@@ -1,0 +1,8 @@
+# Standalone package root (pnpm 11+ settings live here, not package.json#pnpm).
+# Empty packages list keeps this a single-package project.
+packages: []
+
+# Allow esbuild postinstall (required by tsx for pnpm goalboard / tests).
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.requirements/
+.goalboard/
+.impeccable/qa/
+*.log
+.DS_Store

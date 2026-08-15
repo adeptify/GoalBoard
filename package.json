@@ -1,0 +1,60 @@
+{
+  "name": "@adeptify/goalboard",
+  "version": "0.1.0",
+  "description": "GoalBoard V1：面向人和 AI Runtime 的本地 SQLite 目标真相源",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adeptify/goalboard.git"
+  },
+  "homepage": "https://github.com/adeptify/goalboard#readme",
+  "bugs": {
+    "url": "https://github.com/adeptify/goalboard/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "goalboard": "./dist/cli/main.js",
+    "goalboard-mcp": "./dist/mcp/server.js",
+    "goalboard-web": "./dist/web/server.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "examples",
+    "README.md",
+    "PRODUCT.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "pnpm build && node --import tsx --test tests/mcp.test.ts tests/v1.test.ts tests/web.test.ts",
+    "prepack": "pnpm build",
+    "cli": "tsx src/cli/main.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "web": "tsx src/web/server.ts",
+    "web:demo": "tsx src/web/server.ts --demo",
+    "goalboard": "tsx src/cli/main.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.8.0",
+    "lucide": "^1.31.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

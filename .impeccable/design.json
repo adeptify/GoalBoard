@@ -1,0 +1,267 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-15T22:50:00+08:00",
+  "title": "Design System: Clarification Agent Goal Workbench",
+  "extensions": {
+    "colorMeta": {
+      "page": {
+        "role": "neutral",
+        "displayName": "Cool Page",
+        "canonical": "#f6f7f9",
+        "tonalRamp": ["oklch(15% 0.006 250)", "oklch(27% 0.006 250)", "oklch(39% 0.006 250)", "oklch(51% 0.006 250)", "oklch(63% 0.006 250)", "oklch(75% 0.006 250)", "oklch(87% 0.006 250)", "oklch(95% 0.006 250)"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper White",
+        "canonical": "#fff",
+        "tonalRamp": ["oklch(15% 0 0)", "oklch(27% 0 0)", "oklch(39% 0 0)", "oklch(51% 0 0)", "oklch(63% 0 0)", "oklch(75% 0 0)", "oklch(87% 0 0)", "oklch(95% 0 0)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Graphite Ink",
+        "canonical": "#171a21",
+        "tonalRamp": ["oklch(15% 0.015 255)", "oklch(27% 0.015 255)", "oklch(39% 0.015 255)", "oklch(51% 0.015 255)", "oklch(63% 0.015 255)", "oklch(75% 0.015 255)", "oklch(87% 0.015 255)", "oklch(95% 0.015 255)"]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Slate",
+        "canonical": "#68707d",
+        "tonalRamp": ["oklch(15% 0.018 250)", "oklch(27% 0.018 250)", "oklch(39% 0.018 250)", "oklch(51% 0.018 250)", "oklch(63% 0.018 250)", "oklch(75% 0.018 250)", "oklch(87% 0.018 250)", "oklch(95% 0.018 250)"]
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Faint Slate",
+        "canonical": "#9299a4",
+        "tonalRamp": ["oklch(15% 0.014 250)", "oklch(27% 0.014 250)", "oklch(39% 0.014 250)", "oklch(51% 0.014 250)", "oklch(63% 0.014 250)", "oklch(75% 0.014 250)", "oklch(87% 0.014 250)", "oklch(95% 0.014 250)"]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline Gray",
+        "canonical": "#dfe3e8",
+        "tonalRamp": ["oklch(15% 0.008 250)", "oklch(27% 0.008 250)", "oklch(39% 0.008 250)", "oklch(51% 0.008 250)", "oklch(63% 0.008 250)", "oklch(75% 0.008 250)", "oklch(87% 0.008 250)", "oklch(95% 0.008 250)"]
+      },
+      "line-strong": {
+        "role": "neutral",
+        "displayName": "Strong Hairline",
+        "canonical": "#cdd3da",
+        "tonalRamp": ["oklch(15% 0.01 250)", "oklch(27% 0.01 250)", "oklch(39% 0.01 250)", "oklch(51% 0.01 250)", "oklch(63% 0.01 250)", "oklch(75% 0.01 250)", "oklch(87% 0.01 250)", "oklch(95% 0.01 250)"]
+      },
+      "blue": {
+        "role": "primary",
+        "displayName": "Action Blue",
+        "canonical": "#1677ff",
+        "tonalRamp": ["oklch(15% 0.2 255)", "oklch(27% 0.2 255)", "oklch(39% 0.2 255)", "oklch(51% 0.2 255)", "oklch(63% 0.2 255)", "oklch(75% 0.2 255)", "oklch(87% 0.2 255)", "oklch(95% 0.2 255)"]
+      },
+      "blue-dark": {
+        "role": "primary",
+        "displayName": "Reference Blue",
+        "canonical": "#0d63d8",
+        "tonalRamp": ["oklch(15% 0.18 255)", "oklch(27% 0.18 255)", "oklch(39% 0.18 255)", "oklch(51% 0.18 255)", "oklch(63% 0.18 255)", "oklch(75% 0.18 255)", "oklch(87% 0.18 255)", "oklch(95% 0.18 255)"]
+      },
+      "blue-soft": {
+        "role": "primary",
+        "displayName": "Blue Wash",
+        "canonical": "#eaf3ff",
+        "tonalRamp": ["oklch(15% 0.025 255)", "oklch(27% 0.025 255)", "oklch(39% 0.025 255)", "oklch(51% 0.025 255)", "oklch(63% 0.025 255)", "oklch(75% 0.025 255)", "oklch(87% 0.025 255)", "oklch(95% 0.025 255)"]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Completion Green",
+        "canonical": "#168a4b",
+        "tonalRamp": ["oklch(15% 0.12 145)", "oklch(27% 0.12 145)", "oklch(39% 0.12 145)", "oklch(51% 0.12 145)", "oklch(63% 0.12 145)", "oklch(75% 0.12 145)", "oklch(87% 0.12 145)", "oklch(95% 0.12 145)"]
+      },
+      "green-soft": {
+        "role": "secondary",
+        "displayName": "Green Wash",
+        "canonical": "#eaf7ef",
+        "tonalRamp": ["oklch(15% 0.025 145)", "oklch(27% 0.025 145)", "oklch(39% 0.025 145)", "oklch(51% 0.025 145)", "oklch(63% 0.025 145)", "oklch(75% 0.025 145)", "oklch(87% 0.025 145)", "oklch(95% 0.025 145)"]
+      },
+      "amber": {
+        "role": "secondary",
+        "displayName": "Review Amber",
+        "canonical": "#b66a00",
+        "tonalRamp": ["oklch(15% 0.13 65)", "oklch(27% 0.13 65)", "oklch(39% 0.13 65)", "oklch(51% 0.13 65)", "oklch(63% 0.13 65)", "oklch(75% 0.13 65)", "oklch(87% 0.13 65)", "oklch(95% 0.13 65)"]
+      },
+      "amber-soft": {
+        "role": "secondary",
+        "displayName": "Amber Wash",
+        "canonical": "#fff4dc",
+        "tonalRamp": ["oklch(15% 0.03 65)", "oklch(27% 0.03 65)", "oklch(39% 0.03 65)", "oklch(51% 0.03 65)", "oklch(63% 0.03 65)", "oklch(75% 0.03 65)", "oklch(87% 0.03 65)", "oklch(95% 0.03 65)"]
+      },
+      "red": {
+        "role": "tertiary",
+        "displayName": "Blocker Red",
+        "canonical": "#c63838",
+        "tonalRamp": ["oklch(15% 0.14 25)", "oklch(27% 0.14 25)", "oklch(39% 0.14 25)", "oklch(51% 0.14 25)", "oklch(63% 0.14 25)", "oklch(75% 0.14 25)", "oklch(87% 0.14 25)", "oklch(95% 0.14 25)"]
+      },
+      "red-soft": {
+        "role": "tertiary",
+        "displayName": "Red Wash",
+        "canonical": "#fff0f0",
+        "tonalRamp": ["oklch(15% 0.03 25)", "oklch(27% 0.03 25)", "oklch(39% 0.03 25)", "oklch(51% 0.03 25)", "oklch(63% 0.03 25)", "oklch(75% 0.03 25)", "oklch(87% 0.03 25)", "oklch(95% 0.03 25)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Goal Display", "purpose": "Selected Goal title at the beginning of the continuous document." },
+      "headline": { "displayName": "Document Headline", "purpose": "Major Goal document section headings." },
+      "title": { "displayName": "Workbench Title", "purpose": "Tree heading and create-dialog title." },
+      "body": { "displayName": "Workbench Body", "purpose": "Narrative, contract, execution, and history content." },
+      "mobile-form": { "displayName": "Mobile Form Control", "purpose": "16px mobile inputs, selects, and textareas that avoid browser focus zoom." },
+      "label": { "displayName": "Compact Label", "purpose": "Toolbar actions, tabs, statuses, and metadata labels." }
+    },
+    "shadows": [
+      { "name": "dialog-and-toast-ambient", "value": "0 8px 28px rgba(26, 38, 52, .12)", "purpose": "Sustained create-dialog elevation and short-lived toast feedback." },
+      { "name": "toolbar-structure", "value": "0 1px 2px rgba(18, 28, 40, .06)", "purpose": "Hairline-depth cue beneath the global toolbar." },
+      { "name": "selected-tree-edge", "value": "inset 0 0 0 1px rgba(14, 94, 199, .22)", "purpose": "Defines the selected blue Goal row without lifting it." },
+      { "name": "mobile-active-tab", "value": "0 1px 3px rgba(22, 31, 43, .1)", "purpose": "Separates the selected mobile Tree or Goal正文 tab." }
+    ],
+    "motion": [
+      { "name": "goal-document-entry", "value": ".24s cubic-bezier(.16, 1, .3, 1)", "purpose": "Introduces a newly selected Goal document; suppressed during live refresh." },
+      { "name": "toast-feedback", "value": ".16s ease", "purpose": "Moves and fades transient action feedback." },
+      { "name": "sync-pulse", "value": "1s infinite", "purpose": "Shows an active live-data refresh in the toolbar." },
+      { "name": "reduced-motion", "value": ".01ms", "purpose": "Collapses all animations and transitions when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "compact-workbench", "value": "1180px" },
+      { "name": "mobile-workbench", "value": "760px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Global Toolbar",
+      "kind": "nav",
+      "refersTo": "topbar",
+      "description": "The 58px light global bar with identity, source context, sync state, search, and compact actions.",
+      "html": "<header class=\"ds-topbar\"><div class=\"ds-brand\"><svg class=\"ds-icon ds-brand-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M2 7.5 12 2l10 5.5-10 5.5L2 7.5Z\"></path><path d=\"m2 12.5 10 5.5 10-5.5\"></path><path d=\"m2 17 10 5 10-5\"></path></svg><strong>GoalBoard</strong></div><div class=\"ds-source\"><span>clarification-agent</span><small>本地项目</small><span class=\"ds-sync\">已同步</span></div><div class=\"ds-top-spacer\"></div><button class=\"ds-top-action\" type=\"button\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"></path></svg><span>新建目标</span></button></header>",
+      "css": ".ds-topbar { width: 100%; height: 58px; display: flex; align-items: center; color: #171a21; background: rgba(250, 251, 252, .97); border-bottom: 1px solid #cdd3da; box-shadow: 0 1px 2px rgba(18, 28, 40, .06); font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid #dfe3e8; } .ds-brand strong { font-size: 19px; letter-spacing: -.02em; } .ds-icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-brand-icon { color: #1677ff; font-size: 22px; stroke-width: 2.4; } .ds-source { height: 100%; padding: 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; } .ds-source small { color: #68707d; } .ds-sync { margin-left: 4px; padding-left: 11px; border-left: 1px solid #dfe3e8; color: #68707d; font-size: 11px; } .ds-sync::before { content: \"\"; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #168a4b; } .ds-top-spacer { flex: 1; } .ds-top-action { height: 34px; margin-right: 8px; padding: 0 13px; border: 0; border-left: 1px solid #dfe3e8; color: #171a21; background: transparent; display: inline-flex; align-items: center; gap: 8px; font: inherit; font-weight: 650; cursor: pointer; } .ds-top-action:hover { color: #1677ff; } .ds-top-action:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
+    },
+    {
+      "name": "Tree Search Field",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "The compact 34px field used to filter Goal IDs or titles and synchronized with global search.",
+      "html": "<label class=\"ds-search\"><svg class=\"ds-search-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"8\"></circle><path d=\"m21 21-4.3-4.3\"></path></svg><input class=\"ds-search-input\" type=\"search\" placeholder=\"筛选 ID 或标题\" aria-label=\"筛选 Goal Tree\"></label>",
+      "css": ".ds-search { width: 100%; display: block; position: relative; color: #171a21; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-search-icon { position: absolute; z-index: 1; left: 12px; top: 10px; width: 1em; height: 1em; fill: none; stroke: #9299a4; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-search-input { width: 100%; height: 34px; padding: 0 12px 0 35px; border: 1px solid #dfe3e8; border-radius: 5px; color: #171a21; background: #fff; font: inherit; } .ds-search-input:hover { border-color: #cdd3da; } .ds-search-input:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; border-color: #1677ff; } .ds-search-input::placeholder { color: #9299a4; }"
+    },
+    {
+      "name": "Selected Goal Tree Node",
+      "kind": "nav",
+      "refersTo": "tree-node-selected",
+      "description": "A dense selected Goal row with title primary, ID secondary, and a readable status.",
+      "html": "<button class=\"ds-tree-node ds-is-selected\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-tree-copy\"><strong>让 Goal Contract 可验证</strong><small>GOAL-CONTRACT-VERIFY</small></span><span class=\"ds-tree-status\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><path d=\"m9 12 2 2 4-4\"></path></svg><span>已认领</span></span></button>",
+      "css": ".ds-tree-node { width: 100%; min-width: 0; min-height: 34px; padding: 3px 8px; border: 0; border-radius: 4px; color: #fff; background: linear-gradient(180deg, #328bff, #1677ed); box-shadow: inset 0 0 0 1px rgba(14, 94, 199, .22); display: flex; align-items: center; gap: 8px; cursor: pointer; text-align: left; font-family: Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-tree-copy { min-width: 0; flex: 1; display: grid; overflow: hidden; line-height: 1.2; } .ds-tree-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; } .ds-tree-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255, 255, 255, .75); font-size: 9px; letter-spacing: .02em; } .ds-tree-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; } .ds-icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-tree-node:hover { background: linear-gradient(180deg, #2582fb, #0d63d8); } .ds-tree-node:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
+    },
+    {
+      "name": "Tree Resizer",
+      "kind": "custom",
+      "refersTo": "tree-resizer",
+      "description": "The 5px pointer- and keyboard-operable separator that persists the selected Tree width.",
+      "html": "<div class=\"ds-resizer\" role=\"separator\" aria-label=\"调整 Goal Tree 宽度\" aria-orientation=\"vertical\" aria-valuemin=\"260\" aria-valuemax=\"520\" aria-valuenow=\"320\" tabindex=\"0\"></div>",
+      "css": ".ds-resizer { position: relative; width: 5px; height: 180px; cursor: col-resize; background: #f7f8fa; touch-action: none; } .ds-resizer::after { content: \"\"; position: absolute; inset: 0 auto 0 2px; width: 1px; background: #cdd3da; } .ds-resizer:hover::after, .ds-resizer:focus-visible::after, .ds-resizer:active::after { width: 2px; background: #1677ff; } .ds-resizer:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
+    },
+    {
+      "name": "Goal Status Set",
+      "kind": "chip",
+      "refersTo": "goal-status",
+      "description": "Text-and-Lucide statuses where blue is ready or claimed, green satisfied, red blocked, and gray waiting.",
+      "html": "<div class=\"ds-status-set\"><span class=\"ds-status ds-status-ready\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><path d=\"m10 8 6 4-6 4Z\"></path></svg><span>就绪</span></span><span class=\"ds-status ds-status-satisfied\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><path d=\"m9 12 2 2 4-4\"></path></svg><span>已完成</span></span><span class=\"ds-status ds-status-waiting\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M12 7v5l3 2\"></path></svg><span>等待中</span></span><span class=\"ds-status ds-status-blocked\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><path d=\"m9 9 6 6m0-6-6 6\"></path></svg><span>已阻塞</span></span></div>",
+      "css": ".ds-status-set { display: flex; flex-wrap: wrap; gap: 14px; padding: 10px; color: #171a21; background: #fff; font-family: Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; } .ds-status-ready { color: #1677ff; } .ds-status-satisfied { color: #168a4b; } .ds-status-waiting { color: #555d68; } .ds-status-blocked { color: #c63838; } .ds-icon { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }"
+    },
+    {
+      "name": "Runtime Work Loop",
+      "kind": "custom",
+      "refersTo": "runtime-grid",
+      "description": "One bordered execution sequence containing Claim, Run, Evidence, and Review.",
+      "html": "<div class=\"ds-runtime\"><section class=\"ds-runtime-step\"><h3>Claim <span>认领</span></h3><dl><div><dt>Actor</dt><dd>runtime:author</dd></div><div><dt>Lease</dt><dd>active</dd></div></dl></section><section class=\"ds-runtime-step\"><h3>Run <span>执行</span></h3><dl><div><dt>状态</dt><dd>running</dd></div><div><dt>尝试</dt><dd>2</dd></div></dl></section><section class=\"ds-runtime-step\"><h3>Evidence <span>证据</span></h3><p class=\"ds-runtime-pass\">✓ 3 条通过</p></section><section class=\"ds-runtime-step\"><h3>Review <span>复核</span></h3><p class=\"ds-runtime-review\">● 等待复核</p></section></div>",
+      "css": ".ds-runtime { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; color: #171a21; background: #fff; border: 1px solid #cdd3da; border-radius: 5px; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-runtime-step { min-width: 0; min-height: 174px; padding: 13px 15px; border-right: 1px solid #cdd3da; } .ds-runtime-step:last-child { border-right: 0; } .ds-runtime-step h3 { margin: -13px -15px 12px; padding: 10px 15px; border-bottom: 1px solid #dfe3e8; background: #fbfcfd; font-size: 14px; } .ds-runtime-step h3 span { color: #68707d; font-weight: 500; } .ds-runtime-step dl { margin: 0; } .ds-runtime-step dl div { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 8px; margin: 5px 0; } .ds-runtime-step dt { color: #68707d; } .ds-runtime-step dd { min-width: 0; margin: 0; overflow-wrap: anywhere; } .ds-runtime-step p { margin: 5px 0; } .ds-runtime-pass { color: #168a4b; } .ds-runtime-review { color: #b66a00; } @media (max-width: 760px) { .ds-runtime { grid-template-columns: 1fr; } .ds-runtime-step { min-height: 0; border-right: 0; border-bottom: 1px solid #dfe3e8; } .ds-runtime-step:last-child { border-bottom: 0; } }"
+    },
+    {
+      "name": "Continuous Contract List",
+      "kind": "custom",
+      "refersTo": "contract-list",
+      "description": "The hairline-divided Goal Contract with 138px labels and flexible continuous content rows.",
+      "html": "<div class=\"ds-contract\"><section class=\"ds-contract-row\"><h3>包含什么</h3><ul class=\"ds-contract-list\"><li>保留可观察的完成结果</li><li>输出可追溯 Evidence</li></ul></section><section class=\"ds-contract-row\"><h3>明确不做</h3><p class=\"ds-contract-empty\">不替代 Runtime 调度</p></section><section class=\"ds-contract-row\"><h3>必须遵守</h3><ul class=\"ds-contract-list\"><li>所有验收条件可验证</li></ul></section></div>",
+      "css": ".ds-contract { color: #171a21; background: #fff; border-top: 1px solid #dfe3e8; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-contract-row { min-width: 0; padding: 11px 0; border-bottom: 1px solid #dfe3e8; display: grid; grid-template-columns: 138px minmax(0, 1fr); gap: 14px; align-items: start; } .ds-contract-row h3 { margin: 0; font-size: 13px; } .ds-contract-list { min-width: 0; margin: 0; padding-left: 19px; } .ds-contract-list li { margin: 3px 0; } .ds-contract-empty { margin: 0; color: #68707d; font-size: 13px; } @media (max-width: 760px) { .ds-contract-row { grid-template-columns: 1fr; gap: 6px; } }"
+    },
+    {
+      "name": "Draft Contract Proposal Review",
+      "kind": "custom",
+      "refersTo": "contract-proposal-review",
+      "description": "A continuous current-to-proposed Draft Contract review with field provenance, confidence, evidence references, user-only decisions, and an explicit disabled approval state while linked Dependency Rewires remain pending.",
+      "html": "<article class=\"ds-contract-proposal\"><header><div><strong>Contract 补全提案</strong><p>确认后更新同一个 Goal，不会创建新 Goal。</p></div><span>等待用户决定</span></header><div class=\"ds-contract-change\"><h4>业务逻辑</h4><div><small>当前</small><p>未填写</p><small>提案</small><p>用户先记录 Draft，确认 Contract 后执行者才可领取。</p></div><aside><strong>文档事实 · 可信度 82%</strong><small>待你确认业务含义</small></aside></div><div class=\"ds-contract-prerequisite\"><strong>依赖前置决定</strong><p>请先处理上方依赖调整；完成后才可确认 Contract。</p></div><footer><button type=\"button\">退回补全</button><button class=\"ds-primary\" type=\"button\" disabled>先处理依赖调整</button></footer></article>",
+      "css": ".ds-contract-proposal { overflow: hidden; color: #171a21; background: #fff; border: 1px solid #cdd3da; border-radius: 5px; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif; } .ds-contract-proposal > header { padding: 13px 15px; display: flex; justify-content: space-between; gap: 18px; background: #eaf3ff; border-bottom: 1px solid #dfe3e8; } .ds-contract-proposal header p { margin: 2px 0 0; color: #68707d; } .ds-contract-proposal header span { color: #68707d; font-size: 11px; } .ds-contract-change { margin: 0 15px; padding: 13px 0; display: grid; grid-template-columns: 130px minmax(0, 1fr) minmax(210px, .72fr); gap: 15px; border-bottom: 1px solid #dfe3e8; } .ds-contract-change h4 { margin: 1px 0 0; font-size: 13px; } .ds-contract-change p { margin: 0 0 7px; } .ds-contract-change small { color: #68707d; } .ds-contract-change aside { padding-left: 12px; border-left: 1px solid #dfe3e8; display: grid; align-content: start; } .ds-contract-change aside strong { color: #0d63d8; font-size: 11px; } .ds-contract-proposal footer { padding: 12px 15px; display: flex; justify-content: flex-end; gap: 7px; background: #f6f7f9; } .ds-contract-proposal button { min-height: 34px; padding: 0 13px; border: 1px solid #cdd3da; border-radius: 5px; background: #fff; } .ds-contract-proposal .ds-primary { color: #fff; border-color: #1677ff; background: #1677ff; } @media (max-width: 760px) { .ds-contract-change { grid-template-columns: 1fr; gap: 6px; } .ds-contract-change aside { padding: 7px 0 0; border-left: 0; border-top: 1px dashed #dfe3e8; } }"
+    },
+    {
+      "name": "Dependency Proposal",
+      "kind": "custom",
+      "refersTo": "dependency-proposal",
+      "description": "A readable evidence-backed dependency direction and user-decision record for add or deactivate proposals.",
+      "html": "<article class=\"ds-dependency\"><header><span class=\"ds-dependency-action\">新增依赖</span><span class=\"ds-dependency-state\">等待决定</span></header><div class=\"ds-dependency-direction\"><span><strong>实现 Runtime 接口</strong><small>RUNTIME-INTERFACE</small></span><b>依赖 →</b><span><strong>定义 Goal Contract</strong><small>GOAL-CONTRACT</small></span></div><dl><div><dt>为什么需要</dt><dd>Runtime 接口消费已确认的 Contract。</dd></div><div><dt>为什么是这个方向</dt><dd>接口依赖 Contract 输出，Contract 不依赖接口实现。</dd></div><div><dt>如果拒绝</dt><dd>执行入口可能读取未确认字段。</dd></div><div><dt>判断依据</dt><dd>Contract 输出 · 可信度 92%</dd></div></dl><p><strong>证据</strong> specs/goal-contract/spec.md</p></article>",
+      "css": ".ds-dependency { min-width: 0; padding: 11px 13px; color: #171a21; background: #fff; border: 1px solid #dfe3e8; border-radius: 5px; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-dependency header { display: flex; gap: 8px; font-size: 11px; font-weight: 650; } .ds-dependency-action { color: #0d63d8; } .ds-dependency-state { margin-left: auto; color: #b66a00; } .ds-dependency-direction { margin: 8px 0 9px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; } .ds-dependency-direction span { min-width: 0; display: grid; } .ds-dependency-direction strong, .ds-dependency-direction small { white-space: normal; overflow-wrap: anywhere; } .ds-dependency-direction small, .ds-dependency-direction b, .ds-dependency dt, .ds-dependency p strong { color: #68707d; font-size: 11px; font-weight: 650; } .ds-dependency dl { margin: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; } .ds-dependency dl div { min-width: 0; padding: 7px 0; border-top: 1px solid #edf0f3; } .ds-dependency dd { margin: 1px 0 0; overflow-wrap: anywhere; } .ds-dependency p { margin: 0; padding-top: 7px; border-top: 1px solid #edf0f3; color: #0d63d8; overflow-wrap: anywhere; } @media (max-width: 760px) { .ds-dependency dl { grid-template-columns: 1fr; } .ds-dependency-direction { grid-template-columns: 1fr; gap: 6px; } }"
+    },
+    {
+      "name": "Inline Reference",
+      "kind": "custom",
+      "refersTo": "inline-reference",
+      "description": "HTTP(S) references open externally; other references copy their exact value and confirm with a toast.",
+      "html": "<div class=\"ds-ref-stack\"><a class=\"ds-inline-ref\" href=\"https://example.com/evidence\" target=\"_blank\" rel=\"noreferrer\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M15 3h6v6\"></path><path d=\"M10 14 21 3\"></path><path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"></path></svg><span>https://example.com/evidence</span></a><button class=\"ds-inline-ref\" type=\"button\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\"></rect><path d=\"M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2\"></path></svg><span>claim://runtime/GOAL-42</span></button></div>",
+      "css": ".ds-ref-stack { min-width: 0; display: grid; gap: 7px; color: #171a21; background: #fff; font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-inline-ref { width: fit-content; max-width: 100%; padding: 0; border: 0; border-radius: 4px; color: #0d63d8; background: transparent; display: inline-flex; align-items: flex-start; gap: 5px; cursor: pointer; text-decoration: none; font: inherit; } .ds-inline-ref span { min-width: 0; white-space: normal; overflow-wrap: anywhere; } .ds-inline-ref:hover span { text-decoration: underline; } .ds-inline-ref:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; } .ds-icon { flex: 0 0 auto; width: 13px; height: 13px; margin-top: 4px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }"
+    },
+    {
+      "name": "Mobile View Switch",
+      "kind": "nav",
+      "refersTo": "mobile-view-switch",
+      "description": "The 42px mobile tabs that expose exactly one of Goal Tree or Goal正文.",
+      "html": "<nav class=\"ds-mobile-switch\" role=\"tablist\" aria-label=\"移动端视图\"><button class=\"ds-mobile-tab ds-is-active\" type=\"button\" role=\"tab\" aria-selected=\"true\">Goal Tree</button><button class=\"ds-mobile-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\">Goal 正文</button></nav>",
+      "css": ".ds-mobile-switch { width: 100%; height: 42px; padding: 5px; border-bottom: 1px solid #dfe3e8; background: #f7f8fa; display: grid; grid-template-columns: 1fr 1fr; font: 650 12px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-mobile-tab { border: 0; border-radius: 4px; color: #68707d; background: transparent; cursor: pointer; font: inherit; } .ds-mobile-tab:hover { color: #171a21; } .ds-mobile-tab.ds-is-active { color: #171a21; background: #fff; box-shadow: 0 1px 3px rgba(22, 31, 43, .1); } .ds-mobile-tab:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
+    },
+    {
+      "name": "Create Goal Dialog",
+      "kind": "custom",
+      "refersTo": "create-dialog",
+      "description": "The only sustained interactive floating surface, with name-first Goal creation fields, plain-language hierarchy versus execution-dependency guidance, live direction previews, and form-preserving cursor refresh.",
+      "html": "<div class=\"ds-dialog-backdrop\"><section class=\"ds-dialog\" role=\"dialog\" aria-labelledby=\"ds-dialog-title\"><header class=\"ds-dialog-header\"><div class=\"ds-dialog-heading\"><span class=\"ds-dialog-icon\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"></path></svg></span><div><h2 id=\"ds-dialog-title\">新建目标</h2><p>先记录需求事实，再补全 Contract 与拆分。</p></div></div><button class=\"ds-dialog-close\" type=\"button\" aria-label=\"关闭\">×</button></header><div class=\"ds-dialog-body\"><label class=\"ds-field\"><span>目标名称</span><input class=\"ds-field-input\" placeholder=\"一句话说明要完成什么\"></label><section class=\"ds-relation-field\"><header><span>目录层级</span><div><strong>它属于哪个更大的 Goal？</strong><small>只决定 Tree 中放在哪里，不要求上级 Goal 先完成。</small></div></header><select class=\"ds-field-input\"><option>把 GoalBoard 做成人与 Runtime 共享的 Goal 真相源 · GOALBOARD-PRODUCT</option></select><p>关系预览：新 Goal → 属于 → GoalBoard 产品真相源。</p></section><section class=\"ds-relation-field\"><header><span>执行前置</span><div><strong>开始前必须等哪些 Goal 完成？</strong><small>这会成为领取和完成的硬门禁。</small></div></header><p>关系预览：当前没有执行前置，Goal 可以独立推进。</p></section></div><footer class=\"ds-dialog-footer\"><button class=\"ds-dialog-button\" type=\"button\">取消</button><button class=\"ds-dialog-button ds-dialog-button-primary\" type=\"button\">创建草稿 Goal</button></footer></section></div>",
+      "css": ".ds-dialog-backdrop { padding: 20px; display: grid; place-items: center; background: rgba(25, 34, 45, .36); backdrop-filter: blur(2px); font: 14px/1.55 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: hidden; color: #171a21; background: #fff; border: 0; border-radius: 8px; box-shadow: 0 8px 28px rgba(26, 38, 52, .12); } .ds-dialog-header { padding: 18px 20px; border-bottom: 1px solid #dfe3e8; display: flex; align-items: flex-start; justify-content: space-between; } .ds-dialog-heading { display: flex; gap: 11px; } .ds-dialog-icon { width: 34px; height: 34px; border-radius: 6px; color: #1677ff; background: #eaf3ff; display: grid; place-items: center; font-size: 18px; } .ds-icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-dialog-heading h2 { margin: 0; font-size: 19px; } .ds-dialog-heading p { margin: 1px 0 0; color: #68707d; font-size: 12px; } .ds-dialog-close { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; color: #171a21; background: transparent; display: grid; place-items: center; cursor: pointer; font: inherit; } .ds-dialog-body { padding: 18px 20px 22px; display: grid; gap: 13px; } .ds-field { display: grid; gap: 5px; font-weight: 650; } .ds-field-input { width: 100%; padding: 8px 10px; border: 1px solid #cdd3da; border-radius: 5px; color: #171a21; background: #fff; resize: vertical; font: inherit; font-weight: 400; } .ds-relation-field { min-width: 0; padding: 13px 0 3px; border-top: 1px solid #dfe3e8; } .ds-relation-field header { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 12px; } .ds-relation-field header > span { width: fit-content; padding: 2px 6px; border-radius: 3px; color: #4f5864; background: #eef1f4; font-size: 11px; font-weight: 650; } .ds-relation-field header div { display: grid; } .ds-relation-field small { color: #68707d; } .ds-relation-field p { padding: 7px 9px; border-radius: 4px; background: #f4f7fa; font-size: 12px; overflow-wrap: anywhere; } .ds-field-input:focus-visible, .ds-dialog-close:focus-visible, .ds-dialog-button:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; } .ds-dialog-footer { padding: 13px 20px; border-top: 1px solid #dfe3e8; display: flex; justify-content: flex-end; gap: 8px; } .ds-dialog-button { min-height: 34px; padding: 0 13px; border: 1px solid #cdd3da; border-radius: 5px; color: #171a21; background: #fff; cursor: pointer; font: inherit; font-weight: 650; } .ds-dialog-button-primary { color: #fff; border-color: #1677ff; background: #1677ff; } @media (max-width: 760px) { .ds-dialog-backdrop { padding: 0; } .ds-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; border-radius: 0; } .ds-relation-field header { grid-template-columns: 1fr; gap: 6px; } .ds-field-input { font-size: 16px; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Continuous Goal File",
+    "overview": "The interface should feel like opening a precise project file, not entering a collection of detached widgets. A quiet, light toolbar establishes global context; a searchable Goal Tree keeps hierarchy and dependency scan-friendly; the selected Goal opens as one continuous paper document where Outcome, Why, business closure, contract, execution, proof, risk, history, and pending user decisions can be read in order.\n\nThe visual character is compact, calm, and operational. Hairline borders and small radii structure dense information without turning every section into a separate object. Blue marks the current path and available action; semantic green, amber, and red always travel with text or icons so status never depends on color alone.",
+    "keyCharacteristics": [
+      "Light 58px toolbar over a two-pane desktop workspace.",
+      "Searchable, resizable IDE-style Goal Tree with Goal names primary and IDs secondary.",
+      "Continuous white document surface with strong reading order and minimal ornament.",
+      "Compact controls, hairline separators, and restrained corner radii.",
+      "Lucide line icons paired with explicit labels for actions and statuses.",
+      "Stateful live updates that preserve the reader's place instead of resetting the interface."
+    ],
+    "rules": [
+      { "name": "The Blue Selection Rule", "body": "Use blue for the current path and available action; use green for completion, amber for review or warning, red for blocked or failed states, and neutral gray for waiting.", "section": "colors" },
+      { "name": "The Status Pairing Rule", "body": "Every operational status combines color with readable text and, where present, a Lucide icon; color is reinforcement, never the only carrier.", "section": "colors" },
+      { "name": "The Human-First Reading Rule", "body": "Keep prose readable as a document: use short labels to locate facts, but let Outcome, Why, business logic, and decisions remain complete sentences rather than compressing them into badge language.", "section": "typography" },
+      { "name": "The Continuous Document Rule", "body": "The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface ordered from intent through execution, evidence, risk, history, and unresolved decisions.", "section": "layout" },
+      { "name": "The Stable Workspace Rule", "body": "A cursor-driven refresh updates only changed Tree and document regions, preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid.", "section": "layout" },
+      { "name": "The Modal Elevation Rule", "body": "Keep normal work surfaces flat; reserve sustained floating depth and backdrop treatment for the create dialog.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep Goal hierarchy and dependency scanning in the searchable Tree while keeping the selected Goal's complete truth in one continuous document.",
+      "Do preserve selection, collapsed branches, query, scroll, mobile view, Tree width, create-form values, and history across cursor-driven partial updates.",
+      "Do pair semantic status colors with explicit words and Lucide icons.",
+      "Do open HTTP(S) references as external links and make other references directly copyable.",
+      "Do collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / Goal正文 switch.",
+      "Do suppress nonessential motion during live refresh and honor reduced-motion timing.",
+      "Do expose the 5px Tree separator as a keyboard-operable resize control and retain the chosen width."
+      ,"Do show Draft gaps and field provenance before asking the user to confirm a Contract Proposal."
+    ],
+    "donts": [
+      "Don't fragment one Goal into detached modules when a continuous reading order communicates its contract and history more clearly.",
+      "Don't use amber for waiting or use any semantic hue as a color-only status signal.",
+      "Don't add heavy shadows or large radii to ordinary work surfaces; depth is exceptional and borders do most of the structural work.",
+      "Don't replace the shipped Lucide line language with mixed icon families, emoji, or unlabeled glyphs.",
+      "Don't reset the reader to the top or discard open branches when live data changes.",
+      "Don't show both Tree and Goal正文 simultaneously below 760px.",
+      "Don't turn Goal Contract into a matrix of detached boxes; keep its 138px label and flexible content rows continuous."
+      ,"Don't present Contract Proposal fields as raw JSON or let a Runtime-facing control imply that it can approve its own proposal."
+    ]
+  }
+}

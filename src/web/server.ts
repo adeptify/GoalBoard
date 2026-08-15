@@ -1,0 +1,525 @@
+#!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { GoalBoardCoordinator } from "../v1/coordinator.js";
+import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
+import { SqliteGoalBoardStore } from "../v1/store.js";
+import {
+  renderGoalBoardWeb,
+  type GoalBoardWebView,
+  type WebCoverageItem,
+  type WebEventRecord,
+  type WebGoalStatus,
+  type WebInputBinding,
+  type WebPolicyBinding,
+} from "./render.js";
+
+export interface WebServerOptions {
+  databasePath: string;
+  boardId: string;
+  demo?: boolean;
+}
+
+const REVIEW_LABELS: Record<string, string> = {
+  self_verifier: "自检",
+  cross_reviewer: "交叉验证",
+  adversarial_reviewer: "对抗性验证",
+  human_approver: "用户确认",
+};
+
+type DatabaseRow = Record<string, unknown>;
+
+function rowText(value: unknown): string {
+  return value == null ? "" : String(value);
+}
+
+function rowOptionalText(value: unknown): string | null {
+  return value == null ? null : String(value);
+}
+
+function rowJson<T>(value: unknown, fallback: T): T {
+  if (typeof value !== "string") return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function buildGoalBoardWebView(
+  store: SqliteGoalBoardStore,
+  coordinator: GoalBoardCoordinator,
+  options: WebServerOptions,
+): GoalBoardWebView {
+  const snapshot = store.snapshot(options.boardId);
+  const coverage = (store.db
+    .prepare("SELECT * FROM coverage_items WHERE board_id = ? ORDER BY created_at, requirement_id")
+    .all(options.boardId) as DatabaseRow[]).map<WebCoverageItem>((row) => ({
+    requirement_id: rowText(row.requirement_id),
+    statement: rowText(row.statement),
+    disposition: rowText(row.disposition),
+    owner_goal_id: rowOptionalText(row.owner_goal_id),
+    reason: rowOptionalText(row.reason),
+    revisit_condition: rowOptionalText(row.revisit_condition),
+    blocking: Boolean(row.blocking),
+    created_at: rowText(row.created_at),
+    updated_at: rowText(row.updated_at),
+  }));
+  const inputBindings = (store.db
+    .prepare("SELECT * FROM input_bindings WHERE board_id = ? ORDER BY created_at, binding_id")
+    .all(options.boardId) as DatabaseRow[]).map<WebInputBinding>((row) => ({
+    binding_id: rowText(row.binding_id),
+    goal_id: rowText(row.goal_id),
+    input_name: rowText(row.input_name),
+    source_type: rowText(row.source_type),
+    source_ref: rowText(row.source_ref),
+    snapshot_digest: rowOptionalText(row.snapshot_digest),
+    state: rowText(row.state),
+    reason: rowText(row.reason),
+    created_by: rowText(row.created_by),
+    created_at: rowText(row.created_at),
+  }));
+  const policyBindings = (store.db
+    .prepare("SELECT * FROM policy_bindings WHERE board_id = ? ORDER BY created_at, policy_binding_id")
+    .all(options.boardId) as DatabaseRow[]).map<WebPolicyBinding>((row) => ({
+    policy_binding_id: rowText(row.policy_binding_id),
+    goal_id: rowOptionalText(row.goal_id),
+    scope: rowText(row.scope),
+    policy: rowJson(row.policy_json, {}),
+    state: rowText(row.state),
+    created_by: rowText(row.created_by),
+    reason: rowText(row.reason),
+    created_at: rowText(row.created_at),
+  }));
+  const events = (store.db
+    .prepare("SELECT * FROM events WHERE board_id = ? ORDER BY seq DESC")
+    .all(options.boardId) as DatabaseRow[]).map<WebEventRecord>((row) => ({
+    seq: Number(row.seq ?? 0),
+    event_id: rowText(row.event_id),
+    actor_id: rowText(row.actor_id),
+    type: rowText(row.type),
+    object_type: rowText(row.object_type),
+    object_id: rowText(row.object_id),
+    reason: rowText(row.reason),
+    payload: rowJson(row.payload_json, null),
+    at: rowText(row.at),
+  }));
+  const now = new Date().toISOString();
+  const activeClaims = new Map(
+    snapshot.claims
+      .filter((claim) => claim.state === "active" && claim.expires_at > now)
+      .map((claim) => [claim.goal_id, claim]),
+  );
+  const goals = snapshot.goals.map((goal) => {
+    const activeClaim = activeClaims.get(goal.goal_id);
+    const explanation = coordinator.explainGoal({
+      board_id: options.boardId,
+      goal_id: goal.goal_id,
+      actor_id: "web-observer",
+      goal_mode_attestation: true,
+    });
+    let status: WebGoalStatus;
+    if (goal.fulfillment_state === "satisfied") status = "satisfied";
+    else if (activeClaim) status = "claimed";
+    else if (goal.definition_state !== "accepted" || goal.decomposition_state !== "closed_leaf") status = "waiting";
+    else if (explanation.ready) status = "ready";
+    else status = "blocked";
+    const passedCriteria = new Set<string>();
+    for (const evidence of snapshot.evidence) {
+      if (evidence.goal_id !== goal.goal_id || evidence.result !== "passed") continue;
+      for (const criterionId of evidence.criterion_ids) passedCriteria.add(criterionId);
+    }
+    const pendingReviews = snapshot.review_obligations
+      .filter((item) => item.goal_id === goal.goal_id && item.state === "pending")
+      .map((item) => REVIEW_LABELS[item.role] ?? item.role);
+    const riskIds = new Set(
+      (store.db
+        .prepare("SELECT risk_id FROM goal_risks WHERE goal_id = ? ORDER BY risk_id")
+        .all(goal.goal_id) as Array<{ risk_id: string }>).map((item) => item.risk_id),
+    );
+    const relations = snapshot.relations.filter(
+      (item) => item.from_goal_id === goal.goal_id || item.to_goal_id === goal.goal_id,
+    );
+    const claims = snapshot.claims.filter((item) => item.goal_id === goal.goal_id);
+    const runs = snapshot.runs.filter((item) => item.goal_id === goal.goal_id);
+    const evidence = snapshot.evidence.filter((item) => item.goal_id === goal.goal_id);
+    const reviewObligations = snapshot.review_obligations.filter(
+      (item) => item.goal_id === goal.goal_id,
+    );
+    const reviews = snapshot.reviews.filter((item) => item.goal_id === goal.goal_id);
+    const impacts = snapshot.impacts.filter((item) => item.goal_id === goal.goal_id);
+    const relatedObjectIds = new Set<string>([
+      goal.goal_id,
+      ...relations.map((item) => item.relation_id),
+      ...impacts.map((item) => item.binding_id),
+      ...riskIds,
+      ...claims.map((item) => item.claim_id),
+      ...runs.map((item) => item.run_id),
+      ...evidence.map((item) => item.evidence_id),
+      ...reviewObligations.map((item) => item.obligation_id),
+      ...reviews.map((item) => item.review_id),
+    ]);
+    const runIds = new Set(runs.map((item) => item.run_id));
+    const candidateIds = snapshot.candidates
+      .filter((item) => item.discovered_in_run_id && runIds.has(item.discovered_in_run_id))
+      .map((item) => item.candidate_id);
+    candidateIds.forEach((id) => relatedObjectIds.add(id));
+    snapshot.rewires
+      .filter((item) => item.candidate_id && candidateIds.includes(item.candidate_id))
+      .forEach((item) => relatedObjectIds.add(item.rewire_id));
+    return {
+      goal,
+      status,
+      status_label: status,
+      reasons: explanation.reasons.filter((item) => item.code !== "claim.already_active"),
+      active_claim_actor: activeClaim?.actor_id ?? null,
+      active_claim: activeClaim ?? null,
+      claims,
+      runs,
+      evidence,
+      review_obligations: reviewObligations,
+      reviews,
+      risks: snapshot.risks.filter((item) => riskIds.has(item.risk_id)),
+      impacts,
+      relations,
+      coverage: coverage.filter((item) => item.owner_goal_id === goal.goal_id),
+      input_bindings: inputBindings.filter((item) => item.goal_id === goal.goal_id),
+      policy_bindings: policyBindings.filter(
+        (item) => item.goal_id == null || item.goal_id === goal.goal_id,
+      ),
+      events: events.filter((item) => relatedObjectIds.has(item.object_id)),
+      resolved_policy: explanation.resolved_policy,
+      passed_criteria: [...passedCriteria],
+      pending_reviews: pendingReviews,
+    };
+  });
+  const counts: GoalBoardWebView["counts"] = {
+    ready: 0,
+    claimed: 0,
+    blocked: 0,
+    waiting: 0,
+    satisfied: 0,
+  };
+  for (const goal of goals) counts[goal.status]++;
+  const fallback = goals.find((item) => item.status === "claimed") ?? goals.find((item) => item.status === "ready") ?? goals[0];
+  return {
+    snapshot,
+    source_label: path.basename(options.databasePath),
+    database_path: options.databasePath,
+    demo: Boolean(options.demo),
+    active_goal_id: snapshot.board.active_goal_id ?? fallback?.goal.goal_id ?? null,
+    goals,
+    counts,
+    coverage,
+    input_bindings: inputBindings,
+    policy_bindings: policyBindings,
+    events,
+  };
+}
+
+function sendJson(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(JSON.stringify(value));
+}
+
+function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 256_000) reject(new Error("请求内容过大"));
+    });
+    request.on("end", () => {
+      try {
+        resolve(body ? (JSON.parse(body) as Record<string, unknown>) : {});
+      } catch {
+        reject(new Error("请求不是有效 JSON"));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+export function createGoalBoardWebServer(options: WebServerOptions): http.Server {
+  if (options.demo && !fs.existsSync(options.databasePath)) seedDemoBoard(options.databasePath);
+  return http.createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    try {
+      if (!fs.existsSync(options.databasePath)) {
+        if (url.pathname.startsWith("/api/")) {
+          sendJson(response, 404, { error: "GoalBoard 数据库不存在，请先初始化" });
+        } else {
+          response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+          response.end("GoalBoard 数据库不存在，请先运行 goalboard v1 init。\n");
+        }
+        return;
+      }
+      const store = new SqliteGoalBoardStore(options.databasePath);
+      const coordinator = new GoalBoardCoordinator(store);
+      try {
+        if (request.method === "GET" && url.pathname === "/health") {
+          sendJson(response, 200, { status: "ok", board_id: options.boardId });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/board") {
+          sendJson(response, 200, buildGoalBoardWebView(store, coordinator, options));
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/goals") {
+          const body = await readBody(request);
+          const requiredText = (name: string, maximum = 4_000): string => {
+            const result = typeof body[name] === "string" ? body[name].trim() : "";
+            if (!result) throw new Error(`${name} 不能为空`);
+            if (result.length > maximum) throw new Error(`${name} 内容过长`);
+            return result;
+          };
+          const optionalText = (name: string): string | undefined => {
+            const result = typeof body[name] === "string" ? body[name].trim() : "";
+            return result || undefined;
+          };
+          const draftText = (name: string, maximum = 4_000): string => {
+            const result = typeof body[name] === "string" ? body[name].trim() : "";
+            if (result.length > maximum) throw new Error(`${name} 内容过长`);
+            return result;
+          };
+          const priority = Number(body.priority ?? 50);
+          if (!Number.isFinite(priority) || priority < 0 || priority > 100) {
+            sendJson(response, 400, { error: "priority 必须是 0 到 100 的数字" });
+            return;
+          }
+          const goalId = optionalText("goal_id");
+          const parentGoalId = optionalText("parent_goal_id");
+          const dependencyGoalIds = [
+            ...new Set(
+              (Array.isArray(body.dependency_goal_ids) ? body.dependency_goal_ids : [])
+                .filter((value): value is string => typeof value === "string")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            ),
+          ];
+          const acceptanceStatements = [
+            ...new Set(
+              (Array.isArray(body.acceptance_criteria) ? body.acceptance_criteria : [])
+                .filter((value): value is string => typeof value === "string")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            ),
+          ];
+          const knownGoalIds = new Set(
+            store.snapshot(options.boardId).goals.map((goal) => goal.goal_id),
+          );
+          const relationTargets = [...(parentGoalId ? [parentGoalId] : []), ...dependencyGoalIds];
+          const missingTargets = relationTargets.filter((target) => !knownGoalIds.has(target));
+          if (missingTargets.length) {
+            sendJson(response, 400, {
+              error: `找不到关联 Goal: ${[...new Set(missingTargets)].join("、")}`,
+            });
+            return;
+          }
+          if (goalId && relationTargets.includes(goalId)) {
+            sendJson(response, 400, { error: "新 Goal 不能依赖或属于自身" });
+            return;
+          }
+          let created;
+          try {
+            created = coordinator.createGoal(
+              options.boardId,
+              {
+                ...(goalId ? { goal_id: goalId } : {}),
+                title: requiredText("title", 120),
+                outcome: draftText("outcome"),
+                why: draftText("why"),
+                business_logic: draftText("business_logic"),
+                definition_state: "draft",
+                decomposition_state: "abstract",
+                priority,
+                acceptance_criteria: acceptanceStatements.map((statement) => ({
+                  statement,
+                  decision_method: "inspection",
+                  pass_condition: statement,
+                  required_evidence: ["inspection"],
+                })),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-goal-${randomUUID()}`),
+                reason: "用户从 GoalBoard 手动录入 Goal",
+              },
+            );
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          if (parentGoalId) {
+            coordinator.addRelation(
+              options.boardId,
+              {
+                from_goal_id: created.goal.goal_id,
+                to_goal_id: parentGoalId,
+                type: "part_of",
+                state: "active",
+                reason: "用户创建 Goal 时指定上级 Goal",
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: `web-parent-${created.goal.goal_id}-${randomUUID()}`,
+              },
+            );
+          }
+          for (const dependencyGoalId of dependencyGoalIds) {
+            coordinator.addRelation(
+              options.boardId,
+              {
+                from_goal_id: created.goal.goal_id,
+                to_goal_id: dependencyGoalId,
+                type: "depends_on",
+                state: "active",
+                reason: "用户创建 Goal 时指定上游依赖",
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: `web-dependency-${created.goal.goal_id}-${dependencyGoalId}-${randomUUID()}`,
+              },
+            );
+          }
+          sendJson(response, 201, {
+            goal: created.goal,
+            goal_path: `/goals/${encodeURIComponent(created.goal.goal_id)}`,
+            observed_event_cursor: store.snapshot(options.boardId).cursor,
+          });
+          return;
+        }
+        const contractProposalMatch = url.pathname.match(
+          /^\/api\/contract-proposals\/([^/]+)\/decision$/,
+        );
+        if (request.method === "POST" && contractProposalMatch) {
+          const body = await readBody(request);
+          const decision = String(body.decision);
+          if (decision !== "approved" && decision !== "rejected") {
+            sendJson(response, 400, { error: "decision 必须是 approved 或 rejected" });
+            return;
+          }
+          const result = coordinator.decideContractProposal({
+            board_id: options.boardId,
+            proposal_id: decodeURIComponent(contractProposalMatch[1]),
+            actor_id: "web-user",
+            actor_kind: "user",
+            decision,
+            reason: String(
+              body.reason ??
+                (decision === "approved"
+                  ? "用户从 GoalBoard 确认完整 Contract"
+                  : "用户从 GoalBoard 退回 Contract 补全提案"),
+            ),
+            idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
+          });
+          sendJson(response, 200, result);
+          return;
+        }
+        const candidateMatch = url.pathname.match(/^\/api\/candidates\/([^/]+)\/decision$/);
+        if (request.method === "POST" && candidateMatch) {
+          const body = await readBody(request);
+          const decision = String(body.decision);
+          if (decision !== "approved" && decision !== "rejected") {
+            sendJson(response, 400, { error: "decision 必须是 approved 或 rejected" });
+            return;
+          }
+          const result = coordinator.decideCandidate({
+            board_id: options.boardId,
+            candidate_id: decodeURIComponent(candidateMatch[1]),
+            actor_id: "web-user",
+            actor_kind: "user",
+            decision,
+            reason: String(body.reason ?? "用户从 Web UI 做出决定"),
+            idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
+          });
+          sendJson(response, 200, result);
+          return;
+        }
+        const rewireMatch = url.pathname.match(/^\/api\/rewires\/([^/]+)\/(?:decision|confirm)$/);
+        if (request.method === "POST" && rewireMatch) {
+          const body = await readBody(request);
+          const decision = String(body.decision ?? "confirmed");
+          if (decision !== "confirmed" && decision !== "rejected") {
+            sendJson(response, 400, { error: "decision 必须是 confirmed 或 rejected" });
+            return;
+          }
+          const result = coordinator.confirmRewire({
+            board_id: options.boardId,
+            rewire_id: decodeURIComponent(rewireMatch[1]),
+            actor_id: "web-user",
+            actor_kind: "user",
+            decision,
+            reason: String(
+              body.reason ??
+                (decision === "confirmed"
+                  ? "用户从 Web UI 确认 Goal Spine 线路"
+                  : "用户从 Web UI 拒绝这次关系调整"),
+            ),
+            idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
+          });
+          sendJson(response, 200, result);
+          return;
+        }
+        const goalPageMatch = url.pathname.match(/^\/goals\/([^/]+)$/);
+        if (request.method === "GET" && (url.pathname === "/" || goalPageMatch)) {
+          let requestedGoalId: string | undefined;
+          if (goalPageMatch) {
+            try {
+              requestedGoalId = decodeURIComponent(goalPageMatch[1]);
+            } catch {
+              sendJson(response, 404, { error: "Goal 页面不存在" });
+              return;
+            }
+          }
+          const view = buildGoalBoardWebView(store, coordinator, options);
+          if (requestedGoalId && !view.goals.some((item) => item.goal.goal_id === requestedGoalId)) {
+            sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
+            return;
+          }
+          const html = renderGoalBoardWeb(view, requestedGoalId);
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+          });
+          response.end(html);
+          return;
+        }
+        sendJson(response, 404, { error: "页面或接口不存在" });
+      } finally {
+        store.close();
+      }
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
+
+function flag(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMain) {
+  const args = process.argv.slice(2);
+  const demo = args.includes("--demo");
+  const databasePath = path.resolve(flag(args, "--db") ?? (demo ? ".goalboard/demo.db" : ".goalboard/goalboard.db"));
+  const boardId = flag(args, "--board-id") ?? (demo ? DEMO_BOARD_ID : "default");
+  const port = Number(flag(args, "--port") ?? 4173);
+  const server = createGoalBoardWebServer({ databasePath, boardId, demo });
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`GoalBoard Web: http://127.0.0.1:${port}`);
+    console.log(`SQLite: ${databasePath}`);
+  });
+}

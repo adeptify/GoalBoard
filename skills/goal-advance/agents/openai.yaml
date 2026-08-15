@@ -1,0 +1,4 @@
+interface:
+  display_name: "GoalBoard Runtime"
+  short_description: "让 Runtime 先读取并认领 Goal，再按澄清者或执行者工作"
+  default_prompt: "Use $goal-advance to read and claim the relevant Goal before clarifying or executing it."
