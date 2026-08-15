@@ -184,7 +184,13 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /下游/);
   assert.match(html, /Claim 历史/);
   assert.match(html, /Run 历史/);
-  assert.match(html, /风险、影响与规则/);
+  assert.match(html, /风险与影响/);
+  assert.match(html, /Runtime 与 Review Policy/);
+  assert.match(html, /项目默认规则/);
+  assert.match(html, /当前 Goal 额外规则/);
+  assert.match(html, /data-policy-form/);
+  assert.match(html, /name="required_capabilities"/);
+  assert.match(html, /name="max_lease_seconds"/);
   assert.match(html, /事件历史/);
   assert.match(html, /用户决策/);
   assert.match(html, /这里不会启动或分配 Runtime/);
@@ -219,6 +225,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /document\.hidden \|\| dialog\.open/);
   assert.match(html, /const createDraft = dialog\.open \? readCreateDraft\(\) : null/);
   assert.match(html, /applyCreateDraft\(createDraft\)/);
+  assert.match(html, /document\.activeElement\?\.closest\?\.\("\[data-live-form\]"\)/);
   assert.match(html, /form\?\.addEventListener\("change", updateRelationPreviews\)/);
   assert.match(html, /sessionStorage\.setItem/);
   assert.match(html, /data-tree-scroll/);
@@ -632,6 +639,172 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     assert.equal(minimal.goal.outcome, "");
     assert.equal(minimal.goal.why, "");
     assert.equal(minimal.goal.business_logic, "");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web edits project and Goal Policy and submits a user-only Human Review", async () => {
+  const { databasePath } = webFixture();
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.createGoal(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "POLICY-WEB",
+      title: "维护 Runtime 与 Review Policy",
+      outcome: "用户可以配置规则并完成最终确认",
+      why: "验证 Policy 和 Human Review 的 Web 闭环",
+      business_logic: "项目默认提供基线，当前 Goal 只能增加要求，用户 Review 记录最终判断。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "POLICY-WEB-C1",
+          statement: "Policy 与 Review 可以保存",
+          decision_method: "automated_check",
+          pass_condition: "Web API 和页面均可使用",
+          required_evidence: ["test"],
+        },
+      ],
+    },
+    { actor_id: "test-user", idempotency_key: "create-policy-web" },
+  );
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const projectPolicy = await fetch(`${origin}/api/policy-bindings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "project_default",
+        reason: "设置项目默认规则",
+        policy: {
+          goal_mode: "preferred",
+          required_capabilities: [],
+          self_verification: true,
+          cross_reviewers: 0,
+          adversarial_reviewers: 0,
+          human_approval: false,
+          max_lease_seconds: 1800,
+        },
+      }),
+    });
+    assert.equal(projectPolicy.status, 200, await projectPolicy.text());
+    const goalPolicy = await fetch(`${origin}/api/policy-bindings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "goal",
+        goal_id: "POLICY-WEB",
+        reason: "当前 Goal 需要独立验证和用户最终确认",
+        policy: {
+          goal_mode: "required",
+          required_capabilities: ["browser"],
+          self_verification: true,
+          cross_reviewers: 1,
+          adversarial_reviewers: 1,
+          human_approval: true,
+          max_lease_seconds: 900,
+        },
+      }),
+    });
+    assert.equal(goalPolicy.status, 200, await goalPolicy.text());
+
+    const runtimeStore = new SqliteGoalBoardStore(databasePath);
+    const runtimeCoordinator = new GoalBoardCoordinator(runtimeStore);
+    const claim = runtimeCoordinator.claimGoal({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+      actor_id: "runtime-policy-web",
+      role: "executor",
+      capabilities: ["browser"],
+      goal_mode_attestation: true,
+      idempotency_key: "claim-policy-web",
+    }).claim;
+    assert.ok(claim);
+    const run = runtimeCoordinator.startRun({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+      claim_id: claim.claim_id,
+      actor_id: "runtime-policy-web",
+      contract_cursor: runtimeStore.eventCursor(DEMO_BOARD_ID),
+      idempotency_key: "run-policy-web",
+    }).run;
+    const evidence = runtimeCoordinator.submitEvidence({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+      actor_id: "runtime-policy-web",
+      criterion_ids: ["POLICY-WEB-C1"],
+      run_id: run.run_id,
+      kind: "test",
+      locator: "tests/web.test.ts#policy-review",
+      result: "passed",
+      idempotency_key: "evidence-policy-web",
+    }).evidence;
+    const obligation = runtimeStore
+      .snapshot(DEMO_BOARD_ID)
+      .review_obligations.find(
+        (item) => item.goal_id === "POLICY-WEB" && item.role === "human_approver",
+      );
+    assert.ok(obligation);
+    runtimeStore.close();
+
+    const page = await (await fetch(`${origin}/goals/POLICY-WEB`)).text();
+    assert.match(page, /当前最终生效规则/);
+    assert.match(page, /项目默认规则/);
+    assert.match(page, /当前 Goal 额外规则/);
+    assert.match(page, /value="browser"/);
+    assert.match(page, /等待你的最终确认/);
+    assert.match(page, /data-human-review-form/);
+    assert.match(page, /<option value="pass">通过<\/option>/);
+    assert.match(page, /<option value="needs_changes">需要修改<\/option>/);
+    assert.match(page, /<option value="fail">不通过<\/option>/);
+    assert.match(page, /<option value="inconclusive">证据不足<\/option>/);
+    assert.match(page, new RegExp(evidence.evidence_id));
+
+    const missingReason = await fetch(
+      `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ verdict: "pass", evidence_refs: [evidence.evidence_id] }),
+      },
+    );
+    assert.equal(missingReason.status, 400);
+    assert.match(await missingReason.text(), /Review 必须说明判断理由/);
+
+    const reviewed = await fetch(
+      `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          verdict: "needs_changes",
+          evidence_refs: [evidence.evidence_id, "https://example.com/human-observation"],
+          reasoning: "测试已通过，但人工检查发现说明文案仍需修改",
+        }),
+      },
+    );
+    assert.equal(reviewed.status, 200, await reviewed.text());
+    const verifiedStore = new SqliteGoalBoardStore(databasePath);
+    const savedReview = verifiedStore
+      .snapshot(DEMO_BOARD_ID)
+      .reviews.find((item) => item.obligation_id === obligation.obligation_id);
+    assert.equal(savedReview?.actor_id, "web-user");
+    assert.equal(savedReview?.verdict, "needs_changes");
+    assert.deepEqual(savedReview?.evidence_refs, [
+      evidence.evidence_id,
+      "https://example.com/human-observation",
+    ]);
+    verifiedStore.close();
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

@@ -486,8 +486,77 @@ export class GoalBoardCoordinator {
       if (replay) return { ...replay, replayed: true };
       this.requireBoard(boardId);
       if (input.goal_id) this.requireGoalOnBoard(boardId, input.goal_id);
+      if (!input.reason.trim()) {
+        throw new GoalBoardV1Error("policy.reason_required", "保存 Policy 时必须说明原因");
+      }
+      if (
+        input.policy.goal_mode != null &&
+        !["disabled", "preferred", "required"].includes(input.policy.goal_mode)
+      ) {
+        throw new GoalBoardV1Error("policy.goal_mode_invalid", "Goal Mode 必须是关闭、建议或强制");
+      }
+      if (
+        input.policy.required_capabilities != null &&
+        (!Array.isArray(input.policy.required_capabilities) ||
+          input.policy.required_capabilities.some(
+            (capability) => typeof capability !== "string" || !capability.trim(),
+          ))
+      ) {
+        throw new GoalBoardV1Error(
+          "policy.capabilities_invalid",
+          "Runtime 必需能力必须是非空字符串列表",
+        );
+      }
+      for (const [field, value] of [
+        ["cross_reviewers", input.policy.cross_reviewers],
+        ["adversarial_reviewers", input.policy.adversarial_reviewers],
+      ] as const) {
+        if (value != null && (!Number.isInteger(value) || value < 0)) {
+          throw new GoalBoardV1Error("policy.review_count_invalid", `${field} 必须是非负整数`);
+        }
+      }
+      if (
+        input.policy.max_lease_seconds != null &&
+        (!Number.isInteger(input.policy.max_lease_seconds) || input.policy.max_lease_seconds <= 0)
+      ) {
+        throw new GoalBoardV1Error(
+          "policy.max_lease_invalid",
+          "最长领取时间必须是正整数秒数",
+        );
+      }
+      const scope = input.goal_id ? "goal" : "project_default";
+      const normalizedPolicy: Partial<GoalPolicy> = {
+        ...input.policy,
+        ...(input.policy.required_capabilities
+          ? { required_capabilities: unique(input.policy.required_capabilities.map((item) => item.trim())).sort() }
+          : {}),
+      };
       const bindingId = `policy-${randomUUID()}`;
       const at = this.clock().toISOString();
+      const replaced = (input.goal_id
+        ? this.store.db
+            .prepare(
+              "SELECT policy_binding_id FROM policy_bindings WHERE board_id = ? AND goal_id = ? AND scope = 'goal' AND state = 'active'",
+            )
+            .all(boardId, input.goal_id)
+        : this.store.db
+            .prepare(
+              "SELECT policy_binding_id FROM policy_bindings WHERE board_id = ? AND goal_id IS NULL AND scope = 'project_default' AND state = 'active'",
+            )
+            .all(boardId)) as Array<{ policy_binding_id: string }>;
+      if (input.goal_id) {
+        this.store.db
+          .prepare(
+            "UPDATE policy_bindings SET state = 'replaced' WHERE board_id = ? AND goal_id = ? AND scope = 'goal' AND state = 'active'",
+          )
+          .run(boardId, input.goal_id);
+      } else {
+        this.store.db
+          .prepare(
+            "UPDATE policy_bindings SET state = 'replaced' WHERE board_id = ? AND goal_id IS NULL AND scope = 'project_default' AND state = 'active'",
+          )
+          .run(boardId);
+      }
       this.store.db
         .prepare(`
           INSERT INTO policy_bindings (
@@ -499,10 +568,10 @@ export class GoalBoardCoordinator {
           bindingId,
           boardId,
           input.goal_id ?? null,
-          input.goal_id ? "goal" : "project_default",
-          sqliteJson(input.policy),
+          scope,
+          sqliteJson(normalizedPolicy),
           write.actor_id,
-          input.reason,
+          input.reason.trim(),
           at,
         );
       const cursor = this.store.appendEvent({
@@ -512,8 +581,13 @@ export class GoalBoardCoordinator {
         type: "policy.added",
         objectType: "policy",
         objectId: bindingId,
-        reason: input.reason,
-        payload: input,
+        reason: input.reason.trim(),
+        payload: {
+          ...input,
+          policy: normalizedPolicy,
+          scope,
+          replaced_binding_ids: replaced.map((item) => item.policy_binding_id),
+        },
         at,
       });
       const outcome = { policy_binding_id: bindingId, observed_event_cursor: cursor };
@@ -3313,10 +3387,30 @@ export class GoalBoardCoordinator {
     goalId: string,
     strengthen?: Partial<GoalPolicy>,
   ): GoalPolicy {
-    const policies = this.store.activePolicyRows(boardId, goalId).map((row) => row.policy);
-    if (strengthen) policies.push(strengthen);
+    const rows = this.store.activePolicyRows(boardId, goalId);
     let resolved: GoalPolicy = { ...DEFAULT_GOAL_POLICY, required_capabilities: [] };
-    for (const policy of policies) {
+    for (const { policy } of rows.filter((row) => row.scope === "project_default")) {
+      if (policy.goal_mode != null) resolved.goal_mode = policy.goal_mode;
+      if (policy.required_capabilities != null) {
+        resolved.required_capabilities = unique(policy.required_capabilities).sort();
+      }
+      if (policy.self_verification != null) {
+        resolved.self_verification = policy.self_verification;
+      }
+      if (policy.cross_reviewers != null) resolved.cross_reviewers = policy.cross_reviewers;
+      if (policy.adversarial_reviewers != null) {
+        resolved.adversarial_reviewers = policy.adversarial_reviewers;
+      }
+      if (policy.human_approval != null) resolved.human_approval = policy.human_approval;
+      if (policy.max_lease_seconds != null) {
+        resolved.max_lease_seconds = Math.max(1, policy.max_lease_seconds);
+      }
+    }
+    const strengtheningPolicies = rows
+      .filter((row) => row.scope !== "project_default")
+      .map((row) => row.policy);
+    if (strengthen) strengtheningPolicies.push(strengthen);
+    for (const policy of strengtheningPolicies) {
       if (policy.goal_mode && GOAL_MODE_ORDER[policy.goal_mode] > GOAL_MODE_ORDER[resolved.goal_mode]) {
         resolved.goal_mode = policy.goal_mode;
       }

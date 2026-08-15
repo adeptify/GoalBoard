@@ -233,6 +233,112 @@ test("only satisfied Goals can be archived and restoration preserves completion 
   store.close();
 });
 
+test("policy edits replace the same scope while Goal rules only strengthen project defaults", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "policy-target");
+  const firstProject = coordinator.setPolicy(
+    "board-1",
+    {
+      policy: {
+        goal_mode: "disabled",
+        required_capabilities: [],
+        self_verification: false,
+        cross_reviewers: 0,
+        adversarial_reviewers: 0,
+        human_approval: false,
+        max_lease_seconds: 3600,
+      },
+      reason: "项目默认暂不要求 Goal Mode",
+    },
+    { actor_id: "user-1", idempotency_key: "project-policy-off" },
+  );
+  assert.equal(
+    coordinator.readGoalContract("board-1", "policy-target").resolved_policy.goal_mode,
+    "disabled",
+  );
+  assert.equal(
+    coordinator.readGoalContract("board-1", "policy-target").resolved_policy.self_verification,
+    false,
+  );
+
+  const firstGoal = coordinator.setPolicy(
+    "board-1",
+    {
+      goal_id: "policy-target",
+      policy: {
+        goal_mode: "preferred",
+        required_capabilities: ["browser"],
+        self_verification: true,
+        cross_reviewers: 1,
+        adversarial_reviewers: 0,
+        human_approval: false,
+        max_lease_seconds: 2400,
+      },
+      reason: "当前 Goal 需要浏览器能力和交叉验证",
+    },
+    { actor_id: "user-1", idempotency_key: "goal-policy-first" },
+  );
+  const strengthened = coordinator.readGoalContract("board-1", "policy-target").resolved_policy;
+  assert.equal(strengthened.goal_mode, "preferred");
+  assert.deepEqual(strengthened.required_capabilities, ["browser"]);
+  assert.equal(strengthened.cross_reviewers, 1);
+  assert.equal(strengthened.max_lease_seconds, 2400);
+
+  const secondProject = coordinator.setPolicy(
+    "board-1",
+    {
+      policy: {
+        goal_mode: "required",
+        required_capabilities: ["typescript"],
+        self_verification: true,
+        cross_reviewers: 0,
+        adversarial_reviewers: 0,
+        human_approval: true,
+        max_lease_seconds: 1800,
+      },
+      reason: "提高项目默认门槛",
+    },
+    { actor_id: "user-1", idempotency_key: "project-policy-required" },
+  );
+  const secondGoal = coordinator.setPolicy(
+    "board-1",
+    {
+      goal_id: "policy-target",
+      policy: {
+        goal_mode: "disabled",
+        required_capabilities: [],
+        self_verification: false,
+        cross_reviewers: 0,
+        adversarial_reviewers: 0,
+        human_approval: false,
+        max_lease_seconds: 7200,
+      },
+      reason: "尝试降低当前 Goal 门槛",
+    },
+    { actor_id: "user-1", idempotency_key: "goal-policy-second" },
+  );
+  const resolved = coordinator.readGoalContract("board-1", "policy-target").resolved_policy;
+  assert.equal(resolved.goal_mode, "required");
+  assert.equal(resolved.self_verification, true);
+  assert.equal(resolved.human_approval, true);
+  assert.deepEqual(resolved.required_capabilities, ["typescript"]);
+  assert.equal(resolved.max_lease_seconds, 1800);
+
+  const bindingStates = store.db
+    .prepare(
+      "SELECT policy_binding_id, state FROM policy_bindings WHERE policy_binding_id IN (?, ?, ?, ?) ORDER BY policy_binding_id",
+    )
+    .all(
+      firstProject.policy_binding_id,
+      firstGoal.policy_binding_id,
+      secondProject.policy_binding_id,
+      secondGoal.policy_binding_id,
+    ) as Array<{ policy_binding_id: string; state: string }>;
+  assert.equal(bindingStates.filter((binding) => binding.state === "active").length, 2);
+  assert.equal(bindingStates.filter((binding) => binding.state === "replaced").length, 2);
+  store.close();
+});
+
 test("ready query explains dependency and Goal Mode blockers in plain language", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "foundation");

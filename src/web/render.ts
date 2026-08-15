@@ -16,6 +16,7 @@ import type {
   RiskRecord,
   RunRecord,
 } from "../v1/types.js";
+import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
 
 export type WebGoalStatus = "ready" | "claimed" | "blocked" | "waiting" | "satisfied" | "archived";
@@ -393,7 +394,6 @@ function renderScope(item: WebGoalView): string {
 }
 
 function renderSafety(item: WebGoalView): string {
-  const policy = item.resolved_policy;
   return `<div class="safety-grid">
     <section><h3>风险</h3>${
       item.risks.length
@@ -405,8 +405,126 @@ function renderSafety(item: WebGoalView): string {
         ? item.impacts.map((impact) => `<article class="fact-row"><span class="fact-icon">${icon("impact")}</span><span><strong>${escapeHtml(impact.surface)}</strong><small>${escapeHtml(impact.access)} · ${escapeHtml(impact.state)} · ${escapeHtml(impact.reason)}</small>${impact.input_snapshot ? `<small>输入快照：${escapeHtml(impact.input_snapshot)}</small>` : ""}</span></article>`).join("")
         : '<p class="empty-row">暂无影响面绑定</p>'
     }</section>
-    <section><h3>Runtime 策略</h3><dl class="policy-list"><div><dt>Goal Mode</dt><dd>${escapeHtml(policy.goal_mode)}</dd></div><div><dt>自检</dt><dd>${policy.self_verification ? "需要" : "不需要"}</dd></div><div><dt>交叉验证</dt><dd>${policy.cross_reviewers} 人</dd></div><div><dt>对抗验证</dt><dd>${policy.adversarial_reviewers} 人</dd></div><div><dt>用户确认</dt><dd>${policy.human_approval ? "需要" : "不需要"}</dd></div><div><dt>最长认领</dt><dd>${policy.max_lease_seconds} 秒</dd></div></dl></section>
   </div>`;
+}
+
+function activePolicyBinding(
+  item: WebGoalView,
+  scope: "project_default" | "goal",
+): WebPolicyBinding | undefined {
+  return item.policy_bindings
+    .filter(
+      (binding) =>
+        binding.state === "active" &&
+        binding.scope === scope &&
+        (scope === "project_default"
+          ? binding.goal_id == null
+          : binding.goal_id === item.goal.goal_id),
+    )
+    .at(-1);
+}
+
+function mergePolicy(base: GoalPolicy, binding?: WebPolicyBinding): GoalPolicy {
+  const policy = binding?.policy ?? {};
+  return {
+    ...base,
+    ...policy,
+    required_capabilities:
+      policy.required_capabilities == null
+        ? [...base.required_capabilities]
+        : [...policy.required_capabilities],
+  };
+}
+
+function renderGoalModeOptions(selected: GoalPolicy["goal_mode"]): string {
+  return ([
+    ["disabled", "关闭 · Runtime 不必声明 Goal Mode"],
+    ["preferred", "建议 · 提醒 Runtime 使用 Goal Mode"],
+    ["required", "强制 · 未声明时不可领取"],
+  ] as const)
+    .map(
+      ([value, label]) =>
+        `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`,
+    )
+    .join("");
+}
+
+function renderPolicyForm(
+  item: WebGoalView,
+  scope: "project_default" | "goal",
+  policy: GoalPolicy,
+  binding: WebPolicyBinding | undefined,
+): string {
+  const goalScope = scope === "goal";
+  const scopeLabel = goalScope ? "当前 Goal 额外规则" : "项目默认规则";
+  const description = goalScope
+    ? "只作用于当前 Goal；可以增加要求，但不能削弱项目默认最低门槛。"
+    : "所有 Goal 的共同基线；修改后影响后续新的领取与 Review。";
+  const saved = binding
+    ? `已保存 · ${formatDate(binding.created_at)} · ${binding.created_by}`
+    : goalScope
+      ? "尚未单独设置，当前沿用项目默认"
+      : "尚未单独设置，当前使用系统默认";
+  return `<details class="policy-source"${goalScope ? " open" : ""}>
+    <summary><span><strong>${scopeLabel}</strong><small>${escapeHtml(description)}</small></span><span>${escapeHtml(saved)} ${icon("chevron-down")}</span></summary>
+    <form class="policy-form" data-policy-form data-live-form="policy-${escapeHtml(scope)}-${escapeHtml(item.goal.goal_id)}">
+      <input type="hidden" name="scope" value="${scope}">
+      ${goalScope ? `<input type="hidden" name="goal_id" value="${escapeHtml(item.goal.goal_id)}">` : ""}
+      <label class="policy-field"><span>Goal Mode</span><select name="goal_mode">${renderGoalModeOptions(policy.goal_mode)}</select></label>
+      <div class="policy-field"><span>验证方式</span><div class="policy-toggles">
+        <label><input type="checkbox" name="self_verification"${policy.self_verification ? " checked" : ""}><span>执行者必须自我验证</span></label>
+        <label><input type="checkbox" name="human_approval"${policy.human_approval ? " checked" : ""}><span>必须由用户最终确认</span></label>
+      </div></div>
+      <div class="policy-field"><span>独立 Review 人数</span><div class="policy-number-row"><label><span>交叉验证</span><input name="cross_reviewers" type="number" min="0" step="1" value="${policy.cross_reviewers}"></label><label><span>对抗性验证</span><input name="adversarial_reviewers" type="number" min="0" step="1" value="${policy.adversarial_reviewers}"></label></div></div>
+      <label class="policy-field"><span>Runtime 必需能力</span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="用逗号分隔，例如 browser, typescript"><small>Runtime 必须声明全部能力后才能领取。</small></label>
+      <label class="policy-field"><span>最长领取时间</span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>秒</span></span></label>
+      <label class="policy-field"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="说明为什么调整这组规则"></textarea></label>
+      <p class="form-error" data-policy-error role="alert" hidden></p>
+      <footer><span>${goalScope ? "最终生效值会与项目默认规则合并。" : "旧规则会标记为已替换，历史仍保留。"}</span><button class="button-primary" type="submit">保存${scopeLabel}</button></footer>
+    </form>
+  </details>`;
+}
+
+function renderPolicyEditor(item: WebGoalView): string {
+  const projectBinding = activePolicyBinding(item, "project_default");
+  const goalBinding = activePolicyBinding(item, "goal");
+  const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
+  const goalPolicy = mergePolicy(projectPolicy, goalBinding);
+  const policy = item.resolved_policy;
+  return `<div class="policy-workbench">
+    <div class="policy-effective"><div><strong>当前最终生效规则</strong><small>项目默认与当前 Goal 额外要求合并后的领取门槛</small></div><dl><div><dt>Goal Mode</dt><dd>${escapeHtml(policy.goal_mode)}</dd></div><div><dt>自检</dt><dd>${policy.self_verification ? "需要" : "不需要"}</dd></div><div><dt>交叉 / 对抗</dt><dd>${policy.cross_reviewers} / ${policy.adversarial_reviewers} 人</dd></div><div><dt>用户确认</dt><dd>${policy.human_approval ? "需要" : "不需要"}</dd></div><div><dt>最长领取</dt><dd>${policy.max_lease_seconds} 秒</dd></div><div><dt>必需能力</dt><dd>${escapeHtml(policy.required_capabilities.join("、") || "无")}</dd></div></dl></div>
+    ${renderPolicyForm(item, "project_default", projectPolicy, projectBinding)}
+    ${renderPolicyForm(item, "goal", goalPolicy, goalBinding)}
+  </div>`;
+}
+
+function renderHumanReview(item: WebGoalView): string {
+  const pending = item.review_obligations.filter(
+    (obligation) => obligation.role === "human_approver" && obligation.state === "pending",
+  );
+  if (!pending.length) return "";
+  const evidenceChoices = item.evidence.length
+    ? item.evidence
+        .slice()
+        .reverse()
+        .map(
+          (evidence) =>
+            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(evidence.kind)} · ${escapeHtml(evidence.result)}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
+        )
+        .join("")
+    : '<p class="empty-row">当前还没有已提交 Evidence；仍可在下方填写外部引用。</p>';
+  return `<div class="human-review-list"><header><strong>等待你的最终确认</strong><p>请根据 Contract 和 Evidence 给出结论。Human Review 只能由用户入口提交。</p></header>${pending
+    .map(
+      (obligation) => `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}">
+        <label class="review-verdict"><span>Review 结论</span><select name="verdict"><option value="pass">通过</option><option value="needs_changes">需要修改</option><option value="fail">不通过</option><option value="inconclusive">证据不足</option></select></label>
+        <fieldset><legend>引用已有 Evidence</legend><div class="evidence-choice-list">${evidenceChoices}</div></fieldset>
+        <label><span>补充 Evidence 引用 <small>可选，每行一条</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="https://… 或项目内文件引用"></textarea></label>
+        <label><span>判断理由</span><textarea name="reasoning" rows="3" required placeholder="说明为什么给出这个结论，以及哪些证据支撑判断"></textarea></label>
+        <p class="form-error" data-review-error role="alert" hidden></p>
+        <footer><small>${escapeHtml(obligation.independence_rule)} · ${escapeHtml(obligation.obligation_id)}</small><button class="button-primary" type="submit">提交用户 Review</button></footer>
+      </form>`,
+    )
+    .join("")}</div>`;
 }
 
 function renderHistory(item: WebGoalView): string {
@@ -703,6 +821,7 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     <section class="document-section runtime-section" data-section="execution">
       ${sectionHeading("workflow", "Runtime 工作闭环", "GoalBoard 记录真相，Runtime 主动读取并认领")}
       <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
+      ${renderHumanReview(item)}
       <p class="runtime-note">这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Ready Goal 并认领。</p>
     </section>
     <section class="document-section">
@@ -714,8 +833,12 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       ${renderScope(item)}
     </section>
     <section class="document-section">
-      ${sectionHeading("shield", "风险、影响与规则")}
+      ${sectionHeading("shield", "风险与影响")}
       ${renderSafety(item)}
+    </section>
+    <section class="document-section" data-section="policy">
+      ${sectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
+      ${renderPolicyEditor(item)}
     </section>
     <section class="document-section">
       ${sectionHeading("history", "事件历史与用户决策")}
@@ -843,7 +966,7 @@ const STYLES = `
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
   .tree-footer small { margin-left: auto; color: var(--muted); }
   .document-pane { min-width: 0; overflow: auto; background: var(--paper); }
-  .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
+  .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
   .goal-header { padding: 0 0 20px; border-bottom: 1px solid var(--line-strong); }
   .goal-title-row { display: flex; align-items: flex-start; gap: 18px; }
   .goal-title-actions { display: flex; align-items: center; gap: 8px; }
@@ -910,6 +1033,21 @@ const MORE_STYLES = `
   .evidence-row, .review-row { display: flex; align-items: flex-start; gap: 8px; }
   .evidence-row > span:last-child, .review-row > span:last-child { min-width: 0; display: grid; }
   .evidence-row small, .review-row small { color: var(--muted); }
+  .human-review-list { margin-top: 12px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+  .human-review-list > header { padding: 11px 0; display: flex; align-items: baseline; gap: 12px; }
+  .human-review-list > header p { margin: 0; color: var(--muted); font-size: 12px; }
+  .human-review-form { padding: 14px 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+  .human-review-form > label, .human-review-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: start; gap: 14px; }
+  .human-review-form > label > span, .human-review-form legend { padding-top: 7px; font-weight: 650; }
+  .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; }
+  .evidence-choice-list { min-width: 0; display: grid; gap: 5px; }
+  .evidence-choice { min-width: 0; padding: 7px 0; display: flex; align-items: flex-start; gap: 9px; border-bottom: 1px solid #edf0f3; }
+  .evidence-choice:last-child { border-bottom: 0; }
+  .evidence-choice input { margin-top: 4px; }
+  .evidence-choice span { min-width: 0; display: grid; }
+  .evidence-choice small { color: var(--muted); overflow-wrap: anywhere; }
+  .human-review-form footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .human-review-form footer small { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
   .evidence-result { margin-top: 2px; }
   .evidence-result--passed { color: var(--green); }
   .evidence-result--failed { color: var(--red); }
@@ -971,7 +1109,7 @@ const MORE_STYLES = `
   .contract-list h3, .safety-grid h3 { margin: 0; font-size: 13px; }
   .contract-list .doc-list, .contract-list .empty-row { margin-top: 0; }
   .contract-list .doc-list { min-width: 0; overflow-wrap: anywhere; }
-  .safety-grid { display: grid; grid-template-columns: 1.1fr 1fr .8fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .safety-grid { display: grid; grid-template-columns: 1.1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
   .safety-grid > section { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); }
   .safety-grid > section:last-child { border-right: 0; }
   .fact-row { display: flex; gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
@@ -981,6 +1119,37 @@ const MORE_STYLES = `
   .fact-row > span:last-child { min-width: 0; display: grid; }
   .fact-row small { color: var(--muted); overflow-wrap: anywhere; }
   .policy-list div { grid-template-columns: minmax(0, 1fr) auto; }
+  .policy-workbench { border-top: 1px solid var(--line-strong); }
+  .policy-effective { padding: 12px 0; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: start; }
+  .policy-effective > div { display: grid; }
+  .policy-effective > div small { color: var(--muted); }
+  .policy-effective dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 18px; }
+  .policy-effective dl div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-bottom: 1px solid #edf0f3; }
+  .policy-effective dt { color: var(--muted); }
+  .policy-effective dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
+  .policy-source { border-top: 1px solid var(--line); }
+  .policy-source:last-child { border-bottom: 1px solid var(--line); }
+  .policy-source > summary { min-height: 56px; padding: 9px 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; list-style: none; }
+  .policy-source > summary::-webkit-details-marker { display: none; }
+  .policy-source > summary > span:first-child { display: grid; }
+  .policy-source > summary small, .policy-source > summary > span:last-child { color: var(--muted); font-size: 12px; }
+  .policy-source > summary > span:last-child { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .policy-source > summary svg { transition: transform .16s ease; }
+  .policy-source[open] > summary svg { transform: rotate(180deg); }
+  .policy-form { padding: 4px 0 15px; display: grid; gap: 0; }
+  .policy-field { min-width: 0; margin: 0; padding: 9px 0; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; gap: 14px; }
+  .policy-field > span:first-child { padding-top: 7px; font-weight: 650; }
+  .policy-field > small { grid-column: 2; margin-top: -6px; color: var(--muted); }
+  .policy-field input:not([type=checkbox]), .policy-field textarea, .policy-field select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; }
+  .policy-toggles { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 7px; }
+  .policy-toggles label { display: inline-flex; align-items: center; gap: 7px; }
+  .policy-number-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .policy-number-row label { min-width: 0; display: grid; grid-template-columns: auto minmax(70px, 1fr); align-items: center; gap: 8px; color: var(--muted); }
+  .policy-with-unit { display: grid; grid-template-columns: minmax(0, 180px) auto; align-items: center; gap: 8px; }
+  .policy-with-unit > span { color: var(--muted); }
+  .policy-form > .form-error { margin: 8px 0 0 204px; }
+  .policy-form footer { padding-top: 12px; border-top: 1px solid #edf0f3; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .policy-form footer > span { color: var(--muted); font-size: 12px; }
   .history-list { list-style: none; margin: 0; padding: 0; }
   .history-list li { display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: 15px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
   .history-list time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
@@ -1071,6 +1240,23 @@ const MORE_STYLES = `
 `;
 
 const RESPONSIVE_STYLES = `
+  @container (max-width: 660px) {
+    .human-review-list > header { display: grid; gap: 2px; }
+    .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
+    .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
+    .human-review-form footer { align-items: stretch; flex-direction: column; }
+    .human-review-form footer button { align-self: flex-end; }
+    .policy-effective, .policy-field { grid-template-columns: 1fr; gap: 5px; }
+    .policy-effective dl { grid-template-columns: 1fr; }
+    .policy-field > span:first-child { padding-top: 0; }
+    .policy-field > small { grid-column: 1; margin-top: -2px; }
+    .policy-number-row { grid-template-columns: 1fr; }
+    .policy-form > .form-error { margin-left: 0; }
+    .policy-form footer { align-items: stretch; flex-direction: column; }
+    .policy-form footer button { align-self: flex-end; }
+    .policy-source > summary { align-items: flex-start; }
+    .policy-source > summary > span:last-child { max-width: 46%; white-space: normal; text-align: right; }
+  }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
@@ -1083,7 +1269,10 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
     .relation-layout, .safety-grid { grid-template-columns: 1fr 1fr; }
     .relation-group:nth-child(2), .safety-grid > section:nth-child(2) { border-right: 0; }
-    .relation-group:last-child, .safety-grid > section:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+    .relation-group:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+  }
+  @media (max-width: 900px) {
+    .source, .global-search, .top-action[data-view-action] { display: none; }
   }
   @media (max-width: 760px) {
     body { overflow: hidden; }
@@ -1112,6 +1301,21 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:last-child, .relation-group:last-child, .safety-grid > section:last-child { border-bottom: 0 !important; }
     .relation-group:last-child, .safety-grid > section:last-child { grid-column: auto; border-top: 0; }
     .contract-list section { grid-template-columns: 1fr; gap: 6px; }
+    .human-review-list > header { display: grid; gap: 2px; }
+    .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
+    .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
+    .human-review-form footer { align-items: stretch; flex-direction: column; }
+    .human-review-form footer button { align-self: flex-end; }
+    .policy-effective, .policy-field { grid-template-columns: 1fr; gap: 5px; }
+    .policy-effective dl { grid-template-columns: 1fr; }
+    .policy-field > span:first-child { padding-top: 0; }
+    .policy-field > small { grid-column: 1; margin-top: -2px; }
+    .policy-number-row { grid-template-columns: 1fr; }
+    .policy-form > .form-error { margin-left: 0; }
+    .policy-form footer { align-items: stretch; flex-direction: column; }
+    .policy-form footer button { align-self: flex-end; }
+    .policy-source > summary { align-items: flex-start; }
+    .policy-source > summary > span:last-child { white-space: normal; text-align: right; }
     .history-list li { grid-template-columns: 1fr; gap: 2px; }
     .decision-list > article { align-items: stretch; flex-direction: column; }
     .contract-proposal > header { display: grid; }
@@ -1125,7 +1329,7 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
@@ -1345,8 +1549,12 @@ const CLIENT_SCRIPT = `
       }
     }
 
-    const refreshBoard = async () => {
+    const refreshBoard = async (force = false) => {
       if (syncing || document.hidden) return;
+      if (!force && document.activeElement?.closest?.("[data-live-form]")) {
+        setSyncState("编辑中");
+        return;
+      }
       syncing = true;
       try {
         const boardResponse = await fetch("/api/board", { cache: "no-store" });
@@ -1604,6 +1812,91 @@ const CLIENT_SCRIPT = `
         } catch (error) {
           rewire.disabled = false;
           showToast(error.message || "操作失败", true);
+        }
+      }
+    });
+
+    document.addEventListener("submit", async (event) => {
+      const submittedForm = event.target;
+      const policyForm = submittedForm.closest?.("[data-policy-form]");
+      if (policyForm) {
+        event.preventDefault();
+        const submit = policyForm.querySelector('button[type="submit"]');
+        const errorBox = policyForm.querySelector("[data-policy-error]");
+        const values = new FormData(policyForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        const capabilities = String(values.get("required_capabilities") || "")
+          .split(/[\\n,，]/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+        try {
+          const response = await fetch("/api/policy-bindings", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              scope: values.get("scope"),
+              goal_id: values.get("goal_id") || undefined,
+              reason: String(values.get("reason") || "").trim(),
+              policy: {
+                goal_mode: values.get("goal_mode"),
+                self_verification: values.has("self_verification"),
+                cross_reviewers: Number(values.get("cross_reviewers")),
+                adversarial_reviewers: Number(values.get("adversarial_reviewers")),
+                human_approval: values.has("human_approval"),
+                required_capabilities: [...new Set(capabilities)],
+                max_lease_seconds: Number(values.get("max_lease_seconds")),
+              },
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Policy 保存失败");
+          await refreshBoard(true);
+          showToast(values.get("scope") === "goal" ? "当前 Goal 规则已保存" : "项目默认规则已保存");
+        } catch (error) {
+          errorBox.textContent = error.message || "Policy 保存失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const reviewForm = submittedForm.closest?.("[data-human-review-form]");
+      if (reviewForm) {
+        event.preventDefault();
+        const submit = reviewForm.querySelector('button[type="submit"]');
+        const errorBox = reviewForm.querySelector("[data-review-error]");
+        const values = new FormData(reviewForm);
+        const extraRefs = String(values.get("evidence_refs_extra") || "")
+          .split("\\n")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        const evidenceRefs = [...new Set([...values.getAll("evidence_refs").map(String), ...extraRefs])];
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch(
+            "/api/goals/" + encodeURIComponent(reviewForm.dataset.goalId) +
+              "/review-obligations/" + encodeURIComponent(reviewForm.dataset.obligationId) +
+              "/review",
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                verdict: values.get("verdict"),
+                evidence_refs: evidenceRefs,
+                reasoning: String(values.get("reasoning") || "").trim(),
+              }),
+            },
+          );
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Review 提交失败");
+          await refreshBoard(true);
+          showToast("用户 Review 已记录");
+        } catch (error) {
+          errorBox.textContent = error.message || "Review 提交失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
         }
       }
     });

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
+import type { GoalPolicy } from "../v1/types.js";
 import {
   renderGoalBoardWeb,
   type GoalBoardWebView,
@@ -404,6 +405,92 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
             goal_path: `/goals/${encodeURIComponent(created.goal.goal_id)}`,
             observed_event_cursor: store.snapshot(options.boardId).cursor,
           });
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/policy-bindings") {
+          const body = await readBody(request);
+          const scope = String(body.scope ?? "");
+          if (scope !== "project_default" && scope !== "goal") {
+            sendJson(response, 400, { error: "scope 必须是 project_default 或 goal" });
+            return;
+          }
+          const goalId = scope === "goal" ? String(body.goal_id ?? "").trim() : null;
+          if (scope === "goal" && !goalId) {
+            sendJson(response, 400, { error: "当前 Goal 规则必须指定 goal_id" });
+            return;
+          }
+          const policyInput = body.policy as Record<string, unknown> | undefined;
+          if (!policyInput || typeof policyInput !== "object" || Array.isArray(policyInput)) {
+            sendJson(response, 400, { error: "policy 必须是完整规则对象" });
+            return;
+          }
+          const policy: GoalPolicy = {
+            goal_mode: String(policyInput.goal_mode) as GoalPolicy["goal_mode"],
+            required_capabilities: Array.isArray(policyInput.required_capabilities)
+              ? policyInput.required_capabilities.map(String)
+              : [],
+            self_verification: policyInput.self_verification === true,
+            cross_reviewers: Number(policyInput.cross_reviewers),
+            adversarial_reviewers: Number(policyInput.adversarial_reviewers),
+            human_approval: policyInput.human_approval === true,
+            max_lease_seconds: Number(policyInput.max_lease_seconds),
+          };
+          const reason = String(body.reason ?? "").trim();
+          try {
+            const result = coordinator.setPolicy(
+              options.boardId,
+              { goal_id: goalId, policy, reason },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-policy-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, {
+              ...result,
+              resolved_policy: goalId
+                ? coordinator.readGoalContract(options.boardId, goalId).resolved_policy
+                : null,
+            });
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const humanReviewMatch = url.pathname.match(
+          /^\/api\/goals\/([^/]+)\/review-obligations\/([^/]+)\/review$/,
+        );
+        if (request.method === "POST" && humanReviewMatch) {
+          const body = await readBody(request);
+          const verdict = String(body.verdict ?? "");
+          if (!["pass", "fail", "needs_changes", "inconclusive"].includes(verdict)) {
+            sendJson(response, 400, {
+              error: "verdict 必须是 pass、fail、needs_changes 或 inconclusive",
+            });
+            return;
+          }
+          const evidenceRefs = Array.isArray(body.evidence_refs)
+            ? [...new Set(body.evidence_refs.map(String).map((item) => item.trim()).filter(Boolean))]
+            : [];
+          try {
+            const result = coordinator.submitReview({
+              board_id: options.boardId,
+              goal_id: decodeURIComponent(humanReviewMatch[1]),
+              obligation_id: decodeURIComponent(humanReviewMatch[2]),
+              actor_id: "web-user",
+              actor_kind: "user",
+              verdict: verdict as "pass" | "fail" | "needs_changes" | "inconclusive",
+              evidence_refs: evidenceRefs,
+              reasoning: String(body.reasoning ?? "").trim(),
+              idempotency_key: String(body.idempotency_key ?? `web-human-review-${randomUUID()}`),
+            });
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           return;
         }
         const goalArchiveMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/archive$/);
