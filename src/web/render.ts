@@ -1,4 +1,5 @@
 import type {
+  AcceptanceCriterion,
   BoardSnapshot,
   ClaimRecord,
   ContractFieldName,
@@ -353,7 +354,12 @@ function renderAcceptance(item: WebGoalView): string {
   return `<ul class="check-list">${item.goal.acceptance_criteria
     .map((criterion) => {
       const passed = item.passed_criteria.includes(criterion.criterion_id);
-      return `<li><span class="check-box${passed ? " is-checked" : ""}">${passed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong><small>通过条件：${escapeHtml(criterion.pass_condition)} · ${escapeHtml(criterion.decision_method)}</small></span></li>`;
+      const target = criterion.target == null
+        ? "未设置目标值"
+        : Object.keys(criterion.target).length === 1 && "value" in criterion.target
+          ? String(criterion.target.value)
+          : JSON.stringify(criterion.target);
+      return `<li><span class="check-box${passed ? " is-checked" : ""}">${passed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong><small>通过条件：${escapeHtml(criterion.pass_condition)}</small><small>判断：${escapeHtml(criterion.decision_method)} · 目标：${escapeHtml(target)} · 证据：${escapeHtml(criterion.required_evidence.join("、") || "未指定")}</small></span></li>`;
     })
     .join("")}</ul>`;
 }
@@ -781,7 +787,114 @@ function renderDraftGaps(goal: GoalRecord): string {
     !goal.acceptance_criteria.length ? "验收条件" : "",
   ].filter(Boolean);
   if (!gaps.length) return "";
-  return `<div class="draft-gaps"><strong>这还是一条待澄清的 Draft</strong><p>还需要补全：${escapeHtml(gaps.join("、"))}。澄清者可以提交提案，但只有你确认后它才会成为可执行 Goal。</p></div>`;
+  return `<div class="draft-gaps"><div><strong>这还是一条待澄清的 Draft</strong><p>还需要补全：${escapeHtml(gaps.join("、"))}。澄清者可以提交提案，但只有你确认后它才会成为可执行 Goal。</p></div><a href="#acceptance-${escapeHtml(goal.goal_id)}">查看验收</a></div>`;
+}
+
+const DECOMPOSITION_OPTIONS = [
+  ["abstract", "仍需拆分", "方向还比较抽象，需要继续找到可独立交付的结果。"],
+  ["frontier_open", "Frontier 开放", "已经有部分可做边界，但拆分工作还没有结束。"],
+  ["closed_leaf", "最小可执行叶子", "可独立完成、独立交付，并有自己的可观察验收。"],
+  ["closed_compound", "拆分完成的复合 Goal", "自身由一组闭环子 Goal 组成，不作为一个大任务直接执行。"],
+] as const;
+
+function renderDecisionMethodOptions(selected: AcceptanceCriterion["decision_method"]): string {
+  return ([
+    ["automated_check", "自动检查"],
+    ["measurement", "量化测量"],
+    ["inspection", "人工检查"],
+    ["human_decision", "用户判断"],
+  ] as const)
+    .map(([value, label]) => `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function renderCriterionTarget(target: Record<string, unknown> | null | undefined): string {
+  if (target == null) return "";
+  if (Object.keys(target).length === 1 && "value" in target) return String(target.value ?? "");
+  return JSON.stringify(target);
+}
+
+function renderDraftCriterionRow(
+  criterion: AcceptanceCriterion | undefined,
+  index: number,
+): string {
+  return `<article class="criterion-editor-row" data-criterion-row>
+    <header><strong data-criterion-number>验收条件 ${index}</strong><button type="button" data-remove-criterion aria-label="移除这条验收条件">${icon("x")}<span>移除</span></button></header>
+    <div class="criterion-editor-grid">
+      <label class="criterion-statement"><span>检查什么</span><input data-criterion-field="statement" value="${escapeHtml(criterion?.statement ?? "")}" placeholder="例如：用户可以保存 Draft 后再次打开"></label>
+      <label><span>判断方式</span><select data-criterion-field="decision_method">${renderDecisionMethodOptions(criterion?.decision_method ?? "inspection")}</select></label>
+      <label class="criterion-pass"><span>怎样算通过</span><textarea rows="2" data-criterion-field="pass_condition" placeholder="写出明确、可判断的通过条件">${escapeHtml(criterion?.pass_condition ?? "")}</textarea></label>
+      <label><span>目标值 <small>可选</small></span><input data-criterion-field="target" value="${escapeHtml(renderCriterionTarget(criterion?.target))}" placeholder="例如 100%、≤ 2 秒或 JSON"></label>
+      <label><span>所需证据类型</span><input data-criterion-field="required_evidence" value="${escapeHtml(criterion?.required_evidence.join(", ") ?? "")}" placeholder="例如 test, inspection"></label>
+      <label><span>条件 ID <small>可选，留空自动生成</small></span><input data-criterion-field="criterion_id" value="${escapeHtml(criterion?.criterion_id ?? "")}" placeholder="例如 DRAFT-C1"></label>
+    </div>
+  </article>`;
+}
+
+function renderDraftEditor(item: WebGoalView): string {
+  const goal = item.goal;
+  if (goal.definition_state !== "draft") return "";
+  const criteria = goal.acceptance_criteria.length
+    ? goal.acceptance_criteria.map((criterion, index) => renderDraftCriterionRow(criterion, index + 1)).join("")
+    : renderDraftCriterionRow(undefined, 1);
+  const listValue = (values: string[]) => escapeHtml(values.join("\n"));
+  const decompositionOptions = DECOMPOSITION_OPTIONS.map(
+    ([value, label, description]) => `<label class="decomposition-choice"><input type="radio" name="decomposition_state" value="${value}"${goal.decomposition_state === value ? " checked" : ""}><span><strong>${label}</strong><small>${description}</small></span></label>`,
+  ).join("");
+  return `<section class="document-section draft-editor-section" data-draft-editor data-goal-id="${escapeHtml(goal.goal_id)}">
+    ${sectionHeading("clipboard", "补全 Draft Contract", "只有 Draft 可以直接编辑；accepted Contract 需要通过新 Goal 与 Rewire 变更")}
+    <form class="draft-contract-form" data-draft-form data-live-form="draft-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
+      <div class="draft-form-row draft-form-row--title"><label><span>Goal 名称</span><input name="title" required maxlength="120" value="${escapeHtml(goal.title)}"></label><label><span>优先级</span><input name="priority" type="number" min="0" max="100" step="1" value="${goal.priority}"></label></div>
+      <label class="draft-field"><span>要得到的结果</span><textarea name="outcome" rows="2" placeholder="完成后，用户或系统获得什么可观察结果">${escapeHtml(goal.outcome)}</textarea></label>
+      <label class="draft-field"><span>为什么现在做</span><textarea name="why" rows="2" placeholder="说明问题和这项工作的价值">${escapeHtml(goal.why)}</textarea></label>
+      <label class="draft-field"><span>业务逻辑</span><textarea name="business_logic" rows="3" placeholder="用非技术语言说明事情如何运转、边界在哪里">${escapeHtml(goal.business_logic)}</textarea></label>
+      <div class="draft-list-grid">
+        <label><span>包含范围 <small>每行一项</small></span><textarea name="in_scope" rows="4">${listValue(goal.in_scope)}</textarea></label>
+        <label><span>明确不做 <small>每行一项</small></span><textarea name="out_of_scope" rows="4">${listValue(goal.out_of_scope)}</textarea></label>
+        <label><span>约束 <small>每行一项</small></span><textarea name="constraints" rows="4">${listValue(goal.constraints)}</textarea></label>
+        <label><span>需要的输入 <small>每行一项</small></span><textarea name="required_inputs" rows="4">${listValue(goal.required_inputs)}</textarea></label>
+        <label><span>承诺输出 <small>每行一项</small></span><textarea name="promised_outputs" rows="4">${listValue(goal.promised_outputs)}</textarea></label>
+      </div>
+      <fieldset class="decomposition-editor"><legend>这条 Goal 现在拆到什么程度？</legend><div>${decompositionOptions}</div></fieldset>
+      <section class="criteria-editor" aria-labelledby="criteria-editor-${escapeHtml(goal.goal_id)}">
+        <header><div><h3 id="criteria-editor-${escapeHtml(goal.goal_id)}">结构化验收条件</h3><p>每条条件保留自己的判断方式、目标和证据要求。</p></div><button type="button" data-add-criterion>${icon("plus")}<span>添加验收条件</span></button></header>
+        <div class="criteria-editor-list" data-criteria-list>${criteria}</div>
+        <template data-criterion-template>${renderDraftCriterionRow(undefined, 1)}</template>
+      </section>
+      <label class="draft-field"><span>本次修改原因</span><textarea name="reason" rows="2" required placeholder="例如：补充用户确认的范围和验收条件"></textarea></label>
+      <p class="form-error" data-draft-error role="alert" hidden></p>
+      <footer><span>保存会更新同一个 Draft；已有待确认 Proposal 会失效并等待重新提案。</span><button class="button-primary" type="submit">保存 Draft Contract</button></footer>
+    </form>
+    <div class="draft-auxiliary">
+      <details><summary><span>${icon("risk")}<strong>登记初始 Risk</strong><small>记录触发条件、影响和处理方式</small></span>${icon("chevron-down")}</summary>
+        <form class="draft-aux-form" data-draft-risk-form data-live-form="draft-risk-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
+          <label class="draft-aux-wide"><span>风险描述</span><textarea name="description" rows="2" required placeholder="什么可能导致 Goal 不能按 Contract 完成"></textarea></label>
+          <label><span>概率</span><select name="probability"><option value="低">低</option><option value="中" selected>中</option><option value="高">高</option></select></label>
+          <label><span>影响</span><select name="impact"><option value="低">低</option><option value="中" selected>中</option><option value="高">高</option></select></label>
+          <label class="draft-aux-wide"><span>受影响区域 <small>每行一项</small></span><textarea name="affected_surfaces" rows="2"></textarea></label>
+          <label class="draft-aux-wide"><span>触发条件</span><textarea name="trigger" rows="2" required></textarea></label>
+          <label><span>处理方式</span><select name="treatment"><option value="mitigate">缓解</option><option value="avoid">规避</option><option value="defer">延后</option><option value="accept">接受</option></select></label>
+          <label><span>阻塞方式</span><select name="blocking_mode"><option value="none">不阻塞</option><option value="claim">阻止领取</option><option value="completion">阻止完成</option><option value="invalidate_on_trigger">触发后失效</option></select></label>
+          <label class="draft-aux-wide"><span>何时复查</span><textarea name="revisit_condition" rows="2" required></textarea></label>
+          <label><span>负责人</span><input name="owner" required placeholder="用户、团队或角色"></label>
+          <label class="draft-aux-wide"><span>登记原因</span><textarea name="reason" rows="2" required placeholder="为什么现在需要记录这项风险"></textarea></label>
+          <p class="form-error draft-aux-wide" data-risk-error role="alert" hidden></p>
+          <footer class="draft-aux-wide"><button class="button-primary" type="submit">登记 Risk</button></footer>
+        </form>
+      </details>
+      <details><summary><span>${icon("impact")}<strong>登记初始 Impact</strong><small>说明会读、写、决定或独占哪个区域</small></span>${icon("chevron-down")}</summary>
+        <form class="draft-aux-form" data-draft-impact-form data-live-form="draft-impact-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
+          <label class="draft-aux-wide"><span>影响区域</span><input name="surface" required placeholder="例如 src/web 或 onboarding-flow"></label>
+          <label><span>访问类型</span><select name="access"><option value="read">读取</option><option value="write">写入</option><option value="decide">决定</option><option value="exclusive">独占</option></select></label>
+          <label><span>输入快照 <small>可选</small></span><input name="input_snapshot" placeholder="commit、文件版本或事实引用"></label>
+          <label class="draft-aux-wide"><span>绑定原因</span><textarea name="reason" rows="2" required placeholder="为什么这个 Goal 会影响该区域"></textarea></label>
+          <p class="form-error draft-aux-wide" data-impact-error role="alert" hidden></p>
+          <footer class="draft-aux-wide"><button class="button-primary" type="submit">登记 Impact</button></footer>
+        </form>
+      </details>
+      <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>继续设置 Runtime / Review Policy</strong><small>项目默认与当前 Goal 规则在下方独立维护</small></span>${icon("arrow")}</a>
+    </div>
+  </section>`;
 }
 
 function sectionHeading(iconName: GoalBoardIcon, title: string, description = ""): string {
@@ -814,10 +927,11 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       ${sectionHeading("blocked", "阻塞项", "决定这个 Goal 现在能否被认领或完成")}
       ${renderReasons(item)}
     </section>
-    <section class="document-section">
+    <section class="document-section" id="acceptance-${escapeHtml(goal.goal_id)}">
       ${sectionHeading("clipboard", "验收清单", "最小 Goal 必须有明确、可判断的完成条件")}
       ${renderAcceptance(item)}
     </section>
+    ${renderDraftEditor(item)}
     <section class="document-section runtime-section" data-section="execution">
       ${sectionHeading("workflow", "Runtime 工作闭环", "GoalBoard 记录真相，Runtime 主动读取并认领")}
       <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
@@ -836,7 +950,7 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       ${sectionHeading("shield", "风险与影响")}
       ${renderSafety(item)}
     </section>
-    <section class="document-section" data-section="policy">
+    <section class="document-section" data-section="policy" id="policy-${escapeHtml(goal.goal_id)}">
       ${sectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
       ${renderPolicyEditor(item)}
     </section>
@@ -996,9 +1110,12 @@ const STYLES = `
   .business-copy { padding-left: 31px; color: #303641; }
   .business-copy p { margin: 6px 0; }
   .business-copy .outcome { color: var(--ink); }
-  .draft-gaps { margin: 2px 0 12px 31px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--amber-soft); }
+  .draft-gaps { margin: 2px 0 12px 31px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--amber-soft); display: flex; align-items: center; gap: 14px; }
+  .draft-gaps > div { min-width: 0; flex: 1; }
   .draft-gaps strong { color: var(--amber); }
   .draft-gaps p { margin: 2px 0 0; color: var(--ink); }
+  .draft-gaps a { flex: 0 0 auto; color: var(--blue-dark); font-size: 12px; font-weight: 650; text-decoration: none; white-space: nowrap; }
+  .draft-gaps a:hover { text-decoration: underline; }
   .doc-list { margin: 7px 0 0; padding-left: 19px; }
   .doc-list li { margin: 3px 0; }
   .empty-row { margin: 8px 0; color: var(--muted); font-size: 13px; }
@@ -1150,6 +1267,63 @@ const MORE_STYLES = `
   .policy-form > .form-error { margin: 8px 0 0 204px; }
   .policy-form footer { padding-top: 12px; border-top: 1px solid #edf0f3; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
   .policy-form footer > span { color: var(--muted); font-size: 12px; }
+  .draft-editor-section { background: #fbfcfd; }
+  .draft-contract-form { border-top: 1px solid var(--line-strong); display: grid; }
+  .draft-contract-form label { min-width: 0; display: grid; gap: 5px; }
+  .draft-contract-form label > span, .decomposition-editor legend { font-weight: 650; }
+  .draft-contract-form label small { color: var(--muted); font-weight: 400; }
+  .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .draft-form-row { padding: 14px 0 0; display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 14px; }
+  .draft-field { padding-top: 12px; }
+  .draft-list-grid { padding: 14px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+  .draft-list-grid label:last-child { grid-column: 1 / -1; }
+  .decomposition-editor { min-width: 0; margin: 0; padding: 15px 0; border: 0; border-bottom: 1px solid var(--line); }
+  .decomposition-editor legend { margin-bottom: 9px; }
+  .decomposition-editor > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: #fff; }
+  .decomposition-choice { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid !important; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px !important; cursor: pointer; }
+  .decomposition-choice:nth-child(2n) { border-right: 0; }
+  .decomposition-choice:nth-last-child(-n+2) { border-bottom: 0; }
+  .decomposition-choice:has(input:checked) { color: var(--blue-dark); background: var(--blue-soft); }
+  .decomposition-choice input { margin-top: 4px; accent-color: var(--blue); }
+  .decomposition-choice > span { min-width: 0; display: grid; }
+  .decomposition-choice small { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .criteria-editor { padding: 15px 0; border-bottom: 1px solid var(--line); }
+  .criteria-editor > header { margin-bottom: 10px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .criteria-editor h3 { margin: 0; font-size: 14px; }
+  .criteria-editor header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+  .criteria-editor button, .draft-aux-form button { min-height: 34px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+  .criteria-editor-list { display: grid; gap: 9px; }
+  .criterion-editor-row { border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: #fff; }
+  .criterion-editor-row > header { min-height: 39px; padding: 6px 10px 6px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; background: #f7f9fb; }
+  .criterion-editor-row > header button { min-height: 28px; padding-inline: 7px; border-color: transparent; background: transparent; color: var(--muted); }
+  .criterion-editor-row > header button:hover { color: var(--red); background: var(--red-soft); }
+  .criterion-editor-grid { padding: 11px 12px 13px; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(160px, .7fr); gap: 11px 14px; }
+  .criterion-pass { grid-column: 1; }
+  .draft-contract-form > .form-error { margin-top: 12px; }
+  .draft-contract-form > footer { padding-top: 13px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .draft-contract-form > footer > span { color: var(--muted); font-size: 12px; }
+  .draft-contract-form > footer button { min-height: 36px; padding: 0 14px; border: 1px solid var(--blue); border-radius: 4px; cursor: pointer; }
+  .draft-auxiliary { margin-top: 17px; border-top: 1px solid var(--line-strong); }
+  .draft-auxiliary > details { border-bottom: 1px solid var(--line); }
+  .draft-auxiliary summary { min-height: 55px; padding: 9px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+  .draft-auxiliary summary::-webkit-details-marker { display: none; }
+  .draft-auxiliary summary > span { min-width: 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 0 8px; }
+  .draft-auxiliary summary > span > svg { grid-row: 1 / 3; color: var(--muted); font-size: 17px; }
+  .draft-auxiliary summary small { color: var(--muted); font-size: 12px; }
+  .draft-auxiliary summary > svg { color: var(--muted); transition: transform .16s ease; }
+  .draft-auxiliary details[open] summary > svg { transform: rotate(180deg); }
+  .draft-aux-form { padding: 4px 0 15px 30px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 14px; }
+  .draft-aux-form label { min-width: 0; display: grid; gap: 5px; }
+  .draft-aux-form label > span { font-weight: 650; }
+  .draft-aux-form label small { color: var(--muted); font-weight: 400; }
+  .draft-aux-wide { grid-column: 1 / -1; }
+  .draft-aux-form footer { display: flex; justify-content: flex-end; }
+  .draft-policy-link { min-height: 61px; padding: 9px 0; color: inherit; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; text-decoration: none; }
+  .draft-policy-link > svg:first-child { color: var(--muted); font-size: 17px; }
+  .draft-policy-link > span { display: grid; }
+  .draft-policy-link small { color: var(--muted); font-size: 12px; }
+  .draft-policy-link > svg:last-child { color: var(--muted); }
+  .draft-policy-link:hover { color: var(--blue-dark); }
   .history-list { list-style: none; margin: 0; padding: 0; }
   .history-list li { display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: 15px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
   .history-list time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
@@ -1256,6 +1430,13 @@ const RESPONSIVE_STYLES = `
     .policy-form footer button { align-self: flex-end; }
     .policy-source > summary { align-items: flex-start; }
     .policy-source > summary > span:last-child { max-width: 46%; white-space: normal; text-align: right; }
+    .draft-form-row, .draft-list-grid, .decomposition-editor > div, .criterion-editor-grid, .draft-aux-form { grid-template-columns: 1fr; }
+    .draft-list-grid label:last-child, .criterion-pass, .draft-aux-wide { grid-column: 1; }
+    .decomposition-choice { border-right: 0; }
+    .decomposition-choice:nth-last-child(2) { border-bottom: 1px solid var(--line); }
+    .criteria-editor > header, .draft-contract-form > footer { align-items: stretch; flex-direction: column; }
+    .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
+    .draft-aux-form { padding-left: 0; }
   }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
@@ -1316,6 +1497,13 @@ const RESPONSIVE_STYLES = `
     .policy-form footer button { align-self: flex-end; }
     .policy-source > summary { align-items: flex-start; }
     .policy-source > summary > span:last-child { white-space: normal; text-align: right; }
+    .draft-form-row, .draft-list-grid, .decomposition-editor > div, .criterion-editor-grid, .draft-aux-form { grid-template-columns: 1fr; }
+    .draft-list-grid label:last-child, .criterion-pass, .draft-aux-wide { grid-column: 1; }
+    .decomposition-choice { border-right: 0; }
+    .decomposition-choice:nth-last-child(2) { border-bottom: 1px solid var(--line); }
+    .criteria-editor > header, .draft-contract-form > footer { align-items: stretch; flex-direction: column; }
+    .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
+    .draft-aux-form { padding-left: 0; }
     .history-list li { grid-template-columns: 1fr; gap: 2px; }
     .decision-list > article { align-items: stretch; flex-direction: column; }
     .contract-proposal > header { display: grid; }
@@ -1329,7 +1517,7 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
@@ -1379,6 +1567,31 @@ const CLIENT_SCRIPT = `
         dependencyPreview.textContent = names.length
           ? "关系预览：新 Goal → 依赖 → " + names.join("、") + "；这些 Goal 完成前不能领取或完成新 Goal。"
           : "关系预览：当前没有执行前置，Goal 可以独立推进。";
+      }
+    };
+
+    const renumberCriteria = (list) => {
+      [...list.querySelectorAll("[data-criterion-row]")].forEach((row, index) => {
+        const label = row.querySelector("[data-criterion-number]");
+        if (label) label.textContent = "验收条件 " + (index + 1);
+      });
+    };
+
+    const splitLines = (value) => [...new Set(String(value || "")
+      .split("\\n")
+      .map((item) => item.trim())
+      .filter(Boolean))];
+
+    const parseCriterionTarget = (value) => {
+      const text = String(value || "").trim();
+      if (!text) return null;
+      try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed
+          : { value: parsed };
+      } catch {
+        return { value: text };
       }
     };
 
@@ -1722,6 +1935,33 @@ const CLIENT_SCRIPT = `
         }
         return;
       }
+      const addCriterion = target.closest("[data-add-criterion]");
+      if (addCriterion) {
+        const editor = addCriterion.closest("[data-draft-editor]");
+        const list = editor?.querySelector("[data-criteria-list]");
+        const template = editor?.querySelector("[data-criterion-template]");
+        if (list && template) {
+          list.append(template.content.cloneNode(true));
+          renumberCriteria(list);
+          list.lastElementChild?.querySelector('[data-criterion-field="statement"]')?.focus();
+        }
+        return;
+      }
+      const removeCriterion = target.closest("[data-remove-criterion]");
+      if (removeCriterion) {
+        const row = removeCriterion.closest("[data-criterion-row]");
+        const list = row?.parentElement;
+        if (!row || !list) return;
+        if (list.querySelectorAll("[data-criterion-row]").length === 1) {
+          row.querySelectorAll("input, textarea").forEach((control) => { control.value = ""; });
+          const method = row.querySelector('[data-criterion-field="decision_method"]');
+          if (method) method.value = "inspection";
+        } else {
+          row.remove();
+          renumberCriteria(list);
+        }
+        return;
+      }
       const archiveAction = target.closest("[data-goal-archive]");
       if (archiveAction) {
         archiveAction.disabled = true;
@@ -1818,6 +2058,130 @@ const CLIENT_SCRIPT = `
 
     document.addEventListener("submit", async (event) => {
       const submittedForm = event.target;
+      const draftForm = submittedForm.closest?.("[data-draft-form]");
+      if (draftForm) {
+        event.preventDefault();
+        const submit = draftForm.querySelector('button[type="submit"]');
+        const errorBox = draftForm.querySelector("[data-draft-error]");
+        const values = new FormData(draftForm);
+        const acceptanceCriteria = [...draftForm.querySelectorAll("[data-criterion-row]")]
+          .map((row) => {
+            const read = (field) => String(row.querySelector('[data-criterion-field="' + field + '"]')?.value || "").trim();
+            const statement = read("statement");
+            const passCondition = read("pass_condition");
+            if (!statement && !passCondition) return null;
+            return {
+              criterion_id: read("criterion_id") || undefined,
+              statement,
+              decision_method: read("decision_method") || "inspection",
+              pass_condition: passCondition,
+              target: parseCriterionTarget(read("target")),
+              required_evidence: [...new Set(read("required_evidence").split(/[,，\\n]/).map((item) => item.trim()).filter(Boolean))],
+            };
+          })
+          .filter(Boolean);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/goals/" + encodeURIComponent(draftForm.dataset.goalId) + "/draft", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              title: String(values.get("title") || "").trim(),
+              outcome: String(values.get("outcome") || "").trim(),
+              why: String(values.get("why") || "").trim(),
+              business_logic: String(values.get("business_logic") || "").trim(),
+              in_scope: splitLines(values.get("in_scope")),
+              out_of_scope: splitLines(values.get("out_of_scope")),
+              constraints: splitLines(values.get("constraints")),
+              required_inputs: splitLines(values.get("required_inputs")),
+              promised_outputs: splitLines(values.get("promised_outputs")),
+              decomposition_state: values.get("decomposition_state"),
+              priority: Number(values.get("priority")),
+              acceptance_criteria: acceptanceCriteria,
+              reason: String(values.get("reason") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Draft 保存失败");
+          await refreshBoard(true);
+          showToast("Draft Contract 已保存");
+        } catch (error) {
+          errorBox.textContent = error.message || "Draft 保存失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const riskForm = submittedForm.closest?.("[data-draft-risk-form]");
+      if (riskForm) {
+        event.preventDefault();
+        const submit = riskForm.querySelector('button[type="submit"]');
+        const errorBox = riskForm.querySelector("[data-risk-error]");
+        const values = new FormData(riskForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/goals/" + encodeURIComponent(riskForm.dataset.goalId) + "/risks", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              description: String(values.get("description") || "").trim(),
+              probability: values.get("probability"),
+              impact: values.get("impact"),
+              affected_surfaces: splitLines(values.get("affected_surfaces")),
+              trigger: String(values.get("trigger") || "").trim(),
+              treatment: values.get("treatment"),
+              blocking_mode: values.get("blocking_mode"),
+              revisit_condition: String(values.get("revisit_condition") || "").trim(),
+              owner: String(values.get("owner") || "").trim(),
+              reason: String(values.get("reason") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Risk 登记失败");
+          await refreshBoard(true);
+          showToast("Risk 已登记");
+        } catch (error) {
+          errorBox.textContent = error.message || "Risk 登记失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const impactForm = submittedForm.closest?.("[data-draft-impact-form]");
+      if (impactForm) {
+        event.preventDefault();
+        const submit = impactForm.querySelector('button[type="submit"]');
+        const errorBox = impactForm.querySelector("[data-impact-error]");
+        const values = new FormData(impactForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/goals/" + encodeURIComponent(impactForm.dataset.goalId) + "/impacts", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              surface: String(values.get("surface") || "").trim(),
+              access: values.get("access"),
+              input_snapshot: String(values.get("input_snapshot") || "").trim(),
+              reason: String(values.get("reason") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Impact 登记失败");
+          await refreshBoard(true);
+          showToast("Impact 已登记");
+        } catch (error) {
+          errorBox.textContent = error.message || "Impact 登记失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
       const policyForm = submittedForm.closest?.("[data-policy-form]");
       if (policyForm) {
         event.preventDefault();

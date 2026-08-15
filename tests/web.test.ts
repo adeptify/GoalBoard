@@ -646,6 +646,211 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
   }
 });
 
+test("Web maintains a structured Draft Contract and initial Risk and Impact without editing accepted Goals", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-draft-editor-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "draft-editor-board",
+    title: "Draft Editor",
+    actor_id: "web-user",
+    idempotency_key: "draft-editor-board-init",
+  });
+  coordinator.createGoal(
+    "draft-editor-board",
+    {
+      goal_id: "EDIT-ME",
+      title: "先记录一个模糊想法",
+      outcome: "",
+      why: "",
+      business_logic: "",
+      definition_state: "draft",
+      decomposition_state: "abstract",
+      acceptance_criteria: [],
+    },
+    { actor_id: "web-user", idempotency_key: "edit-me-create" },
+  );
+  coordinator.createGoal(
+    "draft-editor-board",
+    {
+      goal_id: "LOCKED",
+      title: "已经接受的 Goal",
+      outcome: "Contract 已经固定",
+      why: "验证不可变边界",
+      business_logic: "新需求创建新 Goal，不原地重写 accepted Contract。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "locked-c1",
+          statement: "accepted Goal 无编辑入口",
+          decision_method: "automated_check",
+          pass_condition: "页面不存在 Draft 编辑表单",
+          required_evidence: ["test"],
+        },
+      ],
+    },
+    { actor_id: "web-user", idempotency_key: "locked-create" },
+  );
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "draft-editor-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const draftPage = await (await fetch(`${origin}/goals/EDIT-ME`)).text();
+    assert.match(draftPage, /data-draft-editor data-goal-id="EDIT-ME"/);
+    assert.match(draftPage, /补全 Draft Contract/);
+    assert.match(draftPage, /href="#acceptance-EDIT-ME">查看验收<\/a>/);
+    assert.match(draftPage, /value="abstract"/);
+    assert.match(draftPage, /value="frontier_open"/);
+    assert.match(draftPage, /value="closed_leaf"/);
+    assert.match(draftPage, /value="closed_compound"/);
+    assert.match(draftPage, /data-criterion-field="decision_method"/);
+    assert.match(draftPage, /data-draft-risk-form/);
+    assert.match(draftPage, /data-draft-impact-form/);
+    assert.match(draftPage, /data-policy-form/);
+    assert.ok(draftPage.indexOf("验收清单") < draftPage.indexOf("补全 Draft Contract"));
+
+    const updateResponse = await fetch(`${origin}/api/goals/EDIT-ME/draft`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "把完整工作拆成一组闭环子 Goal",
+        outcome: "用户可以确认每个子 Goal 的独立交付结果",
+        why: "多个结果可以分别失败和 Review",
+        business_logic: "复合父 Goal 组织一组最小闭环子 Goal，每个叶子有自己的可观察验收。",
+        in_scope: ["Draft Contract 全字段", "结构化验收"],
+        out_of_scope: ["自动接受 Runtime 提案"],
+        constraints: ["accepted Contract 不原地修改"],
+        required_inputs: ["用户确认的业务边界"],
+        promised_outputs: ["可执行子 Goal 族"],
+        decomposition_state: "closed_compound",
+        priority: 72,
+        acceptance_criteria: [
+          {
+            criterion_id: "edit-me-c1",
+            statement: "子 Goal 可以分别交付",
+            decision_method: "measurement",
+            pass_condition: "每个子 Goal 都有独立输出",
+            target: { value: "100%" },
+            required_evidence: ["test", "inspection"],
+          },
+          {
+            statement: "用户可以确认拆分完成",
+            decision_method: "human_decision",
+            pass_condition: "用户给出明确通过结论",
+            target: null,
+            required_evidence: ["review"],
+          },
+        ],
+        reason: "用户补全范围、拆分状态和验收方式",
+        idempotency_key: "web-draft-structured-update",
+      }),
+    });
+    assert.equal(updateResponse.status, 200, await updateResponse.text());
+
+    const riskResponse = await fetch(`${origin}/api/goals/EDIT-ME/risks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        description: "子 Goal 边界仍可能重叠",
+        probability: "中",
+        impact: "高",
+        affected_surfaces: ["src/web", "Goal Tree"],
+        trigger: "两个子 Goal 同时修改同一业务决策",
+        treatment: "mitigate",
+        blocking_mode: "completion",
+        revisit_condition: "子 Goal 关系确认后复查",
+        owner: "product-owner",
+        reason: "Draft 阶段先记录影响拆分的风险",
+        idempotency_key: "web-draft-risk",
+      }),
+    });
+    assert.equal(riskResponse.status, 201, await riskResponse.text());
+
+    const impactResponse = await fetch(`${origin}/api/goals/EDIT-ME/impacts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        surface: "src/web",
+        access: "write",
+        input_snapshot: "contract://EDIT-ME",
+        reason: "Draft 编辑器会写入 Web 工作区",
+        idempotency_key: "web-draft-impact",
+      }),
+    });
+    assert.equal(impactResponse.status, 201, await impactResponse.text());
+
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        goals: Array<{
+          goal_id: string;
+          title: string;
+          definition_state: string;
+          decomposition_state: string;
+          acceptance_criteria: Array<{
+            decision_method: string;
+            target: Record<string, unknown> | null;
+            required_evidence: string[];
+          }>;
+        }>;
+        risks: Array<{ description: string; state: string }>;
+        impacts: Array<{ goal_id: string; surface: string; state: string }>;
+      };
+    };
+    const edited = board.snapshot.goals.find((goal) => goal.goal_id === "EDIT-ME");
+    assert.equal(edited?.title, "把完整工作拆成一组闭环子 Goal");
+    assert.equal(edited?.definition_state, "draft");
+    assert.equal(edited?.decomposition_state, "closed_compound");
+    const structuredCriterion = edited?.acceptance_criteria.find(
+      (criterion) => criterion.decision_method === "measurement",
+    );
+    assert.deepEqual(structuredCriterion?.target, { value: "100%" });
+    assert.deepEqual(structuredCriterion?.required_evidence, ["test", "inspection"]);
+    assert.ok(board.snapshot.risks.some((risk) => risk.description === "子 Goal 边界仍可能重叠" && risk.state === "open"));
+    assert.ok(board.snapshot.impacts.some((impact) => impact.goal_id === "EDIT-ME" && impact.surface === "src/web" && impact.state === "confirmed"));
+
+    const updatedPage = await (await fetch(`${origin}/goals/EDIT-ME`)).text();
+    assert.match(updatedPage, /目标：100%/);
+    assert.match(updatedPage, /证据：test、inspection/);
+    assert.match(updatedPage, /子 Goal 边界仍可能重叠/);
+    assert.match(updatedPage, /contract:\/\/EDIT-ME/);
+
+    const lockedPage = await (await fetch(`${origin}/goals/LOCKED`)).text();
+    assert.doesNotMatch(lockedPage, /data-draft-editor data-goal-id="LOCKED"/);
+    const lockedUpdate = await fetch(`${origin}/api/goals/LOCKED/draft`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "不允许修改",
+        outcome: "不应写入",
+        why: "验证边界",
+        business_logic: "accepted Contract 不可变。",
+        decomposition_state: "closed_leaf",
+        priority: 0,
+        acceptance_criteria: [
+          {
+            statement: "接口拒绝",
+            decision_method: "inspection",
+            pass_condition: "返回 400",
+          },
+        ],
+        reason: "测试不可变边界",
+      }),
+    });
+    assert.equal(lockedUpdate.status, 400);
+    assert.match(await lockedUpdate.text(), /accepted Contract 不能原地修改/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("Web edits project and Goal Policy and submits a user-only Human Review", async () => {
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);

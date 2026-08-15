@@ -344,6 +344,164 @@ export class GoalBoardCoordinator {
     });
   }
 
+  updateDraftGoal(
+    boardId: string,
+    goalId: string,
+    input: CreateGoalInput,
+    write: ActorWrite,
+  ): { goal: GoalRecord; replayed: boolean; observed_event_cursor: number } {
+    if (input.definition_state && input.definition_state !== "draft") {
+      throw new GoalBoardV1Error(
+        "goal.draft_update_cannot_accept",
+        "Draft 编辑只能补全草稿；确认 accepted Contract 必须走用户确认流程",
+      );
+    }
+    const changeReason = write.reason?.trim() ?? "";
+    if (!changeReason) {
+      throw new GoalBoardV1Error("goal.draft_update_reason_required", "更新 Draft 时必须说明修改原因");
+    }
+    const normalized: CreateGoalInput = {
+      ...input,
+      goal_id: goalId,
+      definition_state: "draft",
+      in_scope: unique((input.in_scope ?? []).map((item) => item.trim()).filter(Boolean)),
+      out_of_scope: unique((input.out_of_scope ?? []).map((item) => item.trim()).filter(Boolean)),
+      constraints: unique((input.constraints ?? []).map((item) => item.trim()).filter(Boolean)),
+      required_inputs: unique((input.required_inputs ?? []).map((item) => item.trim()).filter(Boolean)),
+      promised_outputs: unique((input.promised_outputs ?? []).map((item) => item.trim()).filter(Boolean)),
+      acceptance_criteria: input.acceptance_criteria.map((criterion) => ({
+        ...criterion,
+        criterion_id: criterion.criterion_id?.trim() || undefined,
+        statement: criterion.statement.trim(),
+        pass_condition: criterion.pass_condition.trim(),
+        required_evidence: unique(
+          (criterion.required_evidence ?? []).map((item) => item.trim()).filter(Boolean),
+        ),
+      })),
+    };
+    this.validateGoalInput(normalized);
+    const hash = requestHash({ board_id: boardId, goal_id: goalId, goal: normalized });
+    return this.store.immediate(() => {
+      const replay = this.replay<{ goal: GoalRecord; observed_event_cursor: number }>(
+        boardId,
+        write.actor_id,
+        "update_draft_goal",
+        write.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+
+      const current = this.requireGoalOnBoard(boardId, goalId);
+      if (current.definition_state !== "draft") {
+        throw new GoalBoardV1Error(
+          "goal.accepted_contract_immutable",
+          "accepted Contract 不能原地修改；请创建新 Goal 并确认 Rewire",
+        );
+      }
+      const criterionIds = normalized.acceptance_criteria
+        .map((criterion) => criterion.criterion_id)
+        .filter((criterionId): criterionId is string => Boolean(criterionId));
+      if (new Set(criterionIds).size !== criterionIds.length) {
+        throw new GoalBoardV1Error("goal.acceptance_id_duplicate", "验收条件 ID 不能重复");
+      }
+
+      const now = this.clock().toISOString();
+      const pendingProposals = this.store.db
+        .prepare(
+          "SELECT proposal_id FROM contract_proposals WHERE board_id = ? AND goal_id = ? AND state = 'pending' ORDER BY created_at",
+        )
+        .all(boardId, goalId) as Array<{ proposal_id: string }>;
+      if (pendingProposals.length) {
+        this.store.db
+          .prepare(`
+            UPDATE contract_proposals
+            SET state = 'superseded', decided_at = ?, decision_json = ?
+            WHERE board_id = ? AND goal_id = ? AND state = 'pending'
+          `)
+          .run(
+            now,
+            sqliteJson({
+              reason: "用户直接更新了 Draft，需要基于新事实重新提交 Contract Proposal",
+              superseded_by: write.actor_id,
+            }),
+            boardId,
+            goalId,
+          );
+      }
+
+      this.store.db
+        .prepare(`
+          UPDATE goals SET
+            title = ?, outcome = ?, why = ?, business_logic = ?,
+            in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
+            required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_state = ?, priority = ?, updated_at = ?
+          WHERE goal_id = ? AND board_id = ?
+        `)
+        .run(
+          normalized.title.trim(),
+          normalized.outcome.trim(),
+          normalized.why.trim(),
+          normalized.business_logic.trim(),
+          sqliteJson(normalized.in_scope ?? []),
+          sqliteJson(normalized.out_of_scope ?? []),
+          sqliteJson(normalized.constraints ?? []),
+          sqliteJson(normalized.required_inputs ?? []),
+          sqliteJson(normalized.promised_outputs ?? []),
+          normalized.decomposition_state ?? current.decomposition_state,
+          normalized.priority ?? current.priority,
+          now,
+          goalId,
+          boardId,
+        );
+      this.store.db.prepare("DELETE FROM acceptance_criteria WHERE goal_id = ?").run(goalId);
+      const insertCriterion = this.store.db.prepare(`
+        INSERT INTO acceptance_criteria (
+          criterion_id, goal_id, statement, decision_method,
+          pass_condition, target_json, required_evidence_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const criterion of normalized.acceptance_criteria) {
+        insertCriterion.run(
+          criterion.criterion_id || `criterion-${randomUUID()}`,
+          goalId,
+          criterion.statement,
+          criterion.decision_method,
+          criterion.pass_condition,
+          criterion.target == null ? null : sqliteJson(criterion.target),
+          sqliteJson(criterion.required_evidence ?? []),
+        );
+      }
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: "goal.draft_updated",
+        objectType: "goal",
+        objectId: goalId,
+        reason: changeReason,
+        payload: {
+          decomposition_state: normalized.decomposition_state ?? current.decomposition_state,
+          acceptance_criterion_count: normalized.acceptance_criteria.length,
+          superseded_contract_proposal_ids: pendingProposals.map((item) => item.proposal_id),
+        },
+        at: now,
+      });
+      const goal = this.requireGoalOnBoard(boardId, goalId);
+      const outcome = { goal, observed_event_cursor: cursor };
+      this.remember(
+        boardId,
+        write.actor_id,
+        "update_draft_goal",
+        write.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
+      return { ...outcome, replayed: false };
+    });
+  }
+
   addRelation(
     boardId: string,
     input: {

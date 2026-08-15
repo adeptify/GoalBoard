@@ -1,6 +1,6 @@
 ---
 name: GoalBoard Goal Workbench
-description: A light IDE Goal Tree paired with a continuous, policy-aware Goal document workbench.
+description: A light IDE Goal Tree paired with a continuous Goal document for Draft authoring, execution, policy, and review.
 colors:
   page: "#f6f7f9"
   paper: "#fff"
@@ -74,13 +74,6 @@ components:
     typography: "{typography.label}"
     height: "58px"
     padding: "0"
-  search-field:
-    backgroundColor: "{colors.paper}"
-    textColor: "{colors.ink}"
-    typography: "{typography.body}"
-    rounded: "{rounded.control}"
-    height: "34px"
-    padding: "0 12px 0 35px"
   tree-node-selected:
     backgroundColor: "{colors.blue}"
     textColor: "{colors.paper}"
@@ -100,6 +93,12 @@ components:
     typography: "{typography.body}"
     rounded: "0"
     padding: "11px 0"
+  draft-contract-editor:
+    backgroundColor: "#fbfcfd"
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "0"
+    padding: "0"
   policy-workbench:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
@@ -138,7 +137,7 @@ components:
 
 **Creative North Star: "The Continuous Goal File"**
 
-The interface should feel like opening a precise project file, not entering a collection of detached widgets. A quiet, light toolbar establishes global context; a searchable Goal Tree keeps hierarchy and dependency scan-friendly; the selected Goal opens as one continuous paper document where Outcome, Why, business closure, contract, execution, proof, risk, policy, history, and pending user decisions can be read in order.
+The interface should feel like opening a precise project file, not entering a collection of detached widgets. A quiet, light toolbar establishes global context; a searchable Goal Tree keeps hierarchy and dependency scan-friendly; the selected Goal opens as one continuous paper document where intent, blockers, acceptance, Draft authoring, execution, proof, risk, policy, history, and pending user decisions can be read in order.
 
 The visual character is compact, calm, and operational. Hairline borders and small radii structure dense information without turning every section into a separate object. Blue marks the current path and available action; semantic green, amber, and red always travel with text or icons so status never depends on color alone.
 
@@ -147,7 +146,7 @@ The visual character is compact, calm, and operational. Hairline borders and sma
 - Light 58px toolbar over a two-pane desktop workspace.
 - Searchable, resizable IDE-style Goal Tree with Goal names primary and IDs secondary.
 - Continuous white document surface with strong reading order and minimal ornament.
-- Continuous Policy and Human Review rows that keep authority, evidence, and submission state in the same reading flow.
+- Draft-only Contract authoring, structured acceptance, initial Risk / Impact capture, Policy, and Human Review stay in the same reading flow.
 - Compact controls, hairline separators, and restrained corner radii.
 - Lucide line icons paired with explicit labels for actions and statuses.
 - Stateful live updates that preserve the reader's place instead of resetting the interface.
@@ -209,13 +208,15 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 The desktop workspace starts beneath a 58px toolbar and divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line.
 
-The selected Goal is itself an inline-size container. When its usable width falls to 660px, Policy and Human Review labels stack above their controls, their footers become vertical, and Policy summaries allow their saved-state text to wrap. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
+The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; a pending user-decision inbox may appear immediately after business logic, and the editor is omitted unless the selected Goal is still a Draft. When the usable document width falls to 660px, Draft fields and acceptance criteria, initial Risk / Impact forms, Policy, and Human Review labels stack above their controls. Footers become vertical and Policy summaries allow their saved-state text to wrap. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
 
 At 1180px and below, the Tree fallback becomes 280px while a saved width remains respected, four-part execution content reduces to two columns, and relationship and safety content use two-column internal layouts. Contract content stays a continuous row list with a 138px label column and flexible content. At 900px and below, source context, global search, and secondary view actions leave the toolbar so the brand and Create action remain usable. At 760px and below, the toolbar becomes 52px, the separator disappears, a 42px Tree / Goal正文 switch appears, and only the selected view is shown. The document uses 18px side gutters, 20px top space, and single-column internal layouts; Contract labels stack above their content, form controls become 16px, and the create dialog fills the viewport.
 
 **The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface ordered from intent through execution, evidence, risk, history, and unresolved decisions.
 
-**The Stable Workspace Rule.** A cursor-driven refresh updates only changed Tree and document regions, preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If a Policy or Human Review form owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh.
+**The Stable Workspace Rule.** A cursor-driven refresh updates only changed Tree and document regions, preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If a Draft Contract, initial Risk, initial Impact, Policy, or Human Review form owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh.
+
+**The Draft Authority Rule.** Only a Goal whose `definition_state` is `draft` exposes the inline Contract editor. An accepted Contract remains readable but cannot be edited in place; changing it proceeds through a new Goal and Rewire decision so accepted truth and its history are not silently rewritten.
 
 ## Elevation & Depth
 
@@ -291,6 +292,16 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Structure:** Upstream, downstream, and other relations share a bordered group. Goal Contract is a continuous hairline-divided list with a 138px label column, not a set of separate containers; safety uses a compact bordered group, while Policy continues the document's row grammar.
 - **Interaction:** Relation rows remain compact and scannable, with state text and action where applicable. Names, reasons, history text, and non-HTTP references wrap naturally in the document instead of hiding decision-critical content behind ellipsis.
 
+### Draft Contract Editor
+
+- **Entry and authority:** Appears immediately after the Draft's business logic, blockers, and acceptance checklist, with pending user decisions inserted after business logic when they exist. It is rendered only while `definition_state` is `draft`; accepted Contracts never expose this in-place editor.
+- **Contract fields:** One continuous form edits Goal name, priority, Outcome, Why, business logic, in-scope and out-of-scope items, constraints, required inputs, and promised outputs. List fields use one item per line instead of nested chips or cards.
+- **Structured acceptance:** Each criterion keeps its own statement, decision method (`automated_check`, `measurement`, `inspection`, or `human_decision`), explicit pass condition, optional target, required Evidence types, and optional criterion ID. Criteria can be added or removed without collapsing them into one prose textarea.
+- **Decomposition:** A bordered two-column radio group presents all four shipped states with plain-language explanations: `abstract` / 仍需拆分, `frontier_open` / Frontier 开放, `closed_leaf` / 最小可执行叶子, and `closed_compound` / 拆分完成的复合 Goal.
+- **Initial Risk and Impact:** Two disclosure rows keep secondary setup compact. Risk records description, probability, impact, affected surfaces, trigger, treatment, blocking mode, revisit condition, owner, and reason. Impact records surface, access (`read`, `write`, `decide`, or `exclusive`), optional input snapshot, and reason; the following link continues into Runtime / Review Policy.
+- **Submit / Error:** Saving the Draft requires a modification reason, disables its action during the request, reports failure inline through `role="alert"`, and force-refreshes plus toasts on success. Initial Risk and Impact use the same submission feedback. Background live refresh defers while any of these forms owns focus, protecting active input.
+- **Narrow document:** At 660px, title and priority, list fields, decomposition choices, criterion fields, and auxiliary forms all become one column; at 760px form controls use 16px type.
+
 ### Draft Contract Proposals
 
 - **Structure:** The selected Draft shows its missing fields first, then one continuous current-to-proposed document. Each row keeps the business field, current value, proposed value, source type, confidence, rationale, and references readable without exposing protocol JSON.
@@ -339,10 +350,13 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Do** open HTTP(S) references as external links and make other references directly copyable.
 - **Do** preserve the evidence and user decision behind dependency changes, including why the direction is A → B rather than B → A.
 - **Do** show Draft gaps and field provenance before asking the user to confirm a Contract Proposal.
+- **Do** keep the Draft-only editor after business logic, blockers, and the acceptance checklist, and keep accepted Contracts read-only in place.
+- **Do** preserve each acceptance criterion's decision method, pass condition, target, and Evidence requirements as structured fields.
+- **Do** use the four shipped decomposition choices and the initial Risk / Impact forms to make execution boundaries explicit before acceptance.
 - **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / Goal正文 switch.
-- **Do** let the 660px document-container rule stack Policy and Human Review even when a wide viewport contains a narrow resized document pane.
+- **Do** let the 660px document-container rule stack Draft, Risk, Impact, Policy, and Human Review forms even when a wide viewport contains a narrow resized document pane.
 - **Do** keep the final effective Policy above its project-default and Goal-specific sources, and require a reason for every edit.
-- **Do** defer background refresh while a focused Policy or Human Review form is being edited, then force-refresh after a successful submission.
+- **Do** defer background refresh while any focused live form is being edited, then force-refresh after a successful submission.
 - **Do** suppress nonessential motion during live refresh and honor reduced-motion timing.
 - **Do** expose the 5px Tree separator as a keyboard-operable resize control and retain the chosen width.
 
@@ -356,5 +370,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Don't** show both Tree and Goal正文 simultaneously below 760px.
 - **Don't** turn Goal Contract into a matrix of detached boxes; keep its 138px label and flexible content rows continuous.
 - **Don't** present Contract Proposal fields as raw JSON or let a Runtime-facing control imply that it can approve its own proposal.
-- **Don't** compress Policy or Human Review into a fixed desktop label grid when the document container is narrower than 660px.
+- **Don't** expose the Draft editor for an accepted Contract or silently rewrite accepted truth without the new-Goal and Rewire path.
+- **Don't** flatten structured acceptance into one undifferentiated textarea or invent decomposition states beyond the shipped four.
+- **Don't** compress Draft, Risk, Impact, Policy, or Human Review into a fixed desktop label grid when the document container is narrower than 660px.
 - **Don't** invent inheritance or “new requirement” indicators that are not present in the shipped Policy Workbench.

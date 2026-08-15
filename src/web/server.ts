@@ -407,6 +407,212 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           });
           return;
         }
+        const draftGoalMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/draft$/);
+        if (request.method === "POST" && draftGoalMatch) {
+          const body = await readBody(request);
+          const goalId = decodeURIComponent(draftGoalMatch[1]);
+          const text = (name: string, maximum = 4_000): string => {
+            const value = typeof body[name] === "string" ? body[name].trim() : "";
+            if (value.length > maximum) throw new Error(`${name} 内容过长`);
+            return value;
+          };
+          const list = (name: string): string[] => [
+            ...new Set(
+              (Array.isArray(body[name]) ? body[name] : [])
+                .filter((value): value is string => typeof value === "string")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            ),
+          ];
+          const decompositionState = String(body.decomposition_state ?? "abstract");
+          if (!["abstract", "frontier_open", "closed_leaf", "closed_compound"].includes(decompositionState)) {
+            sendJson(response, 400, { error: "拆分状态不受支持" });
+            return;
+          }
+          const priority = Number(body.priority ?? 0);
+          if (!Number.isInteger(priority) || priority < 0 || priority > 100) {
+            sendJson(response, 400, { error: "priority 必须是 0 到 100 的整数" });
+            return;
+          }
+          const criteriaInput = Array.isArray(body.acceptance_criteria)
+            ? body.acceptance_criteria
+            : [];
+          const allowedMethods = new Set([
+            "automated_check",
+            "measurement",
+            "inspection",
+            "human_decision",
+          ]);
+          try {
+            const acceptanceCriteria = criteriaInput.map((raw, index) => {
+              if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+                throw new Error(`第 ${index + 1} 条验收条件格式无效`);
+              }
+              const criterion = raw as Record<string, unknown>;
+              const decisionMethod = String(criterion.decision_method ?? "inspection");
+              if (!allowedMethods.has(decisionMethod)) {
+                throw new Error(`第 ${index + 1} 条验收条件的判断方式无效`);
+              }
+              const target = criterion.target;
+              if (
+                target != null &&
+                (typeof target !== "object" || Array.isArray(target))
+              ) {
+                throw new Error(`第 ${index + 1} 条验收条件的目标值格式无效`);
+              }
+              return {
+                ...(String(criterion.criterion_id ?? "").trim()
+                  ? { criterion_id: String(criterion.criterion_id).trim() }
+                  : {}),
+                statement: String(criterion.statement ?? "").trim(),
+                decision_method: decisionMethod as
+                  | "automated_check"
+                  | "measurement"
+                  | "inspection"
+                  | "human_decision",
+                pass_condition: String(criterion.pass_condition ?? "").trim(),
+                target: (target as Record<string, unknown> | null | undefined) ?? null,
+                required_evidence: [
+                  ...new Set(
+                    (Array.isArray(criterion.required_evidence)
+                      ? criterion.required_evidence
+                      : [])
+                      .map(String)
+                      .map((value) => value.trim())
+                      .filter(Boolean),
+                  ),
+                ],
+              };
+            });
+            const title = text("title", 120);
+            if (!title) throw new Error("title 不能为空");
+            const result = coordinator.updateDraftGoal(
+              options.boardId,
+              goalId,
+              {
+                goal_id: goalId,
+                title,
+                outcome: text("outcome"),
+                why: text("why"),
+                business_logic: text("business_logic"),
+                in_scope: list("in_scope"),
+                out_of_scope: list("out_of_scope"),
+                constraints: list("constraints"),
+                required_inputs: list("required_inputs"),
+                promised_outputs: list("promised_outputs"),
+                definition_state: "draft",
+                decomposition_state: decompositionState as
+                  | "abstract"
+                  | "frontier_open"
+                  | "closed_leaf"
+                  | "closed_compound",
+                priority,
+                acceptance_criteria: acceptanceCriteria,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-draft-${randomUUID()}`),
+                reason: text("reason", 1_000),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const goalRiskMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/risks$/);
+        if (request.method === "POST" && goalRiskMatch) {
+          const body = await readBody(request);
+          const treatment = String(body.treatment ?? "mitigate");
+          const blockingMode = String(body.blocking_mode ?? "none");
+          const probability = String(body.probability ?? "").trim();
+          const impact = String(body.impact ?? "").trim();
+          const owner = String(body.owner ?? "").trim();
+          const reason = String(body.reason ?? "").trim();
+          if (!["accept", "mitigate", "avoid", "defer"].includes(treatment)) {
+            sendJson(response, 400, { error: "Risk 处理方式无效" });
+            return;
+          }
+          if (!["none", "claim", "completion", "invalidate_on_trigger"].includes(blockingMode)) {
+            sendJson(response, 400, { error: "Risk 阻塞方式无效" });
+            return;
+          }
+          const affectedSurfaces = Array.isArray(body.affected_surfaces)
+            ? [...new Set(body.affected_surfaces.map(String).map((value) => value.trim()).filter(Boolean))]
+            : [];
+          try {
+            if (!probability || !impact || !owner || !reason) {
+              throw new Error("Risk 必须填写概率、影响、负责人和登记原因");
+            }
+            const result = coordinator.addRisk(
+              options.boardId,
+              {
+                goal_ids: [decodeURIComponent(goalRiskMatch[1])],
+                description: String(body.description ?? "").trim(),
+                probability,
+                impact,
+                affected_surfaces: affectedSurfaces,
+                trigger: String(body.trigger ?? "").trim(),
+                treatment: treatment as "accept" | "mitigate" | "avoid" | "defer",
+                blocking_mode: blockingMode as
+                  | "none"
+                  | "claim"
+                  | "completion"
+                  | "invalidate_on_trigger",
+                revisit_condition: String(body.revisit_condition ?? "").trim(),
+                owner,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-risk-${randomUUID()}`),
+                reason,
+              },
+            );
+            sendJson(response, 201, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const goalImpactMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/impacts$/);
+        if (request.method === "POST" && goalImpactMatch) {
+          const body = await readBody(request);
+          const access = String(body.access ?? "read");
+          const reason = String(body.reason ?? "").trim();
+          if (!["read", "write", "decide", "exclusive"].includes(access)) {
+            sendJson(response, 400, { error: "Impact access 无效" });
+            return;
+          }
+          try {
+            if (!reason) throw new Error("Impact 必须说明绑定原因");
+            const result = coordinator.addImpact(
+              options.boardId,
+              {
+                goal_id: decodeURIComponent(goalImpactMatch[1]),
+                surface: String(body.surface ?? "").trim(),
+                access: access as "read" | "write" | "decide" | "exclusive",
+                input_snapshot: String(body.input_snapshot ?? "").trim() || null,
+                state: "confirmed",
+                reason,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-impact-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 201, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         if (request.method === "POST" && url.pathname === "/api/policy-bindings") {
           const body = await readBody(request);
           const scope = String(body.scope ?? "");

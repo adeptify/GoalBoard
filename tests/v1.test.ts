@@ -233,6 +233,108 @@ test("only satisfied Goals can be archived and restoration preserves completion 
   store.close();
 });
 
+test("a user can update one Draft Contract while accepted Contracts stay immutable", () => {
+  const { store, coordinator } = fixture();
+  coordinator.createGoal(
+    "board-1",
+    {
+      goal_id: "editable-draft",
+      title: "先记录一个方向",
+      outcome: "",
+      why: "",
+      business_logic: "",
+      definition_state: "draft",
+      decomposition_state: "abstract",
+      acceptance_criteria: [],
+    },
+    { actor_id: "user-1", idempotency_key: "editable-draft-create" },
+  );
+
+  const updated = coordinator.updateDraftGoal(
+    "board-1",
+    "editable-draft",
+    {
+      title: "形成一组可独立交付的子 Goal",
+      outcome: "父 Goal 的拆分边界和验收都可被用户确认",
+      why: "避免把多个能分别失败的结果塞进一个执行单元",
+      business_logic: "复合 Goal 组织最小闭环子 Goal，本身不作为一个大任务执行。",
+      in_scope: ["  拆分状态  ", "结构化验收", "结构化验收"],
+      out_of_scope: ["自动接受 Runtime 提案"],
+      constraints: ["accepted Contract 不原地修改"],
+      required_inputs: ["用户确认的业务边界"],
+      promised_outputs: ["可观察的拆分结果"],
+      definition_state: "draft",
+      decomposition_state: "closed_compound",
+      priority: 68,
+      acceptance_criteria: [
+        {
+          criterion_id: "draft-structured-criterion",
+          statement: "拆分结果可以独立验收",
+          decision_method: "measurement",
+          pass_condition: "所有子 Goal 都有独立通过条件",
+          target: { value: "100%" },
+          required_evidence: [" test ", "inspection", "test"],
+        },
+      ],
+    },
+    {
+      actor_id: "user-1",
+      idempotency_key: "editable-draft-update",
+      reason: "补充用户确认的 Goal 粒度和验收方式",
+    },
+  );
+  assert.equal(updated.goal.definition_state, "draft");
+  assert.equal(updated.goal.decomposition_state, "closed_compound");
+  assert.equal(updated.goal.priority, 68);
+  assert.deepEqual(updated.goal.in_scope, ["拆分状态", "结构化验收"]);
+  assert.deepEqual(updated.goal.acceptance_criteria[0], {
+    criterion_id: "draft-structured-criterion",
+    goal_id: "editable-draft",
+    statement: "拆分结果可以独立验收",
+    decision_method: "measurement",
+    pass_condition: "所有子 Goal 都有独立通过条件",
+    target: { value: "100%" },
+    required_evidence: ["test", "inspection"],
+  });
+  const event = store.db
+    .prepare("SELECT reason, payload_json FROM events WHERE object_id = ? AND type = 'goal.draft_updated'")
+    .get("editable-draft") as { reason: string; payload_json: string };
+  assert.equal(event.reason, "补充用户确认的 Goal 粒度和验收方式");
+  assert.equal(JSON.parse(event.payload_json).acceptance_criterion_count, 1);
+
+  createLeaf(coordinator, "accepted-contract");
+  assert.throws(
+    () =>
+      coordinator.updateDraftGoal(
+        "board-1",
+        "accepted-contract",
+        {
+          title: "尝试原地修改 accepted Goal",
+          outcome: "不应写入",
+          why: "验证边界",
+          business_logic: "accepted Contract 需要新 Goal 和 Rewire。",
+          definition_state: "draft",
+          decomposition_state: "closed_leaf",
+          acceptance_criteria: [
+            {
+              statement: "不应写入",
+              decision_method: "inspection",
+              pass_condition: "接口拒绝修改",
+            },
+          ],
+        },
+        {
+          actor_id: "user-1",
+          idempotency_key: "accepted-contract-update",
+          reason: "验证不可变边界",
+        },
+      ),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal.accepted_contract_immutable",
+  );
+  store.close();
+});
+
 test("policy edits replace the same scope while Goal rules only strengthen project defaults", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "policy-target");
