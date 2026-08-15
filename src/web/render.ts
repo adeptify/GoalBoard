@@ -72,6 +72,10 @@ export interface WebEventRecord {
   at: string;
 }
 
+export interface WebRiskRecord extends RiskRecord {
+  goal_ids: string[];
+}
+
 export interface WebGoalView {
   goal: GoalRecord;
   status: WebGoalStatus;
@@ -84,7 +88,7 @@ export interface WebGoalView {
   evidence: EvidenceRecord[];
   review_obligations: ReviewObligationRecord[];
   reviews: ReviewRecord[];
-  risks: RiskRecord[];
+  risks: WebRiskRecord[];
   impacts: ImpactBindingRecord[];
   relations: GoalRelationRecord[];
   coverage: WebCoverageItem[];
@@ -475,16 +479,159 @@ function renderScope(item: WebGoalView): string {
   </div>`;
 }
 
-function renderSafety(item: WebGoalView): string {
-  return `<div class="safety-grid">
-    <section><h3>风险</h3>${
-      item.risks.length
-        ? item.risks.map((risk) => `<article class="fact-row" id="risk-${escapeHtml(risk.risk_id)}"><span class="fact-icon fact-icon--risk">${icon("risk")}</span><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)} · ${escapeHtml(risk.state)} · ${escapeHtml(risk.blocking_mode)}</small><small>触发：${escapeHtml(risk.trigger)}；处理：${escapeHtml(risk.treatment)}，${escapeHtml(risk.revisit_condition)}</small></span></article>`).join("")
-        : '<p class="empty-row">暂无已登记风险</p>'
-    }</section>
-    <section><h3>影响面</h3>${
+const RISK_STATE_LABELS: Record<RiskRecord["state"], string> = {
+  open: "开放",
+  triggered: "已触发",
+  resolved: "已解决",
+  accepted: "已接受",
+  expired: "已过期",
+};
+
+const RISK_TREATMENT_LABELS: Record<RiskRecord["treatment"], string> = {
+  accept: "接受",
+  mitigate: "缓解",
+  avoid: "规避",
+  defer: "延后",
+};
+
+const RISK_BLOCKING_LABELS: Record<RiskRecord["blocking_mode"], string> = {
+  none: "不阻塞",
+  claim: "阻止领取",
+  completion: "阻止完成",
+  invalidate_on_trigger: "触发后失效",
+};
+
+function riskStateEffect(
+  blockingMode: RiskRecord["blocking_mode"],
+  state: RiskRecord["state"],
+): string {
+  const active = state === "open" || state === "triggered";
+  if (!active) {
+    return blockingMode === "invalidate_on_trigger"
+      ? "当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。"
+      : "当前状态不再施加领取或完成门禁。";
+  }
+  if (blockingMode === "claim") return "当前会阻止所有关联 Goal 被新的 Runtime 领取。";
+  if (blockingMode === "completion") return "当前会阻止所有关联 Goal 被标记为完成。";
+  if (blockingMode === "invalidate_on_trigger") {
+    return state === "triggered"
+      ? "Risk 已触发，所有关联 Goal 立即失效。"
+      : "Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。";
+  }
+  return "这是一条持续观察的事实，不直接阻塞领取或完成。";
+}
+
+function riskSelectOptions<T extends string>(
+  values: Array<[T, string]>,
+  selected: T,
+): string {
+  return values
+    .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function renderRiskGoalPicker(
+  view: GoalBoardWebView,
+  selectedGoalIds: string[],
+  label: string,
+  key: string,
+): string {
+  const selected = new Set(selectedGoalIds);
+  const goals = sortGoals([...view.goals, ...view.archived_goals]);
+  return `<details class="risk-goal-picker" data-persist-open="${escapeHtml(key)}">
+    <summary><span><strong>受影响 Goal</strong><small>${selected.size} 个已选择 · 至少选择一个</small></span>${icon("chevron-down")}</summary>
+    <div><label class="risk-goal-search">${icon("search")}<input type="search" data-risk-goal-filter placeholder="按名称或 ID 筛选" aria-label="筛选${escapeHtml(label)}的受影响 Goal"></label>
+      <div class="risk-goal-options">${goals.map((item) => `<label data-risk-goal-option data-search="${escapeHtml(`${item.goal.title} ${item.goal.goal_id}`.toLocaleLowerCase())}"><input type="checkbox" name="goal_ids" value="${escapeHtml(item.goal.goal_id)}"${selected.has(item.goal.goal_id) ? " checked" : ""}><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}${item.goal.archived_at ? " · 已归档" : ""}</small></span></label>`).join("")}</div>
+    </div>
+  </details>`;
+}
+
+function renderRiskFactsForm(
+  risk: WebRiskRecord | null,
+  currentGoalId: string,
+  view: GoalBoardWebView,
+): string {
+  const treatment = risk?.treatment ?? "mitigate";
+  const blockingMode = risk?.blocking_mode ?? "none";
+  const formKey = risk?.risk_id ?? `new-${currentGoalId}`;
+  return `<label class="risk-form-wide"><span>风险描述</span><textarea name="description" rows="2" required placeholder="什么可能使 Goal 无法按 Contract 完成">${escapeHtml(risk?.description ?? "")}</textarea></label>
+    <label><span>发生概率</span><input name="probability" required value="${escapeHtml(risk?.probability ?? "")}" placeholder="低 / 中 / 高，或量化概率"></label>
+    <label><span>影响程度</span><input name="impact" required value="${escapeHtml(risk?.impact ?? "")}" placeholder="低 / 中 / 高，或具体影响"></label>
+    <label class="risk-form-wide"><span>受影响区域 <small>每行一项</small></span><textarea name="affected_surfaces" rows="2" placeholder="例如 src/web 或 onboarding-flow">${escapeHtml(risk?.affected_surfaces.join("\n") ?? "")}</textarea></label>
+    <label class="risk-form-wide"><span>触发条件</span><textarea name="trigger" rows="2" required placeholder="什么事实发生时算 Risk 已触发">${escapeHtml(risk?.trigger ?? "")}</textarea></label>
+    <label><span>处理方式</span><select name="treatment">${riskSelectOptions([["mitigate", "缓解"], ["avoid", "规避"], ["defer", "延后"], ["accept", "接受"]], treatment)}</select></label>
+    <label><span>阻塞方式</span><select name="blocking_mode" data-risk-blocking-mode>${riskSelectOptions([["none", "不阻塞"], ["claim", "阻止领取"], ["completion", "阻止完成"], ["invalidate_on_trigger", "触发后失效"]], blockingMode)}</select></label>
+    <label class="risk-form-wide"><span>复查条件</span><textarea name="revisit_condition" rows="2" required placeholder="什么时候需要重新判断这项风险">${escapeHtml(risk?.revisit_condition ?? "")}</textarea></label>
+    <label><span>负责人</span><input name="owner" required value="${escapeHtml(risk?.owner ?? "")}" placeholder="用户、团队或角色"></label>
+    ${renderRiskGoalPicker(view, risk?.goal_ids ?? [currentGoalId], risk?.description ?? "新 Risk", `risk-goals-${formKey}`)}`;
+}
+
+function renderRiskGoalLinks(risk: WebRiskRecord, view: GoalBoardWebView): string {
+  const goals = risk.goal_ids
+    .map((goalId) => [...view.goals, ...view.archived_goals].find((item) => item.goal.goal_id === goalId))
+    .filter((item): item is WebGoalView => Boolean(item));
+  return goals.length
+    ? `<div class="risk-linked-goals">${goals.map((item) => `<a href="${item.goal.archived_at ? "/archive/goals/" : "/goals/"}${encodeURIComponent(item.goal.goal_id)}"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small></a>`).join("")}</div>`
+    : '<span class="empty-row">未关联 Goal</span>';
+}
+
+function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoardWebView): string {
+  const readOnly = Boolean(item.goal.archived_at);
+  const stateOptions = riskSelectOptions(
+    [["open", "开放"], ["triggered", "已触发"], ["resolved", "已解决"], ["accepted", "已接受"], ["expired", "已过期"]],
+    risk.state,
+  );
+  return `<article class="risk-record" id="risk-${escapeHtml(risk.risk_id)}">
+    <header><span class="risk-record-icon">${icon("risk")}</span><div><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(RISK_STATE_LABELS[risk.state])}</span><h4>${escapeHtml(risk.description)}</h4><small>${escapeHtml(risk.risk_id)} · 更新于 ${formatDate(risk.updated_at)}</small></div></header>
+    <dl class="risk-facts">
+      <div><dt>概率 / 影响</dt><dd>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)}</dd></div>
+      <div><dt>处理 / 阻塞</dt><dd>${escapeHtml(RISK_TREATMENT_LABELS[risk.treatment])} / ${escapeHtml(RISK_BLOCKING_LABELS[risk.blocking_mode])}</dd></div>
+      <div class="risk-fact-wide"><dt>触发条件</dt><dd>${escapeHtml(risk.trigger)}</dd></div>
+      <div class="risk-fact-wide"><dt>复查条件</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div>
+      <div><dt>负责人</dt><dd>${escapeHtml(risk.owner)}</dd></div>
+      <div><dt>受影响区域</dt><dd>${risk.affected_surfaces.length ? escapeHtml(risk.affected_surfaces.join("、")) : "未单独标记"}</dd></div>
+      <div class="risk-fact-wide"><dt>受影响 Goal</dt><dd>${renderRiskGoalLinks(risk, view)}</dd></div>
+    </dl>
+    <p class="risk-effect risk-effect--${escapeHtml(risk.state)}">${icon(risk.state === "triggered" ? "blocked" : "info")}<span><strong>当前影响</strong>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</span></p>
+    ${readOnly ? '<p class="risk-readonly">已归档 Goal 中的 Risk 只读展示；恢复 Goal 后可以继续维护。</p>' : `<div class="risk-actions">
+      <details data-persist-open="risk-edit-${escapeHtml(risk.risk_id)}"><summary><span>${icon("settings")}<strong>编辑事实</strong></span>${icon("chevron-down")}</summary>
+        <form class="risk-form" data-risk-edit-form data-live-form="risk-edit-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}">
+          ${renderRiskFactsForm(risk, item.goal.goal_id, view)}
+          <label class="risk-form-wide"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="为什么需要更新这项 Risk 的事实或关联 Goal"></textarea></label>
+          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
+          <footer class="risk-form-wide"><span>状态不会随事实编辑而改变。</span><button class="button-primary" type="submit">保存 Risk 事实</button></footer>
+        </form>
+      </details>
+      <details data-persist-open="risk-state-${escapeHtml(risk.risk_id)}"><summary><span>${icon("history")}<strong>变更状态</strong></span>${icon("chevron-down")}</summary>
+        <form class="risk-state-form" data-risk-state-form data-live-form="risk-state-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}">
+          <label><span>新状态</span><select name="state" data-risk-state-select>${stateOptions}</select></label>
+          <p class="risk-state-preview" data-risk-state-preview>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</p>
+          <label class="risk-form-wide"><span>决定理由</span><textarea name="reason" rows="2" required placeholder="说明为什么现在进入这个状态，以及依据是什么"></textarea></label>
+          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
+          <footer class="risk-form-wide"><button class="button-primary" type="submit">记录状态变化</button></footer>
+        </form>
+      </details>
+    </div>`}
+  </article>`;
+}
+
+function renderSafety(item: WebGoalView, view: GoalBoardWebView): string {
+  const canEdit = !item.goal.archived_at;
+  return `<div class="safety-workbench" id="risk-workbench-${escapeHtml(item.goal.goal_id)}">
+    <section class="risk-register"><header class="safety-subheading"><div><h3>风险</h3><p>记录事实、触发条件、影响范围和处理责任；状态决定是否形成门禁。</p></div><span>${item.risks.length} 项</span></header>
+      ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view)).join("")}</div>` : '<p class="risk-empty">暂无已登记 Risk。需要持续观察、阻止领取或影响完成的事项，都从这里记录。</p>'}
+      ${canEdit ? `<details class="risk-create" data-persist-open="risk-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="risk-record-icon">${icon("plus")}</span><span><strong>新增 Risk</strong><small>完整记录事实，并明确关联到哪些 Goal</small></span>${icon("chevron-down")}</summary>
+        <form class="risk-form" data-risk-create-form data-live-form="risk-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+          ${renderRiskFactsForm(null, item.goal.goal_id, view)}
+          <label class="risk-form-wide"><span>登记原因</span><textarea name="reason" rows="2" required placeholder="为什么现在需要记录这项 Risk"></textarea></label>
+          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
+          <footer class="risk-form-wide"><span>新 Risk 默认处于“开放”状态。</span><button class="button-primary" type="submit">登记 Risk</button></footer>
+        </form>
+      </details>` : ""}
+    </section>
+    <section class="impact-register"><header class="safety-subheading"><div><h3>影响面</h3><p>当前 Goal 会读取、写入、决定或独占的区域。</p></div><span>${item.impacts.length} 项</span></header>${
       item.impacts.length
-        ? item.impacts.map((impact) => `<article class="fact-row"><span class="fact-icon">${icon("impact")}</span><span><strong>${escapeHtml(impact.surface)}</strong><small>${escapeHtml(impact.access)} · ${escapeHtml(impact.state)} · ${escapeHtml(impact.reason)}</small>${impact.input_snapshot ? `<small>输入快照：${escapeHtml(impact.input_snapshot)}</small>` : ""}</span></article>`).join("")
+        ? `<div>${item.impacts.map((impact) => `<article class="fact-row"><span class="fact-icon">${icon("impact")}</span><span><strong>${escapeHtml(impact.surface)}</strong><small>${escapeHtml(impact.access)} · ${escapeHtml(impact.state)} · ${escapeHtml(impact.reason)}</small>${impact.input_snapshot ? `<small>输入快照：${escapeHtml(impact.input_snapshot)}</small>` : ""}</span></article>`).join("")}</div>`
         : '<p class="empty-row">暂无影响面绑定</p>'
     }</section>
   </div>`;
@@ -1168,22 +1315,7 @@ function renderDraftEditor(item: WebGoalView): string {
       <footer><span>保存会更新同一个 Draft；已有待确认 Proposal 会失效并等待重新提案。</span><button class="button-primary" type="submit">保存 Draft Contract</button></footer>
     </form>
     <div class="draft-auxiliary">
-      <details><summary><span>${icon("risk")}<strong>登记初始 Risk</strong><small>记录触发条件、影响和处理方式</small></span>${icon("chevron-down")}</summary>
-        <form class="draft-aux-form" data-draft-risk-form data-live-form="draft-risk-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
-          <label class="draft-aux-wide"><span>风险描述</span><textarea name="description" rows="2" required placeholder="什么可能导致 Goal 不能按 Contract 完成"></textarea></label>
-          <label><span>概率</span><select name="probability"><option value="低">低</option><option value="中" selected>中</option><option value="高">高</option></select></label>
-          <label><span>影响</span><select name="impact"><option value="低">低</option><option value="中" selected>中</option><option value="高">高</option></select></label>
-          <label class="draft-aux-wide"><span>受影响区域 <small>每行一项</small></span><textarea name="affected_surfaces" rows="2"></textarea></label>
-          <label class="draft-aux-wide"><span>触发条件</span><textarea name="trigger" rows="2" required></textarea></label>
-          <label><span>处理方式</span><select name="treatment"><option value="mitigate">缓解</option><option value="avoid">规避</option><option value="defer">延后</option><option value="accept">接受</option></select></label>
-          <label><span>阻塞方式</span><select name="blocking_mode"><option value="none">不阻塞</option><option value="claim">阻止领取</option><option value="completion">阻止完成</option><option value="invalidate_on_trigger">触发后失效</option></select></label>
-          <label class="draft-aux-wide"><span>何时复查</span><textarea name="revisit_condition" rows="2" required></textarea></label>
-          <label><span>负责人</span><input name="owner" required placeholder="用户、团队或角色"></label>
-          <label class="draft-aux-wide"><span>登记原因</span><textarea name="reason" rows="2" required placeholder="为什么现在需要记录这项风险"></textarea></label>
-          <p class="form-error draft-aux-wide" data-risk-error role="alert" hidden></p>
-          <footer class="draft-aux-wide"><button class="button-primary" type="submit">登记 Risk</button></footer>
-        </form>
-      </details>
+      <a class="draft-policy-link" href="#risk-workbench-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>继续登记和维护 Risk</strong><small>在“风险与影响”中维护完整事实、关联 Goal 与生命周期</small></span>${icon("arrow")}</a>
       <details><summary><span>${icon("impact")}<strong>登记初始 Impact</strong><small>说明会读、写、决定或独占哪个区域</small></span>${icon("chevron-down")}</summary>
         <form class="draft-aux-form" data-draft-impact-form data-live-form="draft-impact-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
           <label class="draft-aux-wide"><span>影响区域</span><input name="surface" required placeholder="例如 src/web 或 onboarding-flow"></label>
@@ -1249,7 +1381,7 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     </section>
     <section class="document-section">
       ${sectionHeading("shield", "风险与影响")}
-      ${renderSafety(item)}
+      ${renderSafety(item, view)}
     </section>
     <section class="document-section" data-section="policy" id="policy-${escapeHtml(goal.goal_id)}">
       ${sectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
@@ -1591,12 +1723,87 @@ const MORE_STYLES = `
   .dependency-evidence .inline-ref span { min-width: 0; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
   .contract-list { border-top: 1px solid var(--line); }
   .contract-list section { min-width: 0; padding: 11px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 138px minmax(0, 1fr); gap: 14px; align-items: start; }
-  .contract-list h3, .safety-grid h3 { margin: 0; font-size: 13px; }
+  .contract-list h3, .safety-workbench h3 { margin: 0; font-size: 13px; }
   .contract-list .doc-list, .contract-list .empty-row { margin-top: 0; }
   .contract-list .doc-list { min-width: 0; overflow-wrap: anywhere; }
-  .safety-grid { display: grid; grid-template-columns: 1.1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
-  .safety-grid > section { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); }
-  .safety-grid > section:last-child { border-right: 0; }
+  .safety-workbench { border-top: 1px solid var(--line-strong); }
+  .risk-register, .impact-register { min-width: 0; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .impact-register { border-bottom: 0; }
+  .safety-subheading { margin-bottom: 10px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .safety-subheading p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .safety-subheading > span { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+  .risk-list { border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+  .risk-record { scroll-margin-top: 16px; border-bottom: 1px solid var(--line-strong); background: #fff; }
+  .risk-record:last-child { border-bottom: 0; }
+  .risk-record > header { min-width: 0; padding: 12px 14px 10px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; }
+  .risk-record-icon { width: 30px; height: 30px; border-radius: 5px; color: var(--amber); background: var(--amber-soft); display: grid; place-items: center; }
+  .risk-record-icon svg { width: 15px; height: 15px; }
+  .risk-record > header > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 8px; }
+  .risk-record h4 { min-width: 0; margin: 0; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+  .risk-record header small { grid-column: 1 / -1; color: var(--faint); font-size: 10px; overflow-wrap: anywhere; }
+  .risk-record .risk-state { width: fit-content; padding: 2px 6px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); font-size: 10px; white-space: nowrap; }
+  .risk-record .risk-state--triggered { color: var(--red); background: var(--red-soft); }
+  .risk-record .risk-state--resolved { color: var(--green); background: var(--green-soft); }
+  .risk-record .risk-state--accepted, .risk-record .risk-state--expired { color: var(--muted); background: #eef1f4; }
+  .risk-facts { margin: 0; padding: 0 14px 8px 54px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  .risk-facts > div { min-width: 0; padding: 8px 0; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 9px; }
+  .risk-facts dt { color: var(--muted); font-size: 11px; }
+  .risk-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .risk-fact-wide { grid-column: 1 / -1; }
+  .risk-linked-goals { display: flex; flex-wrap: wrap; gap: 5px 16px; }
+  .risk-linked-goals a { min-width: min(100%, 210px); display: grid; color: inherit; text-decoration: none; }
+  .risk-linked-goals a:hover strong { color: var(--blue-dark); text-decoration: underline; }
+  .risk-linked-goals small { color: var(--faint); font-size: 10px; }
+  .risk-effect { margin: 0 14px 12px 54px; padding: 8px 10px; border-left: 2px solid var(--blue); background: #f5f9ff; color: var(--muted); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+  .risk-effect--triggered { border-left-color: var(--red); background: var(--red-soft); color: var(--red); }
+  .risk-effect > svg { margin-top: 1px; color: inherit; }
+  .risk-effect > span { display: grid; gap: 1px; }
+  .risk-effect strong { color: var(--ink); font-size: 11px; }
+  .risk-readonly { margin: 0 14px 12px 54px; color: var(--muted); font-size: 11px; }
+  .risk-actions { border-top: 1px solid var(--line); background: #fbfcfd; }
+  .risk-actions > details { border-bottom: 1px solid var(--line); }
+  .risk-actions > details:last-child { border-bottom: 0; }
+  .risk-actions summary, .risk-create > summary, .risk-goal-picker > summary { list-style: none; cursor: pointer; }
+  .risk-actions summary::-webkit-details-marker, .risk-create > summary::-webkit-details-marker, .risk-goal-picker > summary::-webkit-details-marker { display: none; }
+  .risk-actions > details > summary { min-height: 43px; padding: 8px 14px 8px 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .risk-actions > details > summary:hover, .risk-create > summary:hover { background: #f4f7fa; }
+  .risk-actions summary > span { display: inline-flex; align-items: center; gap: 7px; }
+  .risk-actions summary > span > svg { color: var(--muted); }
+  .risk-actions summary > svg, .risk-create > summary > svg, .risk-goal-picker > summary > svg { color: var(--muted); transition: transform .16s ease; }
+  .risk-actions details[open] > summary > svg, .risk-create[open] > summary > svg, .risk-goal-picker[open] > summary > svg { transform: rotate(180deg); }
+  .risk-form, .risk-state-form { padding: 13px 14px 15px 54px; border-top: 1px solid var(--line); background: #fff; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 14px; }
+  .risk-form label, .risk-state-form label { min-width: 0; display: grid; gap: 5px; }
+  .risk-form label > span, .risk-state-form label > span { color: var(--ink); font-size: 11px; font-weight: 650; }
+  .risk-form label small { color: var(--muted); font-weight: 400; }
+  .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .risk-form-wide, .risk-goal-picker { grid-column: 1 / -1; }
+  .risk-form footer, .risk-state-form footer { padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .risk-form footer > span { color: var(--muted); font-size: 11px; }
+  .risk-form button, .risk-state-form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; cursor: pointer; }
+  .risk-state-preview { min-width: 0; margin: 0; padding: 8px 10px; border-left: 2px solid var(--blue); background: #f5f9ff; color: var(--muted); font-size: 11px; }
+  .risk-goal-picker { border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; }
+  .risk-goal-picker > summary { min-height: 45px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .risk-goal-picker > summary > span { min-width: 0; display: grid; }
+  .risk-goal-picker > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
+  .risk-goal-picker > div { padding: 9px; border-top: 1px solid var(--line); }
+  .risk-goal-search { position: relative; display: block !important; }
+  .risk-goal-search > svg { position: absolute; left: 9px; top: 9px; z-index: 1; color: var(--muted); pointer-events: none; }
+  .risk-goal-search input { padding-left: 31px !important; }
+  .risk-goal-options { max-height: 180px; margin-top: 7px; overflow: auto; scrollbar-width: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 8px; }
+  .risk-goal-options::-webkit-scrollbar { display: none; }
+  .risk-goal-options > label { padding: 6px 7px; border-radius: 4px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px; cursor: pointer; }
+  .risk-goal-options > label:hover { background: var(--blue-soft); }
+  .risk-goal-options > label[hidden] { display: none; }
+  .risk-goal-options input { accent-color: var(--blue); }
+  .risk-goal-options span { min-width: 0; display: grid; }
+  .risk-goal-options strong, .risk-goal-options small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .risk-goal-options small { color: var(--faint); font-size: 10px; font-weight: 400; }
+  .risk-create { margin-top: 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fbfcfd; }
+  .risk-create > summary { min-height: 52px; padding: 9px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+  .risk-create > summary > span:nth-child(2) { min-width: 0; display: grid; }
+  .risk-create > summary small { color: var(--muted); font-size: 11px; }
+  .risk-create > .risk-form { padding-left: 14px; }
+  .risk-empty { margin: 0; padding: 13px 14px; border: 1px dashed var(--line-strong); color: var(--muted); background: #fbfcfd; }
   .fact-row { display: flex; gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
   .fact-row:last-child { border-bottom: 0; }
   .fact-icon { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
@@ -1937,6 +2144,16 @@ const RESPONSIVE_STYLES = `
     .relation-form > footer { align-items: stretch; flex-direction: column; }
     .relation-form > footer button { align-self: flex-end; }
     .relation-editor-action { display: none; }
+    .risk-facts, .risk-form, .risk-state-form { grid-template-columns: 1fr; }
+    .risk-facts { padding-left: 14px; }
+    .risk-fact-wide, .risk-form-wide, .risk-goal-picker { grid-column: 1; }
+    .risk-record > header > div { grid-template-columns: 1fr; }
+    .risk-record .risk-state { margin-bottom: 2px; }
+    .risk-effect, .risk-readonly { margin-left: 14px; }
+    .risk-actions > details > summary, .risk-form, .risk-state-form { padding-left: 14px; }
+    .risk-goal-options { grid-template-columns: 1fr; }
+    .risk-form footer, .risk-state-form footer { align-items: stretch; flex-direction: column; }
+    .risk-form footer button, .risk-state-form footer button { align-self: flex-end; }
   }
   @media (max-width: 1360px) {
     .brand { min-width: 160px; padding-inline: 20px; }
@@ -1955,8 +2172,6 @@ const RESPONSIVE_STYLES = `
     .runtime-grid { grid-template-columns: 1fr 1fr; }
     .runtime-grid > section:nth-child(2) { border-right: 0; }
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
-    .safety-grid { grid-template-columns: 1fr 1fr; }
-    .safety-grid > section:nth-child(2) { border-right: 0; }
   }
   @media (max-width: 900px) {
     .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
@@ -1983,10 +2198,9 @@ const RESPONSIVE_STYLES = `
     .goal-title-row { display: grid; gap: 10px; }
     .goal-title-actions { justify-content: space-between; }
     .goal-meta { gap: 8px 16px; }
-    .runtime-grid, .safety-grid { grid-template-columns: 1fr; }
-    .runtime-grid > section, .safety-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
-    .runtime-grid > section:last-child, .safety-grid > section:last-child { border-bottom: 0 !important; }
-    .safety-grid > section:last-child { grid-column: auto; border-top: 0; }
+    .runtime-grid { grid-template-columns: 1fr; }
+    .runtime-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
+    .runtime-grid > section:last-child { border-bottom: 0 !important; }
     .contract-list section { grid-template-columns: 1fr; gap: 6px; }
     .human-review-list > header { display: grid; gap: 2px; }
     .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
@@ -2041,7 +2255,7 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea, .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
@@ -2126,6 +2340,51 @@ const CLIENT_SCRIPT = `
       .split("\\n")
       .map((item) => item.trim())
       .filter(Boolean))];
+
+    const readRiskPayload = (values) => ({
+      goal_ids: values.getAll("goal_ids").map(String),
+      description: String(values.get("description") || "").trim(),
+      probability: String(values.get("probability") || "").trim(),
+      impact: String(values.get("impact") || "").trim(),
+      affected_surfaces: splitLines(values.get("affected_surfaces")),
+      trigger: String(values.get("trigger") || "").trim(),
+      treatment: values.get("treatment"),
+      blocking_mode: values.get("blocking_mode"),
+      revisit_condition: String(values.get("revisit_condition") || "").trim(),
+      owner: String(values.get("owner") || "").trim(),
+      reason: String(values.get("reason") || "").trim(),
+    });
+
+    const riskStateEffect = (blockingMode, riskState) => {
+      const active = riskState === "open" || riskState === "triggered";
+      if (!active) {
+        return blockingMode === "invalidate_on_trigger"
+          ? "当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。"
+          : "当前状态不再施加领取或完成门禁。";
+      }
+      if (blockingMode === "claim") return "当前会阻止所有关联 Goal 被新的 Runtime 领取。";
+      if (blockingMode === "completion") return "当前会阻止所有关联 Goal 被标记为完成。";
+      if (blockingMode === "invalidate_on_trigger") {
+        return riskState === "triggered"
+          ? "Risk 已触发，所有关联 Goal 立即失效。"
+          : "Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。";
+      }
+      return "这是一条持续观察的事实，不直接阻塞领取或完成。";
+    };
+
+    const updateRiskStatePreview = (riskForm) => {
+      const preview = riskForm?.querySelector("[data-risk-state-preview]");
+      const stateSelect = riskForm?.querySelector("[data-risk-state-select]");
+      if (preview && stateSelect) {
+        preview.textContent = riskStateEffect(riskForm.dataset.riskBlocking, stateSelect.value);
+      }
+    };
+
+    const updateRiskGoalCount = (picker) => {
+      const count = picker?.querySelectorAll('[name="goal_ids"]:checked').length || 0;
+      const summary = picker?.querySelector("summary small");
+      if (summary) summary.textContent = count + " 个已选择 · 至少选择一个";
+    };
 
     const parseCriterionTarget = (value) => {
       const text = String(value || "").trim();
@@ -2464,6 +2723,18 @@ const CLIENT_SCRIPT = `
     document.addEventListener("change", (event) => {
       const relationForm = event.target.closest?.("[data-relation-form]");
       if (relationForm) updateRelationFormPreview(relationForm);
+      const riskStateForm = event.target.closest?.("[data-risk-state-form]");
+      if (riskStateForm) updateRiskStatePreview(riskStateForm);
+      const riskGoalPicker = event.target.closest?.(".risk-goal-picker");
+      if (riskGoalPicker) updateRiskGoalCount(riskGoalPicker);
+    });
+    document.addEventListener("input", (event) => {
+      const filter = event.target.closest?.("[data-risk-goal-filter]");
+      if (!filter) return;
+      const query = String(filter.value || "").trim().toLocaleLowerCase();
+      filter.closest(".risk-goal-picker")?.querySelectorAll("[data-risk-goal-option]").forEach((option) => {
+        option.hidden = Boolean(query) && !String(option.dataset.search || "").includes(query);
+      });
     });
     treeResizer.addEventListener("pointerdown", (event) => {
       if (matchMedia("(max-width: 760px)").matches) return;
@@ -2777,30 +3048,19 @@ const CLIENT_SCRIPT = `
         return;
       }
 
-      const riskForm = submittedForm.closest?.("[data-draft-risk-form]");
-      if (riskForm) {
+      const riskCreateForm = submittedForm.closest?.("[data-risk-create-form]");
+      if (riskCreateForm) {
         event.preventDefault();
-        const submit = riskForm.querySelector('button[type="submit"]');
-        const errorBox = riskForm.querySelector("[data-risk-error]");
-        const values = new FormData(riskForm);
+        const submit = riskCreateForm.querySelector('button[type="submit"]');
+        const errorBox = riskCreateForm.querySelector("[data-risk-error]");
+        const values = new FormData(riskCreateForm);
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(riskForm.dataset.goalId) + "/risks", {
+          const response = await fetch("/api/goals/" + encodeURIComponent(riskCreateForm.dataset.goalId) + "/risks", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              description: String(values.get("description") || "").trim(),
-              probability: values.get("probability"),
-              impact: values.get("impact"),
-              affected_surfaces: splitLines(values.get("affected_surfaces")),
-              trigger: String(values.get("trigger") || "").trim(),
-              treatment: values.get("treatment"),
-              blocking_mode: values.get("blocking_mode"),
-              revisit_condition: String(values.get("revisit_condition") || "").trim(),
-              owner: String(values.get("owner") || "").trim(),
-              reason: String(values.get("reason") || "").trim(),
-            }),
+            body: JSON.stringify(readRiskPayload(values)),
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Risk 登记失败");
@@ -2808,6 +3068,61 @@ const CLIENT_SCRIPT = `
           showToast("Risk 已登记");
         } catch (error) {
           errorBox.textContent = error.message || "Risk 登记失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const riskEditForm = submittedForm.closest?.("[data-risk-edit-form]");
+      if (riskEditForm) {
+        event.preventDefault();
+        const submit = riskEditForm.querySelector('button[type="submit"]');
+        const errorBox = riskEditForm.querySelector("[data-risk-error]");
+        const values = new FormData(riskEditForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/risks/" + encodeURIComponent(riskEditForm.dataset.riskId) + "/update", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(readRiskPayload(values)),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Risk 更新失败");
+          await refreshBoard(true);
+          showToast("Risk 事实已更新");
+        } catch (error) {
+          errorBox.textContent = error.message || "Risk 更新失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const riskStateForm = submittedForm.closest?.("[data-risk-state-form]");
+      if (riskStateForm) {
+        event.preventDefault();
+        const submit = riskStateForm.querySelector('button[type="submit"]');
+        const errorBox = riskStateForm.querySelector("[data-risk-error]");
+        const values = new FormData(riskStateForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/risks/" + encodeURIComponent(riskStateForm.dataset.riskId) + "/state", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              state: values.get("state"),
+              reason: String(values.get("reason") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Risk 状态更新失败");
+          await refreshBoard(true);
+          showToast("Risk 状态已记录");
+        } catch (error) {
+          errorBox.textContent = error.message || "Risk 状态更新失败，请检查输入";
           errorBox.hidden = false;
           submit.disabled = false;
         }

@@ -77,6 +77,20 @@ interface ActorWrite {
   reason?: string;
 }
 
+interface RiskFactsInput {
+  risk_id?: string;
+  goal_ids: string[];
+  description: string;
+  probability: string;
+  impact: string;
+  affected_surfaces?: string[];
+  trigger: string;
+  treatment: RiskRecord["treatment"];
+  blocking_mode: RiskRecord["blocking_mode"];
+  revisit_condition: string;
+  owner: string;
+}
+
 interface SubmitContractProposalInput {
   board_id: string;
   goal_id: string;
@@ -120,6 +134,20 @@ interface Evaluation {
 }
 
 const GOAL_MODE_ORDER = { disabled: 0, preferred: 1, required: 2 } as const;
+const RISK_TREATMENTS = new Set<RiskRecord["treatment"]>(["accept", "mitigate", "avoid", "defer"]);
+const RISK_BLOCKING_MODES = new Set<RiskRecord["blocking_mode"]>([
+  "none",
+  "claim",
+  "completion",
+  "invalidate_on_trigger",
+]);
+const RISK_STATES = new Set<RiskRecord["state"]>([
+  "open",
+  "triggered",
+  "resolved",
+  "accepted",
+  "expired",
+]);
 
 function asText(value: unknown): string {
   return value == null ? "" : String(value);
@@ -852,19 +880,7 @@ export class GoalBoardCoordinator {
 
   addRisk(
     boardId: string,
-    input: {
-      risk_id?: string;
-      goal_ids: string[];
-      description: string;
-      probability: string;
-      impact: string;
-      affected_surfaces?: string[];
-      trigger: string;
-      treatment: RiskRecord["treatment"];
-      blocking_mode: RiskRecord["blocking_mode"];
-      revisit_condition: string;
-      owner: string;
-    },
+    input: RiskFactsInput,
     write: ActorWrite,
   ): { risk: RiskRecord; replayed: boolean; observed_event_cursor: number } {
     const hash = requestHash({ board_id: boardId, ...input });
@@ -878,10 +894,7 @@ export class GoalBoardCoordinator {
       );
       if (replay) return { ...replay, replayed: true };
       this.requireBoard(boardId);
-      if (!input.description.trim() || !input.trigger.trim() || !input.revisit_condition.trim()) {
-        throw new GoalBoardV1Error("risk.required_field_missing", "Risk 必须说明风险、触发条件和何时重看");
-      }
-      for (const goalId of input.goal_ids) this.requireGoalOnBoard(boardId, goalId);
+      const facts = this.normalizeRiskFacts(boardId, input);
       const riskId = input.risk_id?.trim() || `risk-${randomUUID()}`;
       const now = this.clock().toISOString();
       this.store.db
@@ -895,20 +908,20 @@ export class GoalBoardCoordinator {
         .run(
           riskId,
           boardId,
-          input.description.trim(),
-          input.probability,
-          input.impact,
-          sqliteJson(input.affected_surfaces ?? []),
-          input.trigger.trim(),
-          input.treatment,
-          input.blocking_mode,
-          input.revisit_condition.trim(),
-          input.owner,
+          facts.description,
+          facts.probability,
+          facts.impact,
+          sqliteJson(facts.affected_surfaces),
+          facts.trigger,
+          facts.treatment,
+          facts.blocking_mode,
+          facts.revisit_condition,
+          facts.owner,
           now,
           now,
         );
       const link = this.store.db.prepare("INSERT INTO goal_risks (goal_id, risk_id) VALUES (?, ?)");
-      for (const goalId of unique(input.goal_ids)) link.run(goalId, riskId);
+      for (const goalId of facts.goal_ids) link.run(goalId, riskId);
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
@@ -917,12 +930,110 @@ export class GoalBoardCoordinator {
         objectType: "risk",
         objectId: riskId,
         reason: write.reason ?? "登记 Goal 风险",
-        payload: { goal_ids: input.goal_ids, blocking_mode: input.blocking_mode },
+        payload: { goal_ids: facts.goal_ids, blocking_mode: facts.blocking_mode },
         at: now,
       });
       const risk = this.readRisk(boardId, riskId);
       const outcome = { risk, observed_event_cursor: cursor };
       this.remember(boardId, write.actor_id, "add_risk", write.idempotency_key, hash, outcome, now);
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  updateRisk(
+    boardId: string,
+    input: Omit<RiskFactsInput, "risk_id"> & { risk_id: string },
+    write: ActorWrite,
+  ): { risk: RiskRecord; replayed: boolean; observed_event_cursor: number } {
+    const hash = requestHash({ board_id: boardId, ...input, reason: write.reason });
+    return this.store.immediate(() => {
+      const replay = this.replay<{ risk: RiskRecord; observed_event_cursor: number }>(
+        boardId,
+        write.actor_id,
+        "update_risk",
+        write.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      this.requireBoard(boardId);
+      const reasonText = write.reason?.trim();
+      if (!reasonText) {
+        throw new GoalBoardV1Error("risk.reason_required", "更新 Risk 时必须说明原因");
+      }
+      const riskId = input.risk_id.trim();
+      const previous = this.store.db
+        .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
+        .get(riskId, boardId) as Row | undefined;
+      if (!previous) throw new GoalBoardV1Error("risk.not_found", `Risk 不存在: ${riskId}`);
+      const facts = this.normalizeRiskFacts(boardId, input);
+      const previousGoalIds = (this.store.db
+        .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
+        .all(riskId) as Row[]).map((item) => asText(item.goal_id));
+      const state = asText(previous.state) as RiskRecord["state"];
+      const now = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          UPDATE risks SET
+            description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
+            trigger = ?, treatment = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
+          WHERE risk_id = ? AND board_id = ?
+        `)
+        .run(
+          facts.description,
+          facts.probability,
+          facts.impact,
+          sqliteJson(facts.affected_surfaces),
+          facts.trigger,
+          facts.treatment,
+          facts.blocking_mode,
+          facts.revisit_condition,
+          facts.owner,
+          now,
+          riskId,
+          boardId,
+        );
+      this.store.db.prepare("DELETE FROM goal_risks WHERE risk_id = ?").run(riskId);
+      const link = this.store.db.prepare("INSERT INTO goal_risks (goal_id, risk_id) VALUES (?, ?)");
+      for (const goalId of facts.goal_ids) link.run(goalId, riskId);
+
+      const wasInvalidating = asText(previous.blocking_mode) === "invalidate_on_trigger" && state === "triggered";
+      const isInvalidating = facts.blocking_mode === "invalidate_on_trigger" && state === "triggered";
+      const nextInvalidated = new Set(isInvalidating ? facts.goal_ids : []);
+      if (wasInvalidating) {
+        for (const goalId of previousGoalIds.filter((item) => !nextInvalidated.has(item))) {
+          this.store.db
+            .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
+            .run(now, goalId);
+        }
+      }
+      if (isInvalidating) {
+        for (const goalId of facts.goal_ids) {
+          this.store.db
+            .prepare("UPDATE goals SET validity_state = 'invalidated', updated_at = ? WHERE goal_id = ?")
+            .run(now, goalId);
+        }
+      }
+
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: "risk.updated",
+        objectType: "risk",
+        objectId: riskId,
+        reason: reasonText,
+        payload: {
+          previous_goal_ids: previousGoalIds,
+          goal_ids: facts.goal_ids,
+          previous_blocking_mode: asText(previous.blocking_mode),
+          blocking_mode: facts.blocking_mode,
+          state,
+        },
+        at: now,
+      });
+      const risk = this.readRisk(boardId, riskId);
+      const outcome = { risk, observed_event_cursor: cursor };
+      this.remember(boardId, write.actor_id, "update_risk", write.idempotency_key, hash, outcome, now);
       return { ...outcome, replayed: false };
     });
   }
@@ -942,6 +1053,13 @@ export class GoalBoardCoordinator {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
+      if (!RISK_STATES.has(input.state)) {
+        throw new GoalBoardV1Error("risk.state_invalid", "Risk 状态必须是开放、已触发、已解决、已接受或已过期");
+      }
+      const reasonText = input.reason.trim();
+      if (!reasonText) {
+        throw new GoalBoardV1Error("risk.reason_required", "变更 Risk 状态时必须说明原因");
+      }
       const row = this.store.db
         .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
         .get(input.risk_id, boardId) as Row | undefined;
@@ -954,7 +1072,12 @@ export class GoalBoardCoordinator {
         .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
         .all(input.risk_id) as Row[];
       if (asText(row.blocking_mode) === "invalidate_on_trigger") {
-        const validity = input.state === "triggered" ? "invalidated" : input.state === "resolved" ? "needs_revalidation" : null;
+        const previousState = asText(row.state) as RiskRecord["state"];
+        const validity = input.state === "triggered"
+          ? "invalidated"
+          : previousState === "triggered"
+            ? "needs_revalidation"
+            : null;
         if (validity) {
           for (const linked of linkedGoals) {
             this.store.db
@@ -970,8 +1093,13 @@ export class GoalBoardCoordinator {
         type: `risk.${input.state}`,
         objectType: "risk",
         objectId: input.risk_id,
-        reason: input.reason,
-        payload: { linked_goal_ids: linkedGoals.map((item) => asText(item.goal_id)) },
+        reason: reasonText,
+        payload: {
+          previous_state: asText(row.state),
+          state: input.state,
+          blocking_mode: asText(row.blocking_mode),
+          linked_goal_ids: linkedGoals.map((item) => asText(item.goal_id)),
+        },
         at: now,
       });
       const risk = this.readRisk(boardId, input.risk_id);
@@ -979,6 +1107,48 @@ export class GoalBoardCoordinator {
       this.remember(boardId, write.actor_id, "set_risk_state", write.idempotency_key, hash, outcome, now);
       return { ...outcome, replayed: false };
     });
+  }
+
+  private normalizeRiskFacts(
+    boardId: string,
+    input: Omit<RiskFactsInput, "risk_id">,
+  ): Omit<RiskFactsInput, "risk_id" | "affected_surfaces"> & { affected_surfaces: string[] } {
+    const goalIds = unique(input.goal_ids.map((item) => item.trim()).filter(Boolean));
+    const description = input.description.trim();
+    const probability = input.probability.trim();
+    const impact = input.impact.trim();
+    const affectedSurfaces = unique((input.affected_surfaces ?? []).map((item) => item.trim()).filter(Boolean));
+    const trigger = input.trigger.trim();
+    const revisitCondition = input.revisit_condition.trim();
+    const owner = input.owner.trim();
+    if (!goalIds.length) {
+      throw new GoalBoardV1Error("risk.goal_required", "Risk 必须关联至少一个 Goal");
+    }
+    if (!description || !probability || !impact || !trigger || !revisitCondition || !owner) {
+      throw new GoalBoardV1Error(
+        "risk.required_field_missing",
+        "Risk 必须说明描述、概率、影响、触发条件、复查条件和负责人",
+      );
+    }
+    if (!RISK_TREATMENTS.has(input.treatment)) {
+      throw new GoalBoardV1Error("risk.treatment_invalid", "Risk 处理方式无效");
+    }
+    if (!RISK_BLOCKING_MODES.has(input.blocking_mode)) {
+      throw new GoalBoardV1Error("risk.blocking_mode_invalid", "Risk 阻塞方式无效");
+    }
+    for (const goalId of goalIds) this.requireGoalOnBoard(boardId, goalId);
+    return {
+      goal_ids: goalIds,
+      description,
+      probability,
+      impact,
+      affected_surfaces: affectedSurfaces,
+      trigger,
+      treatment: input.treatment,
+      blocking_mode: input.blocking_mode,
+      revisit_condition: revisitCondition,
+      owner,
+    };
   }
 
   setActiveGoal(

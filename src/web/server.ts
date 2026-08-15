@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
-import type { GoalPolicy, GoalRelationRecord } from "../v1/types.js";
+import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
 import {
   renderGoalBoardWeb,
   type GoalBoardWebView,
@@ -16,6 +16,7 @@ import {
   type WebGoalStatus,
   type WebInputBinding,
   type WebPolicyBinding,
+  type WebRiskRecord,
 } from "./render.js";
 
 export interface WebServerOptions {
@@ -60,6 +61,38 @@ function rowJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function uniqueTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))];
+}
+
+function webRiskFacts(
+  body: Record<string, unknown>,
+  fallbackGoalId?: string,
+): Omit<Parameters<GoalBoardCoordinator["addRisk"]>[1], "risk_id"> {
+  const treatment = String(body.treatment ?? "mitigate") as RiskRecord["treatment"];
+  const blockingMode = String(body.blocking_mode ?? "none") as RiskRecord["blocking_mode"];
+  if (!["accept", "mitigate", "avoid", "defer"].includes(treatment)) {
+    throw new Error("Risk 处理方式无效");
+  }
+  if (!["none", "claim", "completion", "invalidate_on_trigger"].includes(blockingMode)) {
+    throw new Error("Risk 阻塞方式无效");
+  }
+  const suppliedGoalIds = uniqueTextArray(body.goal_ids);
+  return {
+    goal_ids: suppliedGoalIds.length ? suppliedGoalIds : fallbackGoalId ? [fallbackGoalId] : [],
+    description: String(body.description ?? "").trim(),
+    probability: String(body.probability ?? "").trim(),
+    impact: String(body.impact ?? "").trim(),
+    affected_surfaces: uniqueTextArray(body.affected_surfaces),
+    trigger: String(body.trigger ?? "").trim(),
+    treatment,
+    blocking_mode: blockingMode,
+    revisit_condition: String(body.revisit_condition ?? "").trim(),
+    owner: String(body.owner ?? "").trim(),
+  };
 }
 
 export function buildGoalBoardWebView(
@@ -119,6 +152,17 @@ export function buildGoalBoardWebView(
     reason: rowText(row.reason),
     payload: rowJson(row.payload_json, null),
     at: rowText(row.at),
+  }));
+  const riskGoalIds = new Map<string, string[]>();
+  for (const row of store.db
+    .prepare("SELECT risk_id, goal_id FROM goal_risks ORDER BY risk_id, goal_id")
+    .all() as DatabaseRow[]) {
+    const riskId = rowText(row.risk_id);
+    riskGoalIds.set(riskId, [...(riskGoalIds.get(riskId) ?? []), rowText(row.goal_id)]);
+  }
+  const webRisks: WebRiskRecord[] = snapshot.risks.map((risk) => ({
+    ...risk,
+    goal_ids: riskGoalIds.get(risk.risk_id) ?? [],
   }));
   const now = new Date().toISOString();
   const activeClaims = new Map(
@@ -196,7 +240,7 @@ export function buildGoalBoardWebView(
       evidence,
       review_obligations: reviewObligations,
       reviews,
-      risks: snapshot.risks.filter((item) => riskIds.has(item.risk_id)),
+      risks: webRisks.filter((item) => riskIds.has(item.risk_id)),
       impacts,
       relations,
       coverage: coverage.filter((item) => item.owner_goal_id === goal.goal_id),
@@ -617,45 +661,12 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
         const goalRiskMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/risks$/);
         if (request.method === "POST" && goalRiskMatch) {
           const body = await readBody(request);
-          const treatment = String(body.treatment ?? "mitigate");
-          const blockingMode = String(body.blocking_mode ?? "none");
-          const probability = String(body.probability ?? "").trim();
-          const impact = String(body.impact ?? "").trim();
-          const owner = String(body.owner ?? "").trim();
           const reason = String(body.reason ?? "").trim();
-          if (!["accept", "mitigate", "avoid", "defer"].includes(treatment)) {
-            sendJson(response, 400, { error: "Risk 处理方式无效" });
-            return;
-          }
-          if (!["none", "claim", "completion", "invalidate_on_trigger"].includes(blockingMode)) {
-            sendJson(response, 400, { error: "Risk 阻塞方式无效" });
-            return;
-          }
-          const affectedSurfaces = Array.isArray(body.affected_surfaces)
-            ? [...new Set(body.affected_surfaces.map(String).map((value) => value.trim()).filter(Boolean))]
-            : [];
           try {
-            if (!probability || !impact || !owner || !reason) {
-              throw new Error("Risk 必须填写概率、影响、负责人和登记原因");
-            }
+            if (!reason) throw new Error("Risk 必须填写登记原因");
             const result = coordinator.addRisk(
               options.boardId,
-              {
-                goal_ids: [decodeURIComponent(goalRiskMatch[1])],
-                description: String(body.description ?? "").trim(),
-                probability,
-                impact,
-                affected_surfaces: affectedSurfaces,
-                trigger: String(body.trigger ?? "").trim(),
-                treatment: treatment as "accept" | "mitigate" | "avoid" | "defer",
-                blocking_mode: blockingMode as
-                  | "none"
-                  | "claim"
-                  | "completion"
-                  | "invalidate_on_trigger",
-                revisit_condition: String(body.revisit_condition ?? "").trim(),
-                owner,
-              },
+              webRiskFacts(body, decodeURIComponent(goalRiskMatch[1])),
               {
                 actor_id: "web-user",
                 idempotency_key: String(body.idempotency_key ?? `web-risk-${randomUUID()}`),
@@ -663,6 +674,57 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
               },
             );
             sendJson(response, 201, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const riskUpdateMatch = url.pathname.match(/^\/api\/risks\/([^/]+)\/update$/);
+        if (request.method === "POST" && riskUpdateMatch) {
+          const body = await readBody(request);
+          const reason = String(body.reason ?? "").trim();
+          try {
+            const result = coordinator.updateRisk(
+              options.boardId,
+              {
+                risk_id: decodeURIComponent(riskUpdateMatch[1]),
+                ...webRiskFacts(body),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-risk-update-${randomUUID()}`),
+                reason,
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const riskStateMatch = url.pathname.match(/^\/api\/risks\/([^/]+)\/state$/);
+        if (request.method === "POST" && riskStateMatch) {
+          const body = await readBody(request);
+          const state = String(body.state ?? "") as RiskRecord["state"];
+          const reason = String(body.reason ?? "").trim();
+          try {
+            const result = coordinator.setRiskState(
+              options.boardId,
+              {
+                risk_id: decodeURIComponent(riskStateMatch[1]),
+                state,
+                reason,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-risk-state-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, result);
           } catch (error) {
             sendJson(response, 400, {
               error: error instanceof Error ? error.message : String(error),

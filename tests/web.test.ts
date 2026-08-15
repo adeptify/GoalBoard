@@ -920,7 +920,8 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.match(draftPage, /value="closed_leaf"/);
     assert.match(draftPage, /value="closed_compound"/);
     assert.match(draftPage, /data-criterion-field="decision_method"/);
-    assert.match(draftPage, /data-draft-risk-form/);
+    assert.match(draftPage, /href="#risk-workbench-EDIT-ME"/);
+    assert.match(draftPage, /data-risk-create-form/);
     assert.match(draftPage, /data-draft-impact-form/);
     assert.match(draftPage, /data-policy-form/);
     assert.ok(draftPage.indexOf("验收清单") < draftPage.indexOf("补全 Draft Contract"));
@@ -1054,6 +1055,158 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     });
     assert.equal(lockedUpdate.status, 400);
     assert.match(await lockedUpdate.text(), /accepted Contract 不能原地修改/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web maintains complete Risk facts, linked Goals, lifecycle states, and their visible effect", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-risk-workbench-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "risk-workbench-board",
+    title: "Risk Workbench",
+    actor_id: "web-user",
+    idempotency_key: "risk-workbench-init",
+  });
+  for (const [goalId, title] of [["RISK-A", "交付风险工作台"], ["RISK-B", "验证关联 Goal"]] as const) {
+    coordinator.createGoal(
+      "risk-workbench-board",
+      {
+        goal_id: goalId,
+        title,
+        outcome: `${title}有明确结果`,
+        why: "验证 Risk 真相源",
+        business_logic: "用户维护事实和状态，GoalBoard 根据阻塞方式解释影响。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [
+          {
+            criterion_id: `${goalId}-C1`,
+            statement: "Risk 可以完整维护",
+            decision_method: "automated_check",
+            pass_condition: "页面和接口保存完整 Risk",
+            required_evidence: ["test"],
+          },
+        ],
+      },
+      { actor_id: "web-user", idempotency_key: `create-${goalId}` },
+    );
+  }
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "risk-workbench-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const emptyPage = await (await fetch(`${origin}/goals/RISK-A`)).text();
+    assert.match(emptyPage, /data-risk-create-form/);
+    assert.match(emptyPage, /name="description"/);
+    assert.match(emptyPage, /name="affected_surfaces"/);
+    assert.match(emptyPage, /name="blocking_mode"/);
+    assert.match(emptyPage, /name="goal_ids" value="RISK-A" checked/);
+    assert.match(emptyPage, /验证关联 Goal/);
+    assert.match(emptyPage, /\.risk-facts, \.risk-form, \.risk-state-form \{ grid-template-columns: 1fr; \}/);
+    assert.match(emptyPage, /\.risk-form input:not\(\[type=checkbox\]\).*font-size: 16px/);
+
+    const createResponse = await fetch(`${origin}/api/goals/RISK-A/risks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_ids: ["RISK-A", "RISK-B"],
+        description: "外部规则可能在交付前改变",
+        probability: "35%",
+        impact: "高",
+        affected_surfaces: ["src/web", "Contract"],
+        trigger: "规则正式发布新版本",
+        treatment: "mitigate",
+        blocking_mode: "completion",
+        revisit_condition: "每次规则发布后复查",
+        owner: "product-owner",
+        reason: "两个 Goal 共享同一个外部规则",
+        idempotency_key: "web-risk-create-complete",
+      }),
+    });
+    const created = (await createResponse.json()) as { risk: { risk_id: string } };
+    assert.equal(createResponse.status, 201, JSON.stringify(created));
+
+    const populatedPage = await (await fetch(`${origin}/goals/RISK-A`)).text();
+    assert.match(populatedPage, /外部规则可能在交付前改变/);
+    assert.match(populatedPage, /35%/);
+    assert.match(populatedPage, /阻止完成/);
+    assert.match(populatedPage, /当前会阻止所有关联 Goal 被标记为完成/);
+    assert.match(populatedPage, /data-risk-edit-form/);
+    assert.match(populatedPage, /data-risk-state-form/);
+    for (const state of ["open", "triggered", "resolved", "accepted", "expired"]) {
+      assert.match(populatedPage, new RegExp(`option value="${state}"`));
+    }
+
+    const updateResponse = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_ids: ["RISK-B"],
+        description: "外部规则已经进入确认窗口",
+        probability: "60%",
+        impact: "中高",
+        affected_surfaces: ["Contract", "tests"],
+        trigger: "规则负责人确认变更",
+        treatment: "avoid",
+        blocking_mode: "claim",
+        revisit_condition: "负责人给出最终版本后复查",
+        owner: "risk-owner",
+        reason: "缩小影响 Goal，并更新处理责任",
+        idempotency_key: "web-risk-update-complete",
+      }),
+    });
+    assert.equal(updateResponse.status, 200, await updateResponse.text());
+
+    for (const state of ["triggered", "resolved", "accepted", "expired", "open"] as const) {
+      const stateResponse = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state,
+          reason: `用户确认进入 ${state}`,
+          idempotency_key: `web-risk-state-${state}`,
+        }),
+      });
+      assert.equal(stateResponse.status, 200, await stateResponse.text());
+    }
+    const missingReason = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: "resolved", reason: "" }),
+    });
+    assert.equal(missingReason.status, 400);
+    assert.match(await missingReason.text(), /必须说明原因/);
+
+    const updatedPage = await (await fetch(`${origin}/goals/RISK-B`)).text();
+    assert.match(updatedPage, /外部规则已经进入确认窗口/);
+    assert.match(updatedPage, /60%/);
+    assert.match(updatedPage, /规避 \/ 阻止领取/);
+    assert.match(updatedPage, /开放/);
+    assert.match(updatedPage, /交付风险工作台/);
+    const verify = new SqliteGoalBoardStore(databasePath);
+    try {
+      assert.deepEqual(
+        (verify.db.prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id").all(created.risk.risk_id) as Array<{ goal_id: string }>).map((row) => row.goal_id),
+        ["RISK-B"],
+      );
+      const stored = verify.snapshot("risk-workbench-board").risks.find((risk) => risk.risk_id === created.risk.risk_id);
+      assert.equal(stored?.description, "外部规则已经进入确认窗口");
+      assert.deepEqual(stored?.affected_surfaces, ["Contract", "tests"]);
+      assert.equal(stored?.owner, "risk-owner");
+      assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'risk.updated'").get(created.risk.risk_id));
+    } finally {
+      verify.close();
+    }
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

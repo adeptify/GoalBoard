@@ -1925,6 +1925,7 @@ test("two Runtime processes racing for one Goal produce exactly one active Claim
 test("Risk operations block Claim and propagate triggered invalidation explicitly", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "risk-goal");
+  createLeaf(coordinator, "risk-linked-goal");
   coordinator.setActiveGoal(
     "board-1",
     { goal_id: "risk-goal", reason: "当前聚焦这个产品结果" },
@@ -1977,18 +1978,83 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     },
     { actor_id: "user-1", idempotency_key: "risk-add-invalidating" },
   );
+  const updateInput = {
+    risk_id: "invalidating-risk",
+    goal_ids: ["risk-goal", "risk-linked-goal"],
+    description: "上游规则已经进入变更窗口",
+    probability: "high",
+    impact: "现有验收依据与两个关联 Goal 都会失效",
+    affected_surfaces: ["contract", "tests"],
+    trigger: "上游规则正式发布",
+    treatment: "avoid" as const,
+    blocking_mode: "invalidate_on_trigger" as const,
+    revisit_condition: "规则稳定并完成重新验证",
+    owner: "risk-owner",
+  };
+  const updatedRisk = coordinator.updateRisk(
+    "board-1",
+    updateInput,
+    { actor_id: "user-1", idempotency_key: "risk-update-invalidating", reason: "补齐影响范围和关联 Goal" },
+  );
+  assert.equal(updatedRisk.risk.description, updateInput.description);
+  assert.equal(updatedRisk.risk.treatment, "avoid");
+  assert.deepEqual(updatedRisk.risk.affected_surfaces, ["contract", "tests"]);
+  assert.deepEqual(
+    (store.db.prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id").all("invalidating-risk") as Array<{ goal_id: string }>).map((item) => item.goal_id),
+    ["risk-goal", "risk-linked-goal"],
+  );
+  assert.equal(
+    coordinator.updateRisk(
+      "board-1",
+      updateInput,
+      { actor_id: "user-1", idempotency_key: "risk-update-invalidating", reason: "补齐影响范围和关联 Goal" },
+    ).replayed,
+    true,
+  );
   coordinator.setRiskState(
     "board-1",
     { risk_id: "invalidating-risk", state: "triggered", reason: "上游规则已改变" },
     { actor_id: "user-1", idempotency_key: "risk-trigger" },
   );
   assert.equal(store.getGoal("risk-goal")?.validity_state, "invalidated");
-  coordinator.setRiskState(
+  assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "invalidated");
+  coordinator.updateRisk(
     "board-1",
-    { risk_id: "invalidating-risk", state: "resolved", reason: "风险已处理，等待重新验证" },
-    { actor_id: "user-1", idempotency_key: "risk-resolve-invalidating" },
+    { ...updateInput, goal_ids: ["risk-linked-goal"] },
+    { actor_id: "user-1", idempotency_key: "risk-unlink-triggered", reason: "当前只影响关联 Goal" },
   );
   assert.equal(store.getGoal("risk-goal")?.validity_state, "needs_revalidation");
+  assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "invalidated");
+  coordinator.setRiskState(
+    "board-1",
+    { risk_id: "invalidating-risk", state: "accepted", reason: "用户接受风险，但历史结果仍需重新验证" },
+    { actor_id: "user-1", idempotency_key: "risk-accept-invalidating" },
+  );
+  assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "needs_revalidation");
+  assert.throws(
+    () => coordinator.setRiskState(
+      "board-1",
+      { risk_id: "invalidating-risk", state: "open", reason: "" },
+      { actor_id: "user-1", idempotency_key: "risk-empty-state-reason" },
+    ),
+    /必须说明原因/,
+  );
+  assert.throws(
+    () => coordinator.setRiskState(
+      "board-1",
+      { risk_id: "invalidating-risk", state: "unknown" as never, reason: "错误状态" },
+      { actor_id: "user-1", idempotency_key: "risk-invalid-state" },
+    ),
+    /状态必须是/,
+  );
+  assert.throws(
+    () => coordinator.updateRisk(
+      "board-1",
+      updateInput,
+      { actor_id: "user-1", idempotency_key: "risk-empty-update-reason", reason: "" },
+    ),
+    /必须说明原因/,
+  );
   store.close();
 });
 
