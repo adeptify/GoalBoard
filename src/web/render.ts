@@ -444,17 +444,46 @@ function mergePolicy(base: GoalPolicy, binding?: WebPolicyBinding): GoalPolicy {
   };
 }
 
-function renderGoalModeOptions(selected: GoalPolicy["goal_mode"]): string {
-  return ([
-    ["disabled", "关闭 · Runtime 不必声明 Goal Mode"],
-    ["preferred", "建议 · 提醒 Runtime 使用 Goal Mode"],
-    ["required", "强制 · 未声明时不可领取"],
-  ] as const)
+const GOAL_MODE_COPY: Record<GoalPolicy["goal_mode"], { label: string; description: string }> = {
+  disabled: { label: "关闭", description: "Runtime 不必声明 Goal Mode" },
+  preferred: { label: "建议", description: "提醒 Runtime 进入 Goal Mode" },
+  required: { label: "强制", description: "未声明时不能领取" },
+};
+
+function renderGoalModeChoices(selected: GoalPolicy["goal_mode"]): string {
+  return `<div class="policy-mode-options">${(
+    Object.entries(GOAL_MODE_COPY) as Array<
+      [GoalPolicy["goal_mode"], { label: string; description: string }]
+    >
+  )
     .map(
-      ([value, label]) =>
-        `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`,
+      ([value, copy]) => `<label><input type="radio" name="goal_mode" value="${value}"${selected === value ? " checked" : ""}><span><strong>${copy.label}</strong><small>${copy.description}</small></span></label>`,
     )
-    .join("");
+    .join("")}</div>`;
+}
+
+function renderPolicyToggle(
+  name: "self_verification" | "human_approval",
+  checked: boolean,
+  title: string,
+  description: string,
+): string {
+  return `<label class="policy-toggle"><input type="checkbox" name="${name}"${checked ? " checked" : ""}><span class="policy-switch" aria-hidden="true"></span><span class="policy-toggle-copy"><strong>${title}</strong><small>${description}</small></span></label>`;
+}
+
+function renderPolicyCounter(
+  name: "cross_reviewers" | "adversarial_reviewers",
+  value: number,
+  title: string,
+  description: string,
+): string {
+  return `<label class="policy-counter"><span><strong>${title}</strong><small>${description}</small></span><span class="policy-counter-input"><input name="${name}" type="number" min="0" step="1" value="${value}" aria-label="${title}人数"><span>人</span></span></label>`;
+}
+
+function policyLeaseDescription(seconds: number): string {
+  if (seconds % 3600 === 0) return `约 ${seconds / 3600} 小时`;
+  if (seconds % 60 === 0) return `约 ${seconds / 60} 分钟`;
+  return "到期后其他 Runtime 可以重新领取";
 }
 
 function renderPolicyForm(
@@ -473,22 +502,31 @@ function renderPolicyForm(
     : goalScope
       ? "尚未单独设置，当前沿用项目默认"
       : "尚未单独设置，当前使用系统默认";
-  return `<details class="policy-source"${goalScope ? " open" : ""}>
-    <summary><span><strong>${scopeLabel}</strong><small>${escapeHtml(description)}</small></span><span>${escapeHtml(saved)} ${icon("chevron-down")}</span></summary>
+  const scopeState = binding ? (goalScope ? "已设置 Goal 规则" : "已设置项目基线") : (goalScope ? "完全继承" : "系统默认");
+  const context = goalScope
+    ? binding
+      ? "下面是当前 Goal 保存的完整规则。项目默认仍是最低门槛，不能被这里削弱。"
+      : "字段先展示继承后的当前值；只有修改并保存，才会建立这条 Goal 的单独规则。"
+    : binding
+      ? "这组规则是所有 Goal 的共同最低门槛；当前 Goal 只能在它之上增加要求。"
+      : "当前仍使用系统默认。保存后，这组规则会成为整个项目的共同最低门槛。";
+  return `<details class="policy-source policy-source--${goalScope ? "goal" : "project"}"${goalScope ? " open" : ""}>
+    <summary><span class="policy-source-title"><span class="policy-scope-index">${goalScope ? "02" : "01"}</span><span><small>${goalScope ? "GOAL OVERRIDE" : "PROJECT DEFAULT"}</small><strong>${scopeLabel}</strong><span>${escapeHtml(description)}</span></span></span><span class="policy-source-state"><strong>${escapeHtml(scopeState)}</strong><small>${escapeHtml(saved)}</small>${icon("chevron-down")}</span></summary>
     <form class="policy-form" data-policy-form data-live-form="policy-${escapeHtml(scope)}-${escapeHtml(item.goal.goal_id)}">
       <input type="hidden" name="scope" value="${scope}">
       ${goalScope ? `<input type="hidden" name="goal_id" value="${escapeHtml(item.goal.goal_id)}">` : ""}
-      <label class="policy-field"><span>Goal Mode</span><select name="goal_mode">${renderGoalModeOptions(policy.goal_mode)}</select></label>
-      <div class="policy-field"><span>验证方式</span><div class="policy-toggles">
-        <label><input type="checkbox" name="self_verification"${policy.self_verification ? " checked" : ""}><span>执行者必须自我验证</span></label>
-        <label><input type="checkbox" name="human_approval"${policy.human_approval ? " checked" : ""}><span>必须由用户最终确认</span></label>
-      </div></div>
-      <div class="policy-field"><span>独立 Review 人数</span><div class="policy-number-row"><label><span>交叉验证</span><input name="cross_reviewers" type="number" min="0" step="1" value="${policy.cross_reviewers}"></label><label><span>对抗性验证</span><input name="adversarial_reviewers" type="number" min="0" step="1" value="${policy.adversarial_reviewers}"></label></div></div>
-      <label class="policy-field"><span>Runtime 必需能力</span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="用逗号分隔，例如 browser, typescript"><small>Runtime 必须声明全部能力后才能领取。</small></label>
-      <label class="policy-field"><span>最长领取时间</span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>秒</span></span></label>
-      <label class="policy-field"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="说明为什么调整这组规则"></textarea></label>
+      <p class="policy-scope-notice">${icon(goalScope ? "target" : "database")}<span>${escapeHtml(context)}</span></p>
+      <section class="policy-form-group"><header><span>${icon("workflow")}</span><div><h3>Runtime 领取</h3><p>决定 Runtime 以什么方式进入 Goal，以及一次认领能保持多久。</p></div></header>
+        <fieldset class="policy-control"><legend>Goal Mode</legend><p>这是 Runtime 领取前对工作模式的约束。</p>${renderGoalModeChoices(policy.goal_mode)}</fieldset>
+        <div class="policy-control policy-control--split"><label class="policy-input"><span><strong>Runtime 必需能力</strong><small>必须声明全部能力后才能领取；用逗号分隔。</small></span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="例如 browser, typescript"></label><label class="policy-input"><span><strong>最长领取时间</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>秒</span></span></label></div>
+      </section>
+      <section class="policy-form-group"><header><span>${icon("shield")}</span><div><h3>验证与 Review</h3><p>决定执行结果需要经过哪些独立检查，谁拥有最终确认权。</p></div></header>
+        <div class="policy-toggle-list">${renderPolicyToggle("self_verification", policy.self_verification, "执行者自我验证", "执行者提交结果前先验证自己的 Evidence")}${renderPolicyToggle("human_approval", policy.human_approval, "用户最终确认", "完成前必须由用户提交 Human Review")}</div>
+        <div class="policy-review-counts">${renderPolicyCounter("cross_reviewers", policy.cross_reviewers, "交叉验证", "由独立 Reviewer 复核结果与证据")}${renderPolicyCounter("adversarial_reviewers", policy.adversarial_reviewers, "对抗性验证", "主动寻找反例、遗漏和错误假设")}</div>
+      </section>
+      <section class="policy-form-group policy-form-group--reason"><header><span>${icon("history")}</span><div><h3>变更说明</h3><p>Policy 是可审计事实；说明为什么现在需要调整。</p></div></header><label class="policy-reason"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="例如：这个 Goal 涉及用户数据，需要独立 Review 和最终确认"></textarea></label></section>
       <p class="form-error" data-policy-error role="alert" hidden></p>
-      <footer><span>${goalScope ? "最终生效值会与项目默认规则合并。" : "旧规则会标记为已替换，历史仍保留。"}</span><button class="button-primary" type="submit">保存${scopeLabel}</button></footer>
+      <footer><span>${goalScope ? "保存后会与项目默认合并，并立即成为这条 Goal 的领取门槛。" : "旧规则会标记为已替换，历史仍保留。"}</span><button class="button-primary" type="submit">保存${scopeLabel}</button></footer>
     </form>
   </details>`;
 }
@@ -499,8 +537,10 @@ function renderPolicyEditor(item: WebGoalView): string {
   const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
   const goalPolicy = mergePolicy(projectPolicy, goalBinding);
   const policy = item.resolved_policy;
+  const mode = GOAL_MODE_COPY[policy.goal_mode];
   return `<div class="policy-workbench">
-    <div class="policy-effective"><div><strong>当前最终生效规则</strong><small>项目默认与当前 Goal 额外要求合并后的领取门槛</small></div><dl><div><dt>Goal Mode</dt><dd>${escapeHtml(policy.goal_mode)}</dd></div><div><dt>自检</dt><dd>${policy.self_verification ? "需要" : "不需要"}</dd></div><div><dt>交叉 / 对抗</dt><dd>${policy.cross_reviewers} / ${policy.adversarial_reviewers} 人</dd></div><div><dt>用户确认</dt><dd>${policy.human_approval ? "需要" : "不需要"}</dd></div><div><dt>最长领取</dt><dd>${policy.max_lease_seconds} 秒</dd></div><div><dt>必需能力</dt><dd>${escapeHtml(policy.required_capabilities.join("、") || "无")}</dd></div></dl></div>
+    <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><small>EFFECTIVE POLICY</small><h3>当前最终生效规则</h3><p>Runtime 实际领取和完成这条 Goal 时，必须满足下面这组门槛。</p></div><span class="policy-effective-state">已生效</span></header><dl><div><dt>Goal Mode</dt><dd><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.description)}</small></dd></div><div><dt>执行者自检</dt><dd><strong>${policy.self_verification ? "需要" : "不需要"}</strong><small>${policy.self_verification ? "提交前必须验证" : "不设自检门槛"}</small></dd></div><div><dt>独立 Review</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} 人</strong><small>交叉 ${policy.cross_reviewers} · 对抗 ${policy.adversarial_reviewers}</small></dd></div><div><dt>用户确认</dt><dd><strong>${policy.human_approval ? "需要" : "不需要"}</strong><small>${policy.human_approval ? "用户拥有最终确认权" : "无需 Human Review"}</small></dd></div><div><dt>最长领取</dt><dd><strong>${policy.max_lease_seconds} 秒</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>必需能力</dt><dd><strong>${escapeHtml(policy.required_capabilities.join("、") || "无")}</strong><small>${policy.required_capabilities.length ? "Runtime 必须全部声明" : "不限制能力标签"}</small></dd></div></dl></section>
+    <div class="policy-inheritance" aria-label="Policy 继承关系"><span><small>01 · 项目默认</small><strong>${projectBinding ? "项目基线已设置" : "使用系统默认"}</strong></span>${icon("arrow")}<span><small>02 · 当前 Goal</small><strong>${goalBinding ? "已增加单独规则" : "完全继承项目"}</strong></span>${icon("arrow")}<span><small>结果</small><strong>最终生效门槛</strong></span></div>
     ${renderPolicyForm(item, "project_default", projectPolicy, projectBinding)}
     ${renderPolicyForm(item, "goal", goalPolicy, goalBinding)}
   </div>`;
@@ -1424,37 +1464,96 @@ const MORE_STYLES = `
   .fact-row > span:last-child { min-width: 0; display: grid; }
   .fact-row small { color: var(--muted); overflow-wrap: anywhere; }
   .policy-list div { grid-template-columns: minmax(0, 1fr) auto; }
-  .policy-workbench { border-top: 1px solid var(--line-strong); }
-  .policy-effective { padding: 12px 0; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: start; }
-  .policy-effective > div { display: grid; }
-  .policy-effective > div small { color: var(--muted); }
-  .policy-effective dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 18px; }
-  .policy-effective dl div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-bottom: 1px solid #edf0f3; }
-  .policy-effective dt { color: var(--muted); }
-  .policy-effective dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
-  .policy-source { border-top: 1px solid var(--line); }
-  .policy-source:last-child { border-bottom: 1px solid var(--line); }
-  .policy-source > summary { min-height: 56px; padding: 9px 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; list-style: none; }
+  .policy-workbench { padding-top: 2px; border-top: 1px solid var(--line-strong); display: grid; gap: 14px; }
+  .policy-effective { margin-top: 14px; padding: 17px 18px 15px; border: 1px solid #bcd4f2; border-left: 3px solid var(--blue); border-radius: 6px; background: linear-gradient(135deg, #f5f9ff 0%, #fbfdff 68%, #f2f7ff 100%); }
+  .policy-effective > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; }
+  .policy-effective-icon { width: 34px; height: 34px; margin-top: 1px; border-radius: 5px; color: #fff; background: var(--blue); display: grid; place-items: center; font-size: 17px; }
+  .policy-effective header > div > small { color: var(--blue-dark); font-size: 9px; font-weight: 800; letter-spacing: .11em; }
+  .policy-effective h3 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
+  .policy-effective header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+  .policy-effective-state { padding: 3px 7px; border-radius: 3px; color: var(--green); background: var(--green-soft); font-size: 10px; font-weight: 700; }
+  .policy-effective dl { margin: 15px 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid #cfe0f5; }
+  .policy-effective dl div { min-width: 0; padding: 10px 12px 1px 0; display: grid; gap: 1px; }
+  .policy-effective dt { color: var(--muted); font-size: 10px; font-weight: 650; }
+  .policy-effective dd { min-width: 0; margin: 0; display: grid; overflow-wrap: anywhere; }
+  .policy-effective dd strong { font-size: 14px; }
+  .policy-effective dd small { color: var(--muted); font-size: 10px; }
+  .policy-inheritance { min-width: 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 5px; background: #f8f9fb; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; }
+  .policy-inheritance > span { min-width: 0; display: grid; }
+  .policy-inheritance small { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .policy-inheritance strong { overflow-wrap: anywhere; font-size: 12px; }
+  .policy-inheritance > svg { color: var(--faint); }
+  .policy-source { min-width: 0; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: #fff; }
+  .policy-source--goal { border-color: #b9d2f1; }
+  .policy-source > summary { min-height: 76px; padding: 13px 15px; display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; list-style: none; background: #f8f9fb; }
+  .policy-source--goal > summary { background: #f4f8fe; }
   .policy-source > summary::-webkit-details-marker { display: none; }
-  .policy-source > summary > span:first-child { display: grid; }
-  .policy-source > summary small, .policy-source > summary > span:last-child { color: var(--muted); font-size: 12px; }
-  .policy-source > summary > span:last-child { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-  .policy-source > summary svg { transition: transform .16s ease; }
-  .policy-source[open] > summary svg { transform: rotate(180deg); }
-  .policy-form { padding: 4px 0 15px; display: grid; gap: 0; }
-  .policy-field { min-width: 0; margin: 0; padding: 9px 0; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; gap: 14px; }
-  .policy-field > span:first-child { padding-top: 7px; font-weight: 650; }
-  .policy-field > small { grid-column: 2; margin-top: -6px; color: var(--muted); }
-  .policy-field input:not([type=checkbox]), .policy-field textarea, .policy-field select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; }
-  .policy-toggles { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 7px; }
-  .policy-toggles label { display: inline-flex; align-items: center; gap: 7px; }
-  .policy-number-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-  .policy-number-row label { min-width: 0; display: grid; grid-template-columns: auto minmax(70px, 1fr); align-items: center; gap: 8px; color: var(--muted); }
-  .policy-with-unit { display: grid; grid-template-columns: minmax(0, 180px) auto; align-items: center; gap: 8px; }
+  .policy-source-title { min-width: 0; display: flex; align-items: flex-start; gap: 11px; }
+  .policy-scope-index { flex: 0 0 auto; width: 29px; height: 29px; border: 1px solid var(--line-strong); border-radius: 4px; display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 750; }
+  .policy-source--goal .policy-scope-index { color: var(--blue-dark); border-color: #b7d0ef; background: #fff; }
+  .policy-source-title > span:last-child { min-width: 0; display: grid; }
+  .policy-source-title small { color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .09em; }
+  .policy-source-title strong { font-size: 15px; }
+  .policy-source-title > span:last-child > span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .policy-source-state { min-width: 190px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; text-align: right; }
+  .policy-source-state strong, .policy-source-state small { min-width: 0; overflow-wrap: anywhere; }
+  .policy-source-state strong { color: var(--blue-dark); font-size: 11px; }
+  .policy-source--project .policy-source-state strong { color: #505965; }
+  .policy-source-state small { grid-column: 1; color: var(--muted); font-size: 9px; }
+  .policy-source-state svg { grid-column: 2; grid-row: 1 / 3; color: var(--muted); transition: transform .16s ease; }
+  .policy-source[open] .policy-source-state svg { transform: rotate(180deg); }
+  .policy-form { padding: 0 15px 15px; display: grid; }
+  .policy-scope-notice { margin: 0 -15px; padding: 10px 15px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: flex-start; gap: 8px; color: #4c5663; font-size: 11px; }
+  .policy-scope-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
+  .policy-form-group { padding: 16px 0 2px; border-bottom: 1px solid var(--line); }
+  .policy-form-group > header { margin-bottom: 13px; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 9px; }
+  .policy-form-group > header > span { width: 28px; height: 28px; border-radius: 4px; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; }
+  .policy-form-group h3 { margin: 0; font-size: 14px; }
+  .policy-form-group header p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
+  .policy-control { min-width: 0; margin: 0; padding: 0 0 14px; border: 0; }
+  .policy-control > legend { padding: 0; font-weight: 650; }
+  .policy-control > p { margin: 0 0 8px; color: var(--muted); font-size: 11px; }
+  .policy-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+  .policy-mode-options label { min-width: 0; position: relative; cursor: pointer; }
+  .policy-mode-options input { position: absolute; opacity: 0; pointer-events: none; }
+  .policy-mode-options label > span { min-height: 58px; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; display: grid; align-content: center; gap: 1px; }
+  .policy-mode-options label:hover > span { border-color: #a8c8ee; background: #fbfdff; }
+  .policy-mode-options input:checked + span { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px rgba(22, 119, 255, .08); }
+  .policy-mode-options input:focus-visible + span { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
+  .policy-mode-options strong { font-size: 12px; }
+  .policy-mode-options small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .policy-control--split { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(180px, .65fr); gap: 12px; }
+  .policy-input { min-width: 0; display: grid; gap: 6px; }
+  .policy-input > span:first-child { display: grid; }
+  .policy-input small { color: var(--muted); font-size: 10px; }
+  .policy-input input, .policy-reason textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .policy-with-unit { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
   .policy-with-unit > span { color: var(--muted); }
-  .policy-form > .form-error { margin: 8px 0 0 204px; }
-  .policy-form footer { padding-top: 12px; border-top: 1px solid #edf0f3; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-  .policy-form footer > span { color: var(--muted); font-size: 12px; }
+  .policy-toggle-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .policy-toggle { min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; cursor: pointer; }
+  .policy-toggle:hover { border-color: #b9cee8; background: #fbfdff; }
+  .policy-toggle > input { position: absolute; opacity: 0; pointer-events: none; }
+  .policy-switch { position: relative; width: 30px; height: 18px; border-radius: 9px; background: #b5bcc6; transition: .16s ease; }
+  .policy-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(20, 30, 42, .2); transition: .16s ease; }
+  .policy-toggle input:checked + .policy-switch { background: var(--blue); }
+  .policy-toggle input:checked + .policy-switch::after { transform: translateX(12px); }
+  .policy-toggle input:focus-visible + .policy-switch { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
+  .policy-toggle-copy { min-width: 0; display: grid; }
+  .policy-toggle-copy strong { font-size: 12px; }
+  .policy-toggle-copy small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .policy-review-counts { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .policy-counter { min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+  .policy-counter > span:first-child { min-width: 0; display: grid; }
+  .policy-counter strong { font-size: 12px; }
+  .policy-counter small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .policy-counter-input { display: grid; grid-template-columns: 56px auto; align-items: center; gap: 5px; color: var(--muted); }
+  .policy-counter-input input { width: 56px; min-width: 0; padding: 7px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; text-align: center; }
+  .policy-form-group--reason { border-bottom: 0; }
+  .policy-reason { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: start; gap: 10px; }
+  .policy-reason > span { padding-top: 7px; font-weight: 650; }
+  .policy-form > .form-error { margin: 8px 0 0; }
+  .policy-form footer { margin-top: 13px; padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .policy-form footer > span { color: var(--muted); font-size: 11px; }
   .draft-editor-section { background: #fbfcfd; }
   .draft-contract-form { border-top: 1px solid var(--line-strong); display: grid; }
   .draft-contract-form label { min-width: 0; display: grid; gap: 5px; }
@@ -1674,16 +1773,19 @@ const RESPONSIVE_STYLES = `
     .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
     .human-review-form footer { align-items: stretch; flex-direction: column; }
     .human-review-form footer button { align-self: flex-end; }
-    .policy-effective, .policy-field { grid-template-columns: 1fr; gap: 5px; }
-    .policy-effective dl { grid-template-columns: 1fr; }
-    .policy-field > span:first-child { padding-top: 0; }
-    .policy-field > small { grid-column: 1; margin-top: -2px; }
-    .policy-number-row { grid-template-columns: 1fr; }
-    .policy-form > .form-error { margin-left: 0; }
+    .policy-effective > header { grid-template-columns: auto minmax(0, 1fr); }
+    .policy-effective-state { grid-column: 2; width: fit-content; }
+    .policy-effective dl { grid-template-columns: 1fr 1fr; }
+    .policy-inheritance { grid-template-columns: 1fr; gap: 5px; }
+    .policy-inheritance > svg { transform: rotate(90deg); }
+    .policy-source > summary { align-items: flex-start; }
+    .policy-source-state { min-width: 0; max-width: 42%; }
+    .policy-source-title > span:last-child > span, .policy-source-state small { display: none; }
+    .policy-mode-options, .policy-control--split, .policy-toggle-list, .policy-review-counts { grid-template-columns: 1fr; }
+    .policy-reason { grid-template-columns: 1fr; gap: 5px; }
+    .policy-reason > span { padding-top: 0; }
     .policy-form footer { align-items: stretch; flex-direction: column; }
     .policy-form footer button { align-self: flex-end; }
-    .policy-source > summary { align-items: flex-start; }
-    .policy-source > summary > span:last-child { max-width: 46%; white-space: normal; text-align: right; }
     .draft-form-row, .draft-list-grid, .decomposition-editor > div, .criterion-editor-grid, .draft-aux-form { grid-template-columns: 1fr; }
     .draft-list-grid label:last-child, .criterion-pass, .draft-aux-wide { grid-column: 1; }
     .decomposition-choice { border-right: 0; }
@@ -1748,16 +1850,18 @@ const RESPONSIVE_STYLES = `
     .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
     .human-review-form footer { align-items: stretch; flex-direction: column; }
     .human-review-form footer button { align-self: flex-end; }
-    .policy-effective, .policy-field { grid-template-columns: 1fr; gap: 5px; }
-    .policy-effective dl { grid-template-columns: 1fr; }
-    .policy-field > span:first-child { padding-top: 0; }
-    .policy-field > small { grid-column: 1; margin-top: -2px; }
-    .policy-number-row { grid-template-columns: 1fr; }
-    .policy-form > .form-error { margin-left: 0; }
+    .policy-effective { padding-inline: 14px; }
+    .policy-effective dl { grid-template-columns: 1fr 1fr; }
+    .policy-inheritance { grid-template-columns: 1fr; gap: 5px; }
+    .policy-inheritance > svg { transform: rotate(90deg); }
+    .policy-source > summary { align-items: flex-start; }
+    .policy-source-state { min-width: 0; max-width: 42%; }
+    .policy-source-title > span:last-child > span, .policy-source-state small { display: none; }
+    .policy-mode-options, .policy-control--split, .policy-toggle-list, .policy-review-counts { grid-template-columns: 1fr; }
+    .policy-reason { grid-template-columns: 1fr; gap: 5px; }
+    .policy-reason > span { padding-top: 0; }
     .policy-form footer { align-items: stretch; flex-direction: column; }
     .policy-form footer button { align-self: flex-end; }
-    .policy-source > summary { align-items: flex-start; }
-    .policy-source > summary > span:last-child { white-space: normal; text-align: right; }
     .draft-form-row, .draft-list-grid, .decomposition-editor > div, .criterion-editor-grid, .draft-aux-form { grid-template-columns: 1fr; }
     .draft-list-grid label:last-child, .criterion-pass, .draft-aux-wide { grid-column: 1; }
     .decomposition-choice { border-right: 0; }

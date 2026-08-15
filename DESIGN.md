@@ -219,7 +219,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 The desktop workspace starts beneath a 58px toolbar and divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line.
 
-The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; the editor is omitted unless the Goal is still a Draft. When that Goal has pending user-owned work, a short blue-edged notice appears between business logic and blockers with a count and deep link to its `/decisions` group; the full forms do not appear in the Goal document. When the usable document width falls to 660px, Draft fields and acceptance criteria, initial Risk / Impact forms, Policy, and Human Review labels stack above their controls. Footers become vertical and Policy summaries allow their saved-state text to wrap. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
+The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; the editor is omitted unless the Goal is still a Draft. When that Goal has pending user-owned work, a short blue-edged notice appears between business logic and blockers with a count and deep link to its `/decisions` group; the full forms do not appear in the Goal document. When the usable document width falls to 660px, Draft fields and acceptance criteria, initial Risk / Impact forms, and Human Review labels stack above their controls. Policy keeps its effective summary at two columns, turns the inheritance path vertical, hides source descriptions and saved subtext, and moves every editing control to one column. Footers become vertical. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
 
 The Decision Center occupies the same 1080px continuous-paper work area with 38px side gutters. Its header combines the total count with a five-type summary, then groups records by owner Goal. Multi-Goal or ambiguously owned Risks appear once under `Board 级事项` while listing every associated Goal. Within each group, Rewire precedes a linked Contract Proposal so prerequisites can be resolved before approval; Candidate, Human Review, and Risk follow in the same vertical stack.
 
@@ -243,8 +243,9 @@ The system is flat by default. Page, Tree, and paper are separated primarily by 
 - **Toolbar Structure** (`0 1px 2px rgba(18, 28, 40, .06)`): A hairline-depth cue beneath the global toolbar.
 - **Selected Tree Edge** (`inset 0 0 0 1px rgba(14, 94, 199, .22)`): Definition inside the blue selected row without lifting it.
 - **Active Mobile Tab** (`0 1px 3px rgba(22, 31, 43, .1)`): Small separation for the chosen Tree or Goal正文 tab.
+- **Policy Switch Thumb** (`0 1px 2px rgba(20, 30, 42, .2)`): Local definition inside compact Policy switch rows, not surface elevation.
 
-The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
+The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, Policy source chevrons and switches respond over `.16s ease`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
 
 **The Modal Elevation Rule.** Keep normal work surfaces flat; reserve sustained floating depth and backdrop treatment for the create dialog.
 
@@ -343,12 +344,14 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 
 ### Policy Workbench
 
-- **Reading order:** Always show the current final effective rule first, then the `project_default` source and the current Goal's additional rule. The effective summary uses a 190px lead column and auto-fitting value rows; sources are continuous disclosure rows rather than isolated panels.
-- **Authority:** The project default is the shared baseline. Current-Goal rules may add requirements but cannot weaken that baseline; saved reason, actor, and time remain visible in the source summary.
-- **Form:** Each source edits Goal Mode, self-verification, human approval, reviewer counts, Runtime capabilities, lease duration, and a required change reason. Rows use a 190px label column and 4px controls; current-Goal rules are open by default.
-- **Value language:** The shipped effective summary keeps the canonical Goal Mode value (`disabled`, `preferred`, or `required`), while the edit options add Chinese explanations. Do not add inheritance or “new requirement” badges until those states exist in code.
+- **Effective first:** A blue-edged 6px panel leads with `EFFECTIVE POLICY`, `当前最终生效规则`, and a text-bearing `已生效` state. Its six gates summarize localized Goal Mode, self-verification, independent Review with cross/adversarial breakdown, user confirmation, maximum lease, and required capabilities in a three-column definition list.
+- **Inheritance:** A visible strip explains `01 · 项目默认 → 02 · 当前 Goal → 结果`. Each step names whether the project baseline is saved or system-provided, whether the Goal adds rules or fully inherits, and that the result is the final effective gate.
+- **Source details:** Project Default and Goal Override are separate 6px disclosure surfaces with source index, English eyebrow, Chinese title, source-specific status, and saved actor/time when present. Project uses quiet gray; Goal uses a blue wash and is open by default. Goal rules may add requirements but cannot weaken the project minimum.
+- **Runtime entry:** Goal Mode is three accessible radio choices—关闭, 建议, 强制—with a plain-language consequence under each label. Required capabilities and maximum lease share their own Runtime group instead of appearing as unlabeled row values.
+- **Verification and Review:** Self-verification and user confirmation use labeled switch rows. Cross Review and adversarial Review use numeric people controls paired with explanations, making each count's purpose visible before editing.
+- **Audit:** Capabilities and lease remain grouped with Runtime entry; a separate `变更说明` group requires an audit reason. The footer explains whether the Goal rule merges with the project baseline or the project baseline is being replaced while history remains available.
 - **Submit / Error:** Submission disables its button, reports failures inline through `role="alert"`, and forces an authoritative refresh plus toast after success. While the form owns focus, background cursor refresh defers rather than replacing the edit.
-- **Narrow document:** At 660px of document width, lead labels, effective values, reviewer counts, summaries, and footers stack without changing the overall document flow.
+- **Narrow document:** At both the 660px document-container boundary and the 760px mobile viewport boundary, the effective gates become two columns, inheritance turns vertical, source descriptions and saved subtext hide, Goal Mode / capability / switch / reviewer controls become one column, and the audit reason and footer stack without leaving the continuous document flow.
 
 ### Inline References
 
@@ -384,8 +387,9 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Do** preserve each acceptance criterion's decision method, pass condition, target, and Evidence requirements as structured fields.
 - **Do** use the four shipped decomposition choices and the initial Risk / Impact forms to make execution boundaries explicit before acceptance.
 - **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / route-specific Goal正文-or-决定中心 switch.
-- **Do** let the 660px document-container rule stack Draft, Risk, Impact, Policy, and Human Review forms even when a wide viewport contains a narrow resized document pane.
-- **Do** keep the final effective Policy above its project-default and Goal-specific sources, and require a reason for every edit.
+- **Do** let the 660px document-container rule stack Draft, Risk, Impact, and Human Review fields while turning Policy inheritance vertical and Policy controls into one column, even inside a wide viewport.
+- **Do** read Policy as final effective gates → 01 Project Default → 02 Goal Override, preserving each source's status, saved provenance, and required audit reason.
+- **Do** present Goal Mode as three labeled radio choices, self/human requirements as switches, and reviewer counts with their purpose beside them.
 - **Do** defer background refresh while any focused live form is being edited, then force-refresh after a successful submission.
 - **Do** suppress nonessential motion during live refresh and honor reduced-motion timing.
 - **Do** expose the 5px Tree separator as a keyboard-operable resize control and retain the chosen width.
@@ -404,5 +408,6 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Don't** present Contract Proposal fields as raw JSON or let a Runtime-facing control imply that it can approve its own proposal.
 - **Don't** expose the Draft editor for an accepted Contract or silently rewrite accepted truth without the new-Goal and Rewire path.
 - **Don't** flatten structured acceptance into one undifferentiated textarea or invent decomposition states beyond the shipped four.
-- **Don't** compress Draft, Risk, Impact, Policy, or Human Review into a fixed desktop label grid when the document container is narrower than 660px.
-- **Don't** invent inheritance or “new requirement” indicators that are not present in the shipped Policy Workbench.
+- **Don't** compress Draft, Risk, Impact, Policy controls, or Human Review into a fixed desktop label grid when the document container is narrower than 660px.
+- **Don't** collapse Policy into anonymous label/value rows; keep localized modes, switches, reviewer purpose, and audit context visible.
+- **Don't** hide the inheritance chain or blur Project Default and Goal Override into one unsourced rule.
