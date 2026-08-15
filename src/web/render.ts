@@ -1,6 +1,7 @@
 import type {
   AcceptanceCriterion,
   BoardSnapshot,
+  CandidateGoalRecord,
   ClaimRecord,
   ContractFieldName,
   ContractFieldSource,
@@ -14,6 +15,7 @@ import type {
   ImpactBindingRecord,
   ReviewObligationRecord,
   ReviewRecord,
+  RewireRecord,
   RiskRecord,
   RunRecord,
 } from "../v1/types.js";
@@ -403,7 +405,7 @@ function renderSafety(item: WebGoalView): string {
   return `<div class="safety-grid">
     <section><h3>风险</h3>${
       item.risks.length
-        ? item.risks.map((risk) => `<article class="fact-row"><span class="fact-icon fact-icon--risk">${icon("risk")}</span><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)} · ${escapeHtml(risk.state)} · ${escapeHtml(risk.blocking_mode)}</small><small>触发：${escapeHtml(risk.trigger)}；处理：${escapeHtml(risk.treatment)}，${escapeHtml(risk.revisit_condition)}</small></span></article>`).join("")
+        ? item.risks.map((risk) => `<article class="fact-row" id="risk-${escapeHtml(risk.risk_id)}"><span class="fact-icon fact-icon--risk">${icon("risk")}</span><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)} · ${escapeHtml(risk.state)} · ${escapeHtml(risk.blocking_mode)}</small><small>触发：${escapeHtml(risk.trigger)}；处理：${escapeHtml(risk.treatment)}，${escapeHtml(risk.revisit_condition)}</small></span></article>`).join("")
         : '<p class="empty-row">暂无已登记风险</p>'
     }</section>
     <section><h3>影响面</h3>${
@@ -673,7 +675,13 @@ function renderRewireDecision(
   const note = rewire.candidate_id
     ? "拒绝关系调整不会删除已经纳入的 Goal。"
     : "拒绝后现有依赖保持不变；确认后才会新增或解除依赖。";
-  return `<article class="rewire-decision"><div><strong>${hasDependencies ? "依赖调整提案" : "关系调整提案"}</strong>${renderRewireSummary(rewire, view)}<small>${note}</small></div><div class="decision-actions"><button type="button" data-rewire-decision="rejected" data-rewire-id="${escapeHtml(rewire.rewire_id)}">拒绝关系调整</button><button class="button-primary" type="button" data-rewire-decision="confirmed" data-rewire-id="${escapeHtml(rewire.rewire_id)}">${hasDependencies ? "确认依赖调整" : "确认调整"}</button></div></article>`;
+  return `<form class="decision-record rewire-decision" data-rewire-decision-form data-live-form="rewire-${escapeHtml(rewire.rewire_id)}" data-rewire-id="${escapeHtml(rewire.rewire_id)}">
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--rewire">${icon("tree")} Rewire</span><small>${escapeHtml(rewire.rewire_id)}</small></header>
+    <div class="decision-record-body"><strong>${hasDependencies ? "依赖调整提案" : "关系调整提案"}</strong>${renderRewireSummary(rewire, view)}<small>${note}</small></div>
+    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="2" required placeholder="说明为什么确认或拒绝这次关系变化"></textarea></label>
+    <p class="form-error" data-decision-error role="alert" hidden></p>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">拒绝关系调整</button><button class="button-primary" type="submit" name="decision" value="confirmed">${hasDependencies ? "确认依赖调整" : "确认调整"}</button></footer>
+  </form>`;
 }
 
 const CONTRACT_SOURCE_LABELS: Record<ContractFieldSource["source_kind"], string> = {
@@ -737,7 +745,7 @@ function renderContractProposal(
     .filter((rewire): rewire is GoalBoardWebView["snapshot"]["rewires"][number] => Boolean(rewire));
   const pendingLinkedRewires = linkedRewires.filter((rewire) => rewire.state === "pending");
   const approvalBlocked = pendingLinkedRewires.length > 0;
-  return `<article class="contract-proposal">
+  return `<form class="decision-record contract-proposal" data-contract-decision-form data-live-form="contract-${escapeHtml(proposal.proposal_id)}" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}">
     <header><div><strong>Contract 补全提案</strong><p>确认后会更新同一个 Goal，不会创建新 Goal；确认前当前正文保持不变。</p></div><span>由 ${escapeHtml(proposal.submitted_by)} 提交</span></header>
     <div class="contract-diff-list">
       ${renderContractDiffRow(proposal, "title", "目标名称", current.title, proposed.title)}
@@ -753,26 +761,206 @@ function renderContractProposal(
     ${proposal.proposed_impacts.length ? `<div class="proposal-appendix"><strong>确认后登记的影响面</strong>${renderList(proposal.proposed_impacts.map((impact) => `${impact.surface} · ${impact.access} · ${impact.reason}`), "")}</div>` : ""}
     ${proposal.proposed_risks.length ? `<div class="proposal-appendix"><strong>确认后登记的风险</strong>${renderList(proposal.proposed_risks.map((risk) => `${risk.description}；影响：${risk.impact}；复查：${risk.revisit_condition}`), "")}</div>` : ""}
     ${linkedRewires.length ? `<div class="proposal-appendix proposal-prerequisite"><strong>依赖前置决定</strong><div>${renderList(linkedRewires.map((rewire) => `${rewire.state === "pending" ? "等待决定" : rewire.state === "applied" ? "已确认" : "已拒绝"} · ${rewire.rewire_id}`), "")}<p>${approvalBlocked ? "请先处理上方依赖调整；完成后才可确认 Contract。" : "依赖决定已经完成，可以确认 Contract。"}</p></div></div>` : ""}
-    <footer class="decision-actions"><button type="button" data-contract-decision="rejected" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}">退回补全</button><button class="button-primary" type="button" data-contract-decision="approved" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}"${approvalBlocked ? ' disabled aria-disabled="true" title="先处理上方依赖调整"' : ""}>${approvalBlocked ? "先处理依赖调整" : "确认并设为可执行"}</button></footer>
+    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="2" required placeholder="确认时说明判断依据；退回时写清需要修改的内容"></textarea></label>
+    <p class="form-error" data-decision-error role="alert" hidden></p>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">退回补全</button><button class="button-primary" type="submit" name="decision" value="approved"${approvalBlocked ? ' disabled aria-disabled="true" title="先处理上方依赖调整"' : ""}>${approvalBlocked ? "先处理依赖调整" : "确认并设为可执行"}</button></footer>
+  </form>`;
+}
+
+interface DecisionGoalGroup {
+  item: WebGoalView | null;
+  contractProposals: ContractProposalRecord[];
+  candidates: CandidateGoalRecord[];
+  rewires: RewireRecord[];
+  humanReview: boolean;
+  risks: RiskRecord[];
+}
+
+function allGoalViews(view: GoalBoardWebView): WebGoalView[] {
+  return [...view.goals, ...view.archived_goals];
+}
+
+function findGoalView(view: GoalBoardWebView, goalId: string | null | undefined): WebGoalView | null {
+  return goalId ? allGoalViews(view).find((item) => item.goal.goal_id === goalId) ?? null : null;
+}
+
+function candidateOwnerGoalId(candidate: CandidateGoalRecord, view: GoalBoardWebView): string | null {
+  if (!candidate.discovered_in_run_id) return null;
+  return view.snapshot.runs.find((run) => run.run_id === candidate.discovered_in_run_id)?.goal_id ?? null;
+}
+
+function rewireOwnerGoalId(rewire: RewireRecord, view: GoalBoardWebView): string | null {
+  if (rewire.candidate_id) {
+    const candidate = view.snapshot.candidates.find((item) => item.candidate_id === rewire.candidate_id);
+    const owner = candidate ? candidateOwnerGoalId(candidate, view) : null;
+    if (owner) return owner;
+  }
+  if (rewire.proposal.discovered_in_run_id) {
+    const run = view.snapshot.runs.find((item) => item.run_id === rewire.proposal.discovered_in_run_id);
+    if (run) return run.goal_id;
+  }
+  if (typeof rewire.proposal.formal_goal_id === "string") return rewire.proposal.formal_goal_id;
+  for (const relation of rewire.proposal.relations ?? []) {
+    const fromGoalId = resolvedProposalGoalId(relation.from_goal_id, rewire);
+    const toGoalId = resolvedProposalGoalId(relation.to_goal_id, rewire);
+    if (findGoalView(view, fromGoalId)) return fromGoalId;
+    if (findGoalView(view, toGoalId)) return toGoalId;
+  }
+  return null;
+}
+
+function riskNeedsDecision(risk: RiskRecord): boolean {
+  return risk.state === "open" || risk.state === "triggered";
+}
+
+function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
+  const groups = new Map<string, DecisionGoalGroup>();
+  const ensure = (goalId: string | null): DecisionGoalGroup => {
+    const key = goalId ?? "$board";
+    const existing = groups.get(key);
+    if (existing) return existing;
+    const created: DecisionGoalGroup = {
+      item: findGoalView(view, goalId),
+      contractProposals: [],
+      candidates: [],
+      rewires: [],
+      humanReview: false,
+      risks: [],
+    };
+    groups.set(key, created);
+    return created;
+  };
+  view.snapshot.contract_proposals
+    .filter((proposal) => proposal.state === "pending")
+    .forEach((proposal) => ensure(proposal.goal_id).contractProposals.push(proposal));
+  view.snapshot.candidates
+    .filter((candidate) => candidate.state === "pending")
+    .forEach((candidate) => ensure(candidateOwnerGoalId(candidate, view)).candidates.push(candidate));
+  view.snapshot.rewires
+    .filter((rewire) => rewire.state === "pending")
+    .forEach((rewire) => ensure(rewireOwnerGoalId(rewire, view)).rewires.push(rewire));
+  for (const item of allGoalViews(view)) {
+    if (item.review_obligations.some((obligation) => obligation.role === "human_approver" && obligation.state === "pending")) {
+      ensure(item.goal.goal_id).humanReview = true;
+    }
+  }
+  for (const risk of view.snapshot.risks.filter(riskNeedsDecision)) {
+    const owners = allGoalViews(view).filter((item) => item.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
+    ensure(owners.length === 1 ? owners[0]!.goal.goal_id : null).risks.push(risk);
+  }
+  return [...groups.values()].filter((group) =>
+    group.contractProposals.length || group.candidates.length || group.rewires.length || group.humanReview || group.risks.length,
+  );
+}
+
+function pendingDecisionCount(view: GoalBoardWebView): number {
+  const riskIds = new Set(
+    allGoalViews(view).flatMap((item) => item.risks.filter(riskNeedsDecision).map((risk) => risk.risk_id)),
+  );
+  return view.snapshot.contract_proposals.filter((item) => item.state === "pending").length +
+    view.snapshot.candidates.filter((item) => item.state === "pending").length +
+    view.snapshot.rewires.filter((item) => item.state === "pending").length +
+    view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length +
+    riskIds.size;
+}
+
+function renderDecisionGoalLink(item: WebGoalView | null): string {
+  if (!item) return '<span class="decision-owner-link"><strong>Board 级事项</strong><small>未关联来源 Goal</small></span>';
+  const base = item.goal.archived_at ? "/archive/goals/" : "/goals/";
+  return `<a class="decision-owner-link" href="${base}${encodeURIComponent(item.goal.goal_id)}"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)} · 打开 Goal</small></a>`;
+}
+
+function renderCandidateList(values: string[] | undefined, empty: string): string {
+  return values?.length ? renderList(values, "") : `<p class="empty-row">${escapeHtml(empty)}</p>`;
+}
+
+function projectDefaultPolicy(view: GoalBoardWebView): GoalPolicy {
+  const binding = view.policy_bindings
+    .filter((item) => item.scope === "project_default" && item.goal_id == null && item.state === "active")
+    .at(-1);
+  return mergePolicy(DEFAULT_GOAL_POLICY, binding);
+}
+
+function recordSummary(value: Record<string, unknown>, kind: "impact" | "risk"): string {
+  if (kind === "impact") {
+    return `${String(value.surface ?? "未命名影响面")} · ${String(value.access ?? "access 未记录")} · ${String(value.reason ?? "未说明原因")}`;
+  }
+  return `${String(value.description ?? "未命名风险")} · 影响 ${String(value.impact ?? "未记录")} · ${String(value.blocking_mode ?? "不阻塞")}`;
+}
+
+function renderCandidateDecision(candidate: CandidateGoalRecord, view: GoalBoardWebView): string {
+  const proposed = candidate.proposed_goal;
+  const owner = findGoalView(view, candidateOwnerGoalId(candidate, view));
+  const policy = projectDefaultPolicy(view);
+  const acceptance = proposed.acceptance_criteria ?? [];
+  const separation = owner
+    ? `来源 Goal 的当前范围是「${owner.goal.in_scope.join("；") || owner.goal.outcome || "未记录"}」；Candidate 要独立交付「${proposed.promised_outputs?.join("；") || proposed.outcome}」。请判断它是否确实应越出原 Contract。`
+    : "该 Candidate 没有关联来源 Run；请根据它自己的 Contract 判断是否应该独立进入 Goal Tree。";
+  return `<form class="decision-record candidate-decision" data-candidate-decision-form data-live-form="candidate-${escapeHtml(candidate.candidate_id)}" data-candidate-id="${escapeHtml(candidate.candidate_id)}">
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--candidate">${icon("plus")} Candidate</span><small>${escapeHtml(candidate.candidate_id)} · ${escapeHtml(candidate.submitted_by)}</small></header>
+    <div class="candidate-title"><div><small>候选 Goal</small><h3>${escapeHtml(proposed.title)}</h3><p>${escapeHtml(proposed.outcome)}</p></div><span>${escapeHtml(candidate.blocking_mode === "none" ? "不阻塞当前 Run" : candidate.blocking_mode === "current_run" ? "阻塞当前 Run" : "影响下游领取")}</span></div>
+    <dl class="candidate-contract">
+      <div><dt>为什么做</dt><dd>${escapeHtml(proposed.why)}</dd></div>
+      <div><dt>业务逻辑</dt><dd>${escapeHtml(proposed.business_logic)}</dd></div>
+      <div class="candidate-wide"><dt>为什么不能留在当前 Goal</dt><dd>${escapeHtml(separation)}</dd></div>
+      <div><dt>包含范围</dt><dd>${renderCandidateList(proposed.in_scope, "未记录")}</dd></div>
+      <div><dt>明确不做</dt><dd>${renderCandidateList(proposed.out_of_scope, "未记录")}</dd></div>
+      <div class="candidate-wide"><dt>验收条件</dt><dd>${acceptance.length ? `<ol class="candidate-acceptance">${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol>` : '<p class="empty-row">未记录验收条件</p>'}</dd></div>
+      <div><dt>影响面</dt><dd>${candidate.proposed_impacts.length ? renderList(candidate.proposed_impacts.map((impact) => recordSummary(impact, "impact")), "") : '<p class="empty-row">未提议影响面</p>'}</dd></div>
+      <div><dt>风险</dt><dd>${candidate.proposed_risks.length ? renderList(candidate.proposed_risks.map((risk) => recordSummary(risk, "risk")), "") : '<p class="empty-row">未提议风险</p>'}</dd></div>
+      <div class="candidate-wide"><dt>Review Policy</dt><dd>采用当前项目基线：Goal Mode ${escapeHtml(policy.goal_mode)}；自检 ${policy.self_verification ? "需要" : "不需要"}；交叉 / 对抗 ${policy.cross_reviewers} / ${policy.adversarial_reviewers} 人；用户确认 ${policy.human_approval ? "需要" : "不需要"}。</dd></div>
+    </dl>
+    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="3" required placeholder="说明为什么纳入；或写清退回后需要怎样调整"></textarea></label>
+    <p class="form-error" data-decision-error role="alert" hidden></p>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">退回并说明修改</button><button class="button-primary" type="submit" name="decision" value="approved">纳入 Goal Tree</button></footer>
+  </form>`;
+}
+
+function renderRiskDecision(risk: RiskRecord, item: WebGoalView | null, view: GoalBoardWebView): string {
+  const href = item ? `${item.goal.archived_at ? "/archive/goals/" : "/goals/"}${encodeURIComponent(item.goal.goal_id)}#risk-${encodeURIComponent(risk.risk_id)}` : "#";
+  const affectedGoals = allGoalViews(view).filter((goalView) => goalView.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
+  return `<article class="decision-record risk-decision">
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--risk">${icon("risk")} Risk</span><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(risk.state)}</span></header>
+    <div class="decision-record-body"><strong>${escapeHtml(risk.description)}</strong><p>概率 ${escapeHtml(risk.probability)} · 影响 ${escapeHtml(risk.impact)} · ${escapeHtml(risk.blocking_mode)}</p><small>触发：${escapeHtml(risk.trigger)}；复查：${escapeHtml(risk.revisit_condition)}；负责人：${escapeHtml(risk.owner)}</small></div>
+    <div class="risk-goal-links"><span>关联 Goal</span><div>${affectedGoals.length ? affectedGoals.map((goalView) => renderDecisionGoalLink(goalView)).join("") : "未关联 Goal"}</div></div>
+    <footer class="decision-link-row"><span>完整处理方式和生命周期在所属 Goal 中维护。</span>${item ? `<a href="${href}">打开 Risk</a>` : ""}</footer>
   </article>`;
 }
 
-function renderDecisionInbox(view: GoalBoardWebView, goalId: string): string {
-  const contractProposals = view.snapshot.contract_proposals.filter(
-    (proposal) => proposal.goal_id === goalId && proposal.state === "pending",
-  );
-  const candidates = view.snapshot.candidates.filter((candidate) => candidate.state === "pending");
-  const rewires = view.snapshot.rewires.filter((rewire) => rewire.state === "pending");
-  if (!contractProposals.length && !candidates.length && !rewires.length) return "";
-  const current = view.goals.find((item) => item.goal.goal_id === goalId)?.goal;
-  return `<section class="document-section decision-section" data-board-inbox>
-    <header class="section-heading"><span>${icon("user")}</span><div><h2>等待用户决定</h2><p>Runtime 只能提案；这些变更由你确认。</p></div></header>
-    <div class="decision-list">
-      ${rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
-      ${current ? contractProposals.map((proposal) => renderContractProposal(proposal, current, view)).join("") : ""}
-      ${candidates.map((candidate) => `<article><div><strong>候选 Goal：${escapeHtml(candidate.proposed_goal.title)}</strong><p>${escapeHtml(candidate.proposed_goal.outcome)}</p></div><div class="decision-actions"><button type="button" data-candidate-decision="rejected" data-candidate-id="${escapeHtml(candidate.candidate_id)}">拒绝</button><button class="button-primary" type="button" data-candidate-decision="approved" data-candidate-id="${escapeHtml(candidate.candidate_id)}">纳入 Goal Tree</button></div></article>`).join("")}
-    </div>
-  </section>`;
+function renderDecisionCenter(view: GoalBoardWebView): string {
+  const groups = buildDecisionGroups(view);
+  const count = pendingDecisionCount(view);
+  const typeCounts = {
+    proposals: view.snapshot.contract_proposals.filter((item) => item.state === "pending").length,
+    candidates: view.snapshot.candidates.filter((item) => item.state === "pending").length,
+    rewires: view.snapshot.rewires.filter((item) => item.state === "pending").length,
+    reviews: view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length,
+    risks: view.snapshot.risks.filter(riskNeedsDecision).length,
+  };
+  return `<article class="decision-center" data-decision-center>
+    <header class="decision-center-header"><div><small>USER AUTHORITY</small><h1>等待你的决定</h1><p>Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。</p></div><strong>${count}<small>项待处理</small></strong></header>
+    <div class="decision-summary" aria-label="待决定事项统计"><span>Contract <strong>${typeCounts.proposals}</strong></span><span>Candidate <strong>${typeCounts.candidates}</strong></span><span>Rewire <strong>${typeCounts.rewires}</strong></span><span>Human Review <strong>${typeCounts.reviews}</strong></span><span>Risk <strong>${typeCounts.risks}</strong></span></div>
+    ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
+      const goalId = group.item?.goal.goal_id ?? "board";
+      return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
+        <header class="decision-owner"><div><span>所属 Goal</span>${renderDecisionGoalLink(group.item)}</div><small>${group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} 项</small></header>
+        <div class="decision-stack">
+          ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
+          ${group.item ? group.contractProposals.map((proposal) => renderContractProposal(proposal, group.item!.goal, view)).join("") : ""}
+          ${group.candidates.map((candidate) => renderCandidateDecision(candidate, view)).join("")}
+          ${group.humanReview && group.item ? renderHumanReview(group.item) : ""}
+          ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
+        </div>
+      </section>`;
+    }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>当前没有等待你的决定</h2><p>Runtime 提交新的 Contract Proposal、Candidate 或 Rewire 后，会自动出现在这里。</p></div>`}
+  </article>`;
+}
+
+function renderGoalDecisionNotice(view: GoalBoardWebView, goalId: string): string {
+  const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
+  if (!group) return "";
+  const count = group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
+  return `<aside class="goal-decision-notice"><div><span>${icon("user")}</span><p><strong>${count} 项等待你的决定</strong><small>属于这个 Goal 的提案、Review 或 Risk 已集中到决定中心。</small></p></div><a href="/decisions#decision-goal-${escapeHtml(goalId)}">前往处理</a></aside>`;
 }
 
 function renderDraftGaps(goal: GoalRecord): string {
@@ -922,7 +1110,7 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       ${renderDraftGaps(goal)}
       <div class="business-copy"><p class="outcome"><strong>要得到的结果：</strong>${escapeHtml(goal.outcome || "待澄清")}</p><p><strong>为什么做：</strong>${escapeHtml(goal.why || "待澄清")}</p><p><strong>事情如何运转：</strong>${escapeHtml(goal.business_logic || "待澄清")}</p></div>
     </section>
-    ${renderDecisionInbox(view, goal.goal_id)}
+    ${renderGoalDecisionNotice(view, goal.goal_id)}
     <section class="document-section">
       ${sectionHeading("blocked", "阻塞项", "决定这个 Goal 现在能否被认领或完成")}
       ${renderReasons(item)}
@@ -935,7 +1123,6 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     <section class="document-section runtime-section" data-section="execution">
       ${sectionHeading("workflow", "Runtime 工作闭环", "GoalBoard 记录真相，Runtime 主动读取并认领")}
       <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
-      ${renderHumanReview(item)}
       <p class="runtime-note">这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Ready Goal 并认领。</p>
     </section>
     <section class="document-section">
@@ -1016,8 +1203,8 @@ const STYLES = `
   svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   [hidden] { display: none !important; }
   .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
-  .app { height: 100%; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
-  .topbar { display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: rgba(250, 251, 252, .97); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
+  .app { min-width: 0; height: 100%; overflow: hidden; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
+  .topbar { min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: rgba(250, 251, 252, .97); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
   .brand strong { font-size: 19px; letter-spacing: -.02em; }
@@ -1027,7 +1214,7 @@ const STYLES = `
   .sync-state::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--green); }
   .sync-state.is-syncing::before { background: var(--blue); animation: pulse 1s infinite; }
   .sync-state.is-offline::before { background: var(--red); }
-  .top-spacer { flex: 1; }
+  .top-spacer { min-width: 0; flex: 1; }
   .global-search { display: flex; align-items: center; min-width: 280px; margin-right: 12px; position: relative; }
   .global-search svg { position: absolute; left: 12px; color: var(--muted); }
   .global-search input { width: 100%; height: 34px; padding: 0 58px 0 36px; border: 1px solid transparent; border-radius: 5px; background: transparent; }
@@ -1036,8 +1223,9 @@ const STYLES = `
   .top-action { height: 34px; margin-right: 8px; padding: 0 13px; border: 0; border-left: 1px solid var(--line); background: transparent; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; white-space: nowrap; }
   a.top-action { text-decoration: none; }
   .top-action:hover { color: var(--blue); }
+  .top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
-  .workspace { min-height: 0; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
+  .workspace { min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
   .tree-pane { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
@@ -1330,13 +1518,46 @@ const MORE_STYLES = `
   .history-list span { min-width: 0; display: grid; }
   .history-list strong, .history-list small { overflow-wrap: anywhere; }
   .history-list small { color: var(--muted); }
-  .decision-section { border-bottom: 0; }
-  .decision-list { display: grid; gap: 8px; }
-  .decision-list > article { padding: 12px 14px; border: 1px solid var(--line); border-radius: 5px; display: flex; gap: 18px; align-items: center; }
-  .decision-list > article > div:first-child { min-width: 0; flex: 1; }
-  .decision-list p { margin: 2px 0 0; color: var(--muted); }
-  .decision-list > .contract-proposal { padding: 0; display: block; overflow: hidden; border-color: var(--line-strong); }
+  .goal-decision-notice { margin-top: 14px; padding: 10px 12px; border: 1px solid #c8dcf8; border-left: 3px solid var(--blue); border-radius: 4px; background: #f5f9ff; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+  .goal-decision-notice > div { min-width: 0; display: flex; align-items: flex-start; gap: 9px; }
+  .goal-decision-notice > div > span { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
+  .goal-decision-notice p { min-width: 0; margin: 0; display: grid; }
+  .goal-decision-notice small { color: var(--muted); }
+  .goal-decision-notice a { flex: 0 0 auto; color: var(--blue-dark); font-weight: 650; text-decoration: none; }
+  .decision-center { width: min(100%, 1080px); margin: 0 auto; padding: 34px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
+  .decision-center-header { padding-bottom: 22px; border-bottom: 1px solid var(--line-strong); display: flex; align-items: flex-end; justify-content: space-between; gap: 26px; }
+  .decision-center-header > div { max-width: 710px; }
+  .decision-center-header > div > small { color: var(--blue-dark); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+  .decision-center-header h1 { margin: 4px 0 5px; font-size: clamp(25px, 2.3vw, 32px); line-height: 1.25; letter-spacing: -.03em; }
+  .decision-center-header p { margin: 0; color: var(--muted); }
+  .decision-center-header > strong { min-width: 94px; font-size: 34px; line-height: 1; text-align: right; font-variant-numeric: tabular-nums; }
+  .decision-center-header > strong small { margin-top: 5px; display: block; color: var(--muted); font-size: 11px; font-weight: 500; }
+  .decision-summary { min-height: 48px; border-bottom: 1px solid var(--line); display: flex; align-items: center; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 12px; }
+  .decision-summary span { display: inline-flex; align-items: center; gap: 6px; }
+  .decision-summary strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .decision-groups { display: grid; }
+  .decision-goal-group { padding: 25px 0 30px; border-bottom: 1px solid var(--line-strong); scroll-margin-top: 12px; }
+  .decision-owner { margin-bottom: 13px; display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
+  .decision-owner > div { min-width: 0; display: grid; gap: 3px; }
+  .decision-owner > div > span { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .decision-owner > small { flex: 0 0 auto; color: var(--muted); }
+  .decision-owner-link { min-width: 0; color: inherit; display: grid; text-decoration: none; }
+  a.decision-owner-link:hover strong { color: var(--blue-dark); text-decoration: underline; }
+  .decision-owner-link strong { font-size: 18px; letter-spacing: -.015em; overflow-wrap: anywhere; }
+  .decision-owner-link small { color: var(--muted); font-size: 11px; }
+  .decision-stack { display: grid; gap: 12px; }
+  .decision-record { min-width: 0; margin: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; background: #fff; }
+  .decision-record-heading { min-height: 40px; padding: 8px 13px; border-bottom: 1px solid var(--line); background: #f7f9fb; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .decision-record-heading > small { min-width: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; text-align: right; }
+  .decision-kind { display: inline-flex; align-items: center; gap: 6px; color: var(--blue-dark); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+  .decision-kind--rewire { color: #6b4eb6; }
+  .decision-kind--risk { color: var(--amber); }
+  .decision-record-body { padding: 12px 14px; }
+  .decision-record-body p { margin: 3px 0; color: var(--muted); }
+  .decision-record-body small { color: var(--muted); overflow-wrap: anywhere; }
+  .rewire-decision .dependency-proposal-list { margin-top: 9px; }
   .contract-proposal > header { padding: 13px 15px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; background: var(--blue-soft); border-bottom: 1px solid var(--line); }
+  .contract-proposal > header strong { font-size: 14px; }
   .contract-proposal > header p { color: var(--muted); }
   .contract-proposal > header > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
   .contract-diff-list { padding: 0 15px; }
@@ -1356,13 +1577,46 @@ const MORE_STYLES = `
   .proposal-appendix .doc-list { margin: 0; }
   .proposal-prerequisite > div { min-width: 0; }
   .proposal-prerequisite p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-  .contract-proposal > footer { padding: 12px 15px; justify-content: flex-end; background: #fbfcfd; }
+  .candidate-title { padding: 14px 15px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .candidate-title > div { min-width: 0; }
+  .candidate-title small { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  .candidate-title h3 { margin: 2px 0 3px; font-size: 17px; line-height: 1.35; letter-spacing: -.015em; }
+  .candidate-title p { margin: 0; color: var(--muted); }
+  .candidate-title > span { flex: 0 0 auto; padding: 2px 7px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); font-size: 10px; font-weight: 650; }
+  .candidate-contract { margin: 0; padding: 0 15px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  .candidate-contract > div { min-width: 0; padding: 11px 0; border-bottom: 1px solid #e7ebf0; }
+  .candidate-contract dt { margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 650; }
+  .candidate-contract dd { margin: 0; overflow-wrap: anywhere; }
+  .candidate-contract .doc-list, .candidate-contract .empty-row { margin: 0; }
+  .candidate-wide { grid-column: 1 / -1; }
+  .candidate-acceptance { margin: 2px 0 0; padding-left: 19px; }
+  .candidate-acceptance li { margin: 4px 0; padding-left: 3px; }
+  .candidate-acceptance li small { display: block; color: var(--muted); }
+  .decision-reason { padding: 12px 15px; border-top: 1px solid var(--line); background: #fbfcfd; display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: start; gap: 13px; }
+  .decision-reason > span { padding-top: 7px; font-weight: 650; }
+  .decision-reason textarea { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .decision-record > .form-error { margin: 0 15px 12px; }
+  .decision-record > footer.decision-actions { padding: 11px 15px 12px; border-top: 1px solid var(--line); justify-content: flex-end; background: #fbfcfd; }
   .decision-actions { display: flex; gap: 7px; }
-  .rewire-decision { align-items: flex-end !important; }
   .decision-actions button, .create-dialog footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; }
   .button-primary { color: #fff !important; border-color: var(--blue) !important; background: var(--blue) !important; }
   .button-primary:hover { background: var(--blue-dark) !important; }
   .decision-actions button:disabled { color: var(--muted) !important; border-color: var(--line) !important; background: #eef0f3 !important; cursor: not-allowed; }
+  .risk-state { color: var(--amber); font-size: 11px; font-weight: 700; }
+  .risk-state--triggered { color: var(--red); }
+  .risk-goal-links { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; }
+  .risk-goal-links > span { color: var(--muted); font-size: 11px; font-weight: 650; }
+  .risk-goal-links > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  .risk-goal-links .decision-owner-link { min-width: min(100%, 220px); }
+  .risk-goal-links .decision-owner-link strong { font-size: 13px; }
+  .decision-link-row { padding: 10px 14px; border-top: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+  .decision-link-row span { color: var(--muted); font-size: 12px; }
+  .decision-link-row a { flex: 0 0 auto; color: var(--blue-dark); font-weight: 650; text-decoration: none; }
+  .decision-stack > .human-review-list { margin: 0; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+  .decision-empty { min-height: 410px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
+  .decision-empty > svg { width: 30px; height: 30px; color: var(--green); }
+  .decision-empty h2 { margin: 12px 0 3px; color: var(--ink); font-size: 19px; }
+  .decision-empty p { margin: 0; }
   .mobile-switch { display: none; }
   .create-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 8px; box-shadow: var(--shadow); }
   .create-dialog::backdrop { background: rgba(25, 34, 45, .36); backdrop-filter: blur(2px); }
@@ -1438,6 +1692,13 @@ const RESPONSIVE_STYLES = `
     .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
     .draft-aux-form { padding-left: 0; }
   }
+  @media (max-width: 1360px) {
+    .brand { min-width: 160px; padding-inline: 20px; }
+    .source { min-width: 0; padding-inline: 14px; }
+    .source > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+    .global-search { min-width: 180px; max-width: 220px; }
+    .top-action { padding-inline: 9px; }
+  }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
@@ -1453,7 +1714,7 @@ const RESPONSIVE_STYLES = `
     .relation-group:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
   }
   @media (max-width: 900px) {
-    .source, .global-search, .top-action[data-view-action] { display: none; }
+    .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
   }
   @media (max-width: 760px) {
     body { overflow: hidden; }
@@ -1461,7 +1722,7 @@ const RESPONSIVE_STYLES = `
     .topbar { grid-row: 1; }
     .brand { min-width: 0; padding: 0 15px; border-right: 0; }
     .brand strong { font-size: 17px; }
-    .source, .global-search, .top-action[data-view-action] { display: none; }
+    .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
     .top-spacer { flex: 1; }
     .top-action { margin-right: 8px; border-left: 0; }
     .top-action span { display: none; }
@@ -1505,7 +1766,19 @@ const RESPONSIVE_STYLES = `
     .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
     .draft-aux-form { padding-left: 0; }
     .history-list li { grid-template-columns: 1fr; gap: 2px; }
-    .decision-list > article { align-items: stretch; flex-direction: column; }
+    .decision-center { padding-inline: 24px; }
+    .decision-center-header, .candidate-title, .decision-owner { align-items: flex-start; }
+    .decision-center-header { display: grid; }
+    .decision-center-header > strong { text-align: left; }
+    .decision-summary { gap: 7px 16px; }
+    .decision-record-heading { align-items: flex-start; }
+    .candidate-title { display: grid; }
+    .candidate-title > span { justify-self: start; }
+    .candidate-contract { grid-template-columns: 1fr; }
+    .candidate-wide { grid-column: 1; }
+    .decision-reason { grid-template-columns: 1fr; gap: 5px; }
+    .decision-reason > span { padding-top: 0; }
+    .goal-decision-notice { align-items: flex-start; }
     .contract-proposal > header { display: grid; }
     .contract-diff-row, .proposal-appendix { grid-template-columns: 1fr; gap: 6px; }
     .proposal-source { padding: 7px 0 0; border-left: 0; border-top: 1px dashed var(--line); }
@@ -1542,9 +1815,10 @@ const CLIENT_SCRIPT = `
     const toast = document.querySelector("[data-toast]");
     const syncState = document.querySelector("[data-sync-state]");
     const archiveView = document.body.dataset.boardView === "archive";
+    const decisionView = document.body.dataset.boardView === "decisions";
     const visibleGoals = (source = state) => archiveView ? source.archived_goals : source.goals;
     const storageKey = "goalboard-ui:" + state.snapshot.board.board_id;
-    let selected = document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (archiveView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
+    let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (archiveView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
     let toastTimer;
     let syncing = false;
     let saveTimer;
@@ -1736,6 +2010,10 @@ const CLIENT_SCRIPT = `
     };
 
     const selectGoal = (goalId, updateHistory = true) => {
+      if (decisionView) {
+        location.assign("/goals/" + encodeURIComponent(goalId));
+        return;
+      }
       if (!applySelection(goalId, true)) return;
       if (updateHistory) {
         const base = archiveView ? "/archive/goals/" : "/goals/";
@@ -1781,17 +2059,19 @@ const CLIENT_SCRIPT = `
         const ui = readUiState();
         const nextGoals = visibleGoals(nextState);
         const goalStillExists = nextGoals.some((item) => item.goal.goal_id === selected);
-        const nextSelected = goalStillExists
-          ? selected
-          : archiveView
-            ? nextGoals[0]?.goal.goal_id
-            : nextState.active_goal_id || nextGoals[0]?.goal.goal_id;
-        if (!nextSelected) {
+        const nextSelected = decisionView
+          ? ""
+          : goalStillExists
+            ? selected
+            : archiveView
+              ? nextGoals[0]?.goal.goal_id
+              : nextState.active_goal_id || nextGoals[0]?.goal.goal_id;
+        if (!decisionView && !nextSelected) {
           location.assign(archiveView ? "/archive" : "/");
           return;
         }
         const pageBase = archiveView ? "/archive/goals/" : "/goals/";
-        const pageResponse = await fetch(pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
+        const pageResponse = await fetch(decisionView ? "/decisions" : pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
         if (!pageResponse.ok) throw new Error("无法更新 Goal 页面");
         const parsed = new DOMParser().parseFromString(await pageResponse.text(), "text/html");
         const nextTree = parsed.querySelector("[data-tree-scroll]");
@@ -1799,6 +2079,7 @@ const CLIENT_SCRIPT = `
         const nextFooter = parsed.querySelector("[data-tree-footer]");
         const nextCount = parsed.querySelector("[data-tree-count]");
         const nextDialog = parsed.querySelector("[data-create-dialog]");
+        const nextDecisionsLink = parsed.querySelector("[data-decisions-link]");
         if (!nextTree || !nextDocument || !nextFooter) throw new Error("页面数据不完整");
         const createDraft = dialog.open ? readCreateDraft() : null;
         documentPane.classList.add("is-syncing");
@@ -1806,6 +2087,13 @@ const CLIENT_SCRIPT = `
         documentPane.innerHTML = nextDocument.innerHTML;
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
+        if (nextDecisionsLink) {
+          const decisionsLink = document.querySelector("[data-decisions-link]");
+          if (decisionsLink) {
+            decisionsLink.innerHTML = nextDecisionsLink.innerHTML;
+            decisionsLink.setAttribute("aria-label", nextDecisionsLink.getAttribute("aria-label") || "待决定");
+          }
+        }
         if (nextDialog) {
           form.elements.parent_goal_id.innerHTML = nextDialog.querySelector('[name="parent_goal_id"]').innerHTML;
           form.querySelector(".goal-choice-list").innerHTML = nextDialog.querySelector(".goal-choice-list").innerHTML;
@@ -1814,7 +2102,7 @@ const CLIENT_SCRIPT = `
         state = nextState;
         document.querySelector("#goalboard-data").textContent = JSON.stringify(nextState).replaceAll("<", "\\u003c");
         selected = nextSelected;
-        applySelection(selected, false);
+        if (!decisionView) applySelection(selected, false);
         applyUiState(ui);
         requestAnimationFrame(() => documentPane.classList.remove("is-syncing"));
         setSyncState("刚刚更新");
@@ -1822,6 +2110,29 @@ const CLIENT_SCRIPT = `
         setSyncState("暂时离线", "offline");
       } finally {
         syncing = false;
+      }
+    };
+
+    const submitDecisionForm = async (decisionForm, endpoint, decision, successMessage) => {
+      const buttons = [...decisionForm.querySelectorAll('button[type="submit"]')];
+      const errorBox = decisionForm.querySelector("[data-decision-error]");
+      const reason = String(new FormData(decisionForm).get("reason") || "").trim();
+      buttons.forEach((button) => { button.disabled = true; });
+      errorBox.hidden = true;
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision, reason }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "决定提交失败");
+        await refreshBoard(true);
+        showToast(successMessage);
+      } catch (error) {
+        errorBox.textContent = error.message || "决定提交失败，请检查输入";
+        errorBox.hidden = false;
+        buttons.forEach((button) => { button.disabled = false; });
       }
     };
 
@@ -1985,79 +2296,49 @@ const CLIENT_SCRIPT = `
         }
         return;
       }
-      const contractProposal = target.closest("[data-contract-decision]");
-      if (contractProposal) {
-        contractProposal.disabled = true;
-        try {
-          const decision = contractProposal.dataset.contractDecision;
-          const response = await fetch("/api/contract-proposals/" + encodeURIComponent(contractProposal.dataset.contractProposalId) + "/decision", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              decision,
-              reason: decision === "approved"
-                ? "用户在 GoalBoard 确认字段来源、验收、依赖和 Review 规则"
-                : "用户在 GoalBoard 退回 Contract 补全提案",
-            }),
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "操作失败");
-          await refreshBoard();
-          showToast(decision === "approved" ? "Contract 已确认，Goal 现在可进入执行" : "提案已退回，Draft 保持不变");
-        } catch (error) {
-          contractProposal.disabled = false;
-          showToast(error.message || "操作失败", true);
-        }
-        return;
-      }
-      const candidate = target.closest("[data-candidate-decision]");
-      if (candidate) {
-        candidate.disabled = true;
-        try {
-          const response = await fetch("/api/candidates/" + encodeURIComponent(candidate.dataset.candidateId) + "/decision", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              decision: candidate.dataset.candidateDecision,
-              reason: candidate.dataset.candidateDecision === "approved" ? "用户从 GoalBoard 批准" : "用户从 GoalBoard 拒绝",
-            }),
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "操作失败");
-          await refreshBoard();
-        } catch (error) {
-          candidate.disabled = false;
-          showToast(error.message || "操作失败", true);
-        }
-        return;
-      }
-      const rewire = target.closest("[data-rewire-decision]");
-      if (rewire) {
-        rewire.disabled = true;
-        try {
-          const decision = rewire.dataset.rewireDecision;
-          const response = await fetch("/api/rewires/" + encodeURIComponent(rewire.dataset.rewireId) + "/decision", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              decision,
-              reason: decision === "confirmed"
-                ? "用户从 GoalBoard 确认关系调整"
-                : "用户保留新 Goal，但拒绝这次关系调整",
-            }),
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "操作失败");
-          await refreshBoard();
-        } catch (error) {
-          rewire.disabled = false;
-          showToast(error.message || "操作失败", true);
-        }
-      }
     });
 
     document.addEventListener("submit", async (event) => {
       const submittedForm = event.target;
+      const contractDecisionForm = submittedForm.closest?.("[data-contract-decision-form]");
+      if (contractDecisionForm) {
+        event.preventDefault();
+        const decision = event.submitter?.value;
+        await submitDecisionForm(
+          contractDecisionForm,
+          "/api/contract-proposals/" + encodeURIComponent(contractDecisionForm.dataset.contractProposalId) + "/decision",
+          decision,
+          decision === "approved" ? "Contract 已确认，Goal 现在可进入执行" : "提案已退回，Draft 保持不变",
+        );
+        return;
+      }
+
+      const candidateDecisionForm = submittedForm.closest?.("[data-candidate-decision-form]");
+      if (candidateDecisionForm) {
+        event.preventDefault();
+        const decision = event.submitter?.value;
+        await submitDecisionForm(
+          candidateDecisionForm,
+          "/api/candidates/" + encodeURIComponent(candidateDecisionForm.dataset.candidateId) + "/decision",
+          decision,
+          decision === "approved" ? "Candidate 已纳入 Goal Tree，等待单独确认 Rewire" : "Candidate 已退回并保留你的意见",
+        );
+        return;
+      }
+
+      const rewireDecisionForm = submittedForm.closest?.("[data-rewire-decision-form]");
+      if (rewireDecisionForm) {
+        event.preventDefault();
+        const decision = event.submitter?.value;
+        await submitDecisionForm(
+          rewireDecisionForm,
+          "/api/rewires/" + encodeURIComponent(rewireDecisionForm.dataset.rewireId) + "/decision",
+          decision,
+          decision === "confirmed" ? "关系调整已确认" : "关系调整已拒绝，已有 Goal 保持不变",
+        );
+        return;
+      }
+
       const draftForm = submittedForm.closest?.("[data-draft-form]");
       if (draftForm) {
         event.preventDefault();
@@ -2335,14 +2616,18 @@ export function renderGoalBoardWeb(
   view: GoalBoardWebView,
   requestedGoalId?: string,
   archiveView = false,
+  decisionView = false,
 ): string {
   const visibleGoals = archiveView ? view.archived_goals : view.goals;
-  const selected =
-    visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
-    (archiveView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
-    visibleGoals[0];
+  const selected = decisionView
+    ? undefined
+    : visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
+      (archiveView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
+      visibleGoals[0];
   const selectedId = selected?.goal.goal_id ?? "";
-  const title = selected
+  const title = decisionView
+    ? "等待你的决定 · GoalBoard"
+    : selected
     ? selected.goal.title + " · GoalBoard"
     : archiveView
       ? "已归档 Goal · GoalBoard"
@@ -2363,7 +2648,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <title>${escapeHtml(title)}</title>
   <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
-<body data-board-view="${archiveView ? "archive" : "current"}">
+<body data-board-view="${decisionView ? "decisions" : archiveView ? "archive" : "current"}">
   ${renderIconSprite()}
   <div class="app">
     <header class="topbar">
@@ -2372,10 +2657,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div class="top-spacer"></div>
       <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="在当前 Goal Tree 内搜索" aria-label="搜索 Goal"><kbd>⌘F</kbd></label>
       <button class="top-action" type="button" data-open-create aria-label="新建目标">${icon("plus")}<span>新建目标</span></button>
+      <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
       <a class="top-action" data-view-action href="${archiveView ? "/" : "/archive"}">${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
-    <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">Goal 正文</button></nav>
+    <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>
     <main class="workspace" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
         <header class="tree-heading"><h2>${archiveView ? "已归档" : "Goal Tree"}</h2><span data-tree-count>${visibleGoals.length}</span><div class="tree-heading-actions">${archiveView ? `<a class="icon-button" href="/" aria-label="返回 Goal Tree">${icon("tree")}</a>` : `<button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button><a class="icon-button" href="/archive" aria-label="查看已归档 Goal">${icon("archive")}</a>`}<button class="icon-button" type="button" data-focus-filter aria-label="筛选目标">${icon("filter")}</button></div></header>
@@ -2385,7 +2671,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       </aside>
       <div class="tree-resizer" role="separator" aria-label="调整 Goal Tree 宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${visibleGoals.length ? visibleGoals.map((item) => renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
+        ${decisionView ? renderDecisionCenter(view) : visibleGoals.length ? visibleGoals.map((item) => renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
       </section>
     </main>
   </div>

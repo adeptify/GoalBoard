@@ -741,18 +741,18 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
             sendJson(response, 400, { error: "decision 必须是 approved 或 rejected" });
             return;
           }
+          const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+          if (!reason) {
+            sendJson(response, 400, { error: "请填写决定理由或修改意见" });
+            return;
+          }
           const result = coordinator.decideContractProposal({
             board_id: options.boardId,
             proposal_id: decodeURIComponent(contractProposalMatch[1]),
             actor_id: "web-user",
             actor_kind: "user",
             decision,
-            reason: String(
-              body.reason ??
-                (decision === "approved"
-                  ? "用户从 GoalBoard 确认完整 Contract"
-                  : "用户从 GoalBoard 退回 Contract 补全提案"),
-            ),
+            reason,
             idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
           });
           sendJson(response, 200, result);
@@ -766,13 +766,18 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
             sendJson(response, 400, { error: "decision 必须是 approved 或 rejected" });
             return;
           }
+          const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+          if (!reason) {
+            sendJson(response, 400, { error: "请填写决定理由或修改意见" });
+            return;
+          }
           const result = coordinator.decideCandidate({
             board_id: options.boardId,
             candidate_id: decodeURIComponent(candidateMatch[1]),
             actor_id: "web-user",
             actor_kind: "user",
             decision,
-            reason: String(body.reason ?? "用户从 Web UI 做出决定"),
+            reason,
             idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
           });
           sendJson(response, 200, result);
@@ -786,18 +791,18 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
             sendJson(response, 400, { error: "decision 必须是 confirmed 或 rejected" });
             return;
           }
+          const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+          if (!reason) {
+            sendJson(response, 400, { error: "请填写决定理由或修改意见" });
+            return;
+          }
           const result = coordinator.confirmRewire({
             board_id: options.boardId,
             rewire_id: decodeURIComponent(rewireMatch[1]),
             actor_id: "web-user",
             actor_kind: "user",
             decision,
-            reason: String(
-              body.reason ??
-                (decision === "confirmed"
-                  ? "用户从 Web UI 确认 Goal Spine 线路"
-                  : "用户从 Web UI 拒绝这次关系调整"),
-            ),
+            reason,
             idempotency_key: String(body.idempotency_key ?? `web-${randomUUID()}`),
           });
           sendJson(response, 200, result);
@@ -806,9 +811,10 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
         const goalPageMatch = url.pathname.match(/^\/goals\/([^/]+)$/);
         const archivePageMatch = url.pathname.match(/^\/archive\/goals\/([^/]+)$/);
         const archiveIndex = url.pathname === "/archive";
+        const decisionIndex = url.pathname === "/decisions";
         if (
           request.method === "GET" &&
-          (url.pathname === "/" || goalPageMatch || archiveIndex || archivePageMatch)
+          (url.pathname === "/" || goalPageMatch || archiveIndex || archivePageMatch || decisionIndex)
         ) {
           let requestedGoalId: string | undefined;
           if (goalPageMatch || archivePageMatch) {
@@ -829,7 +835,7 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
             sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
             return;
           }
-          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView);
+          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView, decisionIndex);
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",

@@ -1,6 +1,6 @@
 ---
 name: GoalBoard Goal Workbench
-description: A light IDE Goal Tree paired with a continuous Goal document for Draft authoring, execution, policy, and review.
+description: A light IDE Goal Tree paired with continuous Goal documents and one user-owned Decision Center.
 colors:
   page: "#f6f7f9"
   paper: "#fff"
@@ -16,6 +16,7 @@ colors:
   green-soft: "#eaf7ef"
   amber: "#b66a00"
   amber-soft: "#fff4dc"
+  rewire-violet: "#6b4eb6"
   red: "#c63838"
   red-soft: "#fff0f0"
 typography:
@@ -24,6 +25,12 @@ typography:
     fontSize: "clamp(22px, 2.1vw, 29px)"
     fontWeight: 700
     lineHeight: 1.3
+    letterSpacing: "-0.03em"
+  decision-display:
+    fontFamily: 'Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
+    fontSize: "clamp(25px, 2.3vw, 32px)"
+    fontWeight: 700
+    lineHeight: 1.25
     letterSpacing: "-0.03em"
   headline:
     fontFamily: 'Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
@@ -87,12 +94,13 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     padding: "0"
-  contract-list:
+  decision-center:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     rounded: "0"
-    padding: "11px 0"
+    padding: "34px 38px 80px"
+    width: "min(100%, 1080px)"
   draft-contract-editor:
     backgroundColor: "#fbfcfd"
     textColor: "{colors.ink}"
@@ -137,23 +145,24 @@ components:
 
 **Creative North Star: "The Continuous Goal File"**
 
-The interface should feel like opening a precise project file, not entering a collection of detached widgets. A quiet, light toolbar establishes global context; a searchable Goal Tree keeps hierarchy and dependency scan-friendly; the selected Goal opens as one continuous paper document where intent, blockers, acceptance, Draft authoring, execution, proof, risk, policy, history, and pending user decisions can be read in order.
+The interface should feel like opening a precise project file, not entering a collection of detached widgets. A quiet, light toolbar establishes global context; a searchable Goal Tree keeps hierarchy and dependency scan-friendly; the selected Goal opens as one continuous paper document for its durable truth, while `/decisions` is the one user-owned place for pending Contract, Candidate, Rewire, Human Review, and Risk judgment.
 
-The visual character is compact, calm, and operational. Hairline borders and small radii structure dense information without turning every section into a separate object. Blue marks the current path and available action; semantic green, amber, and red always travel with text or icons so status never depends on color alone.
+The visual character is compact, calm, and operational. Hairline borders and small radii structure dense information without turning every section into a separate object. Blue marks the current path and available action; semantic green, amber, violet, and red always travel with text or icons so status never depends on color alone.
 
 **Key Characteristics:**
 
 - Light 58px toolbar over a two-pane desktop workspace.
 - Searchable, resizable IDE-style Goal Tree with Goal names primary and IDs secondary.
 - Continuous white document surface with strong reading order and minimal ornament.
-- Draft-only Contract authoring, structured acceptance, initial Risk / Impact capture, Policy, and Human Review stay in the same reading flow.
+- Draft-only Contract authoring, structured acceptance, initial Risk / Impact capture, and Policy remain in the Goal document; Human Review belongs to the Decision Center.
+- One Decision Center groups every pending user-owned judgment by its Goal instead of repeating full decision forms in Goal documents.
 - Compact controls, hairline separators, and restrained corner radii.
 - Lucide line icons paired with explicit labels for actions and statuses.
 - Stateful live updates that preserve the reader's place instead of resetting the interface.
 
 ## Colors
 
-The palette uses cool near-whites and graphite text as the working material, with one decisive blue and semantic green, amber, and red reserved for operational meaning.
+The palette uses cool near-whites and graphite text as the working material, with one decisive blue and small semantic green, amber, violet, and red accents reserved for operational meaning.
 
 ### Primary
 
@@ -166,6 +175,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 ### Tertiary
 
+- **Rewire Violet:** Relationship-change records use `#6b4eb6` only beside the explicit `Rewire` label, separating structural decisions from primary blue actions and amber Risk.
 - **Blocker Red:** Blocked, offline, destructive, or failed states; the soft wash gives critical messages a readable field.
 
 ### Neutral
@@ -180,7 +190,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 ### Named Rules
 
-**The Blue Selection Rule.** Use blue for the current path and available action; use green for completion, amber for review or warning, red for blocked or failed states, and neutral gray for waiting.
+**The Blue Selection Rule.** Use blue for the current path and available action; use green for completion, amber for review or Risk, violet for Rewire, red for blocked or failed states, and neutral gray for waiting.
 
 **The Status Pairing Rule.** Every operational status combines color with readable text and, where present, a Lucide icon; color is reinforcement, never the only carrier.
 
@@ -194,6 +204,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 ### Hierarchy
 
 - **Display** (700, responsive 22px–29px, 1.3): Selected Goal title at the top of the document.
+- **Decision Display** (700, responsive 25px–32px, 1.25): The `等待你的决定` heading at the top of the Decision Center.
 - **Headline** (700, 17px, 1.35): Major document section headings.
 - **Title** (700, 19px, 1.4): Dialog and high-level workbench titles.
 - **Body** (400, 14px, 1.55): Narrative, contract values, history, and execution details.
@@ -208,13 +219,17 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 The desktop workspace starts beneath a 58px toolbar and divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line.
 
-The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; a pending user-decision inbox may appear immediately after business logic, and the editor is omitted unless the selected Goal is still a Draft. When the usable document width falls to 660px, Draft fields and acceptance criteria, initial Risk / Impact forms, Policy, and Human Review labels stack above their controls. Footers become vertical and Policy summaries allow their saved-state text to wrap. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
+The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; the editor is omitted unless the Goal is still a Draft. When that Goal has pending user-owned work, a short blue-edged notice appears between business logic and blockers with a count and deep link to its `/decisions` group; the full forms do not appear in the Goal document. When the usable document width falls to 660px, Draft fields and acceptance criteria, initial Risk / Impact forms, Policy, and Human Review labels stack above their controls. Footers become vertical and Policy summaries allow their saved-state text to wrap. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
 
-At 1180px and below, the Tree fallback becomes 280px while a saved width remains respected, four-part execution content reduces to two columns, and relationship and safety content use two-column internal layouts. Contract content stays a continuous row list with a 138px label column and flexible content. At 900px and below, source context, global search, and secondary view actions leave the toolbar so the brand and Create action remain usable. At 760px and below, the toolbar becomes 52px, the separator disappears, a 42px Tree / Goal正文 switch appears, and only the selected view is shown. The document uses 18px side gutters, 20px top space, and single-column internal layouts; Contract labels stack above their content, form controls become 16px, and the create dialog fills the viewport.
+The Decision Center occupies the same 1080px continuous-paper work area with 38px side gutters. Its header combines the total count with a five-type summary, then groups records by owner Goal. Multi-Goal or ambiguously owned Risks appear once under `Board 级事项` while listing every associated Goal. Within each group, Rewire precedes a linked Contract Proposal so prerequisites can be resolved before approval; Candidate, Human Review, and Risk follow in the same vertical stack.
 
-**The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface ordered from intent through execution, evidence, risk, history, and unresolved decisions.
+At 1360px and below, the toolbar tightens brand/source padding, truncates the source label, reduces search width, and compacts action padding. At 1180px and below, the Tree fallback becomes 280px while a saved width remains respected, four-part execution content reduces to two columns, and relationship and safety content use two-column internal layouts. Contract content stays a continuous row list with a 138px label column and flexible content. At 900px and below, source context, global search, and secondary view actions leave the toolbar, but Create Goal and the counted Decision Center entry remain visible. At 760px and below, the toolbar becomes 52px, the Decision Center entry keeps its Lucide user icon while its label collapses, the separator disappears, and a 42px Tree / Goal正文-or-决定中心 switch exposes one pane at a time. Goal documents use 18px side gutters; the Decision Center uses 24px side gutters and stacks its header, Candidate context, reason fields, Contract diffs, and relationship evidence into one column. Form controls become 16px, and the create dialog fills the viewport.
 
-**The Stable Workspace Rule.** A cursor-driven refresh updates only changed Tree and document regions, preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If a Draft Contract, initial Risk, initial Impact, Policy, or Human Review form owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh.
+**The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface ordered from intent through execution, evidence, risk, and history, while unresolved user authority remains in the Decision Center.
+
+**The Stable Workspace Rule.** A cursor-driven refresh updates only changed Tree and document regions, including the Decision Center and its toolbar count, while preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If any `data-live-form` owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh.
+
+**The Single Decision Door Rule.** `/decisions` is the only place where users approve, reject, return, or review pending work. A Goal document may show its own short count-and-link notice, but it never duplicates the full Contract Proposal, Candidate, Rewire, Human Review, or Risk decision context.
 
 **The Draft Authority Rule.** Only a Goal whose `definition_state` is `draft` exposes the inline Contract editor. An accepted Contract remains readable but cannot be edited in place; changing it proceeds through a new Goal and Rewire decision so accepted truth and its history are not silently rewritten.
 
@@ -229,7 +244,7 @@ The system is flat by default. Page, Tree, and paper are separated primarily by 
 - **Selected Tree Edge** (`inset 0 0 0 1px rgba(14, 94, 199, .22)`): Definition inside the blue selected row without lifting it.
 - **Active Mobile Tab** (`0 1px 3px rgba(22, 31, 43, .1)`): Small separation for the chosen Tree or Goal正文 tab.
 
-The Goal document enters over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
+The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
 
 **The Modal Elevation Rule.** Keep normal work surfaces flat; reserve sustained floating depth and backdrop treatment for the create dialog.
 
@@ -242,7 +257,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 ### Global Toolbar
 
 - **Structure:** Fixed 58px desktop band with nearly opaque cool-white fill, bottom boundary, and a very light structural shadow.
-- **Behavior:** Holds brand, source context, sync state, global search, view action, and Create Goal; lower-priority controls disappear on narrow screens.
+- **Behavior:** Holds brand, source context, sync state, global search, Create Goal, counted Decision Center entry, archive, and Tree actions. The Decision Center link receives `aria-current` on `/decisions`, remains visible when lower-priority controls disappear at 900px, and becomes a labeled user icon for assistive technology while its visible text hides below 760px.
 - **Icons:** Uses the shipped Lucide sprite and keeps icon strokes rounded and legible at compact sizes.
 
 ### Search Fields
@@ -280,9 +295,19 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Responsive:** Four columns on wide screens, two below 1180px, and one below 760px.
 - **State:** Each phase carries its own label and semantic condition without becoming a detached tile.
 
+### Decision Center
+
+- **Authority and entry:** `/decisions` is the only full user-decision surface. The toolbar exposes its live pending count; Goal documents show only a Goal-specific count, explanation, and deep link to that Goal group.
+- **Header and grouping:** A 25px–32px heading, large tabular total, and one hairline summary report Contract, Candidate, Rewire, Human Review, and open/triggered Risk counts. Records are grouped under the owning Goal name and ID; archived owners link to archived documents.
+- **Record order:** Each Goal group presents Rewire first, then Contract Proposal, Candidate, Human Review, and Risk. This preserves dependency prerequisites before Contract approval without turning the surface into columns or a dashboard grid.
+- **Candidate context:** A Candidate includes its title, Outcome, blocking mode, Why, business logic, why it falls outside the source Goal, in/out scope, structured acceptance, proposed impacts, proposed risks, and current project Review Policy before the user decides.
+- **Decision forms:** Contract Proposal, Candidate, and Rewire all require `决定理由或修改意见`. Both actions disable during submission; failures render inline through `role="alert"`, and success force-refreshes the Decision Center plus its toolbar count before showing a toast.
+- **Risk ownership:** Open and triggered Risks participate in the type summary. A Risk associated with exactly one Goal belongs to that group; a Risk associated with zero or multiple Goals renders once under Board-level ownership and lists every associated Goal, avoiding duplicate decisions. The Center links a uniquely owned Risk back to its Goal for full treatment and lifecycle maintenance.
+- **Responsive:** The right work area keeps its continuous-paper grammar. Below 760px the header, Candidate context, reason row, Contract diff, and relationship evidence stack; the mobile tab names the right pane `决定中心`.
+
 ### Human Review
 
-- **Entry condition:** Appears only for pending `human_approver` obligations and explicitly states that the user entry point owns this decision.
+- **Entry condition:** Appears only for pending `human_approver` obligations, inside the owning Goal group in the Decision Center, and explicitly states that the user entry point owns this decision.
 - **Form:** A 170px label column leads the verdict, existing Evidence choices, optional external references, and required reasoning. Verdict options are written in Chinese; evidence locators wrap instead of truncating.
 - **Submit / Error:** The primary button disables during the request. Failure appears inline as a red-on-soft-red `role="alert"` and re-enables submission; success forces a refresh and confirms with a toast.
 - **Narrow document:** At 660px of document width, labels stack, footer metadata wraps above the action, and the button remains right-aligned.
@@ -294,7 +319,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 
 ### Draft Contract Editor
 
-- **Entry and authority:** Appears immediately after the Draft's business logic, blockers, and acceptance checklist, with pending user decisions inserted after business logic when they exist. It is rendered only while `definition_state` is `draft`; accepted Contracts never expose this in-place editor.
+- **Entry and authority:** Appears immediately after the Draft's business logic, blockers, and acceptance checklist. A Goal-specific Decision Center notice may appear after business logic, but full pending decision forms never interrupt the document. The editor is rendered only while `definition_state` is `draft`; accepted Contracts never expose this in-place editor.
 - **Contract fields:** One continuous form edits Goal name, priority, Outcome, Why, business logic, in-scope and out-of-scope items, constraints, required inputs, and promised outputs. List fields use one item per line instead of nested chips or cards.
 - **Structured acceptance:** Each criterion keeps its own statement, decision method (`automated_check`, `measurement`, `inspection`, or `human_decision`), explicit pass condition, optional target, required Evidence types, and optional criterion ID. Criteria can be added or removed without collapsing them into one prose textarea.
 - **Decomposition:** A bordered two-column radio group presents all four shipped states with plain-language explanations: `abstract` / 仍需拆分, `frontier_open` / Frontier 开放, `closed_leaf` / 最小可执行叶子, and `closed_compound` / 拆分完成的复合 Goal.
@@ -304,15 +329,16 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 
 ### Draft Contract Proposals
 
-- **Structure:** The selected Draft shows its missing fields first, then one continuous current-to-proposed document. Each row keeps the business field, current value, proposed value, source type, confidence, rationale, and references readable without exposing protocol JSON.
-- **Authority:** The header says that approval updates the same Goal rather than creating another one. Repository and document facts remain visibly proposed; only the user-facing actions can reject the Proposal or confirm it as executable.
-- **Prerequisites:** Pending Dependency Rewires render before their linked Contract Proposal. While any linked Rewire still awaits a user decision, the approval action is disabled, says `先处理依赖调整`, and explains that resolving the dependency decision restores Contract approval; rejecting the Contract remains available.
+- **Structure:** The Decision Center shows one continuous current-to-proposed document. Each row keeps the business field, current value, proposed value, source type, confidence, rationale, and references readable without exposing protocol JSON.
+- **Authority:** The header says that approval updates the same Goal rather than creating another one. Repository and document facts remain visibly proposed; the user must write a reason or modification request before rejecting the Proposal or confirming it as executable.
+- **Prerequisites:** Pending Dependency Rewires render before their linked Contract Proposal in the same Goal group. While any linked Rewire still awaits a user decision, the approval action is disabled, says `先处理依赖调整`, and explains that resolving the dependency decision restores Contract approval; rejecting the Contract remains available.
 - **Responsive:** Wide layouts use label, value, and source columns. Below 760px they stack in that order, with source evidence separated by a dashed hairline rather than another card.
 
 ### Dependency Proposals
 
 - **Structure:** A continuous bordered list, not a dashboard card grid. Each proposal leads with Goal names, keeps IDs secondary, shows the dependency direction between them, then presents reason, direction rationale, rejection impact, basis, confidence, and evidence as readable rows.
-- **State:** Add/deactivate and pending/applied/rejected labels always use words as well as semantic color. Pending proposals live in the user-decision section; resolved proposals remain in relation history so later revalidation can reuse their evidence.
+- **State:** Add/deactivate and pending/applied/rejected labels always use words as well as semantic color. Pending proposals live only in the Decision Center; resolved proposals remain in relation history so later revalidation can reuse their evidence.
+- **Decision:** Confirmation or rejection requires a written reason or modification request. Rewire uses its restrained violet label while primary confirm actions remain blue.
 - **Interaction:** Goal endpoints navigate to their document. HTTP(S) evidence opens externally; repository or test references copy directly. On mobile the rationale becomes one column and the direction remains readable without horizontal overflow.
 
 ### Policy Workbench
@@ -333,7 +359,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 ### Mobile View Switch
 
 - **Structure:** A 42px two-option switch immediately below the 52px mobile toolbar.
-- **Behavior:** Tree and Goal正文 are mutually exclusive views with accurate selected semantics; switching preserves local reading state.
+- **Behavior:** Tree and Goal正文 are mutually exclusive views on Goal routes; on `/decisions`, the second tab is labeled `决定中心`. Switching preserves local reading state.
 
 ### Create Goal Dialog
 
@@ -349,11 +375,15 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Do** pair semantic status colors with explicit words and Lucide icons.
 - **Do** open HTTP(S) references as external links and make other references directly copyable.
 - **Do** preserve the evidence and user decision behind dependency changes, including why the direction is A → B rather than B → A.
+- **Do** route every full pending Contract Proposal, Candidate, Rewire, Human Review, and Risk context through `/decisions`, grouped by owner Goal.
+- **Do** require a written reason or modification request for Contract Proposal, Candidate, and Rewire actions before submitting.
+- **Do** show full Candidate context—including source separation, scope, acceptance, impacts, risks, and project Review Policy—before asking for a decision.
+- **Do** count a multi-Goal Risk once under Board-level ownership while preserving links to every associated Goal.
 - **Do** show Draft gaps and field provenance before asking the user to confirm a Contract Proposal.
 - **Do** keep the Draft-only editor after business logic, blockers, and the acceptance checklist, and keep accepted Contracts read-only in place.
 - **Do** preserve each acceptance criterion's decision method, pass condition, target, and Evidence requirements as structured fields.
 - **Do** use the four shipped decomposition choices and the initial Risk / Impact forms to make execution boundaries explicit before acceptance.
-- **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / Goal正文 switch.
+- **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / route-specific Goal正文-or-决定中心 switch.
 - **Do** let the 660px document-container rule stack Draft, Risk, Impact, Policy, and Human Review forms even when a wide viewport contains a narrow resized document pane.
 - **Do** keep the final effective Policy above its project-default and Goal-specific sources, and require a reason for every edit.
 - **Do** defer background refresh while any focused live form is being edited, then force-refresh after a successful submission.
@@ -367,7 +397,9 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Don't** add heavy shadows or large radii to ordinary work surfaces; depth is exceptional and borders do most of the structural work.
 - **Don't** replace the shipped Lucide line language with mixed icon families, emoji, or unlabeled glyphs.
 - **Don't** reset the reader to the top or discard open branches when live data changes.
-- **Don't** show both Tree and Goal正文 simultaneously below 760px.
+- **Don't** duplicate full decision forms inside Goal documents; keep only the short Goal-specific notice and link there.
+- **Don't** hide the Decision Center entry with secondary toolbar actions at 900px or remove its accessible label when it becomes icon-only below 760px.
+- **Don't** show both Tree and the Goal正文-or-决定中心 work area simultaneously below 760px.
 - **Don't** turn Goal Contract into a matrix of detached boxes; keep its 138px label and flexible content rows continuous.
 - **Don't** present Contract Proposal fields as raw JSON or let a Runtime-facing control imply that it can approve its own proposal.
 - **Don't** expose the Draft editor for an accepted Contract or silently rewrite accepted truth without the new-Goal and Rewire path.

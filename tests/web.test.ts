@@ -168,6 +168,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal(core.input_bindings[0]?.source_ref, "https://example.com/goalboard-contract");
   assert.ok(core.events.some((item) => item.object_id === "RISK-WEB-OVERLOAD"));
   const html = renderGoalBoardWeb(view);
+  const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
   assert.ok(html.startsWith("<!--\nTHESIS:"));
   assert.match(html, /Runtime 工作闭环/);
   assert.match(html, /为什么做/);
@@ -243,17 +244,28 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /tree-copy"><strong>交付 GoalBoard V1<\/strong><small>V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-section="execution"/);
-  assert.match(html, /依赖调整提案/);
-  assert.match(html, /为什么是这个方向/);
-  assert.match(html, /CORE 消费 INTERFACES 的调用结果/);
-  assert.match(html, /可信度 88%/);
-  assert.match(html, /href="https:\/\/example.com\/contracts\/interfaces"/);
-  assert.match(html, /data-copy-value="tests\/mcp.test.ts"/);
-  assert.match(html, /\.decision-list > article \{/);
-  assert.doesNotMatch(html, /\.decision-list article \{/);
+  assert.match(html, /href="\/decisions#decision-goal-CORE">前往处理<\/a>/);
+  assert.doesNotMatch(html, /<form class="decision-record rewire-decision"/);
+  assert.match(decisionHtml, /data-board-view="decisions"/);
+  assert.match(decisionHtml, /href="\/goals\/CORE"><strong>跑通 SQLite 执行闭环<\/strong>/);
+  assert.match(decisionHtml, /decision-kind decision-kind--risk/);
+  assert.match(decisionHtml, /Risk <strong>1<\/strong>/);
+  assert.match(decisionHtml, /字段过多导致信息过载/);
+  assert.match(decisionHtml, /risk-goal-links/);
+  assert.match(decisionHtml, /打开 Risk/);
+  assert.match(decisionHtml, /依赖调整提案/);
+  assert.match(decisionHtml, /所属 Goal/);
+  assert.match(decisionHtml, /为什么是这个方向/);
+  assert.match(decisionHtml, /CORE 消费 INTERFACES 的调用结果/);
+  assert.match(decisionHtml, /可信度 88%/);
+  assert.match(decisionHtml, /href="https:\/\/example.com\/contracts\/interfaces"/);
+  assert.match(decisionHtml, /data-copy-value="tests\/mcp.test.ts"/);
+  assert.match(decisionHtml, /<form class="decision-record rewire-decision"/);
+  assert.match(decisionHtml, /name="reason"[\s\S]*决定理由或修改意见|决定理由或修改意见[\s\S]*name="reason"/);
+  assert.match(html, /\.decision-record \{ min-width: 0;/);
   assert.match(html, /\.dependency-proposal-list \{ width: 100%; min-width: 0;/);
   assert.match(html, /\.dependency-evidence \.inline-ref span \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
-  assert.match(html, /\.decision-list > article \{ align-items: stretch; flex-direction: column; \}/);
+  assert.match(html, /\.candidate-contract \{ grid-template-columns: 1fr; \}/);
   assert.match(html, /\.create-dialog \{ width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; \}/);
   assert.doesNotMatch(html, /track-map|class="signal"|signal-box|railway/i);
   store.close();
@@ -331,8 +343,37 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     const candidate = board.snapshot.candidates.find((item) => item.state === "pending");
     assert.ok(candidate);
 
+    const decisionCenter = await (await fetch(`${origin}/decisions`)).text();
+    assert.match(decisionCenter, /<title>等待你的决定 · GoalBoard<\/title>/);
+    assert.match(decisionCenter, /data-decision-center/);
+    assert.match(decisionCenter, /所属 Goal/);
+    assert.match(decisionCenter, /<form class="decision-record candidate-decision"/);
+    assert.match(decisionCenter, /为什么做/);
+    assert.match(decisionCenter, /业务逻辑/);
+    assert.match(decisionCenter, /为什么不能留在当前 Goal/);
+    assert.match(decisionCenter, /包含范围/);
+    assert.match(decisionCenter, /明确不做/);
+    assert.match(decisionCenter, /验收条件/);
+    assert.match(decisionCenter, /影响面/);
+    assert.match(decisionCenter, /风险/);
+    assert.match(decisionCenter, /Review Policy/);
+    assert.match(decisionCenter, /决定理由或修改意见/);
+    const unrelatedGoalPage = await (await fetch(`${origin}/goals/WEB`)).text();
+    assert.doesNotMatch(unrelatedGoalPage, /<form class="decision-record candidate-decision"/);
+
     const unsafeReferenceResponse = await fetch(`${origin}/api/reference?value=/etc/passwd`);
     assert.equal(unsafeReferenceResponse.status, 404);
+
+    const missingCandidateReason = await fetch(
+      `${origin}/api/candidates/${encodeURIComponent(candidate.candidate_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approved" }),
+      },
+    );
+    assert.equal(missingCandidateReason.status, 400);
+    assert.match(await missingCandidateReason.text(), /请填写决定理由或修改意见/);
 
     const decisionResponse = await fetch(
       `${origin}/api/candidates/${encodeURIComponent(candidate.candidate_id)}/decision`,
@@ -347,8 +388,11 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
       },
     );
     assert.equal(decisionResponse.status, 200);
-    const result = (await decisionResponse.json()) as { candidate: { state: string } };
+    const result = (await decisionResponse.json()) as {
+      candidate: { state: string; decision: { reason: string } };
+    };
     assert.equal(result.candidate.state, "approved");
+    assert.equal(result.candidate.decision.reason, "自动化测试接受示例 Candidate");
 
     const afterCandidateResponse = await fetch(`${origin}/api/board`);
     const afterCandidate = (await afterCandidateResponse.json()) as {
@@ -359,17 +403,31 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     };
     const rewire = afterCandidate.snapshot.rewires.find((item) => item.state === "pending");
     assert.ok(rewire);
-    const pendingDecisionPage = await (await fetch(`${origin}/goals/CORE`)).text();
+    const pendingDecisionPage = await (await fetch(`${origin}/decisions`)).text();
     assert.match(pendingDecisionPage, /拒绝关系调整/);
-    assert.match(pendingDecisionPage, /data-rewire-decision="confirmed"/);
-    assert.match(pendingDecisionPage, /data-rewire-decision="rejected"/);
-    const decisionSection = pendingDecisionPage.match(
-      /<section class="document-section decision-section"[\s\S]*?<\/section>/,
+    assert.match(pendingDecisionPage, /<form class="decision-record rewire-decision"/);
+    assert.match(pendingDecisionPage, /name="decision" value="confirmed"/);
+    assert.match(pendingDecisionPage, /name="decision" value="rejected"/);
+    assert.match(pendingDecisionPage, /正在执行的 Run 会保持原目标/);
+    const rewireForm = pendingDecisionPage.match(
+      /<form class="decision-record rewire-decision"[\s\S]*?<\/form>/,
     )?.[0];
-    assert.ok(decisionSection);
-    assert.match(decisionSection, /正在执行的 Run 会保持原目标/);
-    assert.doesNotMatch(decisionSection, /active_runs_protected/);
+    assert.ok(rewireForm);
+    assert.doesNotMatch(rewireForm, /active_runs_protected/);
+    const corePageWithDecision = await (await fetch(`${origin}/goals/CORE`)).text();
+    assert.match(corePageWithDecision, /前往处理/);
+    assert.doesNotMatch(corePageWithDecision, /<form class="decision-record rewire-decision"/);
     const relationCountBefore = afterCandidate.snapshot.relations.length;
+    const missingRewireReason = await fetch(
+      `${origin}/api/rewires/${encodeURIComponent(rewire.rewire_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "rejected" }),
+      },
+    );
+    assert.equal(missingRewireReason.status, 400);
+    assert.match(await missingRewireReason.text(), /请填写决定理由或修改意见/);
     const rewireResponse = await fetch(
       `${origin}/api/rewires/${encodeURIComponent(rewire.rewire_id)}/decision`,
       {
@@ -566,19 +624,24 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     const origin = `http://127.0.0.1:${address.port}`;
     const page = await (await fetch(`${origin}/goals/FIRST-DRAFT`)).text();
     assert.match(page, /这还是一条待澄清的 Draft/);
-    assert.match(page, /Contract 补全提案/);
-    assert.match(page, /确认后会更新同一个 Goal，不会创建新 Goal/);
-    assert.match(page, /用户回答 · 可信度 95% · 待你确认/);
-    assert.match(page, /文档事实 · 可信度 82% · 待你确认/);
-    assert.match(page, /data-contract-decision="approved"/);
-    assert.match(page, /请先处理上方依赖调整；完成后才可确认 Contract/);
+    assert.match(page, /2 项等待你的决定/);
+    assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT">前往处理<\/a>/);
+    assert.doesNotMatch(page, /<form class="decision-record contract-proposal"/);
+    const decisionPage = await (await fetch(`${origin}/decisions`)).text();
+    assert.match(decisionPage, /Contract 补全提案/);
+    assert.match(decisionPage, /确认后会更新同一个 Goal，不会创建新 Goal/);
+    assert.match(decisionPage, /用户回答 · 可信度 95% · 待你确认/);
+    assert.match(decisionPage, /文档事实 · 可信度 82% · 待你确认/);
+    assert.match(decisionPage, /<form class="decision-record contract-proposal"/);
+    assert.match(decisionPage, /请先处理上方依赖调整；完成后才可确认 Contract/);
+    assert.match(decisionPage, /决定理由或修改意见/);
     assert.match(
-      page,
-      /data-contract-decision="approved"[^>]*disabled[^>]*>先处理依赖调整<\/button>/,
+      decisionPage,
+      /name="decision" value="approved"[^>]*disabled[^>]*>先处理依赖调整<\/button>/,
     );
     assert.ok(
-      page.indexOf(`data-rewire-id="${dependencyRewire.rewire_id}"`) <
-        page.indexOf(`data-contract-proposal-id="${proposal.proposal_id}"`),
+      decisionPage.indexOf(`data-rewire-id="${dependencyRewire.rewire_id}"`) <
+        decisionPage.indexOf(`data-contract-proposal-id="${proposal.proposal_id}"`),
     );
 
     const rewireDecision = await fetch(
@@ -594,13 +657,24 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
       },
     );
     assert.equal(rewireDecision.status, 200, await rewireDecision.text());
-    const resolvedPage = await (await fetch(`${origin}/goals/FIRST-DRAFT`)).text();
+    const resolvedPage = await (await fetch(`${origin}/decisions`)).text();
     assert.match(resolvedPage, /依赖决定已经完成，可以确认 Contract/);
     assert.match(resolvedPage, /确认并设为可执行/);
     assert.doesNotMatch(
       resolvedPage,
-      /data-contract-decision="approved"[^>]*disabled/,
+      /name="decision" value="approved"[^>]*disabled/,
     );
+
+    const missingContractReason = await fetch(
+      `${origin}/api/contract-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approved" }),
+      },
+    );
+    assert.equal(missingContractReason.status, 400);
+    assert.match(await missingContractReason.text(), /请填写决定理由或修改意见/);
 
     const decision = await fetch(
       `${origin}/api/contract-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
@@ -622,7 +696,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     assert.equal(accepted?.definition_state, "accepted");
     assert.equal(accepted?.outcome, "新用户可以确认 Contract 并看到同一个 Goal 进入可执行状态");
     const acceptedPage = await (await fetch(`${origin}/goals/FIRST-DRAFT`)).text();
-    assert.doesNotMatch(acceptedPage, /data-contract-decision="approved"/);
+    assert.doesNotMatch(acceptedPage, /<form class="decision-record contract-proposal"/);
     assert.match(acceptedPage, /让新用户看懂第一次 Goal 领取/);
 
     const minimalCreate = await fetch(`${origin}/api/goals`, {
@@ -967,13 +1041,22 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /项目默认规则/);
     assert.match(page, /当前 Goal 额外规则/);
     assert.match(page, /value="browser"/);
-    assert.match(page, /等待你的最终确认/);
-    assert.match(page, /data-human-review-form/);
-    assert.match(page, /<option value="pass">通过<\/option>/);
-    assert.match(page, /<option value="needs_changes">需要修改<\/option>/);
-    assert.match(page, /<option value="fail">不通过<\/option>/);
-    assert.match(page, /<option value="inconclusive">证据不足<\/option>/);
+    assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB">前往处理<\/a>/);
+    assert.doesNotMatch(page, /<form class="human-review-form"/);
     assert.match(page, new RegExp(evidence.evidence_id));
+    assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);
+    assert.match(page, /\.top-action\[data-view-action\]:not\(\[data-decisions-link\]\) \{ display: none; \}/);
+
+    const reviewDecisionPage = await (await fetch(`${origin}/decisions`)).text();
+    assert.match(reviewDecisionPage, /等待你的决定/);
+    assert.match(reviewDecisionPage, /维护 Runtime 与 Review Policy/);
+    assert.match(reviewDecisionPage, /等待你的最终确认/);
+    assert.match(reviewDecisionPage, /<form class="human-review-form"/);
+    assert.match(reviewDecisionPage, /<option value="pass">通过<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="needs_changes">需要修改<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="fail">不通过<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="inconclusive">证据不足<\/option>/);
+    assert.match(reviewDecisionPage, new RegExp(evidence.evidence_id));
 
     const missingReason = await fetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
