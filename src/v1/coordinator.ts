@@ -672,6 +672,9 @@ export class GoalBoardCoordinator {
       if (goal.definition_state !== "accepted") {
         throw new GoalBoardV1Error("goal.not_accepted", "只有已接受的 Goal 可以成为当前产品目标");
       }
+      if (goal.archived_at) {
+        throw new GoalBoardV1Error("goal.archived", "已归档 Goal 需要先恢复，才能设为当前产品目标");
+      }
       const now = this.clock().toISOString();
       this.store.db
         .prepare("UPDATE boards SET active_goal_id = ?, updated_at = ? WHERE board_id = ?")
@@ -689,6 +692,77 @@ export class GoalBoardCoordinator {
       });
       const outcome = { active_goal_id: input.goal_id, observed_event_cursor: cursor };
       this.remember(boardId, write.actor_id, "set_active_goal", write.idempotency_key, hash, outcome, now);
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  setGoalArchived(
+    boardId: string,
+    input: { goal_id: string; archived: boolean; reason: string },
+    write: ActorWrite,
+  ): {
+    goal: GoalRecord;
+    active_goal_cleared: boolean;
+    replayed: boolean;
+    observed_event_cursor: number;
+  } {
+    const hash = requestHash({ board_id: boardId, ...input });
+    return this.store.immediate(() => {
+      const replay = this.replay<{
+        goal: GoalRecord;
+        active_goal_cleared: boolean;
+        observed_event_cursor: number;
+      }>(boardId, write.actor_id, "set_goal_archived", write.idempotency_key, hash);
+      if (replay) return { ...replay, replayed: true };
+      const goal = this.requireGoalOnBoard(boardId, input.goal_id);
+      if (input.archived && goal.fulfillment_state !== "satisfied") {
+        throw new GoalBoardV1Error("goal.not_satisfied", "只有已完成的 Goal 可以归档");
+      }
+      if (Boolean(goal.archived_at) === input.archived) {
+        throw new GoalBoardV1Error(
+          "goal.archive_state_unchanged",
+          input.archived ? "Goal 已经归档" : "Goal 当前未归档",
+        );
+      }
+      const now = this.clock().toISOString();
+      this.store.db
+        .prepare("UPDATE goals SET archived_at = ?, archived_by = ?, updated_at = ? WHERE goal_id = ?")
+        .run(input.archived ? now : null, input.archived ? write.actor_id : null, now, input.goal_id);
+      const board = this.store.db
+        .prepare("SELECT active_goal_id FROM boards WHERE board_id = ?")
+        .get(boardId) as Row;
+      const activeGoalCleared = input.archived && asNullableText(board.active_goal_id) === input.goal_id;
+      if (activeGoalCleared) {
+        this.store.db
+          .prepare("UPDATE boards SET active_goal_id = NULL, updated_at = ? WHERE board_id = ?")
+          .run(now, boardId);
+      }
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: input.archived ? "goal.archived" : "goal.restored",
+        objectType: "goal",
+        objectId: input.goal_id,
+        reason: input.reason,
+        payload: { active_goal_cleared: activeGoalCleared },
+        at: now,
+      });
+      const updated = this.requireGoalOnBoard(boardId, input.goal_id);
+      const outcome = {
+        goal: updated,
+        active_goal_cleared: activeGoalCleared,
+        observed_event_cursor: cursor,
+      };
+      this.remember(
+        boardId,
+        write.actor_id,
+        "set_goal_archived",
+        write.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
       return { ...outcome, replayed: false };
     });
   }
@@ -3020,6 +3094,18 @@ export class GoalBoardCoordinator {
     if (!goal || goal.board_id !== input.boardId) {
       reasons.push(reason("goal.not_found", "goal", input.goalId, "找不到这个 Goal"));
       return { goal: null, reasons, policy, surfaces };
+    }
+    if (goal.archived_at) {
+      reasons.push(
+        reason(
+          "goal.archived",
+          "goal",
+          goal.goal_id,
+          "Goal 已归档，当前不接受新的 Runtime 领取",
+          { archived_at: goal.archived_at },
+          "由用户恢复后再查询 Ready",
+        ),
+      );
     }
     if (input.role === "clarifier") {
       const needsClarification =

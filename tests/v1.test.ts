@@ -165,8 +165,72 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 3")
       .get(),
   );
+  const goalColumns = reopened.db.pragma("table_info(goals)") as Array<{ name: string }>;
+  assert.ok(goalColumns.some((column) => column.name === "archived_at"));
+  assert.ok(goalColumns.some((column) => column.name === "archived_by"));
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 4")
+      .get(),
+  );
   assert.equal(reopened.snapshot("board-1").board.title, "产品目标");
   reopened.close();
+});
+
+test("only satisfied Goals can be archived and restoration preserves completion facts", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "archive-target");
+  assert.throws(
+    () =>
+      coordinator.setGoalArchived(
+        "board-1",
+        { goal_id: "archive-target", archived: true, reason: "整理已完成目标" },
+        { actor_id: "user-1", idempotency_key: "archive-unmet" },
+      ),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal.not_satisfied",
+  );
+
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("archive-target");
+  coordinator.setActiveGoal(
+    "board-1",
+    { goal_id: "archive-target", reason: "验证归档当前 Goal" },
+    { actor_id: "user-1", idempotency_key: "archive-active" },
+  );
+  setNow("2026-08-15T01:00:00.000Z");
+  const archived = coordinator.setGoalArchived(
+    "board-1",
+    { goal_id: "archive-target", archived: true, reason: "用户手动归档" },
+    { actor_id: "user-1", idempotency_key: "archive-target" },
+  );
+  assert.equal(archived.goal.archived_at, "2026-08-15T01:00:00.000Z");
+  assert.equal(archived.goal.archived_by, "user-1");
+  assert.equal(archived.goal.fulfillment_state, "satisfied");
+  assert.equal(archived.goal.acceptance_criteria.length, 1);
+  assert.equal(archived.active_goal_cleared, true);
+  assert.equal(store.snapshot("board-1").board.active_goal_id, null);
+  assert.equal(
+    coordinator.queryReady({ board_id: "board-1", actor_id: "runtime-1" }).ready.some(
+      (item) => item.goal.goal_id === "archive-target",
+    ),
+    false,
+  );
+
+  setNow("2026-08-15T02:00:00.000Z");
+  const restored = coordinator.setGoalArchived(
+    "board-1",
+    { goal_id: "archive-target", archived: false, reason: "用户恢复归档" },
+    { actor_id: "user-1", idempotency_key: "restore-target" },
+  );
+  assert.equal(restored.goal.archived_at, null);
+  assert.equal(restored.goal.archived_by, null);
+  assert.equal(restored.goal.fulfillment_state, "satisfied");
+  const archiveEvents = store.db
+    .prepare("SELECT type FROM events WHERE object_id = ? AND type IN ('goal.archived', 'goal.restored') ORDER BY seq")
+    .all("archive-target") as Array<{ type: string }>;
+  assert.deepEqual(archiveEvents.map((event) => event.type), ["goal.archived", "goal.restored"]);
+  store.close();
 });
 
 test("ready query explains dependency and Goal Mode blockers in plain language", () => {

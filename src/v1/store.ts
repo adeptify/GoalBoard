@@ -105,6 +105,8 @@ export class SqliteGoalBoardStore {
           decomposition_state TEXT NOT NULL CHECK (decomposition_state IN ('abstract', 'frontier_open', 'closed_leaf', 'closed_compound')),
           validity_state TEXT NOT NULL CHECK (validity_state IN ('valid', 'needs_revalidation', 'invalidated')),
           fulfillment_state TEXT NOT NULL CHECK (fulfillment_state IN ('unmet', 'satisfied')),
+          archived_at TEXT,
+          archived_by TEXT,
           priority INTEGER NOT NULL DEFAULT 0,
           accepted_by TEXT,
           accepted_at TEXT,
@@ -114,6 +116,7 @@ export class SqliteGoalBoardStore {
 
         CREATE INDEX goals_board_idx ON goals(board_id);
         CREATE INDEX goals_ready_idx ON goals(board_id, definition_state, decomposition_state, validity_state, fulfillment_state);
+        CREATE INDEX goals_archive_idx ON goals(board_id, archived_at);
 
         CREATE TABLE acceptance_criteria (
           criterion_id TEXT PRIMARY KEY,
@@ -385,6 +388,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (3, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (4, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -397,6 +403,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 3")
       .get();
     if (!contractProposalsApplied) this.migrateContractProposals();
+    const goalArchiveApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 4")
+      .get();
+    if (!goalArchiveApplied) this.migrateGoalArchive();
   }
 
   private migrateClarifierRoles(): void {
@@ -493,6 +503,19 @@ export class SqliteGoalBoardStore {
       `);
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (3, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateGoalArchive(): void {
+    this.immediate(() => {
+      this.db.exec(`
+        ALTER TABLE goals ADD COLUMN archived_at TEXT;
+        ALTER TABLE goals ADD COLUMN archived_by TEXT;
+        CREATE INDEX goals_archive_idx ON goals(board_id, archived_at);
+      `);
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (4, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -697,6 +720,8 @@ export class SqliteGoalBoardStore {
       decomposition_state: text(row.decomposition_state) as GoalRecord["decomposition_state"],
       validity_state: text(row.validity_state) as GoalRecord["validity_state"],
       fulfillment_state: text(row.fulfillment_state) as GoalRecord["fulfillment_state"],
+      archived_at: optionalText(row.archived_at),
+      archived_by: optionalText(row.archived_by),
       priority: number(row.priority),
       accepted_by: optionalText(row.accepted_by),
       accepted_at: optionalText(row.accepted_at),

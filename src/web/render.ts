@@ -18,7 +18,7 @@ import type {
 } from "../v1/types.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
 
-export type WebGoalStatus = "ready" | "claimed" | "blocked" | "waiting" | "satisfied";
+export type WebGoalStatus = "ready" | "claimed" | "blocked" | "waiting" | "satisfied" | "archived";
 
 export interface WebCoverageItem {
   requirement_id: string;
@@ -99,6 +99,7 @@ export interface GoalBoardWebView {
   demo: boolean;
   active_goal_id: string | null;
   goals: WebGoalView[];
+  archived_goals: WebGoalView[];
   counts: Record<WebGoalStatus, number>;
   coverage: WebCoverageItem[];
   input_bindings: WebInputBinding[];
@@ -112,6 +113,7 @@ const STATUS_LABELS: Record<WebGoalStatus, string> = {
   blocked: "已阻塞",
   waiting: "待澄清",
   satisfied: "已完成",
+  archived: "已归档",
 };
 
 const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
@@ -120,6 +122,7 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   blocked: "blocked",
   waiting: "waiting",
   satisfied: "completed",
+  archived: "archive",
 };
 
 const RELATION_LABELS: Record<string, { out: string; in: string }> = {
@@ -192,8 +195,12 @@ function sortGoals(items: WebGoalView[]): WebGoalView[] {
   );
 }
 
-function renderGoalTree(view: GoalBoardWebView, selectedGoalId: string): string {
-  const byId = new Map(view.goals.map((item) => [item.goal.goal_id, item]));
+function renderGoalTree(
+  view: GoalBoardWebView,
+  selectedGoalId: string,
+  items: WebGoalView[] = view.goals,
+): string {
+  const byId = new Map(items.map((item) => [item.goal.goal_id, item]));
   const children = new Map<string, WebGoalView[]>();
   const parent = new Map<string, string>();
   for (const relation of view.snapshot.relations) {
@@ -231,9 +238,9 @@ function renderGoalTree(view: GoalBoardWebView, selectedGoalId: string): string 
       ${hasChildren ? `<ul class="tree-children">${nodeChildren.map((child) => renderNode(child, depth + 1)).join("")}</ul>` : ""}
     </li>`;
   };
-  const roots = sortGoals(view.goals.filter((item) => !parent.has(item.goal.goal_id)));
+  const roots = sortGoals(items.filter((item) => !parent.has(item.goal.goal_id)));
   const rendered = roots.map((item) => renderNode(item, 0)).join("");
-  const leftovers = sortGoals(view.goals.filter((item) => !visited.has(item.goal.goal_id)))
+  const leftovers = sortGoals(items.filter((item) => !visited.has(item.goal.goal_id)))
     .map((item) => renderNode(item, 0))
     .join("");
   return `<ul class="goal-tree" data-tree-root>${rendered}${leftovers}</ul>`;
@@ -246,7 +253,9 @@ function relationRow(
 ): string {
   const outgoing = relation.from_goal_id === item.goal.goal_id;
   const relatedId = outgoing ? relation.to_goal_id : relation.from_goal_id;
-  const related = view.goals.find((candidate) => candidate.goal.goal_id === relatedId);
+  const related = [...view.goals, ...view.archived_goals].find(
+    (candidate) => candidate.goal.goal_id === relatedId,
+  );
   const labels = RELATION_LABELS[relation.type] ?? { out: relation.type, in: relation.type };
   return `<button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}">
     <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
@@ -667,10 +676,15 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
   const goal = item.goal;
   const owner = item.active_claim_actor ?? goal.accepted_by ?? "未指定";
   const priorityLabel = goal.priority >= 80 ? "高" : goal.priority >= 40 ? "中" : "普通";
+  const archiveAction = goal.archived_at
+    ? `<button class="document-action" type="button" data-goal-archive="false" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("refresh")}<span>恢复</span></button>`
+    : goal.fulfillment_state === "satisfied"
+      ? `<button class="document-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("archive")}<span>归档</span></button>`
+      : "";
   return `<article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div>${renderStatus(item.status)}</div>
-      <dl class="goal-meta"><div>${icon("clock")}<dt>创建于</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>更新于</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>负责人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>优先级</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div></dl>
+      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${archiveAction}</div></div>
+      <dl class="goal-meta"><div>${icon("clock")}<dt>创建于</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>更新于</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>负责人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>优先级</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>归档于</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
     </header>
     <section class="document-section">
       ${sectionHeading("book", "业务逻辑")}
@@ -783,10 +797,11 @@ const STYLES = `
   .global-search input:hover, .global-search input:focus { background: #fff; border-color: var(--line); }
   .global-search kbd { position: absolute; right: 9px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font: 12px/20px var(--font); background: #fff; }
   .top-action { height: 34px; margin-right: 8px; padding: 0 13px; border: 0; border-left: 1px solid var(--line); background: transparent; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; white-space: nowrap; }
+  a.top-action { text-decoration: none; }
   .top-action:hover { color: var(--blue); }
   .top-action svg { font-size: 17px; }
   .workspace { min-height: 0; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
-  .tree-pane { min-width: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
+  .tree-pane { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
   .tree-resizer:hover::after, .tree-resizer:focus-visible::after, .tree-resizer.is-dragging::after { width: 2px; background: var(--blue); }
@@ -799,7 +814,8 @@ const STYLES = `
   .tree-search { margin: 10px 15px; position: relative; }
   .tree-search svg { position: absolute; left: 12px; top: 10px; color: var(--faint); }
   .tree-search input { width: 100%; height: 34px; padding: 0 12px 0 35px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
-  .tree-scroll { min-height: 0; overflow: auto; padding: 0 14px 16px; }
+  .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 16px; scrollbar-width: none; -ms-overflow-style: none; }
+  .tree-scroll::-webkit-scrollbar { display: none; }
   .goal-tree, .tree-children { list-style: none; padding: 0; margin: 0; }
   .tree-item { position: relative; }
   .tree-children { margin-left: 18px; padding-left: 8px; border-left: 1px solid #d9dee5; }
@@ -822,6 +838,7 @@ const STYLES = `
   .goal-status--blocked { color: var(--red); }
   .goal-status--waiting { color: #555d68; }
   .goal-status--satisfied { color: var(--green); }
+  .goal-status--archived { color: #626b76; }
   .tree-node.is-selected .goal-status { color: #fff; }
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
   .tree-footer small { margin-left: auto; color: var(--muted); }
@@ -829,10 +846,19 @@ const STYLES = `
   .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
   .goal-header { padding: 0 0 20px; border-bottom: 1px solid var(--line-strong); }
   .goal-title-row { display: flex; align-items: flex-start; gap: 18px; }
+  .goal-title-actions { display: flex; align-items: center; gap: 8px; }
   .goal-title-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
   .goal-title-copy > small { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
   .goal-title-row h1 { margin: 0; font-size: clamp(22px, 2.1vw, 29px); line-height: 1.3; letter-spacing: -.03em; }
-  .goal-title-row > .goal-status { margin-top: 2px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; font-size: 14px; }
+  .goal-title-actions > .goal-status { padding: 7px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; font-size: 14px; }
+  .document-action { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+  .document-action:hover { color: var(--blue); border-color: color-mix(in srgb, var(--blue), var(--line) 60%); }
+  .document-action:disabled { opacity: .55; cursor: wait; }
+  .archive-empty { min-height: 100%; padding: 72px 28px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
+  .archive-empty svg { width: 30px; height: 30px; margin-bottom: 12px; color: var(--faint); }
+  .archive-empty h1 { margin: 0 0 5px; color: var(--ink); font-size: 20px; }
+  .archive-empty p { margin: 0 0 18px; }
+  .archive-empty a { color: var(--blue); text-decoration: none; }
   .goal-meta { margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 10px 24px; color: var(--muted); }
   .goal-meta div { display: flex; align-items: center; gap: 6px; }
   .goal-meta svg { font-size: 14px; }
@@ -1079,7 +1105,7 @@ const RESPONSIVE_STYLES = `
     .tree-pane { border-right: 0; }
     .goal-document { padding: 20px 18px 64px; }
     .goal-title-row { display: grid; gap: 10px; }
-    .goal-title-row > .goal-status { width: fit-content; }
+    .goal-title-actions { justify-content: space-between; }
     .goal-meta { gap: 8px 16px; }
     .runtime-grid, .relation-layout, .safety-grid { grid-template-columns: 1fr; }
     .runtime-grid > section, .relation-group, .safety-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
@@ -1123,8 +1149,10 @@ const CLIENT_SCRIPT = `
     const formError = document.querySelector("[data-create-error]");
     const toast = document.querySelector("[data-toast]");
     const syncState = document.querySelector("[data-sync-state]");
+    const archiveView = document.body.dataset.boardView === "archive";
+    const visibleGoals = (source = state) => archiveView ? source.archived_goals : source.goals;
     const storageKey = "goalboard-ui:" + state.snapshot.board.board_id;
-    let selected = document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || state.active_goal_id || state.goals[0]?.goal.goal_id || "";
+    let selected = document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (archiveView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
     let toastTimer;
     let syncing = false;
     let saveTimer;
@@ -1273,7 +1301,7 @@ const CLIENT_SCRIPT = `
     };
 
     const applySelection = (goalId, resetScroll) => {
-      const item = state.goals.find((entry) => entry.goal.goal_id === goalId);
+      const item = visibleGoals().find((entry) => entry.goal.goal_id === goalId);
       if (!item) return false;
       selected = goalId;
       document.querySelectorAll("[data-goal-view]").forEach((element) => {
@@ -1292,7 +1320,10 @@ const CLIENT_SCRIPT = `
 
     const selectGoal = (goalId, updateHistory = true) => {
       if (!applySelection(goalId, true)) return;
-      if (updateHistory) history.pushState({ goalId }, "", "/goals/" + encodeURIComponent(goalId));
+      if (updateHistory) {
+        const base = archiveView ? "/archive/goals/" : "/goals/";
+        history.pushState({ goalId }, "", base + encodeURIComponent(goalId));
+      }
       if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
       saveUiState();
     };
@@ -1327,9 +1358,19 @@ const CLIENT_SCRIPT = `
         }
         setSyncState("同步中", "syncing");
         const ui = readUiState();
-        const goalStillExists = nextState.goals.some((item) => item.goal.goal_id === selected);
-        const nextSelected = goalStillExists ? selected : nextState.active_goal_id || nextState.goals[0]?.goal.goal_id;
-        const pageResponse = await fetch("/goals/" + encodeURIComponent(nextSelected), { cache: "no-store" });
+        const nextGoals = visibleGoals(nextState);
+        const goalStillExists = nextGoals.some((item) => item.goal.goal_id === selected);
+        const nextSelected = goalStillExists
+          ? selected
+          : archiveView
+            ? nextGoals[0]?.goal.goal_id
+            : nextState.active_goal_id || nextGoals[0]?.goal.goal_id;
+        if (!nextSelected) {
+          location.assign(archiveView ? "/archive" : "/");
+          return;
+        }
+        const pageBase = archiveView ? "/archive/goals/" : "/goals/";
+        const pageResponse = await fetch(pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
         if (!pageResponse.ok) throw new Error("无法更新 Goal 页面");
         const parsed = new DOMParser().parseFromString(await pageResponse.text(), "text/html");
         const nextTree = parsed.querySelector("[data-tree-scroll]");
@@ -1371,6 +1412,22 @@ const CLIENT_SCRIPT = `
     globalSearch?.addEventListener("input", () => {
       treeSearch.value = globalSearch.value;
       filterTree(globalSearch.value);
+      queueSave();
+    });
+    treeScroll.addEventListener("keydown", (event) => {
+      if (event.target !== treeScroll) return;
+      const page = Math.max(38, treeScroll.clientHeight - 38);
+      const next = {
+        ArrowDown: treeScroll.scrollTop + 38,
+        ArrowUp: treeScroll.scrollTop - 38,
+        PageDown: treeScroll.scrollTop + page,
+        PageUp: treeScroll.scrollTop - page,
+        Home: 0,
+        End: treeScroll.scrollHeight,
+      }[event.key];
+      if (next == null) return;
+      event.preventDefault();
+      treeScroll.scrollTop = next;
       queueSave();
     });
     treeScroll.addEventListener("scroll", queueSave, { passive: true });
@@ -1454,6 +1511,29 @@ const CLIENT_SCRIPT = `
           showToast("引用已复制");
         } catch {
           showToast("无法访问剪贴板，请手动复制", true);
+        }
+        return;
+      }
+      const archiveAction = target.closest("[data-goal-archive]");
+      if (archiveAction) {
+        archiveAction.disabled = true;
+        const archived = archiveAction.dataset.goalArchive === "true";
+        const goalId = archiveAction.dataset.goalId;
+        try {
+          const response = await fetch("/api/goals/" + encodeURIComponent(goalId) + "/archive", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              archived,
+              reason: archived ? "用户在 GoalBoard 手动归档已完成 Goal" : "用户在 GoalBoard 恢复归档 Goal",
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "操作失败");
+          location.assign((archived ? "/archive/goals/" : "/goals/") + encodeURIComponent(goalId));
+        } catch (error) {
+          archiveAction.disabled = false;
+          showToast(error.message || "操作失败", true);
         }
         return;
       }
@@ -1565,7 +1645,7 @@ const CLIENT_SCRIPT = `
     });
 
     addEventListener("popstate", () => {
-      const match = location.pathname.match(/^\\/goals\\/(.+)$/);
+      const match = location.pathname.match(archiveView ? /^\\/archive\\/goals\\/(.+)$/ : /^\\/goals\\/(.+)$/);
       if (match) applySelection(decodeURIComponent(match[1]), true);
     });
     addEventListener("pagehide", saveUiState);
@@ -1594,13 +1674,22 @@ const CLIENT_SCRIPT = `
   })();
 `;
 
-export function renderGoalBoardWeb(view: GoalBoardWebView, requestedGoalId?: string): string {
+export function renderGoalBoardWeb(
+  view: GoalBoardWebView,
+  requestedGoalId?: string,
+  archiveView = false,
+): string {
+  const visibleGoals = archiveView ? view.archived_goals : view.goals;
   const selected =
-    view.goals.find((item) => item.goal.goal_id === requestedGoalId) ??
-    view.goals.find((item) => item.goal.goal_id === view.active_goal_id) ??
-    view.goals[0];
+    visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
+    (archiveView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
+    visibleGoals[0];
   const selectedId = selected?.goal.goal_id ?? "";
-  const title = selected ? selected.goal.title + " · GoalBoard" : "GoalBoard";
+  const title = selected
+    ? selected.goal.title + " · GoalBoard"
+    : archiveView
+      ? "已归档 Goal · GoalBoard"
+      : "GoalBoard";
   return `<!--
 THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
 OWN-WORLD: 使用参考图的高密度桌面工作台语言：顶部全局栏、左侧 IDE Goal Tree、右侧连续文档。
@@ -1617,7 +1706,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <title>${escapeHtml(title)}</title>
   <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
-<body>
+<body data-board-view="${archiveView ? "archive" : "current"}">
   ${renderIconSprite()}
   <div class="app">
     <header class="topbar">
@@ -1626,19 +1715,20 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div class="top-spacer"></div>
       <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="在当前 Goal Tree 内搜索" aria-label="搜索 Goal"><kbd>⌘F</kbd></label>
       <button class="top-action" type="button" data-open-create aria-label="新建目标">${icon("plus")}<span>新建目标</span></button>
+      <a class="top-action" data-view-action href="${archiveView ? "/" : "/archive"}">${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">Goal 正文</button></nav>
     <main class="workspace" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
-        <header class="tree-heading"><h2>Goal Tree</h2><span data-tree-count>${view.goals.length}</span><div class="tree-heading-actions"><button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button><button class="icon-button" type="button" data-focus-filter aria-label="筛选目标">${icon("filter")}</button></div></header>
-        <label class="tree-search">${icon("search")}<input type="search" data-tree-search placeholder="筛选 ID 或标题" aria-label="筛选 Goal Tree"></label>
-        <div class="tree-scroll" data-tree-scroll>${renderGoalTree(view, selectedId)}</div>
-        <footer class="tree-footer" data-tree-footer><span>共 ${view.goals.length} 个目标</span><small>${view.counts.claimed} 进行中 · ${view.counts.blocked} 阻塞</small></footer>
+        <header class="tree-heading"><h2>${archiveView ? "已归档" : "Goal Tree"}</h2><span data-tree-count>${visibleGoals.length}</span><div class="tree-heading-actions">${archiveView ? `<a class="icon-button" href="/" aria-label="返回 Goal Tree">${icon("tree")}</a>` : `<button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button><a class="icon-button" href="/archive" aria-label="查看已归档 Goal">${icon("archive")}</a>`}<button class="icon-button" type="button" data-focus-filter aria-label="筛选目标">${icon("filter")}</button></div></header>
+        <label class="tree-search">${icon("search")}<input type="search" data-tree-search placeholder="${archiveView ? "筛选已归档 Goal" : "筛选 ID 或标题"}" aria-label="筛选 Goal Tree"></label>
+        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="Goal Tree 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}</div>
+        <footer class="tree-footer" data-tree-footer><span>共 ${visibleGoals.length} 个${archiveView ? "归档" : ""}目标</span><small>${archiveView ? "可随时恢复" : `${view.counts.claimed} 进行中 · ${view.counts.blocked} 阻塞`}</small></footer>
       </aside>
       <div class="tree-resizer" role="separator" aria-label="调整 Goal Tree 宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${view.goals.map((item) => renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("")}
+        ${visibleGoals.length ? visibleGoals.map((item) => renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
       </section>
     </main>
   </div>

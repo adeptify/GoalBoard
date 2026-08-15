@@ -37,6 +37,14 @@ Never start or restart GoalBoard services, discover another instance, change the
 
 If Claim is denied, show the returned reasons in plain language. Do not work around dependency, risk, capability, impact, or active-Claim blockers.
 
+## Recommended Goal granularity
+
+Prefer an executable leaf Goal to describe one smallest closed business result: it can be completed inside its own scope and has acceptance that can independently say whether that result was achieved. At this level, the Goal and the implementation Task may be the same unit.
+
+When one request contains several results that can be delivered, fail, deferred, or reviewed independently, prefer a `closed_compound` parent and a family of smaller child Goals. Keep results together when separating them would not create a meaningful independent outcome. Do not split by field count, file count, technical layer, or a fixed tree depth.
+
+Use the Contract to explain the shared outcome and use child Goals to make execution, dependencies, Risk, Evidence, and Review boundaries explicit. A Runtime recommends the family through Candidate Goals and Rewire proposals; the user separately decides which canonical Goals exist and which relations become active.
+
 ## Clarifier role
 
 Choose `role=clarifier` only for a Goal whose definition, decomposition, or acceptance is incomplete.
@@ -44,7 +52,7 @@ Choose `role=clarifier` only for a Goal whose definition, decomposition, or acce
 1. Query Ready, read Contract, and Claim as `clarifier`.
 2. Start a Run with `goalboard_v1_run_start`.
 3. Clarify naturally with the user. Inspect available repository facts before asking; ask one consequential question at a time.
-4. Turn the result into one or more smallest closed-loop Goals. Every executable leaf must state its outcome, non-technical business logic, scope boundaries, inputs/outputs, and observable acceptance criteria.
+4. Turn the result into one or more smallest closed-loop Goals using the recommended granularity above. Every executable leaf must state its outcome, non-technical business logic, scope boundaries, inputs/outputs, and observable acceptance criteria.
 5. To complete the same Draft, submit `goalboard_v1_contract_propose`. Include the full proposed executable Contract, a source record for every material field, the complete Review policy, proposed impacts and risks, and any separately submitted Dependency Rewire IDs. Repository or document facts and Runtime inferences remain `proposed` until the user confirms them.
 6. Use `goalboard_v1_candidate_submit` only for a genuinely new Goal or split. If the discovery only changes dependencies between existing Goals, use `goalboard_v1_dependency_propose` instead.
 7. Stop at the user-decision boundary. Only the user can call `goalboard_v1_contract_decide`, decide a Candidate, or separately confirm/reject a Rewire. A Contract approval must wait until every referenced dependency Rewire has been decided.
@@ -77,6 +85,14 @@ Choose `role=revalidator` only for an accepted leaf Goal whose `validity_state` 
 6. After a successful decision restores `valid`, report the Run and release the Claim. A normal executor may then claim the Goal.
 
 Revalidation is a narrow trust-state transition, not permission to complete the Goal, approve a Rewire, or silently reinterpret accepted facts.
+
+## Reviewer roles
+
+Choose `role=cross_reviewer` when the resolved policy asks for an independent check of another Runtime's result. Query Ready for that role, read the Contract and submitted Evidence, Claim without weakening the independence rule, then submit a Review with cited `evidence_refs`, a clear `verdict`, and concise `reasoning`. Release the Claim when the Review is recorded. Check whether the promised result and acceptance criteria are actually supported; do not repeat the executor's report as proof.
+
+Choose `role=adversarial_reviewer` when the policy asks for an independent attempt to find counterexamples, unsafe assumptions, or boundary failures. Use the same Ready → Contract → Claim → Review → Release flow, but make the reasoning state what was challenged and what evidence supports the verdict. Do not invent work outside the Contract merely to produce a failure.
+
+Reviewer Claims do not start Runs. Respect the obligation's independence rule, never review restricted work produced by the same actor, and never submit `actor_kind=user`. A cross or adversarial Review satisfies only its own obligation; it cannot replace required human approval.
 
 ## User authority boundaries
 

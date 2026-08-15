@@ -133,8 +133,18 @@ describe("mcp server", () => {
     assert.match(skill, /use CLI as a fallback/);
     assert.match(skill, /create a canonical Goal, including an initial `draft \/ abstract` Goal/);
     assert.match(skill, /separately confirm\/reject a Rewire/);
+    assert.match(skill, /one smallest closed business result/);
+    assert.match(skill, /At this level, the Goal and the implementation Task may be the same unit/);
+    assert.match(skill, /delivered, fail, deferred, or reviewed independently/);
+    assert.match(skill, /Do not split by field count, file count, technical layer, or a fixed tree depth/);
+    assert.match(skill, /user separately decides which canonical Goals exist and which relations become active/);
     assert.match(skill, /Choose `role=revalidator`/);
     assert.match(skill, /goalboard_v1_revalidate/);
+    assert.match(skill, /Choose `role=cross_reviewer`/);
+    assert.match(skill, /Choose `role=adversarial_reviewer`/);
+    assert.match(skill, /Ready → Contract → Claim → Review → Release/);
+    assert.match(skill, /Review with cited `evidence_refs`, a clear `verdict`, and concise `reasoning`/);
+    assert.match(skill, /cannot replace required human approval/);
     assert.match(skill, /permits `actor_kind=user`, treat that host as misconfigured/);
     assert.match(protocol, /GOALBOARD_MCP_AUDIENCE=runtime/);
     assert.match(protocol, /MCP process and Web process must use the same absolute SQLite path and `board_id`/);
@@ -144,8 +154,14 @@ describe("mcp server", () => {
     assert.match(protocol, /launch a new instance/);
     assert.match(protocol, /field_source/);
     assert.match(protocol, /accept a Candidate Goal and then reject its proposed Rewire/);
+    assert.match(protocol, /business-closure judgment, not a fixed rule/);
+    assert.match(protocol, /Candidate existence and Rewire activation separately/);
     assert.match(protocol, /Only a started Run owned by the active `revalidator` Claim/);
     assert.match(protocol, /leaves the Goal in `needs_revalidation`/);
+    assert.match(protocol, /ready\(role="cross_reviewer"\)[\s\S]*review_submit\(evidence_refs, verdict, reasoning\)[\s\S]*release/);
+    assert.match(protocol, /ready\(role="adversarial_reviewer"\)[\s\S]*challenge assumptions and boundary cases[\s\S]*release/);
+    assert.match(protocol, /Reviewers do not start Runs/);
+    assert.match(protocol, /Neither role may submit `actor_kind=user` or substitute for a pending human-approval obligation/);
     assert.doesNotMatch(skill, /If they are unavailable, use the equivalent CLI/);
   });
 

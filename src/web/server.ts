@@ -113,7 +113,7 @@ export function buildGoalBoardWebView(
       .filter((claim) => claim.state === "active" && claim.expires_at > now)
       .map((claim) => [claim.goal_id, claim]),
   );
-  const goals = snapshot.goals.map((goal) => {
+  const allGoals = snapshot.goals.map((goal) => {
     const activeClaim = activeClaims.get(goal.goal_id);
     const explanation = coordinator.explainGoal({
       board_id: options.boardId,
@@ -122,7 +122,8 @@ export function buildGoalBoardWebView(
       goal_mode_attestation: true,
     });
     let status: WebGoalStatus;
-    if (goal.fulfillment_state === "satisfied") status = "satisfied";
+    if (goal.archived_at) status = "archived";
+    else if (goal.fulfillment_state === "satisfied") status = "satisfied";
     else if (activeClaim) status = "claimed";
     else if (goal.definition_state !== "accepted" || goal.decomposition_state !== "closed_leaf") status = "waiting";
     else if (explanation.ready) status = "ready";
@@ -196,22 +197,29 @@ export function buildGoalBoardWebView(
       pending_reviews: pendingReviews,
     };
   });
+  const goals = allGoals.filter((item) => !item.goal.archived_at);
+  const archivedGoals = allGoals.filter((item) => Boolean(item.goal.archived_at));
   const counts: GoalBoardWebView["counts"] = {
     ready: 0,
     claimed: 0,
     blocked: 0,
     waiting: 0,
     satisfied: 0,
+    archived: archivedGoals.length,
   };
   for (const goal of goals) counts[goal.status]++;
   const fallback = goals.find((item) => item.status === "claimed") ?? goals.find((item) => item.status === "ready") ?? goals[0];
+  const activeGoalId = goals.some((item) => item.goal.goal_id === snapshot.board.active_goal_id)
+    ? snapshot.board.active_goal_id
+    : null;
   return {
     snapshot,
     source_label: path.basename(options.databasePath),
     database_path: options.databasePath,
     demo: Boolean(options.demo),
-    active_goal_id: snapshot.board.active_goal_id ?? fallback?.goal.goal_id ?? null,
+    active_goal_id: activeGoalId ?? fallback?.goal.goal_id ?? null,
     goals,
+    archived_goals: archivedGoals,
     counts,
     coverage,
     input_bindings: inputBindings,
@@ -398,6 +406,38 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           });
           return;
         }
+        const goalArchiveMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/archive$/);
+        if (request.method === "POST" && goalArchiveMatch) {
+          const body = await readBody(request);
+          if (typeof body.archived !== "boolean") {
+            sendJson(response, 400, { error: "archived 必须是 boolean" });
+            return;
+          }
+          const goalId = decodeURIComponent(goalArchiveMatch[1]);
+          try {
+            const result = coordinator.setGoalArchived(
+              options.boardId,
+              {
+                goal_id: goalId,
+                archived: body.archived,
+                reason: String(
+                  body.reason ??
+                    (body.archived ? "用户从 GoalBoard 归档已完成 Goal" : "用户从 GoalBoard 恢复归档 Goal"),
+                ),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-archive-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         const contractProposalMatch = url.pathname.match(
           /^\/api\/contract-proposals\/([^/]+)\/decision$/,
         );
@@ -471,22 +511,32 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           return;
         }
         const goalPageMatch = url.pathname.match(/^\/goals\/([^/]+)$/);
-        if (request.method === "GET" && (url.pathname === "/" || goalPageMatch)) {
+        const archivePageMatch = url.pathname.match(/^\/archive\/goals\/([^/]+)$/);
+        const archiveIndex = url.pathname === "/archive";
+        if (
+          request.method === "GET" &&
+          (url.pathname === "/" || goalPageMatch || archiveIndex || archivePageMatch)
+        ) {
           let requestedGoalId: string | undefined;
-          if (goalPageMatch) {
+          if (goalPageMatch || archivePageMatch) {
             try {
-              requestedGoalId = decodeURIComponent(goalPageMatch[1]);
+              requestedGoalId = decodeURIComponent((goalPageMatch ?? archivePageMatch)![1]);
             } catch {
               sendJson(response, 404, { error: "Goal 页面不存在" });
               return;
             }
           }
           const view = buildGoalBoardWebView(store, coordinator, options);
-          if (requestedGoalId && !view.goals.some((item) => item.goal.goal_id === requestedGoalId)) {
+          const requestedArchived = requestedGoalId
+            ? view.archived_goals.some((item) => item.goal.goal_id === requestedGoalId)
+            : false;
+          const archiveView = archiveIndex || Boolean(archivePageMatch) || requestedArchived;
+          const collection = archiveView ? view.archived_goals : view.goals;
+          if (requestedGoalId && !collection.some((item) => item.goal.goal_id === requestedGoalId)) {
             sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
             return;
           }
-          const html = renderGoalBoardWeb(view, requestedGoalId);
+          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView);
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",

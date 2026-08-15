@@ -59,6 +59,12 @@ ready(role, capabilities, goal_mode_attestation)
 
 `ready`, `explain`, `contract`, and `claim` use top-level fields. Most later MCP write tools use `{ board_id, payload: {...} }`; the payload contains actor IDs, object IDs, state, evidence, and an `idempotency_key`.
 
+## Recommended decomposition check
+
+Before proposing an executable leaf, check whether its promised result can be completed and accepted on its own. If the request contains multiple results that could be delivered, fail, deferred, or reviewed independently, recommend a `closed_compound` parent with a child Goal family. If the pieces only make sense together as one accepted result, keep them in one leaf. This is a business-closure judgment, not a fixed rule based on fields, files, implementation layers, or tree depth.
+
+A Runtime represents a recommended split with Candidate Goals and Rewire proposals. It does not create canonical children or activate their relations. The user decides Candidate existence and Rewire activation separately.
+
 ## Clarifier sequence
 
 ```text
@@ -74,7 +80,7 @@ ready(role="clarifier")
   -> release
 ```
 
-A user may create a title-only draft/abstract Goal because clarification is still pending. The clarifier completes that same Goal through `goalboard_v1_contract_propose`; it does not submit a Candidate merely to replace the Draft. The Proposal must produce an `accepted/closed_leaf` Contract with outcome, why, non-technical business logic, scope, explicit priority, at least one measurable or inspectable acceptance criterion, full Review policy, and source records for every material field.
+A user may create a title-only draft/abstract Goal because clarification is still pending. The clarifier completes that same Goal through `goalboard_v1_contract_propose`; it does not submit a Candidate merely to replace the Draft. The Proposal must produce an executable leaf or a clearly decomposed compound Goal with outcome, why, non-technical business logic, scope, explicit priority, measurable or inspectable acceptance, full Review policy, and source records for every material field.
 
 Each `field_source` records the field name, `source_kind` (`user_answer`, `repository_fact`, `document_fact`, or `runtime_inference`), non-empty `source_refs`, confidence from 0 to 1, rationale, `status="proposed"`, and `requires_user_confirmation=true`. Repository and document observations are objective evidence, not permission to decide business meaning. Inference, priority, boundaries, acceptance, risk acceptance, and Review policy remain unconfirmed until the user decides.
 
@@ -131,6 +137,25 @@ ready(role="revalidator")
 Only a started Run owned by the active `revalidator` Claim may call `goalboard_v1_revalidate`. The operation is atomic and idempotent. It restores `validity_state=valid` only when the Goal is still an accepted `closed_leaf` with acceptance criteria, every active `depends_on` Goal is both `satisfied` and `valid`, and no linked open or triggered Risk with a blocking mode remains. Otherwise it returns readable reasons and leaves the Goal in `needs_revalidation`.
 
 An executor remains unable to claim a Goal in `needs_revalidation`. A revalidator cannot use this operation to modify an accepted Contract, activate or remove a dependency, accept a Risk, complete the Goal, or approve its own Candidate/Rewire. If verification shows that canonical facts or the graph must change, submit the corresponding Proposal and wait for the user decision.
+
+## Reviewer sequences
+
+```text
+ready(role="cross_reviewer")
+  -> contract + submitted Evidence
+  -> claim(role="cross_reviewer")
+  -> review_submit(evidence_refs, verdict, reasoning)
+  -> release
+
+ready(role="adversarial_reviewer")
+  -> contract + submitted Evidence
+  -> claim(role="adversarial_reviewer")
+  -> challenge assumptions and boundary cases
+  -> review_submit(evidence_refs, verdict, reasoning)
+  -> release
+```
+
+Reviewers do not start Runs. The Claim must satisfy the Review obligation's independence rule, and the Review must cite the evidence used for its verdict. Cross Review checks whether another Runtime's result proves the Contract; adversarial Review actively looks for supported counterexamples without expanding the Contract. Neither role may submit `actor_kind=user` or substitute for a pending human-approval obligation.
 
 ## Stable user link
 

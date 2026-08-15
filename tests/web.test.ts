@@ -222,6 +222,12 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /form\?\.addEventListener\("change", updateRelationPreviews\)/);
   assert.match(html, /sessionStorage\.setItem/);
   assert.match(html, /data-tree-scroll/);
+  assert.match(html, /data-tree-scroll tabindex="0" aria-label="Goal Tree 目标列表"/);
+  assert.match(html, /\.tree-pane \{[^}]*min-height: 0;[^}]*overflow: hidden;/);
+  assert.match(html, /\.tree-scroll \{[^}]*overflow-y: auto;[^}]*scrollbar-width: none;[^}]*-ms-overflow-style: none;/);
+  assert.match(html, /\.tree-scroll::\-webkit-scrollbar \{ display: none; \}/);
+  assert.match(html, /treeScroll\.addEventListener\("keydown"/);
+  assert.match(html, /End: treeScroll\.scrollHeight/);
   assert.match(html, /data-tree-resizer/);
   assert.match(html, /role="separator" aria-label="调整 Goal Tree 宽度"/);
   assert.match(html, /treeWidth: treePane\.getBoundingClientRect\(\)\.width/);
@@ -626,6 +632,98 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     assert.equal(minimal.goal.outcome, "");
     assert.equal(minimal.goal.why, "");
     assert.equal(minimal.goal.business_logic, "");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web archives only completed Goals and provides a reversible archive view", async () => {
+  const { databasePath } = webFixture();
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  for (const [goalId, title] of [
+    ["ARCHIVE-WEB", "可归档的已完成 Goal"],
+    ["ARCHIVE-UNMET", "尚未完成的 Goal"],
+  ]) {
+    coordinator.createGoal(
+      DEMO_BOARD_ID,
+      {
+        goal_id: goalId,
+        title,
+        outcome: "用户可以验证归档行为",
+        why: "保持当前 Tree 简洁且历史可恢复",
+        business_logic: "完成 Goal 可以归档，归档只影响日常导航并保留全部事实。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [
+          {
+            criterion_id: `${goalId}-criterion`,
+            statement: "归档行为可验证",
+            decision_method: "automated_check",
+            pass_condition: "归档视图和恢复操作可用",
+            required_evidence: ["test"],
+          },
+        ],
+      },
+      { actor_id: "test-user", idempotency_key: `create-${goalId}` },
+    );
+  }
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("ARCHIVE-WEB");
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const completedPage = await (await fetch(`${origin}/goals/ARCHIVE-WEB`)).text();
+    assert.match(completedPage, /data-goal-archive="true"/);
+    assert.match(completedPage, /href="\/archive" aria-label="查看已归档 Goal"/);
+
+    const rejected = await fetch(`${origin}/api/goals/ARCHIVE-UNMET/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true, reason: "不应允许" }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(await rejected.text(), /只有已完成的 Goal 可以归档/);
+
+    const archived = await fetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true, reason: "整理已完成 Goal" }),
+    });
+    assert.equal(archived.status, 200, await archived.text());
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      goals: Array<{ goal: { goal_id: string } }>;
+      archived_goals: Array<{ goal: { goal_id: string; fulfillment_state: string } }>;
+    };
+    assert.equal(board.goals.some((item) => item.goal.goal_id === "ARCHIVE-WEB"), false);
+    assert.equal(board.archived_goals[0]?.goal.fulfillment_state, "satisfied");
+    assert.ok(board.archived_goals.some((item) => item.goal.goal_id === "ARCHIVE-WEB"));
+
+    const currentTree = await (await fetch(`${origin}/`)).text();
+    assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
+    const archivePage = await (await fetch(`${origin}/archive/goals/ARCHIVE-WEB`)).text();
+    assert.match(archivePage, /<h2>已归档<\/h2>/);
+    assert.match(archivePage, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
+    assert.match(archivePage, /data-goal-archive="false"/);
+    assert.match(archivePage, /可归档的已完成 Goal/);
+
+    const restored = await fetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: false, reason: "恢复到当前 Tree" }),
+    });
+    assert.equal(restored.status, 200, await restored.text());
+    const restoredTree = await (await fetch(`${origin}/goals/ARCHIVE-WEB`)).text();
+    assert.match(restoredTree, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
+    assert.match(restoredTree, /data-goal-archive="true"/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

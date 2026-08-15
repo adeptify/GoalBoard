@@ -47,6 +47,8 @@ export interface GoalRecord {
   decomposition_state: DecompositionState;
   validity_state: ValidityState;
   fulfillment_state: FulfillmentState;
+  archived_at: string | null;
+  archived_by: string | null;
   priority: number;
   accepted_by: string | null;
   accepted_at: string | null;
