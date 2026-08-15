@@ -90,6 +90,9 @@ export interface ImpactBindingRecord {
   reason: string;
   created_by: string;
   created_at: string;
+  updated_at: string;
+  deactivated_at: string | null;
+  deactivation_reason: string | null;
 }
 
 export interface RiskRecord {

@@ -181,7 +181,10 @@ export class SqliteGoalBoardStore {
           state TEXT NOT NULL CHECK (state IN ('proposed', 'confirmed', 'inactive')),
           reason TEXT NOT NULL,
           created_by TEXT NOT NULL,
-          created_at TEXT NOT NULL
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deactivated_at TEXT,
+          deactivation_reason TEXT
         );
         CREATE INDEX impacts_goal_idx ON impact_bindings(board_id, goal_id, state);
         CREATE INDEX impacts_surface_idx ON impact_bindings(board_id, surface, state);
@@ -391,6 +394,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (4, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (5, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -407,6 +413,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 4")
       .get();
     if (!goalArchiveApplied) this.migrateGoalArchive();
+    const impactHistoryApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 5")
+      .get();
+    if (!impactHistoryApplied) this.migrateImpactHistory();
   }
 
   private migrateClarifierRoles(): void {
@@ -516,6 +526,20 @@ export class SqliteGoalBoardStore {
       `);
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (4, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateImpactHistory(): void {
+    this.immediate(() => {
+      this.db.exec(`
+        ALTER TABLE impact_bindings ADD COLUMN updated_at TEXT;
+        ALTER TABLE impact_bindings ADD COLUMN deactivated_at TEXT;
+        ALTER TABLE impact_bindings ADD COLUMN deactivation_reason TEXT;
+        UPDATE impact_bindings SET updated_at = created_at WHERE updated_at IS NULL;
+      `);
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (5, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -771,6 +795,9 @@ function mapImpact(row: Row): ImpactBindingRecord {
     reason: text(row.reason),
     created_by: text(row.created_by),
     created_at: text(row.created_at),
+    updated_at: text(row.updated_at) || text(row.created_at),
+    deactivated_at: optionalText(row.deactivated_at),
+    deactivation_reason: optionalText(row.deactivation_reason),
   };
 }
 

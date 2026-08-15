@@ -95,6 +95,28 @@ function webRiskFacts(
   };
 }
 
+function webImpactFacts(
+  body: Record<string, unknown>,
+  fallbackGoalId?: string,
+): Omit<Parameters<GoalBoardCoordinator["addImpact"]>[1], "binding_id"> {
+  const access = String(body.access ?? "read") as Parameters<GoalBoardCoordinator["addImpact"]>[1]["access"];
+  const state = String(body.state ?? "confirmed") as "proposed" | "confirmed";
+  if (!["read", "write", "decide", "exclusive"].includes(access)) {
+    throw new Error("Impact access 无效");
+  }
+  if (!["proposed", "confirmed"].includes(state)) {
+    throw new Error("Impact 状态必须是提议中或已确认");
+  }
+  return {
+    goal_id: String(fallbackGoalId ?? body.goal_id ?? "").trim(),
+    surface: String(body.surface ?? "").trim(),
+    access,
+    input_snapshot: String(body.input_snapshot ?? "").trim() || null,
+    state,
+    reason: String(body.reason ?? "").trim(),
+  };
+}
+
 export function buildGoalBoardWebView(
   store: SqliteGoalBoardStore,
   coordinator: GoalBoardCoordinator,
@@ -735,30 +757,63 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
         const goalImpactMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/impacts$/);
         if (request.method === "POST" && goalImpactMatch) {
           const body = await readBody(request);
-          const access = String(body.access ?? "read");
-          const reason = String(body.reason ?? "").trim();
-          if (!["read", "write", "decide", "exclusive"].includes(access)) {
-            sendJson(response, 400, { error: "Impact access 无效" });
-            return;
-          }
           try {
-            if (!reason) throw new Error("Impact 必须说明绑定原因");
             const result = coordinator.addImpact(
               options.boardId,
-              {
-                goal_id: decodeURIComponent(goalImpactMatch[1]),
-                surface: String(body.surface ?? "").trim(),
-                access: access as "read" | "write" | "decide" | "exclusive",
-                input_snapshot: String(body.input_snapshot ?? "").trim() || null,
-                state: "confirmed",
-                reason,
-              },
+              webImpactFacts(body, decodeURIComponent(goalImpactMatch[1])),
               {
                 actor_id: "web-user",
                 idempotency_key: String(body.idempotency_key ?? `web-impact-${randomUUID()}`),
               },
             );
             sendJson(response, 201, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const impactUpdateMatch = url.pathname.match(/^\/api\/impacts\/([^/]+)\/update$/);
+        if (request.method === "POST" && impactUpdateMatch) {
+          const body = await readBody(request);
+          try {
+            const result = coordinator.updateImpact(
+              options.boardId,
+              {
+                binding_id: decodeURIComponent(impactUpdateMatch[1]),
+                ...webImpactFacts(body),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-impact-update-${randomUUID()}`),
+                reason: String(body.audit_reason ?? "").trim(),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const impactDeactivateMatch = url.pathname.match(/^\/api\/impacts\/([^/]+)\/deactivate$/);
+        if (request.method === "POST" && impactDeactivateMatch) {
+          const body = await readBody(request);
+          try {
+            const result = coordinator.deactivateImpact(
+              options.boardId,
+              {
+                binding_id: decodeURIComponent(impactDeactivateMatch[1]),
+                reason: String(body.reason ?? "").trim(),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-impact-deactivate-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, result);
           } catch (error) {
             sendJson(response, 400, {
               error: error instanceof Error ? error.message : String(error),

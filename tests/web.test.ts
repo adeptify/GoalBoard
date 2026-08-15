@@ -922,7 +922,8 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.match(draftPage, /data-criterion-field="decision_method"/);
     assert.match(draftPage, /href="#risk-workbench-EDIT-ME"/);
     assert.match(draftPage, /data-risk-create-form/);
-    assert.match(draftPage, /data-draft-impact-form/);
+    assert.match(draftPage, /href="#impact-workbench-EDIT-ME"/);
+    assert.match(draftPage, /data-impact-create-form/);
     assert.match(draftPage, /data-policy-form/);
     assert.ok(draftPage.indexOf("验收清单") < draftPage.indexOf("补全 Draft Contract"));
 
@@ -1204,6 +1205,181 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       assert.deepEqual(stored?.affected_surfaces, ["Contract", "tests"]);
       assert.equal(stored?.owner, "risk-owner");
       assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'risk.updated'").get(created.risk.risk_id));
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web maintains Impact facts, access state, deactivation, and retained history", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-impact-workbench-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "impact-workbench-board",
+    title: "Impact Workbench",
+    actor_id: "web-user",
+    idempotency_key: "impact-workbench-init",
+  });
+  coordinator.createGoal(
+    "impact-workbench-board",
+    {
+      goal_id: "IMPACT-A",
+      title: "维护并发影响面",
+      outcome: "Impact Binding 可以持续维护",
+      why: "验证并行领取边界",
+      business_logic: "用户记录区域和访问方式，停用后保留历史但不再形成门禁。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "IMPACT-A-C1",
+          statement: "Impact 可维护",
+          decision_method: "automated_check",
+          pass_condition: "页面和接口保存完整 Impact",
+          required_evidence: ["test"],
+        },
+      ],
+    },
+    { actor_id: "web-user", idempotency_key: "impact-workbench-goal" },
+  );
+  coordinator.createGoal(
+    "impact-workbench-board",
+    {
+      goal_id: "IMPACT-B",
+      title: "另一条 Impact Goal",
+      outcome: "用于验证 HTTP 归属边界",
+      why: "URL 中的 Goal 必须是新增绑定的唯一归属",
+      business_logic: "不能通过请求正文把 Impact 写入另一个 Goal。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "IMPACT-B-C1",
+          statement: "可作为边界验证目标",
+          decision_method: "inspection",
+          pass_condition: "请求正文不能覆盖 URL Goal",
+          required_evidence: ["test"],
+        },
+      ],
+    },
+    { actor_id: "web-user", idempotency_key: "impact-workbench-second-goal" },
+  );
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "impact-workbench-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const emptyPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    assert.match(emptyPage, /data-impact-create-form/);
+    assert.match(emptyPage, /name="surface"/);
+    for (const access of ["read", "write", "decide", "exclusive"]) {
+      assert.match(emptyPage, new RegExp(`option value="${access}"`));
+    }
+    assert.match(emptyPage, /option value="confirmed"/);
+    assert.match(emptyPage, /option value="proposed"/);
+    assert.match(emptyPage, /\.impact-facts, \.impact-form \{ grid-template-columns: 1fr; \}/);
+    assert.match(emptyPage, /\.impact-form input.*font-size: 16px/);
+
+    const createResponse = await fetch(`${origin}/api/goals/IMPACT-A/impacts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: "IMPACT-B",
+        surface: "src/web/render.ts",
+        access: "read",
+        input_snapshot: "https://example.com/render-contract",
+        state: "confirmed",
+        reason: "读取当前渲染 Contract",
+        idempotency_key: "web-impact-create-complete",
+      }),
+    });
+    const created = (await createResponse.json()) as { binding_id: string };
+    assert.equal(createResponse.status, 201, JSON.stringify(created));
+    const afterCreate = new SqliteGoalBoardStore(databasePath);
+    try {
+      const createdImpact = afterCreate.snapshot("impact-workbench-board").impacts.find((impact) => impact.binding_id === created.binding_id);
+      assert.equal(createdImpact?.goal_id, "IMPACT-A", "the URL Goal owns a newly created Impact");
+    } finally {
+      afterCreate.close();
+    }
+
+    const populatedPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    assert.match(populatedPage, /src\/web\/render\.ts/);
+    assert.match(populatedPage, /读取当前渲染 Contract/);
+    assert.match(populatedPage, /只读取该区域，并已固定输入快照/);
+    assert.match(populatedPage, /data-impact-edit-form/);
+    assert.match(populatedPage, /data-impact-deactivate-form/);
+    assert.match(populatedPage, /href="https:\/\/example\.com\/render-contract"/);
+
+    const updateResponse = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: "IMPACT-A",
+        surface: "src/domain/goal.ts",
+        access: "exclusive",
+        input_snapshot: "contract://IMPACT-A",
+        state: "proposed",
+        reason: "准备独占修改 Goal 领域模型",
+        audit_reason: "实际影响范围从读取渲染改为修改领域模型",
+        idempotency_key: "web-impact-update-complete",
+      }),
+    });
+    assert.equal(updateResponse.status, 200, await updateResponse.text());
+    const proposedPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    assert.match(proposedPage, /src\/domain\/goal\.ts/);
+    assert.match(proposedPage, /独占 \/ 提议中/);
+    assert.match(proposedPage, /尚未确认，不会形成 Runtime 领取门禁/);
+
+    const missingAuditReason = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: "IMPACT-A",
+        surface: "src/domain/goal.ts",
+        access: "exclusive",
+        state: "confirmed",
+        reason: "确认独占修改",
+        audit_reason: "",
+      }),
+    });
+    assert.equal(missingAuditReason.status, 400);
+    assert.match(await missingAuditReason.text(), /必须说明修改原因/);
+
+    const deactivateResponse = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/deactivate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reason: "领域修改已迁移到后续 Goal",
+        idempotency_key: "web-impact-deactivate-complete",
+      }),
+    });
+    assert.equal(deactivateResponse.status, 200, await deactivateResponse.text());
+    const historyPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    assert.match(historyPage, /已停用记录/);
+    assert.match(historyPage, /领域修改已迁移到后续 Goal/);
+    assert.match(historyPage, /只作为历史保留，不再参与 Runtime 领取冲突判断/);
+    assert.doesNotMatch(historyPage, /data-impact-edit-form data-live-form=/);
+
+    const verify = new SqliteGoalBoardStore(databasePath);
+    try {
+      const stored = verify.snapshot("impact-workbench-board").impacts.find((impact) => impact.binding_id === created.binding_id);
+      assert.equal(stored?.surface, "src/domain/goal.ts");
+      assert.equal(stored?.access, "exclusive");
+      assert.equal(stored?.input_snapshot, "contract://IMPACT-A");
+      assert.equal(stored?.state, "inactive");
+      assert.equal(stored?.deactivation_reason, "领域修改已迁移到后续 Goal");
+      assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'impact.updated'").get(created.binding_id));
+      assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'impact.deactivated'").get(created.binding_id));
     } finally {
       verify.close();
     }

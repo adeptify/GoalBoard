@@ -113,24 +113,24 @@ components:
     typography: "{typography.body}"
     rounded: "0"
     padding: "0"
-  human-review-form:
+  impact-binding-workbench:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     rounded: "0"
-    padding: "14px 0"
+    padding: "0"
   relationship-workbench:
     backgroundColor: "#fbfcfd"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     rounded: "{rounded.icon}"
     padding: "0"
-  mobile-view-switch:
-    backgroundColor: "#f7f8fa"
-    textColor: "{colors.muted}"
-    typography: "{typography.label}"
-    height: "42px"
-    padding: "4px"
+  risk-register:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "0"
+    padding: "0"
   create-dialog:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
@@ -155,7 +155,7 @@ The visual character is compact, calm, and operational. Hairline borders and sma
 - Light 58px toolbar over a two-pane desktop workspace.
 - Searchable, resizable IDE-style Goal Tree with Goal names primary and IDs secondary.
 - Continuous white document surface with strong reading order and minimal ornament.
-- Draft-only Contract authoring, structured acceptance, the full Risk Register, Impact capture, and Policy remain in the Goal document; Human Review belongs to the Decision Center.
+- Draft-only Contract authoring, structured acceptance, full Risk and Impact registers, and Policy remain in the Goal document; Human Review belongs to the Decision Center.
 - One Decision Center groups every pending user-owned judgment by its Goal instead of repeating full decision forms in Goal documents.
 - Compact controls, hairline separators, and restrained corner radii.
 - Lucide line icons paired with explicit labels for actions and statuses.
@@ -331,8 +331,8 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Contract fields:** One continuous form edits Goal name, priority, Outcome, Why, business logic, in-scope and out-of-scope items, constraints, required inputs, and promised outputs. List fields use one item per line instead of nested chips or cards.
 - **Structured acceptance:** Each criterion keeps its own statement, decision method (`automated_check`, `measurement`, `inspection`, or `human_decision`), explicit pass condition, optional target, required Evidence types, and optional criterion ID. Criteria can be added or removed without collapsing them into one prose textarea.
 - **Decomposition:** A bordered two-column radio group presents all four shipped states with plain-language explanations: `abstract` / 仍需拆分, `frontier_open` / Frontier 开放, `closed_leaf` / 最小可执行叶子, and `closed_compound` / 拆分完成的复合 Goal.
-- **Risk and Impact entry:** Risk maintenance lives in the complete Risk Register later in the Goal document, so the Draft editor links there instead of duplicating a partial Risk form. A compact Impact disclosure still records surface, access (`read`, `write`, `decide`, or `exclusive`), optional input snapshot, and reason; the following link continues into Runtime / Review Policy.
-- **Submit / Error:** Saving the Draft requires a modification reason, disables its action during the request, reports failure inline through `role="alert"`, and force-refreshes plus toasts on success. Initial Impact capture uses the same submission feedback. Background live refresh defers while either form owns focus, protecting active input.
+- **Risk and Impact entry:** The Draft editor links to the complete Risk Register and Impact Binding Workbench later in the Goal document rather than duplicating partial forms. The two workbenches own all ongoing lifecycle changes.
+- **Submit / Error:** Saving the Draft requires a modification reason, disables its action during the request, reports failure inline through `role="alert"`, and force-refreshes plus toasts on success. Background live refresh defers while the form owns focus, protecting active input.
 - **Narrow document:** At 660px, title and priority, list fields, decomposition choices, criterion fields, and auxiliary forms all become one column; at 760px form controls use 16px type.
 
 ### Risk Register
@@ -343,6 +343,14 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Fact and lifecycle authority:** `新增风险`, `编辑事实`, and `变更状态` are separate disclosures. Fact edits cover all canonical fields and linked Goals; lifecycle changes expose exactly `open`, `triggered`, `resolved`, `accepted`, and `expired`. Every change requires a written audit reason, and archived Goals remain readable but not editable.
 - **Continuity:** Successful writes force one authoritative cursor refresh and toast. Background refresh defers while a Risk form owns focus; disclosure state and reading position survive ordinary refreshes.
 - **Narrow document:** At 660px, Risk fact fields, Goal picker, lifecycle control, impact preview, and action footer become one column. At 760px, form controls use 16px type and long Goal or Evidence references wrap without horizontal overflow.
+
+### Impact Binding Workbench
+
+- **Continuous ledger:** The Goal-owned Impact Binding Workbench is one hairline-ledger, not a cluster of cards. Active bindings lead with the human-readable surface; the opaque binding ID is supporting metadata. `新增 Impact` and `已停用记录` continue on the same vertical rule, so the reader can scan current constraints and their history in one place.
+- **Facts and effect:** Each active record exposes its access (`read`, `write`, `decide`, or `exclusive`), confirmation state, input snapshot, reason, creator, and last update. A plain-language `当前影响` explains exactly how that combination affects concurrent Runtime claims; HTTP snapshots open as links and project references remain copyable.
+- **User maintenance:** `新增 Impact` stores the complete facts. `编辑绑定` requires a written modification reason and records both the prior and current facts in the event history. A binding remains attached to its original Goal during edits; moving the work means adding a new binding to the target Goal and then stopping the old one.
+- **History, not deletion:** `停用绑定` requires a reason, changes the binding to `inactive`, removes it from active claim-conflict evaluation, and retains its surface, original reason, snapshot, stop reason, and timestamp in the collapsible history ledger. Inactive records use neutral treatment so they cannot be mistaken for current constraints, while keyboard focus remains visible.
+- **Continuity and responsive behavior:** Background refresh defers while any Impact form owns focus; successful create, edit, or stop forces one authoritative refresh and toast without clearing the document. At 660px fact rows and forms become one column; at 760px every Impact control uses 16px type and long surfaces or snapshots wrap instead of overflowing.
 
 ### Draft Contract Proposals
 
@@ -402,7 +410,8 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Do** show Draft gaps and field provenance before asking the user to confirm a Contract Proposal.
 - **Do** keep the Draft-only editor after business logic, blockers, and the acceptance checklist, and keep accepted Contracts read-only in place.
 - **Do** preserve each acceptance criterion's decision method, pass condition, target, and Evidence requirements as structured fields.
-- **Do** use the four shipped decomposition choices, the full Risk Register, and Impact capture to make execution boundaries explicit before acceptance.
+- **Do** use the four shipped decomposition choices, the full Risk Register, and the complete Impact Binding Workbench to make execution boundaries explicit before acceptance.
+- **Do** keep active Impact bindings, creation, and inactive history in one continuous ledger; require reasons for updates and stopping a binding, and retain history instead of erasing it.
 - **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / route-specific Goal正文-or-决定中心 switch.
 - **Do** let the 660px document-container rule stack Draft, Risk, Impact, and Human Review fields while turning Policy inheritance vertical and Policy controls into one column, even inside a wide viewport.
 - **Do** read Policy as final effective gates → 01 Project Default → 02 Goal Override, preserving each source's status, saved provenance, and required audit reason.
@@ -427,5 +436,6 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Don't** expose the Draft editor for an accepted Contract or silently rewrite accepted truth without the new-Goal and Rewire path.
 - **Don't** flatten structured acceptance into one undifferentiated textarea or invent decomposition states beyond the shipped four.
 - **Don't** compress Draft, Risk, Impact, Policy controls, or Human Review into a fixed desktop label grid when the document container is narrower than 660px.
+- **Don't** use an edit request to move an Impact silently between Goals, or let an inactive record look like an active Runtime-claim constraint.
 - **Don't** collapse Policy into anonymous label/value rows; keep localized modes, switches, reviewer purpose, and audit context visible.
 - **Don't** hide the inheritance chain or blur Project Default and Goal Override into one unsourced rule.

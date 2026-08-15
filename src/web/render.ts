@@ -615,8 +615,82 @@ function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoar
   </article>`;
 }
 
+const IMPACT_ACCESS_LABELS: Record<ImpactBindingRecord["access"], string> = {
+  read: "读取",
+  write: "写入",
+  decide: "决策",
+  exclusive: "独占",
+};
+
+const IMPACT_STATE_LABELS: Record<ImpactBindingRecord["state"], string> = {
+  proposed: "提议中",
+  confirmed: "已确认",
+  inactive: "已停用",
+};
+
+function impactStateEffect(impact: ImpactBindingRecord): string {
+  if (impact.state === "inactive") return "这条绑定只作为历史保留，不再参与 Runtime 领取冲突判断。";
+  if (impact.state === "proposed") return "这条绑定尚未确认，不会形成 Runtime 领取门禁。";
+  if (impact.access === "exclusive") return "当前 Goal 独占该区域；其他 active Goal 不能同时读取、写入或作出决策。";
+  if (impact.access === "decide") return "当前 Goal 对该区域作出业务决策；其他 active Goal 的读取、写入或决策会发生冲突。";
+  if (impact.access === "write") return "当前 Goal 会写入该区域；其他写入会冲突，读取方必须固定输入快照。";
+  return impact.input_snapshot
+    ? "当前 Goal 只读取该区域，并已固定输入快照，可与写入方并行推进。"
+    : "当前 Goal 只读取该区域，但未固定输入快照；同一区域的 active 写入会阻止领取。";
+}
+
+function renderImpactFactsForm(
+  impact: ImpactBindingRecord | null,
+  goalId: string,
+): string {
+  const access = impact?.access ?? "read";
+  const state = impact?.state === "proposed" ? "proposed" : "confirmed";
+  return `<input type="hidden" name="goal_id" value="${escapeHtml(goalId)}">
+    <label class="impact-form-wide"><span>影响区域</span><input name="surface" required value="${escapeHtml(impact?.surface ?? "")}" placeholder="例如 src/web 或 onboarding-flow"></label>
+    <label><span>访问类型</span><select name="access">${riskSelectOptions([["read", "读取"], ["write", "写入"], ["decide", "决策"], ["exclusive", "独占"]], access)}</select></label>
+    <label><span>当前状态</span><select name="state">${riskSelectOptions([["confirmed", "已确认"], ["proposed", "提议中"]], state)}</select></label>
+    <label class="impact-form-wide"><span>输入快照 <small>读取方可用 commit、文件版本或事实引用固定输入</small></span><input name="input_snapshot" value="${escapeHtml(impact?.input_snapshot ?? "")}" placeholder="可选，例如 commit://abc123 或 contract://GOAL-ID"></label>
+    <label class="impact-form-wide"><span>绑定理由</span><textarea name="reason" rows="2" required placeholder="为什么这个 Goal 会影响该区域">${escapeHtml(impact?.reason ?? "")}</textarea></label>`;
+}
+
+function renderImpactRecord(impact: ImpactBindingRecord, item: WebGoalView): string {
+  const inactive = impact.state === "inactive";
+  const readOnly = Boolean(item.goal.archived_at);
+  return `<article class="impact-record${inactive ? " impact-record--inactive" : ""}" id="impact-${escapeHtml(impact.binding_id)}">
+    <header><span class="impact-record-icon">${icon("impact")}</span><div><span class="impact-access impact-access--${escapeHtml(impact.access)}">${escapeHtml(IMPACT_ACCESS_LABELS[impact.access])}</span><h4>${escapeHtml(impact.surface)}</h4><small>${escapeHtml(impact.binding_id)} · ${inactive ? `停用于 ${formatDate(impact.deactivated_at ?? impact.updated_at)}` : `更新于 ${formatDate(impact.updated_at)}`}</small></div><span class="impact-state impact-state--${escapeHtml(impact.state)}">${escapeHtml(IMPACT_STATE_LABELS[impact.state])}</span></header>
+    <dl class="impact-facts">
+      <div><dt>访问 / 状态</dt><dd>${escapeHtml(IMPACT_ACCESS_LABELS[impact.access])} / ${escapeHtml(IMPACT_STATE_LABELS[impact.state])}</dd></div>
+      <div><dt>创建者</dt><dd>${escapeHtml(impact.created_by)} · ${formatDate(impact.created_at)}</dd></div>
+      <div class="impact-fact-wide"><dt>输入快照</dt><dd>${impact.input_snapshot ? renderReference(impact.input_snapshot, "输入快照") : "未固定"}</dd></div>
+      <div class="impact-fact-wide"><dt>绑定理由</dt><dd>${escapeHtml(impact.reason)}</dd></div>
+      ${inactive ? `<div class="impact-fact-wide"><dt>停用原因</dt><dd>${escapeHtml(impact.deactivation_reason ?? "未记录")}</dd></div>` : ""}
+    </dl>
+    <p class="impact-effect impact-effect--${escapeHtml(impact.state)}">${icon(inactive ? "history" : "info")}<span><strong>当前影响</strong>${escapeHtml(impactStateEffect(impact))}</span></p>
+    ${readOnly || inactive ? (readOnly && !inactive ? '<p class="impact-readonly">已归档 Goal 中的 Impact 只读展示；恢复 Goal 后可以继续维护。</p>' : "") : `<div class="impact-actions">
+      <details data-persist-open="impact-edit-${escapeHtml(impact.binding_id)}"><summary><span>${icon("settings")}<strong>编辑绑定</strong></span>${icon("chevron-down")}</summary>
+        <form class="impact-form" data-impact-edit-form data-live-form="impact-edit-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
+          ${renderImpactFactsForm(impact, item.goal.goal_id)}
+          <label class="impact-form-wide"><span>修改说明</span><textarea name="audit_reason" rows="2" required placeholder="为什么需要更新影响区域、访问方式或状态"></textarea></label>
+          <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
+          <footer class="impact-form-wide"><span>修改会进入事件历史；已停用记录不会原地恢复。</span><button class="button-primary" type="submit">保存 Impact</button></footer>
+        </form>
+      </details>
+      <details class="impact-deactivate" data-persist-open="impact-deactivate-${escapeHtml(impact.binding_id)}"><summary><span>${icon("archive")}<strong>停用绑定</strong></span>${icon("chevron-down")}</summary>
+        <form data-impact-deactivate-form data-live-form="impact-deactivate-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
+          <p>停用后不再参与领取冲突判断，但完整绑定事实和停用原因会保留在历史中。</p>
+          <label><span>停用原因</span><textarea name="reason" rows="2" required placeholder="为什么这条 Impact 已不再有效"></textarea></label>
+          <p class="form-error" data-impact-error role="alert" hidden></p>
+          <footer><button class="danger-confirm" type="submit">确认停用</button></footer>
+        </form>
+      </details>
+    </div>`}
+  </article>`;
+}
+
 function renderSafety(item: WebGoalView, view: GoalBoardWebView): string {
   const canEdit = !item.goal.archived_at;
+  const activeImpacts = item.impacts.filter((impact) => impact.state !== "inactive");
+  const inactiveImpacts = item.impacts.filter((impact) => impact.state === "inactive");
   return `<div class="safety-workbench" id="risk-workbench-${escapeHtml(item.goal.goal_id)}">
     <section class="risk-register"><header class="safety-subheading"><div><h3>风险</h3><p>记录事实、触发条件、影响范围和处理责任；状态决定是否形成门禁。</p></div><span>${item.risks.length} 项</span></header>
       ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view)).join("")}</div>` : '<p class="risk-empty">暂无已登记 Risk。需要持续观察、阻止领取或影响完成的事项，都从这里记录。</p>'}
@@ -629,11 +703,19 @@ function renderSafety(item: WebGoalView, view: GoalBoardWebView): string {
         </form>
       </details>` : ""}
     </section>
-    <section class="impact-register"><header class="safety-subheading"><div><h3>影响面</h3><p>当前 Goal 会读取、写入、决定或独占的区域。</p></div><span>${item.impacts.length} 项</span></header>${
-      item.impacts.length
-        ? `<div>${item.impacts.map((impact) => `<article class="fact-row"><span class="fact-icon">${icon("impact")}</span><span><strong>${escapeHtml(impact.surface)}</strong><small>${escapeHtml(impact.access)} · ${escapeHtml(impact.state)} · ${escapeHtml(impact.reason)}</small>${impact.input_snapshot ? `<small>输入快照：${escapeHtml(impact.input_snapshot)}</small>` : ""}</span></article>`).join("")}</div>`
-        : '<p class="empty-row">暂无影响面绑定</p>'
-    }</section>
+    <section class="impact-register" id="impact-workbench-${escapeHtml(item.goal.goal_id)}"><header class="safety-subheading"><div><h3>影响面</h3><p>明确这个 Goal 会读取、写入、决策或独占哪些区域，以及它如何影响并行领取。</p></div><span>${activeImpacts.length} 项生效${inactiveImpacts.length ? ` · ${inactiveImpacts.length} 项历史` : ""}</span></header>
+      <div class="impact-ledger">
+      ${activeImpacts.length ? `<div class="impact-list">${activeImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div>` : '<p class="impact-empty">暂无生效中的 Impact。需要约束并行读取、写入或决策时，从这里登记。</p>'}
+      ${canEdit ? `<details class="impact-create" data-persist-open="impact-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="impact-record-icon">${icon("plus")}</span><span><strong>新增 Impact</strong><small>记录影响区域、访问方式、输入快照和绑定理由</small></span>${icon("chevron-down")}</summary>
+        <form class="impact-form" data-impact-create-form data-live-form="impact-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+          ${renderImpactFactsForm(null, item.goal.goal_id)}
+          <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
+          <footer class="impact-form-wide"><span>已确认绑定会立即参与 Runtime 领取冲突判断。</span><button class="button-primary" type="submit">登记 Impact</button></footer>
+        </form>
+      </details>` : ""}
+      ${inactiveImpacts.length ? `<details class="impact-history" data-persist-open="impact-history-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>已停用记录</strong><small>${inactiveImpacts.length} 条 · 仍可查看原事实和停用原因</small></span>${icon("chevron-down")}</summary><div class="impact-list">${inactiveImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div></details>` : ""}
+      </div>
+    </section>
   </div>`;
 }
 
@@ -1316,16 +1398,7 @@ function renderDraftEditor(item: WebGoalView): string {
     </form>
     <div class="draft-auxiliary">
       <a class="draft-policy-link" href="#risk-workbench-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>继续登记和维护 Risk</strong><small>在“风险与影响”中维护完整事实、关联 Goal 与生命周期</small></span>${icon("arrow")}</a>
-      <details><summary><span>${icon("impact")}<strong>登记初始 Impact</strong><small>说明会读、写、决定或独占哪个区域</small></span>${icon("chevron-down")}</summary>
-        <form class="draft-aux-form" data-draft-impact-form data-live-form="draft-impact-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
-          <label class="draft-aux-wide"><span>影响区域</span><input name="surface" required placeholder="例如 src/web 或 onboarding-flow"></label>
-          <label><span>访问类型</span><select name="access"><option value="read">读取</option><option value="write">写入</option><option value="decide">决定</option><option value="exclusive">独占</option></select></label>
-          <label><span>输入快照 <small>可选</small></span><input name="input_snapshot" placeholder="commit、文件版本或事实引用"></label>
-          <label class="draft-aux-wide"><span>绑定原因</span><textarea name="reason" rows="2" required placeholder="为什么这个 Goal 会影响该区域"></textarea></label>
-          <p class="form-error draft-aux-wide" data-impact-error role="alert" hidden></p>
-          <footer class="draft-aux-wide"><button class="button-primary" type="submit">登记 Impact</button></footer>
-        </form>
-      </details>
+      <a class="draft-policy-link" href="#impact-workbench-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>继续登记和维护 Impact</strong><small>在“风险与影响”中维护区域、访问方式、状态与历史</small></span>${icon("arrow")}</a>
       <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>继续设置 Runtime / Review Policy</strong><small>项目默认与当前 Goal 规则在下方独立维护</small></span>${icon("arrow")}</a>
     </div>
   </section>`;
@@ -1804,6 +1877,71 @@ const MORE_STYLES = `
   .risk-create > summary small { color: var(--muted); font-size: 11px; }
   .risk-create > .risk-form { padding-left: 14px; }
   .risk-empty { margin: 0; padding: 13px 14px; border: 1px dashed var(--line-strong); color: var(--muted); background: #fbfcfd; }
+  .impact-ledger { border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+  .impact-list { overflow: hidden; }
+  .impact-record { scroll-margin-top: 16px; border-bottom: 1px solid var(--line-strong); background: #fff; }
+  .impact-record:last-child { border-bottom: 0; }
+  .impact-record--inactive { background: #fbfcfd; }
+  .impact-record > header { min-width: 0; padding: 12px 14px 10px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+  .impact-record-icon { width: 30px; height: 30px; border-radius: 5px; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; }
+  .impact-record-icon svg { width: 15px; height: 15px; }
+  .impact-record > header > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 8px; }
+  .impact-record h4 { min-width: 0; margin: 0; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+  .impact-record header small { grid-column: 1 / -1; color: var(--faint); font-size: 10px; overflow-wrap: anywhere; }
+  .impact-access, .impact-state { width: fit-content; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 650; white-space: nowrap; }
+  .impact-access { color: var(--blue-dark); background: var(--blue-soft); }
+  .impact-access--decide { color: var(--rewire-violet); background: #f1edfb; }
+  .impact-access--exclusive { color: var(--red); background: var(--red-soft); }
+  .impact-state { color: var(--green); background: var(--green-soft); }
+  .impact-state--proposed { color: var(--amber); background: var(--amber-soft); }
+  .impact-state--inactive { color: var(--muted); background: #eef1f4; }
+  .impact-record--inactive .impact-record-icon,
+  .impact-record--inactive .impact-access { color: var(--muted); background: #eef1f4; }
+  .impact-facts { margin: 0; padding: 0 14px 8px 54px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  .impact-facts > div { min-width: 0; padding: 8px 0; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 9px; }
+  .impact-facts dt { color: var(--muted); font-size: 11px; }
+  .impact-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .impact-fact-wide { grid-column: 1 / -1; }
+  .impact-effect { margin: 0 14px 12px 54px; padding: 8px 10px; border: 1px solid #c9def9; border-radius: 4px; background: #f5f9ff; color: var(--muted); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+  .impact-effect--proposed { border-color: #ead5a4; background: var(--amber-soft); }
+  .impact-effect--inactive { border-color: var(--line); background: #f4f6f8; }
+  .impact-record--inactive .impact-effect strong { color: #59616c; }
+  .impact-effect > svg { margin-top: 1px; color: inherit; }
+  .impact-effect > span { display: grid; gap: 1px; }
+  .impact-effect strong { color: var(--ink); font-size: 11px; }
+  .impact-readonly { margin: 0 14px 12px 54px; color: var(--muted); font-size: 11px; }
+  .impact-actions { border-top: 1px solid var(--line); background: #fbfcfd; }
+  .impact-actions > details { border-bottom: 1px solid var(--line); }
+  .impact-actions > details:last-child { border-bottom: 0; }
+  .impact-actions summary, .impact-create > summary, .impact-history > summary { list-style: none; cursor: pointer; }
+  .impact-actions summary::-webkit-details-marker, .impact-create > summary::-webkit-details-marker, .impact-history > summary::-webkit-details-marker { display: none; }
+  .impact-actions > details > summary { min-height: 43px; padding: 8px 14px 8px 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .impact-actions summary:focus-visible, .impact-create > summary:focus-visible, .impact-history > summary:focus-visible { outline: 2px solid #8ab8ee; outline-offset: -3px; }
+  .impact-actions > details > summary:hover, .impact-create > summary:hover, .impact-history > summary:hover { background: #f4f7fa; }
+  .impact-actions summary > span { display: inline-flex; align-items: center; gap: 7px; }
+  .impact-actions summary > span > svg { color: var(--muted); }
+  .impact-actions summary > svg, .impact-create > summary > svg, .impact-history > summary > svg { color: var(--muted); transition: transform .16s ease; }
+  .impact-actions details[open] > summary > svg, .impact-create[open] > summary > svg, .impact-history[open] > summary > svg { transform: rotate(180deg); }
+  .impact-form { padding: 13px 14px 15px 54px; border-top: 1px solid var(--line); background: #fff; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 14px; }
+  .impact-form label, .impact-deactivate form label { min-width: 0; display: grid; gap: 5px; }
+  .impact-form label > span, .impact-deactivate form label > span { color: var(--ink); font-size: 11px; font-weight: 650; }
+  .impact-form label small { color: var(--muted); font-weight: 400; }
+  .impact-form input, .impact-form textarea, .impact-form select, .impact-deactivate textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .impact-form-wide { grid-column: 1 / -1; }
+  .impact-form footer { padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .impact-form footer > span { color: var(--muted); font-size: 11px; }
+  .impact-form button, .impact-deactivate button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; cursor: pointer; }
+  .impact-deactivate form { padding: 13px 14px 15px 54px; border-top: 1px solid var(--line); background: #fff; display: grid; gap: 10px; }
+  .impact-deactivate form > p { margin: 0; color: var(--muted); font-size: 11px; }
+  .impact-deactivate form footer { display: flex; justify-content: flex-end; }
+  .impact-deactivate .danger-confirm { color: var(--red); border-color: #e5b9b9; background: var(--red-soft); font-weight: 650; }
+  .impact-create, .impact-history { margin: 0; border: 0; border-top: 1px solid var(--line-strong); border-radius: 0; background: #fbfcfd; }
+  .impact-create > summary, .impact-history > summary { min-height: 52px; padding: 9px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+  .impact-create > summary > span:nth-child(2), .impact-history > summary > span:first-child { min-width: 0; display: grid; }
+  .impact-create > summary small, .impact-history > summary small { color: var(--muted); font-size: 11px; }
+  .impact-create > .impact-form { padding-left: 14px; }
+  .impact-history > .impact-list { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+  .impact-empty { margin: 0; padding: 13px 14px; border: 0; color: var(--muted); background: #fbfcfd; }
   .fact-row { display: flex; gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
   .fact-row:last-child { border-bottom: 0; }
   .fact-icon { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
@@ -2154,6 +2292,17 @@ const RESPONSIVE_STYLES = `
     .risk-goal-options { grid-template-columns: 1fr; }
     .risk-form footer, .risk-state-form footer { align-items: stretch; flex-direction: column; }
     .risk-form footer button, .risk-state-form footer button { align-self: flex-end; }
+    .impact-facts, .impact-form { grid-template-columns: 1fr; }
+    .impact-facts { padding-left: 14px; }
+    .impact-fact-wide, .impact-form-wide { grid-column: 1; }
+    .impact-record > header { grid-template-columns: auto minmax(0, 1fr); }
+    .impact-record > header > div { grid-template-columns: 1fr; }
+    .impact-record > header > .impact-state { grid-column: 2; justify-self: start; }
+    .impact-access { margin-bottom: 2px; }
+    .impact-effect, .impact-readonly { margin-left: 14px; }
+    .impact-actions > details > summary, .impact-form, .impact-deactivate form { padding-left: 14px; }
+    .impact-form footer { align-items: stretch; flex-direction: column; }
+    .impact-form footer button { align-self: flex-end; }
   }
   @media (max-width: 1360px) {
     .brand { min-width: 160px; padding-inline: 20px; }
@@ -2255,7 +2404,7 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea, .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea, .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select, .impact-form input, .impact-form textarea, .impact-form select, .impact-deactivate textarea { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
@@ -2353,6 +2502,16 @@ const CLIENT_SCRIPT = `
       revisit_condition: String(values.get("revisit_condition") || "").trim(),
       owner: String(values.get("owner") || "").trim(),
       reason: String(values.get("reason") || "").trim(),
+    });
+
+    const readImpactPayload = (values) => ({
+      goal_id: String(values.get("goal_id") || "").trim(),
+      surface: String(values.get("surface") || "").trim(),
+      access: values.get("access"),
+      input_snapshot: String(values.get("input_snapshot") || "").trim(),
+      state: values.get("state"),
+      reason: String(values.get("reason") || "").trim(),
+      audit_reason: String(values.get("audit_reason") || "").trim(),
     });
 
     const riskStateEffect = (blockingMode, riskState) => {
@@ -3129,24 +3288,19 @@ const CLIENT_SCRIPT = `
         return;
       }
 
-      const impactForm = submittedForm.closest?.("[data-draft-impact-form]");
-      if (impactForm) {
+      const impactCreateForm = submittedForm.closest?.("[data-impact-create-form]");
+      if (impactCreateForm) {
         event.preventDefault();
-        const submit = impactForm.querySelector('button[type="submit"]');
-        const errorBox = impactForm.querySelector("[data-impact-error]");
-        const values = new FormData(impactForm);
+        const submit = impactCreateForm.querySelector('button[type="submit"]');
+        const errorBox = impactCreateForm.querySelector("[data-impact-error]");
+        const values = new FormData(impactCreateForm);
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(impactForm.dataset.goalId) + "/impacts", {
+          const response = await fetch("/api/goals/" + encodeURIComponent(impactCreateForm.dataset.goalId) + "/impacts", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              surface: String(values.get("surface") || "").trim(),
-              access: values.get("access"),
-              input_snapshot: String(values.get("input_snapshot") || "").trim(),
-              reason: String(values.get("reason") || "").trim(),
-            }),
+            body: JSON.stringify(readImpactPayload(values)),
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Impact 登记失败");
@@ -3154,6 +3308,58 @@ const CLIENT_SCRIPT = `
           showToast("Impact 已登记");
         } catch (error) {
           errorBox.textContent = error.message || "Impact 登记失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const impactEditForm = submittedForm.closest?.("[data-impact-edit-form]");
+      if (impactEditForm) {
+        event.preventDefault();
+        const submit = impactEditForm.querySelector('button[type="submit"]');
+        const errorBox = impactEditForm.querySelector("[data-impact-error]");
+        const values = new FormData(impactEditForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/impacts/" + encodeURIComponent(impactEditForm.dataset.impactId) + "/update", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(readImpactPayload(values)),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Impact 更新失败");
+          await refreshBoard(true);
+          showToast("Impact 已更新");
+        } catch (error) {
+          errorBox.textContent = error.message || "Impact 更新失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const impactDeactivateForm = submittedForm.closest?.("[data-impact-deactivate-form]");
+      if (impactDeactivateForm) {
+        event.preventDefault();
+        const submit = impactDeactivateForm.querySelector('button[type="submit"]');
+        const errorBox = impactDeactivateForm.querySelector("[data-impact-error]");
+        const values = new FormData(impactDeactivateForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/impacts/" + encodeURIComponent(impactDeactivateForm.dataset.impactId) + "/deactivate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason: String(values.get("reason") || "").trim() }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Impact 停用失败");
+          await refreshBoard(true);
+          showToast("Impact 已停用并保留在历史中");
+        } catch (error) {
+          errorBox.textContent = error.message || "Impact 停用失败，请检查输入";
           errorBox.hidden = false;
           submit.disabled = false;
         }

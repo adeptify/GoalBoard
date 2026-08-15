@@ -77,6 +77,16 @@ interface ActorWrite {
   reason?: string;
 }
 
+interface ImpactFactsInput {
+  binding_id?: string;
+  goal_id: string;
+  surface: string;
+  access: ImpactAccess;
+  input_snapshot?: string | null;
+  state?: "proposed" | "confirmed";
+  reason: string;
+}
+
 interface RiskFactsInput {
   risk_id?: string;
   goal_ids: string[];
@@ -134,6 +144,8 @@ interface Evaluation {
 }
 
 const GOAL_MODE_ORDER = { disabled: 0, preferred: 1, required: 2 } as const;
+const IMPACT_ACCESSES = new Set<ImpactAccess>(["read", "write", "decide", "exclusive"]);
+const IMPACT_ACTIVE_STATES = new Set<"proposed" | "confirmed">(["proposed", "confirmed"]);
 const RISK_TREATMENTS = new Set<RiskRecord["treatment"]>(["accept", "mitigate", "avoid", "defer"]);
 const RISK_BLOCKING_MODES = new Set<RiskRecord["blocking_mode"]>([
   "none",
@@ -691,19 +703,12 @@ export class GoalBoardCoordinator {
 
   addImpact(
     boardId: string,
-    input: {
-      goal_id: string;
-      surface: string;
-      access: ImpactAccess;
-      input_snapshot?: string | null;
-      state?: "proposed" | "confirmed";
-      reason: string;
-    },
+    input: ImpactFactsInput,
     write: ActorWrite,
-  ): { binding_id: string; replayed: boolean; observed_event_cursor: number } {
+  ): { binding_id: string; impact: ImpactBindingRecord; replayed: boolean; observed_event_cursor: number } {
     const hash = requestHash({ board_id: boardId, ...input });
     return this.store.immediate(() => {
-      const replay = this.replay<{ binding_id: string; observed_event_cursor: number }>(
+      const replay = this.replay<{ binding_id: string; impact: ImpactBindingRecord; observed_event_cursor: number }>(
         boardId,
         write.actor_id,
         "add_impact",
@@ -711,27 +716,28 @@ export class GoalBoardCoordinator {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
-      this.requireGoalOnBoard(boardId, input.goal_id);
-      if (!input.surface.trim()) throw new GoalBoardV1Error("impact.surface_required", "影响面不能为空");
+      const facts = this.normalizeImpactFacts(boardId, input);
       const bindingId = `impact-${randomUUID()}`;
       const at = this.clock().toISOString();
       this.store.db
         .prepare(`
           INSERT INTO impact_bindings (
             binding_id, board_id, goal_id, surface, access, input_snapshot,
-            state, reason, created_by, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            state, reason, created_by, created_at, updated_at,
+            deactivated_at, deactivation_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
         `)
         .run(
           bindingId,
           boardId,
-          input.goal_id,
-          input.surface.trim(),
-          input.access,
-          input.input_snapshot ?? null,
-          input.state ?? "confirmed",
-          input.reason,
+          facts.goal_id,
+          facts.surface,
+          facts.access,
+          facts.input_snapshot,
+          facts.state,
+          facts.reason,
           write.actor_id,
+          at,
           at,
         );
       const cursor = this.store.appendEvent({
@@ -741,14 +747,176 @@ export class GoalBoardCoordinator {
         type: "impact.added",
         objectType: "impact",
         objectId: bindingId,
-        reason: input.reason,
-        payload: input,
+        reason: facts.reason,
+        payload: facts,
         at,
       });
-      const outcome = { binding_id: bindingId, observed_event_cursor: cursor };
+      const outcome = {
+        binding_id: bindingId,
+        impact: this.readImpact(boardId, bindingId),
+        observed_event_cursor: cursor,
+      };
       this.remember(boardId, write.actor_id, "add_impact", write.idempotency_key, hash, outcome, at);
       return { ...outcome, replayed: false };
     });
+  }
+
+  updateImpact(
+    boardId: string,
+    input: Omit<ImpactFactsInput, "binding_id"> & { binding_id: string },
+    write: ActorWrite,
+  ): { impact: ImpactBindingRecord; replayed: boolean; observed_event_cursor: number } {
+    const hash = requestHash({ board_id: boardId, ...input, audit_reason: write.reason });
+    return this.store.immediate(() => {
+      const replay = this.replay<{ impact: ImpactBindingRecord; observed_event_cursor: number }>(
+        boardId,
+        write.actor_id,
+        "update_impact",
+        write.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const auditReason = write.reason?.trim();
+      if (!auditReason) throw new GoalBoardV1Error("impact.audit_reason_required", "更新 Impact 时必须说明修改原因");
+      const bindingId = input.binding_id.trim();
+      const previous = this.store.db
+        .prepare("SELECT * FROM impact_bindings WHERE binding_id = ? AND board_id = ?")
+        .get(bindingId, boardId) as Row | undefined;
+      if (!previous) throw new GoalBoardV1Error("impact.not_found", `Impact 不存在: ${bindingId}`);
+      if (asText(previous.state) === "inactive") {
+        throw new GoalBoardV1Error("impact.inactive_immutable", "已停用的 Impact 作为历史保留，不能原地修改");
+      }
+      if (input.goal_id.trim() !== asText(previous.goal_id)) {
+        throw new GoalBoardV1Error(
+          "impact.goal_immutable",
+          "Impact 的归属 Goal 不能通过更新迁移；请在目标 Goal 新建绑定并停用原记录",
+        );
+      }
+      const facts = this.normalizeImpactFacts(boardId, input);
+      const at = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          UPDATE impact_bindings SET
+            goal_id = ?, surface = ?, access = ?, input_snapshot = ?, state = ?,
+            reason = ?, updated_at = ?
+          WHERE binding_id = ? AND board_id = ?
+        `)
+        .run(
+          facts.goal_id,
+          facts.surface,
+          facts.access,
+          facts.input_snapshot,
+          facts.state,
+          facts.reason,
+          at,
+          bindingId,
+          boardId,
+        );
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: "impact.updated",
+        objectType: "impact",
+        objectId: bindingId,
+        reason: auditReason,
+        payload: {
+          previous: {
+            goal_id: asText(previous.goal_id),
+            surface: asText(previous.surface),
+            access: asText(previous.access),
+            input_snapshot: asNullableText(previous.input_snapshot),
+            state: asText(previous.state),
+            reason: asText(previous.reason),
+          },
+          current: facts,
+        },
+        at,
+      });
+      const outcome = { impact: this.readImpact(boardId, bindingId), observed_event_cursor: cursor };
+      this.remember(boardId, write.actor_id, "update_impact", write.idempotency_key, hash, outcome, at);
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  deactivateImpact(
+    boardId: string,
+    input: { binding_id: string; reason: string },
+    write: ActorWrite,
+  ): { impact: ImpactBindingRecord; replayed: boolean; observed_event_cursor: number } {
+    const hash = requestHash({ board_id: boardId, ...input });
+    return this.store.immediate(() => {
+      const replay = this.replay<{ impact: ImpactBindingRecord; observed_event_cursor: number }>(
+        boardId,
+        write.actor_id,
+        "deactivate_impact",
+        write.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const reasonText = input.reason.trim();
+      if (!reasonText) throw new GoalBoardV1Error("impact.deactivation_reason_required", "停用 Impact 时必须说明原因");
+      const bindingId = input.binding_id.trim();
+      const row = this.store.db
+        .prepare("SELECT * FROM impact_bindings WHERE binding_id = ? AND board_id = ?")
+        .get(bindingId, boardId) as Row | undefined;
+      if (!row) throw new GoalBoardV1Error("impact.not_found", `Impact 不存在: ${bindingId}`);
+      if (asText(row.state) === "inactive") {
+        throw new GoalBoardV1Error("impact.already_inactive", "Impact 已经停用");
+      }
+      const at = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          UPDATE impact_bindings SET state = 'inactive', updated_at = ?,
+            deactivated_at = ?, deactivation_reason = ?
+          WHERE binding_id = ? AND board_id = ?
+        `)
+        .run(at, at, reasonText, bindingId, boardId);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: "impact.deactivated",
+        objectType: "impact",
+        objectId: bindingId,
+        reason: reasonText,
+        payload: {
+          goal_id: asText(row.goal_id),
+          surface: asText(row.surface),
+          access: asText(row.access),
+          previous_state: asText(row.state),
+        },
+        at,
+      });
+      const outcome = { impact: this.readImpact(boardId, bindingId), observed_event_cursor: cursor };
+      this.remember(boardId, write.actor_id, "deactivate_impact", write.idempotency_key, hash, outcome, at);
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  private normalizeImpactFacts(
+    boardId: string,
+    input: Omit<ImpactFactsInput, "binding_id">,
+  ): Required<Pick<ImpactFactsInput, "goal_id" | "surface" | "access" | "state" | "reason">> & {
+    input_snapshot: string | null;
+  } {
+    const goalId = input.goal_id.trim();
+    const surface = input.surface.trim();
+    const state = input.state ?? "confirmed";
+    const reasonText = input.reason.trim();
+    this.requireGoalOnBoard(boardId, goalId);
+    if (!surface) throw new GoalBoardV1Error("impact.surface_required", "影响面不能为空");
+    if (!IMPACT_ACCESSES.has(input.access)) throw new GoalBoardV1Error("impact.access_invalid", "Impact access 无效");
+    if (!IMPACT_ACTIVE_STATES.has(state)) throw new GoalBoardV1Error("impact.state_invalid", "Impact 状态必须是提议中或已确认");
+    if (!reasonText) throw new GoalBoardV1Error("impact.reason_required", "Impact 必须说明绑定原因");
+    return {
+      goal_id: goalId,
+      surface,
+      access: input.access,
+      input_snapshot: input.input_snapshot?.trim() || null,
+      state,
+      reason: reasonText,
+    };
   }
 
   setPolicy(
@@ -2677,8 +2845,8 @@ export class GoalBoardCoordinator {
           .prepare(`
             INSERT INTO impact_bindings (
               binding_id, board_id, goal_id, surface, access, input_snapshot,
-              state, reason, created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)
+              state, reason, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?)
           `)
           .run(
             bindingId,
@@ -2689,6 +2857,7 @@ export class GoalBoardCoordinator {
             impact.input_snapshot ?? null,
             impact.reason.trim(),
             input.actor_id,
+            now,
             now,
           );
         impactBindingIds.push(bindingId);
@@ -3311,8 +3480,8 @@ export class GoalBoardCoordinator {
           .prepare(`
             INSERT INTO impact_bindings (
               binding_id, board_id, goal_id, surface, access, input_snapshot,
-              state, reason, created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)
+              state, reason, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?)
           `)
           .run(
             `impact-${randomUUID()}`,
@@ -3323,6 +3492,7 @@ export class GoalBoardCoordinator {
             impact.input_snapshot ?? null,
             String(impact.reason ?? input.reason),
             input.actor_id,
+            now,
             now,
           );
       }
@@ -3582,6 +3752,12 @@ export class GoalBoardCoordinator {
     const risk = this.store.snapshot(boardId).risks.find((item) => item.risk_id === riskId);
     if (!risk) throw new Error(`Risk 写入后无法读取: ${riskId}`);
     return risk;
+  }
+
+  private readImpact(boardId: string, bindingId: string): ImpactBindingRecord {
+    const impact = this.store.snapshot(boardId).impacts.find((item) => item.binding_id === bindingId);
+    if (!impact) throw new Error(`Impact 写入后无法读取: ${bindingId}`);
+    return impact;
   }
 
   private evaluate(input: EvaluationInput): Evaluation {

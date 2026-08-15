@@ -173,6 +173,15 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 4")
       .get(),
   );
+  const impactColumns = reopened.db.pragma("table_info(impact_bindings)") as Array<{ name: string }>;
+  for (const column of ["updated_at", "deactivated_at", "deactivation_reason"]) {
+    assert.ok(impactColumns.some((item) => item.name === column), `missing impact_bindings.${column}`);
+  }
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 5")
+      .get(),
+  );
   assert.equal(reopened.snapshot("board-1").board.title, "产品目标");
   reopened.close();
 });
@@ -653,6 +662,109 @@ test("confirmed impact bindings prevent two active writers", () => {
   });
   assert.equal(second.allowed, false);
   assert.ok(second.reasons.some((item) => item.code === "impact.write_write_conflict"));
+  store.close();
+});
+
+test("Impact bindings can be updated and deactivated without erasing their history", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "impact-maintenance");
+  createLeaf(coordinator, "impact-maintenance-target");
+  const created = coordinator.addImpact(
+    "board-1",
+    {
+      goal_id: "impact-maintenance",
+      surface: "src/web",
+      access: "read",
+      input_snapshot: "commit://one",
+      state: "proposed",
+      reason: "先记录可能读取的区域",
+    },
+    { actor_id: "user-1", idempotency_key: "impact-maintenance-add" },
+  );
+  assert.equal(created.impact.state, "proposed");
+  assert.equal(created.impact.updated_at, created.impact.created_at);
+
+  setNow("2026-08-15T01:00:00.000Z");
+  const updateInput = {
+    binding_id: created.binding_id,
+    goal_id: "impact-maintenance",
+    surface: "src/web/render.ts",
+    access: "write" as const,
+    input_snapshot: "contract://impact-maintenance",
+    state: "confirmed" as const,
+    reason: "实现会写入 Goal 文档渲染区域",
+  };
+  const updated = coordinator.updateImpact(
+    "board-1",
+    updateInput,
+    {
+      actor_id: "user-1",
+      idempotency_key: "impact-maintenance-update",
+      reason: "确认实际修改范围和访问方式",
+    },
+  );
+  assert.equal(updated.impact.surface, "src/web/render.ts");
+  assert.equal(updated.impact.access, "write");
+  assert.equal(updated.impact.state, "confirmed");
+  assert.equal(updated.impact.updated_at, "2026-08-15T01:00:00.000Z");
+  assert.equal(
+    coordinator.updateImpact(
+      "board-1",
+      updateInput,
+      {
+        actor_id: "user-1",
+        idempotency_key: "impact-maintenance-update",
+        reason: "确认实际修改范围和访问方式",
+      },
+    ).replayed,
+    true,
+  );
+  assert.throws(
+    () => coordinator.updateImpact(
+      "board-1",
+      updateInput,
+      { actor_id: "user-1", idempotency_key: "impact-maintenance-no-audit", reason: "" },
+    ),
+    /必须说明修改原因/,
+  );
+  assert.throws(
+    () => coordinator.updateImpact(
+      "board-1",
+      { ...updateInput, goal_id: "impact-maintenance-target" },
+      {
+        actor_id: "user-1",
+        idempotency_key: "impact-maintenance-move-goal",
+        reason: "尝试把绑定迁移到另一个 Goal",
+      },
+    ),
+    /归属 Goal 不能通过更新迁移/,
+  );
+
+  setNow("2026-08-15T02:00:00.000Z");
+  const deactivated = coordinator.deactivateImpact(
+    "board-1",
+    { binding_id: created.binding_id, reason: "该渲染区域已由新的 Goal 接管" },
+    { actor_id: "user-1", idempotency_key: "impact-maintenance-deactivate" },
+  );
+  assert.equal(deactivated.impact.state, "inactive");
+  assert.equal(deactivated.impact.deactivated_at, "2026-08-15T02:00:00.000Z");
+  assert.equal(deactivated.impact.deactivation_reason, "该渲染区域已由新的 Goal 接管");
+  assert.equal(deactivated.impact.reason, "实现会写入 Goal 文档渲染区域");
+  assert.ok(store.snapshot("board-1").impacts.some((item) => item.binding_id === created.binding_id));
+  assert.throws(
+    () => coordinator.updateImpact(
+      "board-1",
+      updateInput,
+      {
+        actor_id: "user-1",
+        idempotency_key: "impact-maintenance-edit-inactive",
+        reason: "尝试修改历史",
+      },
+    ),
+    /不能原地修改/,
+  );
+  assert.ok(store.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'impact.updated'").get(created.binding_id));
+  assert.ok(store.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'impact.deactivated'").get(created.binding_id));
   store.close();
 });
 
