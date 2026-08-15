@@ -441,6 +441,77 @@ test("policy edits replace the same scope while Goal rules only strengthen proje
   store.close();
 });
 
+test("user relation maintenance keeps direction, reason, history, and idempotency", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "relation-source");
+  createLeaf(coordinator, "relation-target");
+
+  const added = coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "relation-source",
+      to_goal_id: "relation-target",
+      type: "extends",
+      reason: "source 在 target 的已交付结果上继续扩展",
+    },
+    { actor_id: "user-1", idempotency_key: "relation-maintenance-add" },
+  );
+  assert.throws(
+    () =>
+      coordinator.addRelation(
+        "board-1",
+        {
+          from_goal_id: "relation-source",
+          to_goal_id: "relation-target",
+          type: "extends",
+          reason: "不能重复添加同一条生效关系",
+        },
+        { actor_id: "user-1", idempotency_key: "relation-maintenance-duplicate" },
+      ),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "relation.already_exists",
+  );
+
+  const deactivated = coordinator.deactivateRelation(
+    "board-1",
+    {
+      relation_id: added.relation_id,
+      reason: "扩展结果已经并入新的独立 Goal",
+    },
+    { actor_id: "user-1", idempotency_key: "relation-maintenance-deactivate" },
+  );
+  assert.equal(deactivated.relation.from_goal_id, "relation-source");
+  assert.equal(deactivated.relation.to_goal_id, "relation-target");
+  assert.equal(deactivated.relation.type, "extends");
+  assert.equal(deactivated.relation.state, "inactive");
+  assert.ok(deactivated.relation.deactivated_at);
+
+  const replay = coordinator.deactivateRelation(
+    "board-1",
+    {
+      relation_id: added.relation_id,
+      reason: "扩展结果已经并入新的独立 Goal",
+    },
+    { actor_id: "user-1", idempotency_key: "relation-maintenance-deactivate" },
+  );
+  assert.equal(replay.replayed, true);
+  assert.throws(
+    () =>
+      coordinator.deactivateRelation(
+        "board-1",
+        { relation_id: added.relation_id, reason: "再次解除" },
+        { actor_id: "user-1", idempotency_key: "relation-maintenance-deactivate-again" },
+      ),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "relation.not_active",
+  );
+  const event = store.db
+    .prepare("SELECT reason FROM events WHERE type = 'relation.deactivated' AND object_id = ?")
+    .get(added.relation_id) as { reason: string } | undefined;
+  assert.equal(event?.reason, "扩展结果已经并入新的独立 Goal");
+  store.close();
+});
+
 test("ready query explains dependency and Goal Mode blockers in plain language", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "foundation");

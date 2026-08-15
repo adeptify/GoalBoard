@@ -18,6 +18,7 @@ import {
   type GoalPolicy,
   type GoalContractView,
   type GoalRecord,
+  type GoalRelationRecord,
   type ImpactAccess,
   type ImpactBindingRecord,
   type ReadyGoal,
@@ -528,6 +529,30 @@ export class GoalBoardCoordinator {
       if (input.from_goal_id === input.to_goal_id) {
         throw new GoalBoardV1Error("relation.self_reference", "Goal 不能关联到自身");
       }
+      const relationReason = input.reason.trim();
+      if (!relationReason) {
+        throw new GoalBoardV1Error("relation.reason_required", "关系必须说明建立原因");
+      }
+      const alreadyActive = this.store.db
+        .prepare(`
+          SELECT relation_id FROM goal_relations
+          WHERE board_id = ? AND from_goal_id = ? AND to_goal_id = ?
+            AND type = ? AND state = ?
+          LIMIT 1
+        `)
+        .get(
+          boardId,
+          input.from_goal_id,
+          input.to_goal_id,
+          input.type,
+          input.state ?? "active",
+        ) as Row | undefined;
+      if (alreadyActive) {
+        throw new GoalBoardV1Error(
+          "relation.already_exists",
+          input.state === "proposed" ? "这条待确认关系已经存在" : "这条关系已经生效",
+        );
+      }
       const relationId = `relation-${randomUUID()}`;
       const at = this.clock().toISOString();
       this.store.db
@@ -544,7 +569,7 @@ export class GoalBoardCoordinator {
           input.to_goal_id,
           input.type,
           input.state ?? "active",
-          input.reason,
+          relationReason,
           write.actor_id,
           at,
         );
@@ -555,12 +580,83 @@ export class GoalBoardCoordinator {
         type: "relation.added",
         objectType: "relation",
         objectId: relationId,
-        reason: input.reason,
-        payload: input,
+        reason: relationReason,
+        payload: { ...input, reason: relationReason },
         at,
       });
       const outcome = { relation_id: relationId, observed_event_cursor: cursor };
       this.remember(boardId, write.actor_id, "add_relation", write.idempotency_key, hash, outcome, at);
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  deactivateRelation(
+    boardId: string,
+    input: { relation_id: string; reason: string },
+    write: ActorWrite,
+  ): {
+    relation: GoalRelationRecord;
+    replayed: boolean;
+    observed_event_cursor: number;
+  } {
+    const reasonText = input.reason.trim();
+    if (!reasonText) {
+      throw new GoalBoardV1Error("relation.deactivation_reason_required", "解除关系时必须说明原因");
+    }
+    const hash = requestHash({ board_id: boardId, relation_id: input.relation_id, reason: reasonText });
+    return this.store.immediate(() => {
+      const replay = this.replay<{
+        relation: GoalRelationRecord;
+        observed_event_cursor: number;
+      }>(boardId, write.actor_id, "deactivate_relation", write.idempotency_key, hash);
+      if (replay) return { ...replay, replayed: true };
+      this.requireBoard(boardId);
+      const row = this.store.db
+        .prepare("SELECT * FROM goal_relations WHERE board_id = ? AND relation_id = ?")
+        .get(boardId, input.relation_id) as Row | undefined;
+      if (!row) {
+        throw new GoalBoardV1Error("relation.not_found", `找不到关系: ${input.relation_id}`);
+      }
+      if (asText(row.state) !== "active") {
+        throw new GoalBoardV1Error("relation.not_active", "只有正在生效的关系可以解除");
+      }
+      const at = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          UPDATE goal_relations
+          SET state = 'inactive', deactivated_at = ?
+          WHERE relation_id = ?
+        `)
+        .run(at, input.relation_id);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId: write.actor_id,
+        type: "relation.deactivated",
+        objectType: "relation",
+        objectId: input.relation_id,
+        reason: reasonText,
+        payload: {
+          from_goal_id: asText(row.from_goal_id),
+          to_goal_id: asText(row.to_goal_id),
+          type: asText(row.type),
+        },
+        at,
+      });
+      const relation = this.store
+        .snapshot(boardId)
+        .relations.find((item) => item.relation_id === input.relation_id);
+      if (!relation) throw new Error("关系停用后无法读取");
+      const outcome = { relation, observed_event_cursor: cursor };
+      this.remember(
+        boardId,
+        write.actor_id,
+        "deactivate_relation",
+        write.idempotency_key,
+        hash,
+        outcome,
+        at,
+      );
       return { ...outcome, replayed: false };
     });
   }

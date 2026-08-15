@@ -271,6 +271,142 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   store.close();
 });
 
+test("Web lets the user add and deactivate every supported Goal relation with explicit direction", async () => {
+  const { databasePath } = webFixture();
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID, demo: true });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const initialPage = await (await fetch(`${origin}/goals/CORE`)).text();
+    assert.match(initialPage, /data-relation-editor/);
+    assert.match(initialPage, /这是用户确认入口/);
+    assert.match(initialPage, /Runtime 发现的变化仍只能提交 Rewire/);
+    assert.match(initialPage, /name="direction" value="outgoing" checked/);
+    assert.match(initialPage, /name="direction" value="incoming"/);
+    assert.match(initialPage, /data-relation-live-preview/);
+    for (const type of [
+      "part_of",
+      "depends_on",
+      "conflicts_with",
+      "mitigates",
+      "extends",
+      "replaces",
+      "corrects",
+      "invalidates",
+      "migrates_from",
+    ]) {
+      assert.match(initialPage, new RegExp(`<option value="${type}"`));
+    }
+
+    const missingReason = await fetch(`${origin}/api/goals/CORE/relations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        direction: "incoming",
+        type: "corrects",
+        target_goal_id: "INTERFACES",
+      }),
+    });
+    assert.equal(missingReason.status, 400);
+    assert.match(await missingReason.text(), /为什么要建立这条关系/);
+
+    const createResponse = await fetch(`${origin}/api/goals/CORE/relations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        direction: "incoming",
+        type: "corrects",
+        target_goal_id: "INTERFACES",
+        reason: "接口 Goal 修正当前执行闭环中的协议偏差",
+        idempotency_key: "web-relation-maintenance-add",
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const created = (await createResponse.json()) as { relation_id: string };
+    const afterCreate = (await (await fetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        relations: Array<{
+          relation_id: string;
+          from_goal_id: string;
+          to_goal_id: string;
+          type: string;
+          state: string;
+          reason: string;
+          deactivated_at: string | null;
+        }>;
+      };
+    };
+    const relation = afterCreate.snapshot.relations.find(
+      (item) => item.relation_id === created.relation_id,
+    );
+    assert.deepEqual(
+      relation && {
+        from_goal_id: relation.from_goal_id,
+        to_goal_id: relation.to_goal_id,
+        type: relation.type,
+        state: relation.state,
+        reason: relation.reason,
+      },
+      {
+        from_goal_id: "INTERFACES",
+        to_goal_id: "CORE",
+        type: "corrects",
+        state: "active",
+        reason: "接口 Goal 修正当前执行闭环中的协议偏差",
+      },
+    );
+    const activePage = await (await fetch(`${origin}/goals/CORE`)).text();
+    assert.match(activePage, new RegExp(`data-relation-id="${created.relation_id}"`));
+    assert.match(activePage, /让 CLI 与 MCP 共用同一真相 → 修正 → 当前 Goal/);
+    assert.match(activePage, /接口 Goal 修正当前执行闭环中的协议偏差/);
+    assert.match(activePage, /data-relation-deactivate-open/);
+
+    const missingDeactivateReason = await fetch(
+      `${origin}/api/relations/${encodeURIComponent(created.relation_id)}/deactivate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(missingDeactivateReason.status, 400);
+    assert.match(await missingDeactivateReason.text(), /必须说明原因/);
+
+    const deactivateResponse = await fetch(
+      `${origin}/api/relations/${encodeURIComponent(created.relation_id)}/deactivate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reason: "修正工作已经独立完成，这条关系不再成立",
+          idempotency_key: "web-relation-maintenance-deactivate",
+        }),
+      },
+    );
+    assert.equal(deactivateResponse.status, 200);
+    const deactivated = (await deactivateResponse.json()) as {
+      relation: { state: string; deactivated_at: string | null };
+    };
+    assert.equal(deactivated.relation.state, "inactive");
+    assert.ok(deactivated.relation.deactivated_at);
+    const inactivePage = await (await fetch(`${origin}/goals/CORE`)).text();
+    assert.match(inactivePage, /已解除关系/);
+    assert.match(inactivePage, /解除原因：修正工作已经独立完成，这条关系不再成立/);
+    assert.doesNotMatch(
+      inactivePage.match(
+        new RegExp(`<div class="relation-record relation-record--inactive" data-relation-id="${created.relation_id}"[\\s\\S]*?<\\/div>`),
+      )?.[0] ?? "",
+      /data-relation-deactivate-open/,
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("Web server keeps Candidate and Rewire as separate user decisions", async () => {
   const { databasePath } = webFixture();
   const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID, demo: true });
@@ -1055,6 +1191,9 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /name="cross_reviewers"/);
     assert.match(page, /name="adversarial_reviewers"/);
     assert.match(page, /name="max_lease_seconds"/);
+    assert.match(page, /const syncGoalViews = \(nextDocument\) =>/);
+    assert.match(page, /currentView\.replaceWith\(nextView\)/);
+    assert.doesNotMatch(page, /documentPane\.innerHTML = nextDocument\.innerHTML/);
     assert.match(page, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
     assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB">前往处理<\/a>/);

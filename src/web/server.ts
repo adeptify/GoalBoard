@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
-import type { GoalPolicy } from "../v1/types.js";
+import type { GoalPolicy, GoalRelationRecord } from "../v1/types.js";
 import {
   renderGoalBoardWeb,
   type GoalBoardWebView,
@@ -30,6 +30,18 @@ const REVIEW_LABELS: Record<string, string> = {
   adversarial_reviewer: "对抗性验证",
   human_approver: "用户确认",
 };
+
+const RELATION_TYPES = new Set<GoalRelationRecord["type"]>([
+  "part_of",
+  "depends_on",
+  "conflicts_with",
+  "mitigates",
+  "extends",
+  "replaces",
+  "corrects",
+  "invalidates",
+  "migrates_from",
+]);
 
 type DatabaseRow = Record<string, unknown>;
 
@@ -513,6 +525,85 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
                 actor_id: "web-user",
                 idempotency_key: String(body.idempotency_key ?? `web-draft-${randomUUID()}`),
                 reason: text("reason", 1_000),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const goalRelationMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/relations$/);
+        if (request.method === "POST" && goalRelationMatch) {
+          const body = await readBody(request);
+          const goalId = decodeURIComponent(goalRelationMatch[1]);
+          const targetGoalId = String(body.target_goal_id ?? "").trim();
+          const type = String(body.type ?? "") as GoalRelationRecord["type"];
+          const direction = String(body.direction ?? "outgoing");
+          const reason = String(body.reason ?? "").trim();
+          if (!targetGoalId) {
+            sendJson(response, 400, { error: "请选择另一个 Goal" });
+            return;
+          }
+          if (!RELATION_TYPES.has(type)) {
+            sendJson(response, 400, { error: "关系类型不受支持" });
+            return;
+          }
+          if (direction !== "outgoing" && direction !== "incoming") {
+            sendJson(response, 400, { error: "关系方向必须是 outgoing 或 incoming" });
+            return;
+          }
+          if (!reason) {
+            sendJson(response, 400, { error: "请说明为什么要建立这条关系" });
+            return;
+          }
+          try {
+            const result = coordinator.addRelation(
+              options.boardId,
+              {
+                from_goal_id: direction === "outgoing" ? goalId : targetGoalId,
+                to_goal_id: direction === "outgoing" ? targetGoalId : goalId,
+                type,
+                state: "active",
+                reason,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-relation-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 201, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const relationDeactivateMatch = url.pathname.match(
+          /^\/api\/relations\/([^/]+)\/deactivate$/,
+        );
+        if (request.method === "POST" && relationDeactivateMatch) {
+          const body = await readBody(request);
+          const reason = String(body.reason ?? "").trim();
+          if (!reason) {
+            sendJson(response, 400, { error: "解除关系时必须说明原因" });
+            return;
+          }
+          try {
+            const result = coordinator.deactivateRelation(
+              options.boardId,
+              {
+                relation_id: decodeURIComponent(relationDeactivateMatch[1]),
+                reason,
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(
+                  body.idempotency_key ?? `web-relation-deactivate-${randomUUID()}`,
+                ),
               },
             );
             sendJson(response, 200, result);

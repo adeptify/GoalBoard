@@ -141,6 +141,22 @@ const RELATION_LABELS: Record<string, { out: string; in: string }> = {
   migrates_from: { out: "迁移自", in: "迁移到" },
 };
 
+const RELATION_TYPES: Array<{
+  type: GoalRelationRecord["type"];
+  label: string;
+  description: string;
+}> = [
+  { type: "part_of", label: "属于 / 包含", description: "只改变 Goal Tree 层级，不要求上级先完成" },
+  { type: "depends_on", label: "依赖 / 被依赖", description: "左侧 Goal 必须等待右侧 Goal 完成，是领取与完成门禁" },
+  { type: "conflicts_with", label: "冲突", description: "两项工作无法同时成立，或会相互干扰" },
+  { type: "mitigates", label: "缓解", description: "左侧 Goal 用来降低右侧风险或负面影响" },
+  { type: "extends", label: "扩展", description: "左侧 Goal 在右侧结果上继续增加能力" },
+  { type: "replaces", label: "替代", description: "左侧 Goal 将取代右侧 Goal" },
+  { type: "corrects", label: "修正", description: "左侧 Goal 修正右侧的错误或偏差" },
+  { type: "invalidates", label: "使其失效", description: "左侧 Goal 使右侧事实或结果不再有效" },
+  { type: "migrates_from", label: "迁移自", description: "左侧 Goal 从右侧旧实现或旧结构迁移而来" },
+];
+
 const REVIEW_LABELS: Record<string, string> = {
   self_verifier: "自检",
   cross_reviewer: "交叉验证",
@@ -260,13 +276,30 @@ function relationRow(
   const related = [...view.goals, ...view.archived_goals].find(
     (candidate) => candidate.goal.goal_id === relatedId,
   );
+  const relatedName = related?.goal.title ?? relatedId;
   const labels = RELATION_LABELS[relation.type] ?? { out: relation.type, in: relation.type };
-  return `<button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}">
-    <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
-    <span class="relation-copy"><strong>${escapeHtml(related?.goal.title ?? relatedId)}</strong><small>${escapeHtml(relatedId)} · ${escapeHtml(relation.reason)}</small></span>
-    <span class="relation-state relation-state--${escapeHtml(relation.state)}">${escapeHtml(relation.state === "active" ? "生效" : relation.state === "proposed" ? "待确认" : "停用")}</span>
-    ${icon("chevron-right")}
-  </button>`;
+  const path = outgoing
+    ? `当前 Goal → ${labels.out} → ${relatedName}`
+    : `${relatedName} → ${labels.out} → 当前 Goal`;
+  const deactivated = item.events.find(
+    (event) => event.type === "relation.deactivated" && event.object_id === relation.relation_id,
+  );
+  const stateLabel = relation.state === "active" ? "生效" : relation.state === "proposed" ? "待确认" : "已解除";
+  const deactivateId = `relation-deactivate-${relation.relation_id}`;
+  return `<div class="relation-record relation-record--${escapeHtml(relation.state)}" data-relation-id="${escapeHtml(relation.relation_id)}">
+    <button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}" aria-label="打开 ${escapeHtml(relatedName)}">
+      <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
+      <span class="relation-copy"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">建立原因：${escapeHtml(relation.reason)}${deactivated ? ` · 解除原因：${escapeHtml(deactivated.reason)}` : ""}</small></span>
+      <span class="relation-state relation-state--${escapeHtml(relation.state)}">${escapeHtml(stateLabel)}</span>
+      ${icon("chevron-right")}
+    </button>
+    ${relation.state === "active" && !item.goal.archived_at ? `<button class="relation-deactivate-open" type="button" data-relation-deactivate-open aria-expanded="false" aria-controls="${escapeHtml(deactivateId)}">解除</button>` : ""}
+    ${relation.state === "active" && !item.goal.archived_at ? `<form class="relation-deactivate-form" id="${escapeHtml(deactivateId)}" data-relation-deactivate-form data-live-form="relation-deactivate-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}" hidden>
+      <label><span>解除原因</span><textarea name="reason" rows="2" required placeholder="说明为什么这条关系不再成立；历史记录会保留"></textarea></label>
+      <p class="form-error" data-relation-deactivate-error role="alert" hidden></p>
+      <footer><button type="button" data-relation-deactivate-cancel>取消</button><button class="button-danger" type="submit">确认解除</button></footer>
+    </form>` : ""}
+  </div>`;
 }
 
 function relationGroup(
@@ -285,6 +318,7 @@ function relationGroup(
 
 function renderRelations(item: WebGoalView, view: GoalBoardWebView): string {
   const relations = item.relations.filter((relation) => relation.state !== "inactive");
+  const inactive = item.relations.filter((relation) => relation.state === "inactive");
   const spineTypes = new Set(["depends_on", "part_of"]);
   const upstream = relations.filter(
     (relation) => relation.from_goal_id === item.goal.goal_id && spineTypes.has(relation.type),
@@ -299,7 +333,47 @@ function renderRelations(item: WebGoalView, view: GoalBoardWebView): string {
     ${relationGroup("上游", "这个 Goal 开始前需要什么", upstream, item, view)}
     ${relationGroup("下游", "哪些 Goal 等待或包含它", downstream, item, view)}
     ${relationGroup("其他关联", "扩展、替代、修正或风险关系", other, item, view)}
-  </div>${renderResolvedDependencyHistory(item, view)}`;
+  </div>
+  ${renderRelationEditor(item, view)}
+  ${inactive.length ? `<details class="relation-inactive-history" data-persist-open="inactive-relations-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>已解除关系</strong><small>${inactive.length} 条，保留方向与变更原因</small></span>${icon("chevron-down")}</summary><div>${inactive.map((relation) => relationRow(relation, item, view)).join("")}</div></details>` : ""}
+  ${renderResolvedDependencyHistory(item, view)}`;
+}
+
+function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string {
+  if (item.goal.archived_at) return "";
+  const targets = sortGoals(view.goals).filter(
+    (candidate) => candidate.goal.goal_id !== item.goal.goal_id,
+  );
+  const editorKey = `relation-editor-${item.goal.goal_id}`;
+  if (!targets.length) {
+    return `<div class="relation-editor-empty">${icon("link")}<span><strong>还没有可关联的其他 Goal</strong><small>先新建另一个 Goal，再回来建立层级、依赖或语义关系。</small></span></div>`;
+  }
+  const targetOptions = targets
+    .map(
+      (target) =>
+        `<option value="${escapeHtml(target.goal.goal_id)}" data-goal-name="${escapeHtml(target.goal.title)}">${escapeHtml(target.goal.title)} · ${escapeHtml(target.goal.goal_id)}</option>`,
+    )
+    .join("");
+  const typeOptions = RELATION_TYPES.map(({ type, label, description }) => {
+    const labels = RELATION_LABELS[type];
+    return `<option value="${escapeHtml(type)}" data-out-label="${escapeHtml(labels.out)}" data-in-label="${escapeHtml(labels.in)}" data-description="${escapeHtml(description)}">${escapeHtml(label)}</option>`;
+  }).join("");
+  const firstTarget = targets[0]!.goal;
+  return `<details class="relation-editor" data-relation-editor data-persist-open="${escapeHtml(editorKey)}" data-live-form="${escapeHtml(editorKey)}">
+    <summary><span class="relation-editor-icon">${icon("link")}</span><span><strong>维护关系</strong><small>新增关系，或在上方解除已有关系</small></span><span class="relation-editor-action">打开编辑器</span>${icon("chevron-down")}</summary>
+    <form class="relation-form" data-relation-form data-live-form="relation-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-current-goal-name="${escapeHtml(item.goal.title)}">
+      <div class="relation-authority"><span>${icon("shield")}</span><p><strong>这是用户确认入口</strong><small>你在这里提交的关系会直接生效；Runtime 发现的变化仍只能提交 Rewire，并在<a href="/decisions">决定中心</a>等待你确认。</small></p></div>
+      <fieldset class="relation-direction-control"><legend>关系从哪里发出</legend><div><label><input type="radio" name="direction" value="outgoing" checked><span><strong>当前 Goal → 其他 Goal</strong><small>当前 Goal 是关系左侧</small></span></label><label><input type="radio" name="direction" value="incoming"><span><strong>其他 Goal → 当前 Goal</strong><small>当前 Goal 是关系右侧</small></span></label></div></fieldset>
+      <div class="relation-builder">
+        <label><span>关系类型</span><select name="type">${typeOptions}</select></label>
+        <label><span>另一个 Goal</span><select name="target_goal_id">${targetOptions}</select></label>
+      </div>
+      <div class="relation-live-preview" data-relation-live-preview><small>方向预览</small><strong>${escapeHtml(item.goal.title)} <span>→ 属于 →</span> ${escapeHtml(firstTarget.title)}</strong><p>只改变 Goal Tree 层级，不要求上级先完成</p></div>
+      <label class="relation-reason-field"><span>建立原因</span><textarea name="reason" rows="3" required placeholder="说明为什么方向是 A → B，而不是 B → A；这个理由会进入关系历史"></textarea></label>
+      <p class="form-error" data-relation-error role="alert" hidden></p>
+      <footer><p>提交后直接生效并写入事件历史；不会创建或启动 Runtime。</p><button class="button-primary" type="submit">建立关系</button></footer>
+    </form>
+  </details>`;
 }
 
 function renderClaimCell(item: WebGoalView): string {
@@ -1400,25 +1474,91 @@ const MORE_STYLES = `
   .review-state { flex: 0 0 8px; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--amber); }
   .review-state--satisfied { background: var(--green); }
   .review-state--waived { background: var(--faint); }
-  .relation-layout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
-  .relation-group { min-width: 0; border-right: 1px solid var(--line); }
-  .relation-group:last-child { border-right: 0; }
-  .relation-group > header { padding: 10px 12px; border-bottom: 1px solid var(--line); background: #fbfcfd; }
+  .relation-layout { display: grid; grid-template-columns: 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .relation-group { min-width: 0; border-bottom: 1px solid var(--line); }
+  .relation-group:last-child { border-bottom: 0; }
+  .relation-group > header { padding: 9px 12px; border-bottom: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: baseline; gap: 9px; }
   .relation-group h3 { margin: 0; font-size: 13px; }
   .relation-group h3 span { color: var(--muted); font-weight: 500; }
   .relation-group p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
   .relation-group > div { padding: 5px 7px; }
-  .relation-row { width: 100%; min-width: 0; padding: 7px 5px; border: 0; border-bottom: 1px solid #edf0f3; background: transparent; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 7px; text-align: left; cursor: pointer; }
-  .relation-row:last-child { border-bottom: 0; }
+  .relation-record { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid #edf0f3; }
+  .relation-record:last-child { border-bottom: 0; }
+  .relation-row { width: 100%; min-width: 0; padding: 8px 5px; border: 0; background: transparent; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 7px; text-align: left; cursor: pointer; }
   .relation-row:hover { background: var(--blue-soft); }
   .relation-kind { padding: 1px 5px; border-radius: 3px; background: #eef1f4; color: #4f5864; font-size: 10px; white-space: nowrap; }
-  .relation-copy { min-width: 0; display: grid; }
+  .relation-copy { min-width: 0; display: grid; gap: 1px; }
   .relation-copy strong, .relation-copy small { white-space: normal; overflow-wrap: anywhere; }
   .relation-copy small { color: var(--muted); font-size: 10px; }
+  .relation-copy .relation-goal-id { color: var(--faint); }
+  .relation-copy .relation-path { color: #3e4753; }
+  .relation-copy .relation-reason { line-height: 1.4; }
   .relation-state { font-size: 10px; color: var(--muted); }
   .relation-state--active { color: var(--green); }
   .relation-state--proposed { color: var(--amber); }
+  .relation-state--inactive { color: var(--muted); }
   .relation-row > svg { color: var(--faint); }
+  .relation-deactivate-open { align-self: center; margin-right: 5px; padding: 4px 6px; border: 1px solid transparent; color: var(--muted); background: transparent; font-size: 11px; }
+  .relation-deactivate-open:hover { border-color: #efcaca; color: var(--red); background: var(--red-soft); }
+  .relation-deactivate-form { grid-column: 1 / -1; margin: 0 5px 7px; padding: 10px; border: 1px solid #efcaca; border-radius: 5px; background: var(--red-soft); display: grid; gap: 8px; }
+  .relation-deactivate-form[hidden] { display: none; }
+  .relation-deactivate-form label { display: grid; gap: 4px; }
+  .relation-deactivate-form label > span { color: #743333; font-size: 11px; font-weight: 650; }
+  .relation-deactivate-form textarea { width: 100%; min-height: 56px; padding: 7px 8px; border: 1px solid #dfbaba; border-radius: 4px; background: var(--paper); color: var(--ink); resize: vertical; }
+  .relation-deactivate-form footer { display: flex; justify-content: flex-end; gap: 7px; }
+  .relation-deactivate-form footer button { padding: 6px 10px; }
+  .button-danger { border-color: var(--red) !important; color: #fff !important; background: var(--red) !important; }
+  .relation-editor { margin-top: 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fbfcfd; overflow: hidden; }
+  .relation-editor > summary, .relation-inactive-history > summary { min-height: 54px; padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 9px; list-style: none; cursor: pointer; }
+  .relation-editor > summary::-webkit-details-marker, .relation-inactive-history > summary::-webkit-details-marker { display: none; }
+  .relation-editor > summary:hover, .relation-inactive-history > summary:hover { background: #f4f7fa; }
+  .relation-editor > summary > svg:last-child, .relation-inactive-history > summary > svg:last-child { width: 14px; height: 14px; color: var(--muted); transition: transform .16s ease; }
+  .relation-editor[open] > summary > svg:last-child, .relation-inactive-history[open] > summary > svg:last-child { transform: rotate(180deg); }
+  .relation-editor-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; color: var(--blue-dark); background: var(--blue-soft); }
+  .relation-editor-icon svg { width: 15px; height: 15px; }
+  .relation-editor > summary > span:nth-child(2), .relation-inactive-history > summary > span:first-child { min-width: 0; display: grid; }
+  .relation-editor > summary strong, .relation-inactive-history > summary strong { font-size: 13px; }
+  .relation-editor > summary small, .relation-inactive-history > summary small { color: var(--muted); font-size: 11px; }
+  .relation-editor-action { color: var(--blue-dark); font-size: 11px; font-weight: 650; }
+  .relation-form { padding: 14px; border-top: 1px solid var(--line); background: var(--paper); display: grid; gap: 14px; }
+  .relation-authority { padding: 10px 11px; border: 1px solid #c9def9; border-radius: 5px; background: #f5f9ff; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; }
+  .relation-authority > span { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 4px; color: var(--blue-dark); background: var(--blue-soft); }
+  .relation-authority svg { width: 14px; height: 14px; }
+  .relation-authority p { margin: 0; display: grid; gap: 2px; }
+  .relation-authority strong { font-size: 12px; }
+  .relation-authority small { color: #536274; font-size: 11px; line-height: 1.5; }
+  .relation-authority a { color: var(--blue-dark); text-underline-offset: 2px; }
+  .relation-direction-control { min-width: 0; padding: 0; border: 0; }
+  .relation-direction-control legend { margin-bottom: 6px; color: #444d59; font-size: 11px; font-weight: 650; }
+  .relation-direction-control > div { padding: 3px; border: 1px solid var(--line-strong); border-radius: 5px; background: #f3f5f7; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+  .relation-direction-control label { position: relative; min-width: 0; cursor: pointer; }
+  .relation-direction-control input { position: absolute; opacity: 0; pointer-events: none; }
+  .relation-direction-control label > span { min-height: 48px; padding: 7px 9px; border: 1px solid transparent; border-radius: 4px; display: grid; align-content: center; gap: 1px; }
+  .relation-direction-control label > span strong { font-size: 12px; }
+  .relation-direction-control label > span small { color: var(--muted); font-size: 10px; }
+  .relation-direction-control input:checked + span { border-color: #b7d5fa; background: var(--paper); color: var(--blue-dark); }
+  .relation-direction-control input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .relation-builder { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(0, 1.3fr); gap: 10px; }
+  .relation-builder label, .relation-reason-field { min-width: 0; display: grid; gap: 5px; }
+  .relation-builder label > span, .relation-reason-field > span { color: #444d59; font-size: 11px; font-weight: 650; }
+  .relation-builder select, .relation-reason-field textarea { width: 100%; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--paper); color: var(--ink); }
+  .relation-reason-field textarea { min-height: 72px; resize: vertical; }
+  .relation-live-preview { padding: 11px 12px; border: 1px solid #c9def9; border-radius: 5px; background: #f7faff; display: grid; gap: 3px; }
+  .relation-live-preview > small { color: var(--blue-dark); font-size: 10px; font-weight: 700; }
+  .relation-live-preview > strong { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+  .relation-live-preview > strong span { color: var(--blue-dark); }
+  .relation-live-preview > p { margin: 0; color: #536274; font-size: 11px; }
+  .relation-form > footer { padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .relation-form > footer p { margin: 0; color: var(--muted); font-size: 11px; }
+  .relation-form > footer button { flex: 0 0 auto; }
+  .relation-inactive-history { margin-top: 8px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; }
+  .relation-inactive-history > summary { min-height: 44px; grid-template-columns: minmax(0, 1fr) auto; }
+  .relation-inactive-history > summary > span { grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 7px; }
+  .relation-inactive-history > summary > span svg { width: 14px; height: 14px; color: var(--muted); }
+  .relation-inactive-history > div { padding: 5px 7px; border-top: 1px solid var(--line); }
+  .relation-editor-empty { margin-top: 10px; padding: 10px 11px; border: 1px dashed var(--line-strong); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; color: var(--muted); }
+  .relation-editor-empty > span { display: grid; }
+  .relation-editor-empty svg { width: 15px; height: 15px; }
   .dependency-history { margin-top: 14px; }
   .dependency-history > h3 { margin: 0; font-size: 13px; }
   .dependency-history > h3 span { color: var(--muted); font-weight: 500; }
@@ -1793,6 +1933,10 @@ const RESPONSIVE_STYLES = `
     .criteria-editor > header, .draft-contract-form > footer { align-items: stretch; flex-direction: column; }
     .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
     .draft-aux-form { padding-left: 0; }
+    .relation-direction-control > div, .relation-builder { grid-template-columns: 1fr; }
+    .relation-form > footer { align-items: stretch; flex-direction: column; }
+    .relation-form > footer button { align-self: flex-end; }
+    .relation-editor-action { display: none; }
   }
   @media (max-width: 1360px) {
     .brand { min-width: 160px; padding-inline: 20px; }
@@ -1811,9 +1955,8 @@ const RESPONSIVE_STYLES = `
     .runtime-grid { grid-template-columns: 1fr 1fr; }
     .runtime-grid > section:nth-child(2) { border-right: 0; }
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
-    .relation-layout, .safety-grid { grid-template-columns: 1fr 1fr; }
-    .relation-group:nth-child(2), .safety-grid > section:nth-child(2) { border-right: 0; }
-    .relation-group:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+    .safety-grid { grid-template-columns: 1fr 1fr; }
+    .safety-grid > section:nth-child(2) { border-right: 0; }
   }
   @media (max-width: 900px) {
     .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
@@ -1840,10 +1983,10 @@ const RESPONSIVE_STYLES = `
     .goal-title-row { display: grid; gap: 10px; }
     .goal-title-actions { justify-content: space-between; }
     .goal-meta { gap: 8px 16px; }
-    .runtime-grid, .relation-layout, .safety-grid { grid-template-columns: 1fr; }
-    .runtime-grid > section, .relation-group, .safety-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
-    .runtime-grid > section:last-child, .relation-group:last-child, .safety-grid > section:last-child { border-bottom: 0 !important; }
-    .relation-group:last-child, .safety-grid > section:last-child { grid-column: auto; border-top: 0; }
+    .runtime-grid, .safety-grid { grid-template-columns: 1fr; }
+    .runtime-grid > section, .safety-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
+    .runtime-grid > section:last-child, .safety-grid > section:last-child { border-bottom: 0 !important; }
+    .safety-grid > section:last-child { grid-column: auto; border-top: 0; }
     .contract-list section { grid-template-columns: 1fr; gap: 6px; }
     .human-review-list > header { display: grid; gap: 2px; }
     .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
@@ -1869,6 +2012,10 @@ const RESPONSIVE_STYLES = `
     .criteria-editor > header, .draft-contract-form > footer { align-items: stretch; flex-direction: column; }
     .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
     .draft-aux-form { padding-left: 0; }
+    .relation-direction-control > div, .relation-builder { grid-template-columns: 1fr; }
+    .relation-form > footer { align-items: stretch; flex-direction: column; }
+    .relation-form > footer button { align-self: flex-end; }
+    .relation-editor-action { display: none; }
     .history-list li { grid-template-columns: 1fr; gap: 2px; }
     .decision-center { padding-inline: 24px; }
     .decision-center-header, .candidate-title, .decision-owner { align-items: flex-start; }
@@ -1894,7 +2041,7 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
@@ -1946,6 +2093,26 @@ const CLIENT_SCRIPT = `
           ? "关系预览：新 Goal → 依赖 → " + names.join("、") + "；这些 Goal 完成前不能领取或完成新 Goal。"
           : "关系预览：当前没有执行前置，Goal 可以独立推进。";
       }
+    };
+
+    const updateRelationFormPreview = (relationForm) => {
+      if (!relationForm) return;
+      const preview = relationForm.querySelector("[data-relation-live-preview]");
+      const type = relationForm.elements.type?.selectedOptions?.[0];
+      const target = relationForm.elements.target_goal_id?.selectedOptions?.[0];
+      const direction = relationForm.elements.direction?.value || "outgoing";
+      if (!preview || !type || !target) return;
+      const currentName = relationForm.dataset.currentGoalName || relationForm.dataset.goalId;
+      const targetName = target.dataset.goalName || target.textContent;
+      const left = direction === "outgoing" ? currentName : targetName;
+      const right = direction === "outgoing" ? targetName : currentName;
+      const label = type.dataset.outLabel || type.textContent;
+      preview.querySelector("strong").textContent = left + " → " + label + " → " + right;
+      preview.querySelector("p").textContent = type.dataset.description || "关系方向和原因会进入事件历史";
+    };
+
+    const updateAllRelationFormPreviews = () => {
+      document.querySelectorAll("[data-relation-form]").forEach(updateRelationFormPreview);
     };
 
     const renumberCriteria = (list) => {
@@ -2052,6 +2219,7 @@ const CLIENT_SCRIPT = `
     const readUiState = () => ({
       selected,
       collapsed: [...document.querySelectorAll("[data-tree-item].is-collapsed")].map((item) => item.dataset.goalId),
+      disclosures: [...document.querySelectorAll("[data-persist-open][open]")].map((item) => item.dataset.persistOpen),
       treeTop: treeScroll.scrollTop,
       documentTop: documentPane.scrollTop,
       treeWidth: treePane.getBoundingClientRect().width,
@@ -2066,6 +2234,10 @@ const CLIENT_SCRIPT = `
         const isCollapsed = collapsed.has(item.dataset.goalId);
         item.classList.toggle("is-collapsed", isCollapsed);
         item.querySelector(":scope > .tree-row [data-tree-toggle]")?.setAttribute("aria-expanded", String(!isCollapsed));
+      });
+      const disclosures = new Set(ui?.disclosures || []);
+      document.querySelectorAll("[data-persist-open]").forEach((item) => {
+        item.open = disclosures.has(item.dataset.persistOpen);
       });
       treeSearch.value = ui?.query || "";
       globalSearch.value = ui?.query || "";
@@ -2144,6 +2316,22 @@ const CLIENT_SCRIPT = `
       }
     }
 
+    const syncGoalViews = (nextDocument) => {
+      const currentViews = new Map(
+        [...documentPane.querySelectorAll("[data-goal-view]")].map((view) => [view.dataset.goalView, view]),
+      );
+      const nextViews = [...nextDocument.querySelectorAll("[data-goal-view]")];
+      const nextIds = new Set(nextViews.map((view) => view.dataset.goalView));
+      currentViews.forEach((view, goalId) => {
+        if (!nextIds.has(goalId)) view.remove();
+      });
+      nextViews.forEach((nextView) => {
+        const currentView = currentViews.get(nextView.dataset.goalView);
+        if (currentView) currentView.replaceWith(nextView);
+        else documentPane.append(nextView);
+      });
+    };
+
     const refreshBoard = async (force = false) => {
       if (syncing || document.hidden) return;
       if (!force && document.activeElement?.closest?.("[data-live-form]")) {
@@ -2188,7 +2376,8 @@ const CLIENT_SCRIPT = `
         const createDraft = dialog.open ? readCreateDraft() : null;
         documentPane.classList.add("is-syncing");
         treeScroll.innerHTML = nextTree.innerHTML;
-        documentPane.innerHTML = nextDocument.innerHTML;
+        if (decisionView) documentPane.replaceChildren(...nextDocument.childNodes);
+        else syncGoalViews(nextDocument);
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
         if (nextDecisionsLink) {
@@ -2208,6 +2397,7 @@ const CLIENT_SCRIPT = `
         selected = nextSelected;
         if (!decisionView) applySelection(selected, false);
         applyUiState(ui);
+        updateAllRelationFormPreviews();
         requestAnimationFrame(() => documentPane.classList.remove("is-syncing"));
         setSyncState("刚刚更新");
       } catch {
@@ -2268,6 +2458,13 @@ const CLIENT_SCRIPT = `
     });
     treeScroll.addEventListener("scroll", queueSave, { passive: true });
     documentPane.addEventListener("scroll", queueSave, { passive: true });
+    document.addEventListener("toggle", (event) => {
+      if (event.target.matches?.("[data-persist-open]")) queueSave();
+    }, true);
+    document.addEventListener("change", (event) => {
+      const relationForm = event.target.closest?.("[data-relation-form]");
+      if (relationForm) updateRelationFormPreview(relationForm);
+    });
     treeResizer.addEventListener("pointerdown", (event) => {
       if (matchMedia("(max-width: 760px)").matches) return;
       resizeStartX = event.clientX;
@@ -2347,6 +2544,30 @@ const CLIENT_SCRIPT = `
           showToast("引用已复制");
         } catch {
           showToast("无法访问剪贴板，请手动复制", true);
+        }
+        return;
+      }
+      const openRelationDeactivate = target.closest("[data-relation-deactivate-open]");
+      if (openRelationDeactivate) {
+        const record = openRelationDeactivate.closest("[data-relation-id]");
+        const deactivateForm = record?.querySelector("[data-relation-deactivate-form]");
+        if (!deactivateForm) return;
+        deactivateForm.hidden = false;
+        openRelationDeactivate.hidden = true;
+        openRelationDeactivate.setAttribute("aria-expanded", "true");
+        deactivateForm.querySelector("textarea")?.focus();
+        return;
+      }
+      const cancelRelationDeactivate = target.closest("[data-relation-deactivate-cancel]");
+      if (cancelRelationDeactivate) {
+        const record = cancelRelationDeactivate.closest("[data-relation-id]");
+        const deactivateForm = record?.querySelector("[data-relation-deactivate-form]");
+        const openButton = record?.querySelector("[data-relation-deactivate-open]");
+        if (deactivateForm) deactivateForm.hidden = true;
+        if (openButton) {
+          openButton.hidden = false;
+          openButton.setAttribute("aria-expanded", "false");
+          openButton.focus();
         }
         return;
       }
@@ -2440,6 +2661,63 @@ const CLIENT_SCRIPT = `
           decision,
           decision === "confirmed" ? "关系调整已确认" : "关系调整已拒绝，已有 Goal 保持不变",
         );
+        return;
+      }
+
+      const relationForm = submittedForm.closest?.("[data-relation-form]");
+      if (relationForm) {
+        event.preventDefault();
+        const submit = relationForm.querySelector('button[type="submit"]');
+        const errorBox = relationForm.querySelector("[data-relation-error]");
+        const values = new FormData(relationForm);
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/goals/" + encodeURIComponent(relationForm.dataset.goalId) + "/relations", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              direction: values.get("direction"),
+              type: values.get("type"),
+              target_goal_id: values.get("target_goal_id"),
+              reason: String(values.get("reason") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "关系建立失败");
+          await refreshBoard(true);
+          showToast("Goal 关系已建立");
+        } catch (error) {
+          errorBox.textContent = error.message || "关系建立失败，请检查方向和原因";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const relationDeactivateForm = submittedForm.closest?.("[data-relation-deactivate-form]");
+      if (relationDeactivateForm) {
+        event.preventDefault();
+        const submit = relationDeactivateForm.querySelector('button[type="submit"]');
+        const errorBox = relationDeactivateForm.querySelector("[data-relation-deactivate-error]");
+        const reason = String(new FormData(relationDeactivateForm).get("reason") || "").trim();
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch("/api/relations/" + encodeURIComponent(relationDeactivateForm.dataset.relationId) + "/deactivate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "关系解除失败");
+          await refreshBoard(true);
+          showToast("Goal 关系已解除，历史记录仍保留");
+        } catch (error) {
+          errorBox.textContent = error.message || "关系解除失败，请检查原因";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
         return;
       }
 
@@ -2712,6 +2990,7 @@ const CLIENT_SCRIPT = `
       if (stored) applyUiState(stored);
     } catch {}
     updateRelationPreviews();
+    updateAllRelationFormPreviews();
     setInterval(refreshBoard, 4000);
   })();
 `;
