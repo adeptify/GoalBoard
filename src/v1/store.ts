@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import type {
   AcceptanceCriterion,
   BoardSnapshot,
@@ -559,6 +560,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (11, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (12, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -603,6 +607,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 11")
       .get();
     if (!goalTrashApplied) this.migrateGoalTrash();
+    const lifecycleReconciliationApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 12")
+      .get();
+    if (!lifecycleReconciliationApplied) this.migrateLifecycleState();
   }
 
   private migrateClarifierRoles(): void {
@@ -1023,6 +1031,107 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (11, ?)")
         .run(new Date().toISOString());
+    });
+  }
+
+  private migrateLifecycleState(): void {
+    this.immediate(() => {
+      const migratedAt = new Date().toISOString();
+      const migrationActor = "goalboard:migration-12";
+      const staleRuns = this.db
+        .prepare(`
+          SELECT
+            r.run_id,
+            r.board_id,
+            r.goal_id,
+            r.claim_id,
+            r.state AS run_state,
+            c.state AS claim_state,
+            c.released_at
+          FROM runs r
+          JOIN claims c ON c.claim_id = r.claim_id
+          WHERE r.state IN ('started', 'blocked') AND c.state != 'active'
+          ORDER BY r.run_id
+        `)
+        .all() as Row[];
+      for (const row of staleRuns) {
+        const claimState = text(row.claim_state);
+        const reason = `关联 Claim 已是 ${claimState}，迁移时关闭历史遗留 Run`;
+        const endedAt = optionalText(row.released_at) ?? migratedAt;
+        this.db
+          .prepare(`
+            UPDATE runs
+            SET state = 'abandoned', block_reason = ?, ended_at = ?
+            WHERE run_id = ? AND state IN ('started', 'blocked')
+          `)
+          .run(reason, endedAt, text(row.run_id));
+        this.appendEvent({
+          eventId: randomUUID(),
+          boardId: text(row.board_id),
+          actorId: migrationActor,
+          type: "run.abandoned",
+          objectType: "run",
+          objectId: text(row.run_id),
+          reason,
+          payload: {
+            claim_id: text(row.claim_id),
+            claim_state: claimState,
+            goal_id: text(row.goal_id),
+            previous_state: text(row.run_state),
+            recovery: true,
+            migration_id: 12,
+          },
+          at: migratedAt,
+        });
+      }
+
+      const staleClarifications = this.db
+        .prepare(`
+          SELECT
+            cs.session_id,
+            cs.board_id,
+            cs.goal_id,
+            cs.state AS session_state,
+            g.definition_state,
+            g.accepted_at
+          FROM clarification_sessions cs
+          JOIN goals g ON g.board_id = cs.board_id AND g.goal_id = cs.goal_id
+          WHERE cs.state != 'closed' AND g.definition_state != 'draft'
+          ORDER BY cs.session_id
+        `)
+        .all() as Row[];
+      for (const row of staleClarifications) {
+        const closedAt = optionalText(row.accepted_at) ?? migratedAt;
+        const reason = "Goal 已结束 Draft 澄清，迁移时关闭历史遗留澄清会话";
+        this.db
+          .prepare(`
+            UPDATE clarification_sessions
+            SET state = 'closed', updated_at = ?, closed_at = ?
+            WHERE session_id = ? AND state != 'closed'
+          `)
+          .run(migratedAt, closedAt, text(row.session_id));
+        this.appendEvent({
+          eventId: randomUUID(),
+          boardId: text(row.board_id),
+          actorId: migrationActor,
+          type: "clarification.closed",
+          objectType: "clarification_session",
+          objectId: text(row.session_id),
+          reason,
+          payload: {
+            goal_id: text(row.goal_id),
+            definition_state: text(row.definition_state),
+            previous_state: text(row.session_state),
+            recovery: true,
+            migration_id: 12,
+          },
+          at: migratedAt,
+        });
+      }
+
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (12, ?)")
+        .run(migratedAt);
     });
   }
 

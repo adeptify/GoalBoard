@@ -329,6 +329,11 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   );
   assert.ok(
     reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 12")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_trash_records'")
       .get(),
   );
@@ -353,6 +358,64 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .get(),
   );
   assert.equal(reopened.snapshot("board-1").board.title, "产品目标");
+  reopened.close();
+});
+
+test("migration 12 reconciles historical Runs and clarification sessions exactly once", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-migration",
+    rough_idea: "模拟旧版本留下的澄清生命周期记录。",
+    goal_id: "migration-lifecycle-draft",
+    idempotency_key: "migration-lifecycle-dialogue",
+  });
+  const acceptedAt = "2026-08-15T00:10:00.000Z";
+  const releasedAt = "2026-08-15T00:11:00.000Z";
+  store.db
+    .prepare("UPDATE claims SET state = 'expired', released_at = ?, release_reason = ? WHERE claim_id = ?")
+    .run(releasedAt, "模拟历史租约过期", dialogue.claim!.claim_id);
+  store.db
+    .prepare("UPDATE clarification_sessions SET state = 'proposal_ready' WHERE session_id = ?")
+    .run(dialogue.dialogue.session_id);
+  store.db
+    .prepare(`
+      UPDATE goals
+      SET definition_state = 'accepted', decomposition_state = 'closed_leaf',
+          accepted_by = 'user-1', accepted_at = ?, updated_at = ?
+      WHERE board_id = 'board-1' AND goal_id = 'migration-lifecycle-draft'
+    `)
+    .run(acceptedAt, acceptedAt);
+  store.db.prepare("DELETE FROM schema_migrations WHERE migration_id = 12").run();
+  const databasePath = store.path;
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  const migratedSnapshot = migrated.snapshot("board-1");
+  const repairedRun = migratedSnapshot.runs.find((run) => run.run_id === dialogue.run!.run_id);
+  assert.equal(repairedRun?.state, "abandoned");
+  assert.equal(repairedRun?.ended_at, releasedAt);
+  assert.match(repairedRun?.block_reason ?? "", /Claim 已是 expired/);
+  const repairedSession = migratedSnapshot.clarification_sessions.find(
+    (session) => session.session_id === dialogue.dialogue.session_id,
+  );
+  assert.equal(repairedSession?.state, "closed");
+  assert.equal(repairedSession?.closed_at, acceptedAt);
+  const repairEvents = migrated.db
+    .prepare("SELECT type, object_id FROM events WHERE actor_id = ? ORDER BY seq")
+    .all("goalboard:migration-12") as Array<{ type: string; object_id: string }>;
+  assert.deepEqual(
+    repairEvents.map((event) => event.type).sort(),
+    ["clarification.closed", "run.abandoned"],
+  );
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 12").get());
+  migrated.close();
+
+  const reopened = new SqliteGoalBoardStore(databasePath);
+  const repairEventCount = reopened.db
+    .prepare("SELECT COUNT(*) AS count FROM events WHERE actor_id = ?")
+    .get("goalboard:migration-12") as { count: number };
+  assert.equal(repairEventCount.count, 2);
   reopened.close();
 });
 
@@ -1984,6 +2047,86 @@ test("a denied Draft dialogue start rolls back its draft, claim, run, and dialog
   store.close();
 });
 
+test("only an approved Contract closes its Draft clarification session", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-contract-dialogue",
+    rough_idea: "把这条粗略想法澄清成可执行的叶子 Goal。",
+    goal_id: "contract-dialogue-lifecycle",
+    idempotency_key: "contract-dialogue-lifecycle-start",
+  });
+  const proposedGoal = {
+    ...treeGoalPayload({
+      goal_id: "contract-dialogue-lifecycle",
+      title: "通过 Contract 确认关闭澄清会话",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    priority: 50,
+  };
+  const reviewPolicy = {
+    goal_mode: "preferred" as const,
+    required_capabilities: [],
+    self_verification: true,
+    cross_reviewers: 0,
+    adversarial_reviewers: 0,
+    human_approval: false,
+    max_lease_seconds: 1800,
+  };
+  const submit = (idempotencyKey: string) => coordinator.submitContractProposal({
+    board_id: "board-1",
+    goal_id: "contract-dialogue-lifecycle",
+    actor_id: "runtime-contract-dialogue",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: proposedGoal,
+    field_sources: contractFieldSources(dialogue.run!.run_id) as never,
+    review_policy: reviewPolicy,
+    idempotency_key: idempotencyKey,
+  }).proposal;
+
+  const rejectedProposal = submit("contract-dialogue-lifecycle-propose-rejected");
+  coordinator.decideContractProposal({
+    board_id: "board-1",
+    proposal_id: rejectedProposal.proposal_id,
+    actor_id: "user-1",
+    actor_kind: "user",
+    decision: "rejected",
+    reason: "先保留 Draft 继续澄清。",
+    idempotency_key: "contract-dialogue-lifecycle-reject",
+  });
+  assert.equal(
+    store.snapshot("board-1").clarification_sessions.find(
+      (session) => session.session_id === dialogue.dialogue.session_id,
+    )?.state,
+    "clarifying",
+  );
+
+  const approvedProposal = submit("contract-dialogue-lifecycle-propose-approved");
+  const decisionInput = {
+    board_id: "board-1",
+    proposal_id: approvedProposal.proposal_id,
+    actor_id: "user-1",
+    actor_kind: "user" as const,
+    decision: "approved" as const,
+    reason: "Contract 的结果、边界和验收已经确认。",
+    idempotency_key: "contract-dialogue-lifecycle-approve",
+  };
+  coordinator.decideContractProposal(decisionInput);
+  const closed = store.snapshot("board-1").clarification_sessions.find(
+    (session) => session.session_id === dialogue.dialogue.session_id,
+  );
+  assert.equal(closed?.state, "closed");
+  assert.equal(closed?.closed_at, "2026-08-15T00:00:00.000Z");
+  const closeEventCount = () => (store.db
+    .prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'clarification.closed' AND object_id = ?")
+    .get(dialogue.dialogue.session_id) as { count: number }).count;
+  assert.equal(closeEventCount(), 1);
+  coordinator.decideContractProposal(decisionInput);
+  assert.equal(closeEventCount(), 1);
+  store.close();
+});
+
 test("a clarifier submits one atomic, versioned Goal Tree proposal without touching canonical facts", () => {
   const { store, coordinator } = fixture();
   const dialogue = coordinator.startDraftDialogue({
@@ -2330,6 +2473,16 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.equal(store.getGoal("tree-decision-future-child"), null);
   assert.equal(store.getGoal("tree-decision-parent")?.definition_state, "accepted");
   assert.equal(
+    store.snapshot("board-1").clarification_sessions.find(
+      (session) => session.session_id === dialogue.dialogue.session_id,
+    )?.state,
+    "closed",
+  );
+  const treeClarificationCloseCount = () => (store.db
+    .prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'clarification.closed' AND object_id = ?")
+    .get(dialogue.dialogue.session_id) as { count: number }).count;
+  assert.equal(treeClarificationCloseCount(), 1);
+  assert.equal(
     coordinator.readGoalContract("board-1", "tree-decision-parent").work_state.work_state,
     "waiting_children",
   );
@@ -2355,6 +2508,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   const replay = coordinator.decideGoalTreeProposal(decisionInput);
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.applied_item_ids.sort(), applied.applied_item_ids.sort());
+  assert.equal(treeClarificationCloseCount(), 1);
   const databasePath = store.path;
   store.close();
   const recoveredStore = new SqliteGoalBoardStore(databasePath);

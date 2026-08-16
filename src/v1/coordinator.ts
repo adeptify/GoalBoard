@@ -4841,6 +4841,13 @@ export class GoalBoardCoordinator {
           now,
           input.proposal_id,
         );
+      this.closeOpenClarificationSessions(
+        input.board_id,
+        goalId,
+        input.actor_id,
+        `用户批准 Contract Proposal ${input.proposal_id}，Draft 澄清结束`,
+        now,
+      );
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -5671,6 +5678,49 @@ export class GoalBoardCoordinator {
       );
     }
     return session;
+  }
+
+  private closeOpenClarificationSessions(
+    boardId: string,
+    goalId: string,
+    actorId: string,
+    reason: string,
+    at: string,
+  ): string[] {
+    const sessions = this.store.db
+      .prepare(`
+        SELECT session_id, state
+        FROM clarification_sessions
+        WHERE board_id = ? AND goal_id = ? AND state != 'closed'
+        ORDER BY session_id
+      `)
+      .all(boardId, goalId) as Row[];
+    for (const session of sessions) {
+      const sessionId = asText(session.session_id);
+      this.store.db
+        .prepare(`
+          UPDATE clarification_sessions
+          SET state = 'closed', updated_at = ?, closed_at = ?
+          WHERE session_id = ? AND state != 'closed'
+        `)
+        .run(at, at, sessionId);
+      this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId,
+        type: "clarification.closed",
+        objectType: "clarification_session",
+        objectId: sessionId,
+        reason,
+        payload: {
+          goal_id: goalId,
+          previous_state: asText(session.state),
+          definition_state: "accepted",
+        },
+        at,
+      });
+    }
+    return sessions.map((session) => asText(session.session_id));
   }
 
   private requireActiveClarificationRun(
@@ -6661,6 +6711,15 @@ export class GoalBoardCoordinator {
         boardId,
         goalId,
       );
+    if (definitionState === "accepted") {
+      this.closeOpenClarificationSessions(
+        boardId,
+        goalId,
+        actorId,
+        `用户通过 Goal Tree Proposal ${item.proposal_id} 接受了 Draft Goal`,
+        at,
+      );
+    }
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId,
