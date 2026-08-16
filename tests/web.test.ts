@@ -291,8 +291,14 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
       ?.events.some((item) => item.type === "goal_tree_proposal.submitted"),
   );
   const html = renderGoalBoardWeb(view);
+  const coreHtml = renderGoalBoardWeb(view, "CORE");
   const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
   assert.ok(html.startsWith("<!--\nTHESIS:"));
+  assert.equal((html.match(/data-goal-view=/g) ?? []).length, 1);
+  assert.match(html, /data-goal-view="V1"/);
+  assert.doesNotMatch(html, /data-goal-view="CORE"/);
+  assert.equal((coreHtml.match(/data-goal-view=/g) ?? []).length, 1);
+  assert.match(coreHtml, /data-goal-view="CORE"/);
   assert.match(html, /已澄清，等待子 Goal/);
   assert.match(html, /Runtime 工作闭环/);
   assert.match(html, /为什么做/);
@@ -323,15 +329,19 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-tree-root/);
   assert.match(html, /class="tree-children"/);
   assert.match(html, /开始前必须等哪些 Goal 完成[\s\S]*跑通 SQLite 执行闭环/);
-  assert.match(html, /验证 corrects 关系的完整呈现/);
-  assert.match(html, /字段过多导致信息过载/);
-  assert.match(html, /fixture-snapshot/);
-  assert.match(html, /REQ-WEB-COVERAGE/);
-  assert.match(html, /sha256:web-fixture/);
-  assert.match(html, /href="https:\/\/example.com\/goalboard-contract"/);
-  assert.match(html, /data-copy-value/);
+  assert.match(coreHtml, /验证 corrects 关系的完整呈现/);
+  assert.match(coreHtml, /字段过多导致信息过载/);
+  assert.match(coreHtml, /fixture-snapshot/);
+  assert.match(coreHtml, /REQ-WEB-COVERAGE/);
+  assert.match(coreHtml, /sha256:web-fixture/);
+  assert.match(coreHtml, /href="https:\/\/example.com\/goalboard-contract"/);
+  assert.match(coreHtml, /data-copy-value/);
   assert.match(html, /data-select-goal/);
-  assert.match(html, /data-tree-search/);
+  assert.match(html, /data-global-search/);
+  assert.equal((html.match(/<input type="search" data-global-search/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /data-tree-search|class="tree-heading"|class="tree-search"/);
+  assert.equal((html.match(/data-open-create aria-label="新建目标"/g) ?? []).length, 1);
+  assert.match(html, /class="top-filter-control">[\s\S]*data-tree-filter-trigger[\s\S]*id="tree-status-filter"/);
   assert.match(html, /data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter"/);
   assert.match(html, /id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选"/);
   assert.match(html, /可同时选择多个状态；会与关键词搜索一起生效。/);
@@ -364,6 +374,11 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /button\.setAttribute\("aria-selected", String\(active\)\)/);
   assert.match(html, /data-sync-state/);
   assert.match(html, /setInterval\(refreshBoard, 4000\)/);
+  assert.match(html, /fetch\(route\("\/api\/board\/cursor"\)/);
+  assert.match(html, /\/document\?view=" \+ documentCollection/);
+  assert.match(html, /searchComposing = true/);
+  assert.match(html, /noteSearchActivity\(\)/);
+  assert.doesNotMatch(html, /fetch\(route\("\/api\/board"\)/);
   assert.doesNotMatch(html, /document\.hidden \|\| dialog\.open/);
   assert.match(html, /const createDraft = dialog\.open \? readCreateDraft\(\) : null/);
   assert.match(html, /applyCreateDraft\(createDraft\)/);
@@ -385,7 +400,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /tree-copy"><strong>交付 GoalBoard V1<\/strong><small>V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-section="execution"/);
-  assert.match(html, /href="\/decisions#decision-goal-CORE">前往处理<\/a>/);
+  assert.match(coreHtml, /href="\/decisions#decision-goal-CORE">前往处理<\/a>/);
   assert.doesNotMatch(html, /<form class="decision-record rewire-decision"/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
   assert.match(decisionHtml, /href="\/goals\/CORE"><strong>跑通 SQLite 执行闭环<\/strong>/);
@@ -434,6 +449,8 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(projectIndex, new RegExp(`href="${betaPrefix}"`));
     assert.doesNotMatch(projectIndex, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(projectIndex, /数据源:|board_id/);
+    assert.match(projectIndex, /\.project-index-page > \.topbar \{ height: 58px; \}/);
+    assert.match(projectIndex, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
 
     const missingSelection = await fetch(`${origin}/api/board`);
     assert.equal(missingSelection.status, 400);
@@ -446,6 +463,31 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(alphaPage, /仅 Beta 可见的 Goal|数据源:|goalboard\.db/);
     assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
     assert.match(alphaPage, new RegExp(`href="${alphaPrefix}/decisions"`));
+    assert.match(alphaPage, /\.app \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\)/);
+    assert.equal((alphaPage.match(/data-goal-view=/g) ?? []).length, 1);
+
+    const alphaCursorResponse = await fetch(`${origin}${alphaPrefix}/api/board/cursor`);
+    assert.equal(alphaCursorResponse.status, 200);
+    const alphaCursorText = await alphaCursorResponse.text();
+    assert.ok(alphaCursorText.length < 100);
+    assert.equal(typeof (JSON.parse(alphaCursorText) as { observed_event_cursor: number }).observed_event_cursor, "number");
+
+    const alphaDocumentResponse = await fetch(
+      `${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=current`,
+    );
+    assert.equal(alphaDocumentResponse.status, 200);
+    const alphaDocument = await alphaDocumentResponse.text();
+    assert.match(alphaDocument, /data-goal-view="ALPHA-ONLY"/);
+    assert.match(alphaDocument, /仅 Alpha 可见的 Goal/);
+    assert.doesNotMatch(alphaDocument, /<!doctype html>|仅 Beta 可见的 Goal/);
+    assert.equal(
+      (await fetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=trash`)).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=unknown`)).status,
+      400,
+    );
 
     const betaPage = await (await fetch(`${origin}${betaPrefix}/goals/BETA-ONLY`)).text();
     assert.match(betaPage, /项目：<\/strong><span>产品 Beta/);
@@ -1122,6 +1164,8 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
       snapshot: {
         rewires: Array<{ rewire_id: string; state: string }>;
         relations: Array<{ from_goal_id: string; to_goal_id: string; type: string }>;
+        candidates: Array<{ candidate_id: string; discovered_in_run_id: string | null }>;
+        runs: Array<{ run_id: string; goal_id: string }>;
       };
     };
     const rewire = afterCandidate.snapshot.rewires.find((item) => item.state === "pending");
@@ -1137,9 +1181,16 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     )?.[0];
     assert.ok(rewireForm);
     assert.doesNotMatch(rewireForm, /active_runs_protected/);
-    const corePageWithDecision = await (await fetch(`${origin}/goals/CORE`)).text();
-    assert.match(corePageWithDecision, /前往处理/);
-    assert.doesNotMatch(corePageWithDecision, /<form class="decision-record rewire-decision"/);
+    const candidateAfterApproval = afterCandidate.snapshot.candidates.find(
+      (item) => item.candidate_id === candidate.candidate_id,
+    );
+    const ownerGoalId = afterCandidate.snapshot.runs.find(
+      (run) => run.run_id === candidateAfterApproval?.discovered_in_run_id,
+    )?.goal_id;
+    assert.ok(ownerGoalId);
+    const ownerPageWithDecision = await (await fetch(`${origin}/goals/${encodeURIComponent(ownerGoalId)}`)).text();
+    assert.match(ownerPageWithDecision, /前往处理/);
+    assert.doesNotMatch(ownerPageWithDecision, /<form class="decision-record rewire-decision"/);
     const relationCountBefore = afterCandidate.snapshot.relations.length;
     const missingRewireReason = await fetch(
       `${origin}/api/rewires/${encodeURIComponent(rewire.rewire_id)}/decision`,
@@ -2121,8 +2172,9 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /name="cross_reviewers"/);
     assert.match(page, /name="adversarial_reviewers"/);
     assert.match(page, /name="max_lease_seconds"/);
-    assert.match(page, /const syncGoalViews = \(nextDocument\) =>/);
-    assert.match(page, /currentView\.replaceWith\(nextView\)/);
+    assert.match(page, /const loadGoalDocument = async \(goalId\) =>/);
+    assert.match(page, /documentPane\.replaceChildren\(nextView\)/);
+    assert.match(page, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/document\?view=/);
     assert.doesNotMatch(page, /documentPane\.innerHTML = nextDocument\.innerHTML/);
     assert.match(page, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
@@ -2517,10 +2569,17 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     const currentTree = await (await fetch(`${origin}/`)).text();
     assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="TRASH-UI-READY"/);
     const trashPage = await (await fetch(`${origin}/trash/goals/TRASH-UI-READY`)).text();
-    assert.match(trashPage, /<h2>回收站<\/h2>/);
+    assert.match(trashPage, /data-board-view="trash"/);
+    assert.doesNotMatch(trashPage, /class="tree-heading"/);
     assert.match(trashPage, /data-tree-item data-goal-id="TRASH-UI-READY"/);
     assert.match(trashPage, /data-open-goal-restore/);
     assert.match(trashPage, /Goal 的 Contract、Run、Evidence 与事件历史都已保留/);
+    const trashFragment = await (
+      await fetch(`${origin}/api/goals/TRASH-UI-READY/document?view=trash`)
+    ).text();
+    assert.match(trashFragment, /data-goal-view="TRASH-UI-READY"/);
+    assert.match(trashFragment, /data-open-goal-restore/);
+    assert.doesNotMatch(trashFragment, /<!doctype html>/);
 
     const restored = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
       method: "POST",
@@ -2615,10 +2674,17 @@ test("Web archives only completed Goals and provides a reversible archive view",
     const currentTree = await (await fetch(`${origin}/`)).text();
     assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
     const archivePage = await (await fetch(`${origin}/archive/goals/ARCHIVE-WEB`)).text();
-    assert.match(archivePage, /<h2>已归档<\/h2>/);
+    assert.match(archivePage, /data-board-view="archive"/);
+    assert.doesNotMatch(archivePage, /class="tree-heading"/);
     assert.match(archivePage, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
     assert.match(archivePage, /data-goal-archive="false"/);
     assert.match(archivePage, /可归档的已完成 Goal/);
+    const archiveFragment = await (
+      await fetch(`${origin}/api/goals/ARCHIVE-WEB/document?view=archive`)
+    ).text();
+    assert.match(archiveFragment, /data-goal-view="ARCHIVE-WEB"/);
+    assert.match(archiveFragment, /data-goal-archive="false"/);
+    assert.doesNotMatch(archiveFragment, /<!doctype html>/);
 
     const restored = await fetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
       method: "POST",

@@ -230,7 +230,24 @@ function escapeHtml(value: unknown): string {
 }
 
 function dataJson(view: GoalBoardWebView): string {
-  return JSON.stringify(view).replaceAll("<", "\\u003c");
+  const summarize = (items: WebGoalView[]) => items.map((item) => ({
+    goal: {
+      goal_id: item.goal.goal_id,
+      title: item.goal.title,
+    },
+    status: item.status,
+  }));
+  return JSON.stringify({
+    snapshot: {
+      board: { board_id: view.snapshot.board.board_id },
+      cursor: view.snapshot.cursor,
+    },
+    project: view.project,
+    active_goal_id: view.active_goal_id,
+    goals: summarize(view.goals),
+    archived_goals: summarize(view.archived_goals),
+    trashed_goals: summarize(view.trashed_goals),
+  }).replaceAll("<", "\\u003c");
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -1646,6 +1663,31 @@ function renderTrashGoalDocument(item: WebGoalView, selected: boolean): string {
   </article>`;
 }
 
+export type GoalDocumentCollection = "current" | "archive" | "trash";
+
+/**
+ * Render one Goal document through the same renderer used by the full page.
+ * Tree navigation loads this fragment on demand, so hidden Goal forms never
+ * accumulate in the live DOM.
+ */
+export function renderGoalDocumentFragment(
+  view: GoalBoardWebView,
+  goalId: string,
+  collection: GoalDocumentCollection = "current",
+): string | null {
+  const items = collection === "trash"
+    ? view.trashed_goals
+    : collection === "archive"
+      ? view.archived_goals
+      : view.goals;
+  const item = items.find((candidate) => candidate.goal.goal_id === goalId);
+  if (!item) return null;
+  const html = collection === "trash"
+    ? renderTrashGoalDocument(item, true)
+    : renderGoalDocument(item, view, true);
+  return prefixLocalLinks(html, view.route_prefix);
+}
+
 function renderGoalTrashDialog(): string {
   return `<dialog class="create-dialog goal-trash-dialog" data-goal-trash-dialog aria-labelledby="goal-trash-dialog-title">
     <form method="dialog" class="dialog-shell" data-goal-trash-form data-live-form="goal-trash">
@@ -1716,7 +1758,7 @@ const STYLES = `
   [hidden] { display: none !important; }
   .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
   .app { min-width: 0; height: 100%; overflow: hidden; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
-  .topbar { min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: rgba(250, 251, 252, .97); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
+  .topbar { position: relative; min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: rgba(250, 251, 252, .97); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
   .brand strong { font-size: 19px; letter-spacing: -.02em; }
@@ -1739,21 +1781,15 @@ const STYLES = `
   .top-action:hover { color: var(--blue); }
   .top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
+  .top-filter-control { position: relative; height: 100%; display: flex; align-items: center; }
   .workspace { min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
-  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
+  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
   .tree-resizer:hover::after, .tree-resizer:focus-visible::after, .tree-resizer.is-dragging::after { width: 2px; background: var(--blue); }
-  .tree-heading { height: 60px; margin: 0 15px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
-  .tree-heading h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
-  .tree-heading span { margin-left: 8px; color: var(--muted); font-weight: 500; font-size: 12px; }
-  .tree-heading-actions { margin-left: auto; display: flex; gap: 4px; }
   .icon-button { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; display: grid; place-items: center; cursor: pointer; }
   .icon-button:hover, .icon-button.is-active { background: #eef1f4; color: var(--blue); }
-  .tree-search { margin: 10px 15px; position: relative; }
-  .tree-search svg { position: absolute; left: 12px; top: 10px; color: var(--faint); }
-  .tree-search input { width: 100%; height: 34px; padding: 0 12px 0 35px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
-  .tree-filter { position: absolute; z-index: 7; top: 112px; right: 15px; left: 15px; max-height: min(430px, calc(100dvh - 166px)); overflow: auto; padding: 13px 14px 12px; color: var(--ink); background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); }
+  .tree-filter { position: absolute; z-index: 12; top: calc(100% - 5px); right: 8px; width: min(320px, calc(100vw - 24px)); max-height: min(430px, calc(100dvh - 68px)); overflow: auto; padding: 13px 14px 12px; color: var(--ink); background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); }
   .tree-filter[hidden] { display: none; }
   .tree-filter > header { display: flex; align-items: baseline; gap: 10px; }
   .tree-filter > header strong { font-size: 13px; }
@@ -1768,7 +1804,7 @@ const STYLES = `
   .tree-filter-option .goal-status { min-width: 0; white-space: normal; font-size: 12px; }
   .tree-filter-option small { color: var(--muted); font-size: 11px; }
   .tree-filter-summary { margin-bottom: 0 !important; padding-top: 9px; border-top: 1px solid var(--line); }
-  .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 16px; scrollbar-width: none; -ms-overflow-style: none; }
+  .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 14px 14px 16px; scrollbar-width: none; -ms-overflow-style: none; }
   .tree-scroll::-webkit-scrollbar { display: none; }
   .tree-filter-empty { margin: 28px 5px; padding: 14px 12px; color: var(--muted); background: #f5f7f9; font-size: 13px; line-height: 1.5; text-align: center; }
   .tree-filter-empty p { margin: 0 0 8px; }
@@ -2604,7 +2640,15 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
   }
   @media (max-width: 900px) {
-    .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .global-search { min-width: 34px; max-width: 34px; flex: 0 0 34px; margin-right: 4px; z-index: 13; }
+    .global-search input { width: 34px; padding: 0; color: transparent; cursor: pointer; }
+    .global-search input::placeholder { color: transparent; }
+    .global-search svg { left: 9px; pointer-events: none; }
+    .global-search kbd { display: none; }
+    .global-search:focus-within { position: absolute; top: 12px; right: 12px; width: min(320px, calc(100vw - 24px)); min-width: min(320px, calc(100vw - 24px)); max-width: none; margin: 0; }
+    .global-search:focus-within input { width: 100%; padding: 0 12px 0 36px; color: var(--ink); background: #fff; box-shadow: var(--shadow); cursor: text; }
+    .global-search:focus-within input::placeholder { color: var(--faint); }
+    .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
     .top-spacer { display: none; }
     .project-context { min-width: 0; flex: 1 1 auto; padding-inline: 12px; }
     .project-context > strong, .project-context small, .project-context .sync-state { display: none; }
@@ -2617,7 +2661,8 @@ const RESPONSIVE_STYLES = `
     .topbar { grid-row: 1; }
     .brand { min-width: 0; padding: 0 15px; border-right: 0; }
     .brand strong { font-size: 17px; }
-    .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .global-search:focus-within { top: 9px; }
+    .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
     .project-context { padding-inline: 8px; }
     .project-context > span:not(.sync-state) { max-width: 132px; }
     .top-spacer { flex: 1; }
@@ -2709,7 +2754,8 @@ const RESPONSIVE_STYLES = `
 
 const PROJECT_INDEX_STYLES = `
   body.project-index-page { overflow: auto; background: var(--page); }
-  .project-index { min-height: 100%; padding: clamp(40px, 10vh, 112px) 24px; display: grid; place-items: start center; }
+  .project-index-page > .topbar { height: 58px; }
+  .project-index { min-height: calc(100dvh - 58px); padding: clamp(40px, 10vh, 112px) 24px; display: grid; place-items: start center; }
   .project-index-panel { width: min(100%, 760px); border: 1px solid var(--line-strong); background: var(--paper); box-shadow: var(--shadow); }
   .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
   .project-index-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
@@ -2754,6 +2800,10 @@ const PROJECT_INDEX_STYLES = `
   .project-migration-form > footer .project-migration-submit:hover { background: var(--blue-dark); }
   .project-migration-form > footer .project-migration-submit:disabled { opacity: .58; cursor: wait; }
   .project-index-note { margin: 0; padding: 12px 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: #fbfcfd; }
+  @media (max-width: 760px) {
+    .project-index-page > .topbar { height: 52px; }
+    .project-index { min-height: calc(100dvh - 52px); }
+  }
   @media (max-width: 620px) {
     .project-index { padding: 28px 14px; place-items: start stretch; }
     .project-index-panel { width: 100%; }
@@ -2826,10 +2876,10 @@ const CLIENT_SCRIPT = `
     const treePane = document.querySelector("#goal-tree-pane");
     const treeResizer = document.querySelector("[data-tree-resizer]");
     const treeScroll = document.querySelector("[data-tree-scroll]");
-    const treeSearch = document.querySelector("[data-tree-search]");
+    const globalSearch = document.querySelector("[data-global-search]");
+    const treeSearch = globalSearch;
     const treeFilter = document.querySelector("[data-tree-filter]");
     const treeFilterTrigger = document.querySelector("[data-tree-filter-trigger]");
-    const globalSearch = document.querySelector("[data-global-search]");
     const dialog = document.querySelector("[data-create-dialog]");
     const form = document.querySelector("[data-create-form]");
     const formError = document.querySelector("[data-create-error]");
@@ -2843,6 +2893,7 @@ const CLIENT_SCRIPT = `
     const trashView = document.body.dataset.boardView === "trash";
     const decisionView = document.body.dataset.boardView === "decisions";
     const collectionView = archiveView || trashView;
+    const documentCollection = trashView ? "trash" : archiveView ? "archive" : "current";
     const routePrefix = document.body.dataset.routePrefix || "";
     const route = (pathname) => routePrefix + pathname;
     const localPathname = () => routePrefix && location.pathname.startsWith(routePrefix)
@@ -2858,6 +2909,10 @@ const CLIENT_SCRIPT = `
     let resizeStartX = 0;
     let resizeStartWidth = 0;
     let selectedStatuses = new Set();
+    let goalDocumentRequest = 0;
+    let searchBusyUntil = 0;
+    let searchComposing = false;
+    let deferredRefreshTimer;
 
     const updateRelationPreviews = () => {
       if (!form) return;
@@ -3176,7 +3231,6 @@ const CLIENT_SCRIPT = `
         item.open = disclosures.has(item.dataset.persistOpen);
       });
       treeSearch.value = ui?.query || "";
-      globalSearch.value = ui?.query || "";
       setSelectedStatuses(ui?.statuses || []);
       filterTree(ui?.query || "");
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
@@ -3208,9 +3262,6 @@ const CLIENT_SCRIPT = `
       const item = visibleGoals().find((entry) => entry.goal.goal_id === goalId);
       if (!item) return false;
       selected = goalId;
-      document.querySelectorAll("[data-goal-view]").forEach((element) => {
-        element.hidden = element.dataset.goalView !== goalId;
-      });
       document.querySelectorAll(".tree-node[data-select-goal]").forEach((button) => {
         const active = button.dataset.selectGoal === goalId;
         button.classList.toggle("is-selected", active);
@@ -3222,12 +3273,60 @@ const CLIENT_SCRIPT = `
       return true;
     };
 
-    const selectGoal = (goalId, updateHistory = true) => {
+    const replaceGoalDocument = (html) => {
+      const template = document.createElement("template");
+      template.innerHTML = String(html || "").trim();
+      const nextView = template.content.querySelector("[data-goal-view]");
+      if (!nextView) throw new Error("Goal 正文响应不完整");
+      documentPane.replaceChildren(nextView);
+      updateAllRelationFormPreviews();
+      document.querySelectorAll("[data-risk-state-form]").forEach(updateRiskStatePreview);
+      document.querySelectorAll(".risk-goal-picker").forEach(updateRiskGoalCount);
+    };
+
+    const loadGoalDocument = async (goalId) => {
+      const requestId = ++goalDocumentRequest;
+      documentPane.setAttribute("aria-busy", "true");
+      setSyncState("载入 Goal…", "syncing");
+      try {
+        const response = await fetch(
+          route("/api/goals/" + encodeURIComponent(goalId) + "/document?view=" + documentCollection),
+          { cache: "no-store" },
+        );
+        if (!response.ok) throw new Error("无法读取这条 Goal 正文");
+        const html = await response.text();
+        if (requestId !== goalDocumentRequest) return null;
+        replaceGoalDocument(html);
+        setSyncState("已同步");
+        return true;
+      } catch (error) {
+        if (requestId !== goalDocumentRequest) return null;
+        setSyncState("暂时离线", "offline");
+        showToast(error.message || "无法读取这条 Goal 正文", true);
+        return false;
+      } finally {
+        if (requestId === goalDocumentRequest) documentPane.removeAttribute("aria-busy");
+      }
+    };
+
+    const selectGoal = async (goalId, updateHistory = true) => {
       if (decisionView) {
         location.assign(route("/goals/" + encodeURIComponent(goalId)));
         return;
       }
+      const currentView = documentPane.querySelector("[data-goal-view]");
+      if (goalId === selected && currentView?.dataset.goalView === goalId) {
+        if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
+        return;
+      }
+      const fallbackGoalId = currentView?.dataset.goalView || selected;
       if (!applySelection(goalId, true)) return;
+      const loaded = await loadGoalDocument(goalId);
+      if (loaded == null) return;
+      if (!loaded) {
+        if (selected === goalId && fallbackGoalId) applySelection(fallbackGoalId, false);
+        return;
+      }
       if (updateHistory) {
         history.pushState({ goalId }, "", goalPageBase() + encodeURIComponent(goalId));
       }
@@ -3293,56 +3392,72 @@ const CLIENT_SCRIPT = `
       if (empty) empty.hidden = matched.length > 0 || items.length === 0;
     }
 
-    const syncGoalViews = (nextDocument) => {
-      const currentViews = new Map(
-        [...documentPane.querySelectorAll("[data-goal-view]")].map((view) => [view.dataset.goalView, view]),
-      );
-      const nextViews = [...nextDocument.querySelectorAll("[data-goal-view]")];
-      const nextIds = new Set(nextViews.map((view) => view.dataset.goalView));
-      currentViews.forEach((view, goalId) => {
-        if (!nextIds.has(goalId)) view.remove();
-      });
-      nextViews.forEach((nextView) => {
-        const currentView = currentViews.get(nextView.dataset.goalView);
-        if (currentView) currentView.replaceWith(nextView);
-        else documentPane.append(nextView);
-      });
+    const searchInteractionActive = () => searchComposing || Date.now() < searchBusyUntil;
+
+    const scheduleDeferredRefresh = () => {
+      clearTimeout(deferredRefreshTimer);
+      const wait = Math.max(80, searchBusyUntil - Date.now() + 40);
+      deferredRefreshTimer = setTimeout(() => refreshBoard(), wait);
+    };
+
+    const noteSearchActivity = (delay = 900) => {
+      searchBusyUntil = Math.max(searchBusyUntil, Date.now() + delay);
+      scheduleDeferredRefresh();
     };
 
     const refreshBoard = async (force = false) => {
       if (syncing || document.hidden) return;
+      if (!force && searchInteractionActive()) {
+        setSyncState("搜索中");
+        scheduleDeferredRefresh();
+        return;
+      }
       if (!force && document.activeElement?.closest?.("[data-live-form]")) {
         setSyncState("编辑中");
         return;
       }
       syncing = true;
       try {
-        const boardResponse = await fetch(route("/api/board"), { cache: "no-store" });
-        if (!boardResponse.ok) throw new Error("无法读取 GoalBoard");
-        const nextState = await boardResponse.json();
-        if (nextState.snapshot.cursor === state.snapshot.cursor) {
+        const cursorResponse = await fetch(route("/api/board/cursor"), { cache: "no-store" });
+        if (!cursorResponse.ok) throw new Error("无法读取 GoalBoard 游标");
+        const cursorState = await cursorResponse.json();
+        if (Number(cursorState.observed_event_cursor) === Number(state.snapshot.cursor)) {
           setSyncState("已同步");
+          return;
+        }
+        if (!force && searchInteractionActive()) {
+          setSyncState("搜索中");
+          scheduleDeferredRefresh();
           return;
         }
         setSyncState("同步中", "syncing");
         const ui = readUiState();
+        const pageBase = goalPageBase();
+        const collectionPath = trashView ? "/trash" : archiveView ? "/archive" : "/";
+        const pagePath = decisionView
+          ? route("/decisions")
+          : selected
+            ? pageBase + encodeURIComponent(selected)
+            : route(collectionPath);
+        let pageResponse = await fetch(pagePath, { cache: "no-store" });
+        if (!pageResponse.ok && !decisionView) {
+          pageResponse = await fetch(route(collectionPath), { cache: "no-store" });
+        }
+        if (!pageResponse.ok) throw new Error("无法更新 Goal 页面");
+        const parsed = new DOMParser().parseFromString(await pageResponse.text(), "text/html");
+        if (parsed.body.dataset.boardView !== document.body.dataset.boardView) {
+          location.reload();
+          return;
+        }
+        const nextStateNode = parsed.querySelector("#goalboard-data");
+        if (!nextStateNode) throw new Error("页面状态不完整");
+        const nextState = JSON.parse(nextStateNode.textContent);
         const nextGoals = visibleGoals(nextState);
+        const renderedGoalId = parsed.querySelector("[data-goal-view]")?.dataset.goalView || "";
         const goalStillExists = nextGoals.some((item) => item.goal.goal_id === selected);
         const nextSelected = decisionView
           ? ""
-          : goalStillExists
-            ? selected
-            : collectionView
-              ? nextGoals[0]?.goal.goal_id
-              : nextState.active_goal_id || nextGoals[0]?.goal.goal_id;
-        if (!decisionView && !nextSelected) {
-          location.assign(route(trashView ? "/trash" : archiveView ? "/archive" : "/"));
-          return;
-        }
-        const pageBase = goalPageBase();
-        const pageResponse = await fetch(decisionView ? route("/decisions") : pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
-        if (!pageResponse.ok) throw new Error("无法更新 Goal 页面");
-        const parsed = new DOMParser().parseFromString(await pageResponse.text(), "text/html");
+          : renderedGoalId || (goalStillExists ? selected : nextState.active_goal_id || nextGoals[0]?.goal.goal_id || "");
         const nextTree = parsed.querySelector("[data-tree-scroll]");
         const nextDocument = parsed.querySelector("[data-document-pane]");
         const nextFooter = parsed.querySelector("[data-tree-footer]");
@@ -3351,11 +3466,15 @@ const CLIENT_SCRIPT = `
         const nextDialog = parsed.querySelector("[data-create-dialog]");
         const nextDecisionsLink = parsed.querySelector("[data-decisions-link]");
         if (!nextTree || !nextDocument || !nextFooter) throw new Error("页面数据不完整");
+        if (!force && searchInteractionActive()) {
+          setSyncState("搜索中");
+          scheduleDeferredRefresh();
+          return;
+        }
         const createDraft = dialog.open ? readCreateDraft() : null;
         documentPane.classList.add("is-syncing");
         treeScroll.innerHTML = nextTree.innerHTML;
-        if (decisionView) documentPane.replaceChildren(...nextDocument.childNodes);
-        else syncGoalViews(nextDocument);
+        documentPane.replaceChildren(...nextDocument.childNodes);
         if (nextFilter && treeFilter) treeFilter.innerHTML = nextFilter.innerHTML;
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
@@ -3374,7 +3493,7 @@ const CLIENT_SCRIPT = `
         state = nextState;
         document.querySelector("#goalboard-data").textContent = JSON.stringify(nextState).replaceAll("<", "\\u003c");
         selected = nextSelected;
-        if (!decisionView) applySelection(selected, false);
+        if (!decisionView && selected) applySelection(selected, false);
         applyUiState(ui);
         updateAllRelationFormPreviews();
         requestAnimationFrame(() => documentPane.classList.remove("is-syncing"));
@@ -3410,14 +3529,19 @@ const CLIENT_SCRIPT = `
     };
 
     treeSearch?.addEventListener("input", () => {
-      globalSearch.value = treeSearch.value;
+      noteSearchActivity();
       filterTree(treeSearch.value);
       queueSave();
     });
-    globalSearch?.addEventListener("input", () => {
-      treeSearch.value = globalSearch.value;
-      filterTree(globalSearch.value);
-      queueSave();
+    treeSearch?.addEventListener("focus", () => noteSearchActivity(500));
+    treeSearch?.addEventListener("keydown", () => noteSearchActivity());
+    treeSearch?.addEventListener("compositionstart", () => {
+      searchComposing = true;
+      noteSearchActivity();
+    });
+    treeSearch?.addEventListener("compositionend", () => {
+      searchComposing = false;
+      noteSearchActivity(500);
     });
     treeScroll.addEventListener("keydown", (event) => {
       if (event.target !== treeScroll) return;
@@ -3510,7 +3634,6 @@ const CLIENT_SCRIPT = `
       }
       if (target.closest("[data-clear-tree-filter]")) {
         treeSearch.value = "";
-        globalSearch.value = "";
         setSelectedStatuses([]);
         filterTree("");
         queueSave();
@@ -4157,7 +4280,7 @@ const CLIENT_SCRIPT = `
       const match = localPathname().match(
         trashView ? /^\\/trash\\/goals\\/(.+)$/ : archiveView ? /^\\/archive\\/goals\\/(.+)$/ : /^\\/goals\\/(.+)$/,
       );
-      if (match) applySelection(decodeURIComponent(match[1]), true);
+      if (match) void selectGoal(decodeURIComponent(match[1]), false);
     });
     addEventListener("pagehide", saveUiState);
     addEventListener("keydown", (event) => {
@@ -4266,11 +4389,6 @@ export function renderGoalBoardWeb(
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
   const collectionTitle = trashView ? "回收站" : archiveView ? "已归档" : "Goal Tree";
-  const searchPlaceholder = trashView
-    ? "筛选回收站 Goal"
-    : archiveView
-      ? "筛选已归档 Goal"
-      : "筛选 ID 或标题";
   const collectionSuffix = trashView ? "回收站" : archiveView ? "归档" : "";
   const selected = decisionView
     ? undefined
@@ -4335,24 +4453,25 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       ${projectContext}
       <div class="top-spacer"></div>
       <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="${trashView ? "在回收站内搜索" : archiveView ? "在已归档 Goal 中搜索" : "在当前 Goal Tree 内搜索"}" aria-label="${trashView ? "搜索回收站" : archiveView ? "搜索已归档 Goal" : "搜索 Goal"}"><kbd>⌘F</kbd></label>
+      <div class="top-filter-control">
+        <button class="top-action" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="筛选目标">${icon("filter")}<span>状态</span></button>
+        ${renderTreeStatusFilter(visibleGoals)}
+      </div>
       <button class="top-action" type="button" data-open-create aria-label="新建目标">${icon("plus")}<span>新建目标</span></button>
       <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
-      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
-      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
+      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? "返回 Goal Tree" : "查看已归档 Goal"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
+      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? "返回 Goal Tree" : "查看回收站"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>
     <main class="workspace" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
-        <header class="tree-heading"><h2>${collectionTitle}</h2><span data-tree-count>${visibleGoals.length}</span><div class="tree-heading-actions">${collectionView ? `<a class="icon-button" href="/" aria-label="返回 Goal Tree">${icon("tree")}</a>` : `<button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button>`}${!archiveView ? `<a class="icon-button" href="/archive" aria-label="查看已归档 Goal">${icon("archive")}</a>` : ""}${!trashView ? `<a class="icon-button" href="/trash" aria-label="查看回收站">${icon("archive")}</a>` : ""}<button class="icon-button" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="筛选目标">${icon("filter")}</button></div></header>
-        <label class="tree-search">${icon("search")}<input type="search" data-tree-search placeholder="${searchPlaceholder}" aria-label="筛选${collectionTitle}"></label>
-        ${renderTreeStatusFilter(visibleGoals)}
-        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="Goal Tree 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>没有符合当前筛选条件的 Goal。</p><button type="button" data-clear-tree-filter>清除所有筛选</button></div></div>
+        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>没有符合当前筛选条件的 Goal。</p><button type="button" data-clear-tree-filter>清除所有筛选</button></div></div>
         <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${collectionSuffix}">共 ${visibleGoals.length} 个${collectionSuffix}目标</span><small>${collectionNote}</small></footer>
       </aside>
       <div class="tree-resizer" role="separator" aria-label="调整 Goal Tree 宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${decisionView ? renderDecisionCenter(view) : visibleGoals.length ? visibleGoals.map((item) => trashView ? renderTrashGoalDocument(item, item.goal.goal_id === selectedId) : renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : trashView ? `<div class="archive-empty">${icon("archive")}<h1>回收站是空的</h1><p>移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。</p><a href="/">返回 Goal Tree</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
+        ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>回收站是空的</h1><p>移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。</p><a href="/">返回 Goal Tree</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
       </section>
     </main>
   </div>

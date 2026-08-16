@@ -11,6 +11,7 @@ import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js"
 import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
 import type { GoalBoardProjectRecord } from "../projects/catalog.js";
 import {
+  renderGoalDocumentFragment,
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
   WEB_GOAL_STATUSES,
@@ -669,8 +670,40 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           sendJson(response, 200, { status: "ok", board_id: options.boardId });
           return;
         }
+        if (request.method === "GET" && url.pathname === "/api/board/cursor") {
+          sendJson(response, 200, { observed_event_cursor: store.eventCursor(options.boardId) });
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/api/board") {
           sendJson(response, 200, buildGoalBoardWebView(store, coordinator, options));
+          return;
+        }
+        const goalDocumentMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/document$/);
+        if (request.method === "GET" && goalDocumentMatch) {
+          let goalId: string;
+          try {
+            goalId = decodeURIComponent(goalDocumentMatch[1]);
+          } catch {
+            sendJson(response, 404, { error: "Goal 正文不存在" });
+            return;
+          }
+          const collection = url.searchParams.get("view") ?? "current";
+          if (collection !== "current" && collection !== "archive" && collection !== "trash") {
+            sendJson(response, 400, { error: "Goal 正文集合无效" });
+            return;
+          }
+          const view = buildGoalBoardWebView(store, coordinator, options);
+          const fragment = renderGoalDocumentFragment(view, goalId, collection);
+          if (!fragment) {
+            sendJson(response, 404, { error: `找不到这个 Goal: ${goalId}` });
+            return;
+          }
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+          });
+          response.end(fragment);
           return;
         }
         const projectReferenceMatch = url.pathname.match(/^\/api\/project-references\/([^/]+)$/);
