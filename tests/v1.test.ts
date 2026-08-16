@@ -223,7 +223,7 @@ function contractFieldSources(runId: string) {
   }));
 }
 
-test("public CLI and library exports expose only GoalBoard V1 plus explicit V3 import", async () => {
+test("public CLI exposes only install and GoalBoard V1 plus explicit V3 import", async () => {
   const logs: string[] = [];
   const errors: string[] = [];
   const originalLog = console.log;
@@ -236,7 +236,7 @@ test("public CLI and library exports expose only GoalBoard V1 plus explicit V3 i
     assert.match(logs.join("\n"), /import-v3/);
     assert.doesNotMatch(logs.join("\n"), /profiles|strategy|coverage|handoff|replay/);
     assert.equal(await runPublicCli(["profiles"]), 1);
-    assert.match(errors.join("\n"), /只提供 goalboard v1/);
+    assert.match(errors.join("\n"), /只提供 goalboard install 和 goalboard v1/);
   } finally {
     console.log = originalLog;
     console.error = originalError;

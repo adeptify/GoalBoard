@@ -1,0 +1,370 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  RuntimeIntegrationService,
+  type RuntimeIntegrationServiceOptions,
+  type SupportedRuntimeId,
+} from "../src/install/runtime-integration.js";
+import { runtimeContextHostFromEnvironment } from "../src/mcp/server.js";
+
+interface Fixture {
+  directory: string;
+  home: string;
+  userHome: string;
+  release: string;
+  skillSource: string;
+  launcher: string;
+  executables: Record<SupportedRuntimeId, string>;
+}
+
+async function withFixture<T>(run: (fixture: Fixture) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), "goalboard-runtime-integration-"));
+  try {
+    const home = join(directory, "goalboard-home");
+    const userHome = join(directory, "user-home");
+    const release = join(home, "releases", "goalboard-test");
+    const skillSource = join(release, "skills", "goal-advance");
+    const launcher = join(home, "bin", "goalboard-mcp");
+    const codex = join(directory, "bin", "codex");
+    const claude = join(directory, "bin", "claude");
+    await Promise.all([
+      mkdir(join(home, "config"), { recursive: true }),
+      mkdir(skillSource, { recursive: true }),
+      mkdir(join(home, "bin"), { recursive: true }),
+      mkdir(join(directory, "bin"), { recursive: true }),
+      mkdir(userHome, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(home, "config", "installation.json"), `${JSON.stringify({
+        schema_version: 2,
+        installer: "goalboard-home-install-v1",
+        version: "test",
+        release_path: "releases/goalboard-test",
+      }, null, 2)}\n`),
+      writeFile(join(skillSource, "SKILL.md"), "---\nname: goal-advance\n---\n"),
+      writeFile(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      writeFile(codex, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      writeFile(claude, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+    ]);
+    return await run({
+      directory,
+      home,
+      userHome,
+      release,
+      skillSource,
+      launcher,
+      executables: { codex, "claude-code": claude },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function service(
+  fixture: Fixture,
+  options: Pick<RuntimeIntegrationServiceOptions, "validateConnection"> = {},
+): RuntimeIntegrationService {
+  return new RuntimeIntegrationService({
+    homeDirectory: fixture.home,
+    userHomeDirectory: fixture.userHome,
+    runtimeExecutables: fixture.executables,
+    validateConnection: options.validateConnection ?? (() => true),
+  });
+}
+
+async function pathMissing(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+test("detect and prepare are read-only and public plans never expose the user's full config", async () => {
+  await withFixture(async (fixture) => {
+    const codexConfig = join(fixture.userHome, ".codex", "config.toml");
+    const claudeConfig = join(fixture.userHome, ".claude.json");
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    await writeFile(codexConfig, 'model = "gpt-test"\nprivate_note = "DO-NOT-LEAK-CODEX"\n');
+    await writeFile(claudeConfig, '{\n  "privateNote": "DO-NOT-LEAK-CLAUDE",\n  "mcpServers": {}\n}\n');
+    const beforeCodex = await readFile(codexConfig, "utf8");
+    const beforeClaude = await readFile(claudeConfig, "utf8");
+    const integration = service(fixture);
+
+    const detections = await integration.detectAll();
+    assert.deepEqual(detections.map((item) => [item.runtime_id, item.connection_state]), [
+      ["codex", "not_connected"],
+      ["claude-code", "not_connected"],
+    ]);
+    const codexPlan = await integration.prepare("codex", "connect");
+    const claudePlan = await integration.prepare("claude-code", "connect");
+    assert.equal(codexPlan.status, "ready");
+    assert.equal(claudePlan.status, "ready");
+    assert.match(codexPlan.changes[0].after, /GOALBOARD_RUNTIME_ID/);
+    assert.match(claudePlan.changes[0].after, /goalboard-mcp/);
+    const publicPlans = JSON.stringify([codexPlan, claudePlan]);
+    assert.doesNotMatch(publicPlans, /DO-NOT-LEAK/);
+    assert.doesNotMatch(publicPlans, /private_note|privateNote/);
+    assert.equal(await readFile(codexConfig, "utf8"), beforeCodex);
+    assert.equal(await readFile(claudeConfig, "utf8"), beforeClaude);
+    assert.equal(await pathMissing(join(fixture.home, "runtime-integrations")), true);
+  });
+});
+
+test("Codex first and repeated connection preserve unrelated TOML and create a backup and receipt", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".codex", "config.toml");
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    const before = [
+      'model = "gpt-test"',
+      'private_note = "KEEP-ME"',
+      "",
+      "[mcp_servers.other]",
+      'command = "other-mcp"',
+      "",
+    ].join("\n");
+    await writeFile(config, before);
+    const integration = service(fixture);
+    const plan = await integration.prepare("codex", "connect");
+    const result = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+
+    assert.equal(result.status, "connected");
+    assert.ok(result.backup_path);
+    assert.equal(await readFile(result.backup_path!, "utf8"), before);
+    const after = await readFile(config, "utf8");
+    assert.match(after, /private_note = "KEEP-ME"/);
+    assert.match(after, /\[mcp_servers\.other\][\s\S]*command = "other-mcp"/);
+    assert.match(after, /\[mcp_servers\.goalboard\]/);
+    assert.match(after, new RegExp(fixture.launcher.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(await readlink(join(fixture.userHome, ".codex", "skills", "goal-advance")), fixture.skillSource);
+    const receipt = await readFile(join(fixture.home, "runtime-integrations", "codex.json"), "utf8");
+    assert.match(receipt, /goalboard-runtime-integration-v1/);
+    assert.doesNotMatch(receipt, /KEEP-ME/);
+
+    const replay = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+    assert.equal(replay.status, "already_connected");
+    assert.equal(await readFile(config, "utf8"), after);
+    const freshPlan = await integration.prepare("codex", "connect");
+    assert.equal(freshPlan.status, "no_change");
+    assert.equal((await integration.detect("codex")).connection_state, "connected");
+  });
+});
+
+test("Codex connection replaces the old static project DB integration instead of preserving a second path", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".codex", "config.toml");
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    await writeFile(config, [
+      'model = "gpt-test"',
+      "",
+      "[mcp_servers.goalboard]",
+      'command = "node"',
+      'args = ["/old/source/dist/mcp/server.js"]',
+      "",
+      "[mcp_servers.goalboard.env]",
+      'GOALBOARD_DATABASE = "/old/project.db"',
+      'GOALBOARD_BOARD_ID = "old-board"',
+      "",
+    ].join("\n"));
+    const integration = service(fixture);
+    assert.equal((await integration.detect("codex")).connection_state, "needs_repair");
+    const plan = await integration.prepare("codex", "connect");
+    assert.equal(plan.status, "ready");
+    const result = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+    assert.equal(result.status, "connected");
+    const after = await readFile(config, "utf8");
+    assert.doesNotMatch(after, /GOALBOARD_DATABASE|GOALBOARD_BOARD_ID|\/old\/source|\/old\/project/);
+    assert.match(after, /GOALBOARD_RUNTIME_ID = "codex"/);
+    assert.match(after, /model = "gpt-test"/);
+  });
+});
+
+test("declined, mismatched, stale, and conflicting plans never overwrite Runtime configuration or Skill", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".codex", "config.toml");
+    const skill = join(fixture.userHome, ".codex", "skills", "goal-advance");
+    await mkdir(join(fixture.userHome, ".codex", "skills"), { recursive: true });
+    await writeFile(config, 'model = "gpt-test"\n');
+    const integration = service(fixture);
+    const plan = await integration.prepare("codex", "connect");
+    const before = await readFile(config, "utf8");
+
+    const declined = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "declined" });
+    assert.equal(declined.status, "declined");
+    assert.equal(await readFile(config, "utf8"), before);
+    assert.equal(await pathMissing(skill), true);
+
+    const mismatched = await integration.confirm({ runtime_id: "claude-code", plan_id: plan.plan_id, decision: "confirmed" });
+    assert.equal(mismatched.status, "confirmation_mismatch");
+    assert.equal(await readFile(config, "utf8"), before);
+
+    await writeFile(config, 'model = "changed-after-preview"\n');
+    const stale = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+    assert.equal(stale.status, "stale");
+    assert.equal(await readFile(config, "utf8"), 'model = "changed-after-preview"\n');
+
+    await writeFile(config, '[mcp_servers.goalboard]\ncommand = "not-goalboard"\n');
+    await writeFile(skill, "user-owned skill\n");
+    const conflictPlan = await integration.prepare("codex", "connect");
+    assert.equal(conflictPlan.status, "conflict");
+    const conflictBefore = await readFile(config, "utf8");
+    const conflict = await integration.confirm({ runtime_id: "codex", plan_id: conflictPlan.plan_id, decision: "confirmed" });
+    assert.equal(conflict.status, "conflict");
+    assert.equal(await readFile(config, "utf8"), conflictBefore);
+    assert.equal(await readFile(skill, "utf8"), "user-owned skill\n");
+  });
+});
+
+test("failed validation restores Codex config bytes and Skill state", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".codex", "config.toml");
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    const before = 'model = "gpt-test"\n';
+    await writeFile(config, before);
+    const integration = service(fixture, { validateConnection: () => false });
+    const plan = await integration.prepare("codex", "connect");
+    const result = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+
+    assert.equal(result.status, "rolled_back");
+    assert.equal(await readFile(config, "utf8"), before);
+    assert.equal(await pathMissing(join(fixture.userHome, ".codex", "skills", "goal-advance")), true);
+    assert.equal(await pathMissing(join(fixture.home, "runtime-integrations", "codex.json")), true);
+    const attempts = await stat(join(fixture.home, "runtime-integration-attempts"));
+    assert.ok(attempts.isDirectory());
+  });
+});
+
+test("default validation completes a real MCP initialize and tools-list smoke test", async () => {
+  await withFixture(async (fixture) => {
+    const builtServer = join(process.cwd(), "dist", "mcp", "server.js");
+    await writeFile(fixture.launcher, `#!/bin/sh\nexec node ${JSON.stringify(builtServer)}\n`, { mode: 0o755 });
+    const integration = new RuntimeIntegrationService({
+      homeDirectory: fixture.home,
+      userHomeDirectory: fixture.userHome,
+      runtimeExecutables: fixture.executables,
+    });
+    const plan = await integration.prepare("codex", "connect");
+    const result = await integration.confirm({ runtime_id: "codex", plan_id: plan.plan_id, decision: "confirmed" });
+    assert.equal(result.status, "connected");
+  });
+});
+
+test("Claude Code connection and removal preserve unrelated JSON and other MCP servers", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".claude.json");
+    await writeFile(config, `${JSON.stringify({
+      privateNote: "KEEP-CLAUDE",
+      mcpServers: { other: { type: "stdio", command: "other-mcp", args: [] } },
+      projects: { example: { allowed: true } },
+    }, null, 2)}\n`);
+    const integration = service(fixture);
+    const connectPlan = await integration.prepare("claude-code", "connect");
+    const connected = await integration.confirm({
+      runtime_id: "claude-code",
+      plan_id: connectPlan.plan_id,
+      decision: "confirmed",
+    });
+    assert.equal(connected.status, "connected");
+    const afterConnect = JSON.parse(await readFile(config, "utf8")) as Record<string, any>;
+    assert.equal(afterConnect.privateNote, "KEEP-CLAUDE");
+    assert.deepEqual(afterConnect.projects, { example: { allowed: true } });
+    assert.equal(afterConnect.mcpServers.other.command, "other-mcp");
+    assert.equal(afterConnect.mcpServers.goalboard.command, fixture.launcher);
+    assert.equal(afterConnect.mcpServers.goalboard.env.GOALBOARD_RUNTIME_ID, "claude-code");
+
+    const removePlan = await integration.prepare("claude-code", "remove");
+    assert.equal(removePlan.status, "ready");
+    const removed = await integration.confirm({
+      runtime_id: "claude-code",
+      plan_id: removePlan.plan_id,
+      decision: "confirmed",
+    });
+    assert.equal(removed.status, "removed");
+    const afterRemove = JSON.parse(await readFile(config, "utf8")) as Record<string, any>;
+    assert.equal(afterRemove.privateNote, "KEEP-CLAUDE");
+    assert.equal(afterRemove.mcpServers.other.command, "other-mcp");
+    assert.equal(afterRemove.mcpServers.goalboard, undefined);
+    assert.equal(await pathMissing(join(fixture.userHome, ".claude", "skills", "goal-advance")), true);
+    assert.equal(await pathMissing(join(fixture.home, "runtime-integrations", "claude-code.json")), true);
+    const replay = await integration.confirm({
+      runtime_id: "claude-code",
+      plan_id: removePlan.plan_id,
+      decision: "confirmed",
+    });
+    assert.equal(replay.status, "already_removed");
+  });
+});
+
+test("removal refuses to delete GoalBoard entries or Skill links changed after connection", async () => {
+  await withFixture(async (fixture) => {
+    const config = join(fixture.userHome, ".claude.json");
+    await writeFile(config, '{"mcpServers":{}}\n');
+    const integration = service(fixture);
+    const connectPlan = await integration.prepare("claude-code", "connect");
+    assert.equal((await integration.confirm({
+      runtime_id: "claude-code",
+      plan_id: connectPlan.plan_id,
+      decision: "confirmed",
+    })).status, "connected");
+
+    const changed = JSON.parse(await readFile(config, "utf8")) as Record<string, any>;
+    changed.mcpServers.goalboard.args = ["--user-change"];
+    await writeFile(config, `${JSON.stringify(changed)}\n`);
+    const skill = join(fixture.userHome, ".claude", "skills", "goal-advance");
+    await rm(skill);
+    const userSkill = join(fixture.directory, "user-skill");
+    await mkdir(userSkill);
+    await symlink(userSkill, skill, "dir");
+    const before = await readFile(config, "utf8");
+
+    const removePlan = await integration.prepare("claude-code", "remove");
+    assert.equal(removePlan.status, "conflict");
+    const result = await integration.confirm({
+      runtime_id: "claude-code",
+      plan_id: removePlan.plan_id,
+      decision: "confirmed",
+    });
+    assert.equal(result.status, "conflict");
+    assert.equal(await readFile(config, "utf8"), before);
+    assert.equal(await readlink(skill), userSkill);
+  });
+});
+
+test("Runtime host derives stable Session identity only from known host signals and keeps workspace as a suggestion clue", () => {
+  const codex = runtimeContextHostFromEnvironment({
+    GOALBOARD_RUNTIME_ID: "codex",
+    CODEX_THREAD_ID: "codex-thread-123",
+    PWD: "/workspace/alpha",
+  }, "/fallback");
+  assert.equal(codex?.runtimeContext.stable_work_context_id, "codex-thread-123");
+  assert.equal(codex?.runtimeContext.host_declares_stable, true);
+  assert.deepEqual(codex?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/alpha" }]);
+
+  const claude = runtimeContextHostFromEnvironment({
+    GOALBOARD_RUNTIME_ID: "claude-code",
+    CLAUDE_CODE_SESSION_ID: "claude-session-456",
+    CLAUDE_CODE_SESSION_NAME: "Alpha launch",
+  }, "/workspace/beta");
+  assert.equal(claude?.runtimeContext.stable_work_context_id, "claude-session-456");
+  assert.deepEqual(claude?.projectSuggestionClues, [
+    { kind: "workspace", value: "/workspace/beta" },
+    { kind: "session_title", value: "Alpha launch" },
+  ]);
+
+  const explicit = runtimeContextHostFromEnvironment({
+    GOALBOARD_RUNTIME_ID: "codex",
+    GOALBOARD_WORK_CONTEXT_ID: "explicit-id",
+    GOALBOARD_WORK_CONTEXT_STABLE: "true",
+    CODEX_THREAD_ID: "ignored-thread",
+  }, "/workspace/gamma");
+  assert.equal(explicit?.runtimeContext.stable_work_context_id, "explicit-id");
+
+  const unknown = runtimeContextHostFromEnvironment({ GOALBOARD_RUNTIME_ID: "some-runtime" }, "/workspace/delta");
+  assert.equal(unknown?.runtimeContext.stable_work_context_id, null);
+  assert.equal(unknown?.runtimeContext.host_declares_stable, false);
+});

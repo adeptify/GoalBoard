@@ -1,4 +1,4 @@
 interface:
   display_name: "GoalBoard Runtime"
-  short_description: "让当前 Runtime 通过 MCP 连续推进一个 GoalBoard 项目"
-  default_prompt: "Use $goal-advance to connect this work to GoalBoard and continue the current Runtime flow."
+  short_description: "在当前对话自然澄清、选择并推进 GoalBoard 工作"
+  default_prompt: "Use $goal-advance in this conversation. Explain what you understand and what happens next in plain language, then persist and continue the current GoalBoard flow."

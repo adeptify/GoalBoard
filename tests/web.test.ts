@@ -1,15 +1,68 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Script } from "node:vm";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
+import { RuntimeIntegrationService } from "../src/install/runtime-integration.js";
+import { GoalBoardServer } from "../src/mcp/server.js";
 import { renderGoalBoardWeb } from "../src/web/render.js";
-import { buildGoalBoardWebView, createGoalBoardWebServer } from "../src/web/server.js";
+import {
+  buildGoalBoardWebView,
+  createGoalBoardWebServer as createBaseGoalBoardWebServer,
+} from "../src/web/server.js";
+
+const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
+let webRequestSequence = 0;
+
+function createGoalBoardWebServer(
+  options: Parameters<typeof createBaseGoalBoardWebServer>[0] = {},
+) {
+  return createBaseGoalBoardWebServer({ ...options, controlToken: WEB_TEST_CONTROL_TOKEN });
+}
+
+function webFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (method === "GET" || method === "HEAD") return globalThis.fetch(input, init);
+  const target = new URL(input instanceof Request ? input.url : String(input));
+  const headers = new Headers(init.headers);
+  if (!headers.has("origin")) headers.set("origin", target.origin);
+  if (!headers.has("x-goalboard-control-token")) {
+    headers.set("x-goalboard-control-token", WEB_TEST_CONTROL_TOKEN);
+  }
+  if (!headers.has("x-goalboard-idempotency-key")) {
+    webRequestSequence += 1;
+    headers.set("x-goalboard-idempotency-key", `web-test-request-${webRequestSequence}`);
+  }
+  return globalThis.fetch(input, { ...init, headers });
+}
+
+function rawHttpGet(port: number, path: string, hostHeader: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ hostname: "127.0.0.1", port, path, headers: { host: hostHeader } }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function assertInlineScriptsCompile(html: string): void {
+  const scripts = Array.from(html.matchAll(/<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/g));
+  for (const [, source] of scripts) {
+    if (!source.trim() || source.trim().startsWith("{")) continue;
+    assert.doesNotThrow(() => new Script(source), "rendered inline script must be valid JavaScript");
+  }
+}
 
 function webFixture() {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-web-"));
@@ -59,6 +112,43 @@ async function webProjectCatalogFixture() {
   } finally {
     catalog.close();
   }
+}
+
+function webRuntimeIntegrationFixture(homeDirectory: string) {
+  const userHomeDirectory = join(homeDirectory, "test-user-home");
+  const release = join(homeDirectory, "releases", "goalboard-web-test");
+  const skill = join(release, "skills", "goal-advance");
+  const launcher = join(homeDirectory, "bin", "goalboard-mcp");
+  const runtimeBin = join(homeDirectory, "test-runtime-bin");
+  mkdirSync(join(homeDirectory, "config"), { recursive: true });
+  mkdirSync(skill, { recursive: true });
+  mkdirSync(join(homeDirectory, "bin"), { recursive: true });
+  mkdirSync(runtimeBin, { recursive: true });
+  mkdirSync(userHomeDirectory, { recursive: true });
+  writeFileSync(join(homeDirectory, "config", "installation.json"), `${JSON.stringify({
+    schema_version: 2,
+    installer: "goalboard-home-install-v1",
+    version: "web-test",
+    release_path: "releases/goalboard-web-test",
+  }, null, 2)}\n`);
+  writeFileSync(join(skill, "SKILL.md"), "---\nname: goal-advance\n---\n");
+  writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
+  const codex = join(runtimeBin, "codex");
+  const claude = join(runtimeBin, "claude");
+  writeFileSync(codex, "#!/bin/sh\nexit 0\n");
+  writeFileSync(claude, "#!/bin/sh\nexit 0\n");
+  [launcher, codex, claude].forEach((file) => chmodSync(file, 0o755));
+  return {
+    userHomeDirectory,
+    skill,
+    launcher,
+    service: new RuntimeIntegrationService({
+      homeDirectory,
+      userHomeDirectory,
+      runtimeExecutables: { codex, "claude-code": claude },
+      validateConnection: () => true,
+    }),
+  };
 }
 
 function addProjectGoal(
@@ -441,7 +531,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const alphaPrefix = `/projects/${encodeURIComponent(fixture.alpha.project_id)}`;
     const betaPrefix = `/projects/${encodeURIComponent(fixture.beta.project_id)}`;
 
-    const projectIndex = await (await fetch(`${origin}/`)).text();
+    const projectIndex = await (await webFetch(`${origin}/`)).text();
     assert.match(projectIndex, /选择一个项目/);
     assert.match(projectIndex, /产品 Alpha/);
     assert.match(projectIndex, /产品 Beta/);
@@ -452,11 +542,11 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(projectIndex, /\.project-index-page > \.topbar \{ height: 58px; \}/);
     assert.match(projectIndex, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
 
-    const missingSelection = await fetch(`${origin}/api/board`);
+    const missingSelection = await webFetch(`${origin}/api/board`);
     assert.equal(missingSelection.status, 400);
     assert.match(await missingSelection.text(), /请先选择一个 GoalBoard 项目/);
 
-    const alphaPage = await (await fetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY`)).text();
+    const alphaPage = await (await webFetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY`)).text();
     assert.match(alphaPage, /项目：<\/strong><span>产品 Alpha/);
     assert.match(alphaPage, /切换项目/);
     assert.match(alphaPage, /仅 Alpha 可见的 Goal/);
@@ -466,13 +556,13 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(alphaPage, /\.app \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\)/);
     assert.equal((alphaPage.match(/data-goal-view=/g) ?? []).length, 1);
 
-    const alphaCursorResponse = await fetch(`${origin}${alphaPrefix}/api/board/cursor`);
+    const alphaCursorResponse = await webFetch(`${origin}${alphaPrefix}/api/board/cursor`);
     assert.equal(alphaCursorResponse.status, 200);
     const alphaCursorText = await alphaCursorResponse.text();
     assert.ok(alphaCursorText.length < 100);
     assert.equal(typeof (JSON.parse(alphaCursorText) as { observed_event_cursor: number }).observed_event_cursor, "number");
 
-    const alphaDocumentResponse = await fetch(
+    const alphaDocumentResponse = await webFetch(
       `${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=current`,
     );
     assert.equal(alphaDocumentResponse.status, 200);
@@ -481,20 +571,20 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(alphaDocument, /仅 Alpha 可见的 Goal/);
     assert.doesNotMatch(alphaDocument, /<!doctype html>|仅 Beta 可见的 Goal/);
     assert.equal(
-      (await fetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=trash`)).status,
+      (await webFetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=trash`)).status,
       404,
     );
     assert.equal(
-      (await fetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=unknown`)).status,
+      (await webFetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=unknown`)).status,
       400,
     );
 
-    const betaPage = await (await fetch(`${origin}${betaPrefix}/goals/BETA-ONLY`)).text();
+    const betaPage = await (await webFetch(`${origin}${betaPrefix}/goals/BETA-ONLY`)).text();
     assert.match(betaPage, /项目：<\/strong><span>产品 Beta/);
     assert.match(betaPage, /仅 Beta 可见的 Goal/);
     assert.doesNotMatch(betaPage, /仅 Alpha 可见的 Goal/);
 
-    const alphaBoardResponse = await fetch(`${origin}${alphaPrefix}/api/board`);
+    const alphaBoardResponse = await webFetch(`${origin}${alphaPrefix}/api/board`);
     assert.equal(alphaBoardResponse.status, 200);
     const alphaBoardText = await alphaBoardResponse.text();
     assert.doesNotMatch(alphaBoardText, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -508,7 +598,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.ok(alphaBoard.goals.some((item) => item.goal.goal_id === "ALPHA-ONLY"));
     assert.ok(!alphaBoard.goals.some((item) => item.goal.goal_id === "BETA-ONLY"));
 
-    const created = await fetch(`${origin}${alphaPrefix}/api/goals`, {
+    const created = await webFetch(`${origin}${alphaPrefix}/api/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -523,7 +613,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const createdPayload = (await created.json()) as { goal_path: string };
     assert.equal(createdPayload.goal_path, `${alphaPrefix}/goals/ALPHA-WEB-CREATED`);
 
-    const betaBoard = (await (await fetch(`${origin}${betaPrefix}/api/board`)).json()) as {
+    const betaBoard = (await (await webFetch(`${origin}${betaPrefix}/api/board`)).json()) as {
       goals: Array<{ goal: { goal_id: string } }>;
     };
     assert.ok(!betaBoard.goals.some((item) => item.goal.goal_id === "ALPHA-WEB-CREATED"));
@@ -543,6 +633,349 @@ test("Web project catalog switches browser scope without exposing storage or cha
   }
 });
 
+test("Web settings use shared Runtime and project services for confirmed setup flows", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const runtime = webRuntimeIntegrationFixture(fixture.homeDirectory);
+  const server = createGoalBoardWebServer({
+    homeDirectory: fixture.homeDirectory,
+    runtimeIntegrationService: runtime.service,
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const redirect = await webFetch(`${origin}/settings`, { redirect: "manual" });
+    assert.equal(redirect.status, 302);
+    assert.equal(redirect.headers.get("location"), "/settings/runtimes");
+
+    const runtimePage = await (await webFetch(`${origin}/settings/runtimes`)).text();
+    assertInlineScriptsCompile(runtimePage);
+    assert.match(runtimePage, /Runtime 接入/);
+    assert.match(runtimePage, /Codex/);
+    assert.match(runtimePage, /Claude Code/);
+    assert.match(runtimePage, /未接入/);
+    assert.match(runtimePage, /data-runtime-plan="codex"/);
+    assert.match(runtimePage, /data-runtime-plan-dialog/);
+    assert.match(runtimePage, /我已查看并确认这份变更/);
+    assert.match(runtimePage, /.settings-page > \.topbar \{ height: 58px; \}/);
+    assert.match(runtimePage, /@media \(max-width: 760px\)[\s\S]*\.settings-page > \.topbar \{ height: 52px; \}/);
+    assert.match(runtimePage, /button:focus-visible[\s\S]*a:focus-visible/);
+    assert.doesNotMatch(runtimePage, /兼容模式|自动启用项目|单数据库工作区/);
+
+    const projectPage = await (await webFetch(`${origin}/settings/projects`)).text();
+    assert.match(projectPage, /创建项目/);
+    assert.match(projectPage, /产品 Alpha/);
+    assert.match(projectPage, /产品 Beta/);
+    assert.match(projectPage, /DB 信息/);
+    assert.match(projectPage, /data-project-rename/);
+    assert.match(projectPage, /data-project-migration-form/);
+    assert.match(projectPage, /项目删除暂不在这里开放/);
+
+    const diagnosticsPage = await (await webFetch(`${origin}/settings/diagnostics`)).text();
+    assert.match(diagnosticsPage, /安装完整/);
+    assert.match(diagnosticsPage, /web-test/);
+    assert.match(diagnosticsPage, /启动入口/);
+    assert.match(diagnosticsPage, /goalboard-mcp/);
+    const diagnostics = (await (await webFetch(`${origin}/api/settings/diagnostics`)).json()) as {
+      installation_state: string;
+      project_count: number;
+    };
+    assert.equal(diagnostics.installation_state, "ready");
+    assert.equal(diagnostics.project_count, 2);
+
+    const codexConfig = join(runtime.userHomeDirectory, ".codex", "config.toml");
+    const planResponse = await webFetch(`${origin}/api/settings/runtimes/codex/plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "connect" }),
+    });
+    assert.equal(planResponse.status, 200);
+    const plan = (await planResponse.json()) as { plan_id: string; status: string; changes: unknown[]; next_contents?: unknown };
+    assert.equal(plan.status, "ready");
+    assert.ok(plan.changes.length >= 2);
+    assert.equal(plan.next_contents, undefined);
+    assert.equal(existsSync(codexConfig), false);
+
+    const incompleteConfirm = await webFetch(`${origin}/api/settings/runtimes/codex/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "confirmed" }),
+    });
+    assert.equal(incompleteConfirm.status, 400);
+    assert.equal(existsSync(codexConfig), false);
+
+    const declined = await webFetch(`${origin}/api/settings/runtimes/codex/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plan_id: plan.plan_id, decision: "declined" }),
+    });
+    assert.equal(declined.status, 200);
+    assert.equal(existsSync(codexConfig), false);
+
+    const confirmed = await webFetch(`${origin}/api/settings/runtimes/codex/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plan_id: plan.plan_id, decision: "confirmed" }),
+    });
+    assert.equal(confirmed.status, 200);
+    const confirmedResult = (await confirmed.json()) as { status: string };
+    assert.equal(confirmedResult.status, "connected");
+    assert.match(readFileSync(codexConfig, "utf8"), /GOALBOARD_RUNTIME_ID = "codex"/);
+    assert.equal(readlinkSync(join(runtime.userHomeDirectory, ".codex", "skills", "goal-advance")), runtime.skill);
+
+    const beforeCatalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    let beforeBindings: ReturnType<GoalBoardProjectCatalog["listRuntimeContextBindingEvents"]>;
+    try {
+      beforeBindings = beforeCatalog.listRuntimeContextBindingEvents();
+    } finally {
+      beforeCatalog.close();
+    }
+    const unconfirmedProject = await webFetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ display_name: "网页新项目" }),
+    });
+    assert.equal(unconfirmedProject.status, 400);
+
+    const createdResponse = await webFetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ display_name: "网页新项目", user_confirmed: true }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = (await createdResponse.json()) as {
+      project: { project_id: string; display_name: string };
+      project_path: string;
+    };
+    assert.equal(created.project.display_name, "网页新项目");
+    const renamedResponse = await webFetch(
+      `${origin}/api/settings/projects/${encodeURIComponent(created.project.project_id)}/rename`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ display_name: "网页项目已改名" }),
+      },
+    );
+    assert.equal(renamedResponse.status, 200);
+    assert.match(await renamedResponse.text(), /网页项目已改名/);
+    assert.equal((await webFetch(`${origin}${created.project_path}`)).status, 200);
+
+    const afterCatalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    try {
+      assert.equal(afterCatalog.getProject(created.project.project_id).display_name, "网页项目已改名");
+      assert.deepEqual(afterCatalog.listRuntimeContextBindingEvents(), beforeBindings);
+    } finally {
+      afterCatalog.close();
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("Web manages only confirmed Runtime Session bindings without exposing host identities", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const page = await (await webFetch(`${origin}/settings/projects`)).text();
+    assertInlineScriptsCompile(page);
+    assert.match(page, /已关联的 Runtime Session/);
+    assert.match(page, /data-connection-rebind/);
+    assert.match(page, /data-connection-unbind/);
+    assert.doesNotMatch(page, /web-project-alpha-session|web-project-beta-session/);
+
+    const listed = (await (await webFetch(`${origin}/api/settings/connections`)).json()) as {
+      connections: Array<{
+        binding_id: string;
+        context_label: string;
+        project_id: string;
+        project_name: string;
+      }>;
+    };
+    assert.equal(listed.connections.length, 2);
+    assert.match(listed.connections[0]?.context_label ?? "", /Session · [A-F0-9]{6}$/);
+    assert.doesNotMatch(JSON.stringify(listed), /stable_work_context_id|database_path|web-project-alpha-session/);
+    const alphaConnection = listed.connections.find((connection) => connection.project_id === fixture.alpha.project_id);
+    assert.ok(alphaConnection);
+
+    const unconfirmedRebind = await webFetch(
+      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/rebind`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: fixture.beta.project_id }),
+      },
+    );
+    assert.equal(unconfirmedRebind.status, 400);
+
+    const beforeConfirmed = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    try {
+      assert.equal(beforeConfirmed.resolveRuntimeContext(fixture.alphaContext).project?.project_id, fixture.alpha.project_id);
+    } finally {
+      beforeConfirmed.close();
+    }
+
+    const reboundResponse = await webFetch(
+      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/rebind`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: fixture.beta.project_id, user_confirmed: true }),
+      },
+    );
+    assert.equal(reboundResponse.status, 200);
+    const rebound = (await reboundResponse.json()) as { connection: { project_id: string; project_name: string } };
+    assert.equal(rebound.connection.project_id, fixture.beta.project_id);
+    assert.equal(rebound.connection.project_name, fixture.beta.display_name);
+    assert.doesNotMatch(JSON.stringify(rebound), /stable_work_context_id|database_path|web-project-alpha-session/);
+
+    const runtime = new GoalBoardServer("runtime", null, {
+      homeDirectory: fixture.homeDirectory,
+      runtimeContext: fixture.alphaContext,
+      webBaseUrl: origin,
+    });
+    const runtimeResolution = JSON.parse(await runtime.callTool("goalboard_v1_context_resolve", {})) as {
+      project: { project_id: string } | null;
+    };
+    assert.equal(runtimeResolution.project?.project_id, fixture.beta.project_id);
+
+    const unconfirmedUnbind = await webFetch(
+      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/unbind`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(unconfirmedUnbind.status, 400);
+
+    const unboundResponse = await webFetch(
+      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/unbind`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_confirmed: true }),
+      },
+    );
+    assert.equal(unboundResponse.status, 200);
+    const after = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    try {
+      assert.equal(after.resolveRuntimeContext(fixture.alphaContext).status, "unbound");
+      assert.equal(after.resolveRuntimeContext(fixture.betaContext).project?.project_id, fixture.beta.project_id);
+      assert.equal(after.listProjects().length, 2);
+      assert.equal(after.listRuntimeContextBindings().length, 1);
+      assert.deepEqual(
+        after.listRuntimeContextBindingEvents(fixture.alphaContext).map((event) => event.type),
+        ["context.bound", "context.rebound", "context.unbound"],
+      );
+    } finally {
+      after.close();
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("Web local control gate rejects cross-site, missing-credential, hostile-host, and replayed writes", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const pageResponse = await globalThis.fetch(`${origin}/settings/projects`);
+    assert.equal(pageResponse.status, 200);
+    const page = await pageResponse.text();
+    assert.match(page, new RegExp(`<meta name="goalboard-control-token" content="${WEB_TEST_CONTROL_TOKEN}">`));
+    const apiText = await (await globalThis.fetch(`${origin}/api/settings/projects`)).text();
+    assert.doesNotMatch(apiText, new RegExp(WEB_TEST_CONTROL_TOKEN));
+
+    const hostileHost = await rawHttpGet(address.port, "/settings/projects", `attacker.example:${address.port}`);
+    assert.equal(hostileHost.status, 403);
+    assert.doesNotMatch(hostileHost.body, /attacker\.example/);
+
+    const missingToken = await globalThis.fetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        "x-goalboard-idempotency-key": "security-missing-token",
+      },
+      body: JSON.stringify({ display_name: "不应创建", user_confirmed: true }),
+    });
+    assert.equal(missingToken.status, 403);
+
+    const crossSite = await globalThis.fetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://attacker.example",
+        "x-goalboard-control-token": WEB_TEST_CONTROL_TOKEN,
+        "x-goalboard-idempotency-key": "security-cross-site",
+      },
+      body: JSON.stringify({ display_name: "不应创建", user_confirmed: true }),
+    });
+    assert.equal(crossSite.status, 403);
+    assert.doesNotMatch(await crossSite.text(), /attacker\.example|goalboard-web-test-control-token/);
+
+    const missingRequestKey = await globalThis.fetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        "x-goalboard-control-token": WEB_TEST_CONTROL_TOKEN,
+      },
+      body: JSON.stringify({ display_name: "不应创建", user_confirmed: true }),
+    });
+    assert.equal(missingRequestKey.status, 400);
+
+    const retryKey = "security-failed-request-retry";
+    const invalid = await globalThis.fetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        "x-goalboard-control-token": WEB_TEST_CONTROL_TOKEN,
+        "x-goalboard-idempotency-key": retryKey,
+      },
+      body: JSON.stringify({ display_name: "安全创建" }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const confirmedRequest = {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        "x-goalboard-control-token": WEB_TEST_CONTROL_TOKEN,
+        "x-goalboard-idempotency-key": retryKey,
+      },
+      body: JSON.stringify({ display_name: "安全创建", user_confirmed: true }),
+    } satisfies RequestInit;
+    const confirmed = await globalThis.fetch(`${origin}/api/settings/projects`, confirmedRequest);
+    assert.equal(confirmed.status, 201);
+    const replayed = await globalThis.fetch(`${origin}/api/settings/projects`, confirmedRequest);
+    assert.equal(replayed.status, 409);
+    assert.match(await replayed.text(), /不会重复执行/);
+
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    try {
+      assert.equal(catalog.listProjects().filter((project) => project.display_name === "安全创建").length, 1);
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test("Web project catalog empty state does not create a project or Runtime binding", async () => {
   const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-empty-"));
   const server = createGoalBoardWebServer({ homeDirectory });
@@ -550,10 +983,11 @@ test("Web project catalog empty state does not create a project or Runtime bindi
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const page = await (await fetch(`http://127.0.0.1:${address.port}/`)).text();
-    assert.match(page, /还没有 GoalBoard 项目/);
-    assert.match(page, /当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目/);
-    assert.doesNotMatch(page, /data-open-create|新建项目/);
+    const page = await (await webFetch(`http://127.0.0.1:${address.port}/`)).text();
+    assert.match(page, /从一个真实项目开始/);
+    assert.match(page, /创建第一个项目/);
+    assert.match(page, /设置 Runtime 接入/);
+    assert.match(page, /两步都可跳过/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -594,7 +1028,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
 
-    const indexResponse = await fetch(`${origin}/`);
+    const indexResponse = await webFetch(`${origin}/`);
     assert.match(indexResponse.headers.get("content-security-policy") ?? "", /script-src 'unsafe-inline'/);
     assert.match(indexResponse.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
     const index = await indexResponse.text();
@@ -604,7 +1038,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
     assert.match(index, /不会绑定或切换任何 Runtime Session/);
     assert.doesNotMatch(index, /兼容模式|单数据库工作区|显式 --db/);
 
-    const withoutConfirmation = await fetch(`${origin}/api/projects/migrate`, {
+    const withoutConfirmation = await webFetch(`${origin}/api/projects/migrate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ legacy_database_path: legacyDatabasePath }),
@@ -621,7 +1055,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
       unconfirmedCatalog.close();
     }
 
-    const migratedResponse = await fetch(`${origin}/api/projects/migrate`, {
+    const migratedResponse = await webFetch(`${origin}/api/projects/migrate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -649,7 +1083,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
       catalog.close();
     }
 
-    const migratedPage = await (await fetch(`${origin}${migrated.project_path}`)).text();
+    const migratedPage = await (await webFetch(`${origin}${migrated.project_path}`)).text();
     assert.match(migratedPage, /项目：<\/strong><span>迁移后的产品/);
     assert.match(migratedPage, /交付 GoalBoard V1/);
     assert.doesNotMatch(migratedPage, new RegExp(legacyDatabasePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -669,7 +1103,7 @@ test("Web leaves an invalid legacy DB and the project catalog unchanged when mig
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/projects/migrate`, {
+    const response = await webFetch(`http://127.0.0.1:${address.port}/api/projects/migrate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -743,7 +1177,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const initialPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
+    const initialPage = await (await webFetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
     const goalDocument = (page: string, goalId: string): string => {
       const marker = `<article class="goal-document" data-goal-view="${goalId}"`;
       const start = page.indexOf(marker);
@@ -756,7 +1190,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
     assert.match(initialDocument, /data-set-active-goal/);
     assert.match(initialDocument, /设为当前 Goal/);
 
-    const activate = await fetch(`${origin}/api/goals/ACTIVE-GOAL-WEB/active`, {
+    const activate = await webFetch(`${origin}/api/goals/ACTIVE-GOAL-WEB/active`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason: "用户把这条已接受 Goal 设为当前聚焦" }),
@@ -771,7 +1205,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
     assert.equal(activated.replayed, false);
     assert.ok(activated.observed_event_cursor > 0);
 
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       active_goal_id: string;
       snapshot: { board: { active_goal_id: string } };
       events: Array<{ type: string; object_id: string }>;
@@ -785,15 +1219,15 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
         (event) => event.type === "board.active_goal_changed" && event.object_id === "ACTIVE-GOAL-WEB",
       ),
     );
-    const currentPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
+    const currentPage = await (await webFetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
     const currentDocument = goalDocument(currentPage, "ACTIVE-GOAL-WEB");
     assert.match(currentDocument, /当前 Goal/);
     assert.match(currentDocument, /当前产品聚焦 Goal；不表示 Runtime 正在执行/);
     assert.doesNotMatch(currentDocument, /data-set-active-goal/);
 
-    const draftPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-DRAFT`)).text();
+    const draftPage = await (await webFetch(`${origin}/goals/ACTIVE-GOAL-DRAFT`)).text();
     assert.doesNotMatch(goalDocument(draftPage, "ACTIVE-GOAL-DRAFT"), /data-set-active-goal/);
-    const draftActivation = await fetch(`${origin}/api/goals/ACTIVE-GOAL-DRAFT/active`, {
+    const draftActivation = await webFetch(`${origin}/api/goals/ACTIVE-GOAL-DRAFT/active`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason: "不能绕过 accepted 校验" }),
@@ -852,7 +1286,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const ambiguous = await fetch(
+    const ambiguous = await webFetch(
       `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
         method: "POST",
@@ -862,7 +1296,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     );
     assert.equal(ambiguous.status, 400);
     assert.match(await ambiguous.text(), /不能验证上一轮/);
-    const decision = await fetch(
+    const decision = await webFetch(
       `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
         method: "POST",
@@ -880,7 +1314,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
       },
     );
     assert.equal(decision.status, 200, await decision.text());
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         goals: Array<{ goal_id: string; definition_state: string }>;
         goal_tree_proposals: Array<{
@@ -908,7 +1342,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const initialPage = await (await fetch(`${origin}/goals/CORE`)).text();
+    const initialPage = await (await webFetch(`${origin}/goals/CORE`)).text();
     assert.match(initialPage, /data-relation-editor/);
     assert.match(initialPage, /这是用户确认入口/);
     assert.match(initialPage, /Runtime 发现的变化仍只能提交 Rewire/);
@@ -929,7 +1363,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
       assert.match(initialPage, new RegExp(`<option value="${type}"`));
     }
 
-    const missingReason = await fetch(`${origin}/api/goals/CORE/relations`, {
+    const missingReason = await webFetch(`${origin}/api/goals/CORE/relations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -941,7 +1375,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     assert.equal(missingReason.status, 400);
     assert.match(await missingReason.text(), /为什么要建立这条关系/);
 
-    const createResponse = await fetch(`${origin}/api/goals/CORE/relations`, {
+    const createResponse = await webFetch(`${origin}/api/goals/CORE/relations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -954,7 +1388,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     });
     assert.equal(createResponse.status, 201);
     const created = (await createResponse.json()) as { relation_id: string };
-    const afterCreate = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const afterCreate = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         relations: Array<{
           relation_id: string;
@@ -986,13 +1420,13 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
         reason: "接口 Goal 修正当前执行闭环中的协议偏差",
       },
     );
-    const activePage = await (await fetch(`${origin}/goals/CORE`)).text();
+    const activePage = await (await webFetch(`${origin}/goals/CORE`)).text();
     assert.match(activePage, new RegExp(`data-relation-id="${created.relation_id}"`));
     assert.match(activePage, /让 CLI 与 MCP 共用同一真相 → 修正 → 当前 Goal/);
     assert.match(activePage, /接口 Goal 修正当前执行闭环中的协议偏差/);
     assert.match(activePage, /data-relation-deactivate-open/);
 
-    const missingDeactivateReason = await fetch(
+    const missingDeactivateReason = await webFetch(
       `${origin}/api/relations/${encodeURIComponent(created.relation_id)}/deactivate`,
       {
         method: "POST",
@@ -1003,7 +1437,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     assert.equal(missingDeactivateReason.status, 400);
     assert.match(await missingDeactivateReason.text(), /必须说明原因/);
 
-    const deactivateResponse = await fetch(
+    const deactivateResponse = await webFetch(
       `${origin}/api/relations/${encodeURIComponent(created.relation_id)}/deactivate`,
       {
         method: "POST",
@@ -1020,7 +1454,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     };
     assert.equal(deactivated.relation.state, "inactive");
     assert.ok(deactivated.relation.deactivated_at);
-    const inactivePage = await (await fetch(`${origin}/goals/CORE`)).text();
+    const inactivePage = await (await webFetch(`${origin}/goals/CORE`)).text();
     assert.match(inactivePage, /已解除关系/);
     assert.match(inactivePage, /解除原因：修正工作已经独立完成，这条关系不再成立/);
     assert.doesNotMatch(
@@ -1044,15 +1478,15 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const goalPageResponse = await fetch(`${origin}/goals/CORE`);
+    const goalPageResponse = await webFetch(`${origin}/goals/CORE`);
     assert.equal(goalPageResponse.status, 200);
     const goalPage = await goalPageResponse.text();
     assert.match(goalPage, /<title>跑通 SQLite 执行闭环 · GoalBoard<\/title>/);
     assert.match(goalPage, /data-goal-view="CORE"/);
-    const missingGoalResponse = await fetch(`${origin}/goals/DOES-NOT-EXIST`);
+    const missingGoalResponse = await webFetch(`${origin}/goals/DOES-NOT-EXIST`);
     assert.equal(missingGoalResponse.status, 404);
 
-    const createResponse = await fetch(`${origin}/api/goals`, {
+    const createResponse = await webFetch(`${origin}/api/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1077,11 +1511,11 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     assert.equal(created.goal.definition_state, "draft");
     assert.equal(created.goal.decomposition_state, "abstract");
     assert.equal(created.goal_path, "/goals/WEB-CREATED");
-    const createdPage = await fetch(`${origin}${created.goal_path}`);
+    const createdPage = await webFetch(`${origin}${created.goal_path}`);
     assert.equal(createdPage.status, 200);
     assert.match(await createdPage.text(), /从 Web 手动录入 Goal/);
 
-    const boardResponse = await fetch(`${origin}/api/board`);
+    const boardResponse = await webFetch(`${origin}/api/board`);
     assert.equal(boardResponse.status, 200);
     const board = (await boardResponse.json()) as {
       snapshot: {
@@ -1108,7 +1542,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     const candidate = board.snapshot.candidates.find((item) => item.state === "pending");
     assert.ok(candidate);
 
-    const decisionCenter = await (await fetch(`${origin}/decisions`)).text();
+    const decisionCenter = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(decisionCenter, /<title>等待你的决定 · GoalBoard<\/title>/);
     assert.match(decisionCenter, /data-decision-center/);
     assert.match(decisionCenter, /所属 Goal/);
@@ -1123,13 +1557,13 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     assert.match(decisionCenter, /风险/);
     assert.match(decisionCenter, /Review Policy/);
     assert.match(decisionCenter, /决定理由或修改意见/);
-    const unrelatedGoalPage = await (await fetch(`${origin}/goals/WEB`)).text();
+    const unrelatedGoalPage = await (await webFetch(`${origin}/goals/WEB`)).text();
     assert.doesNotMatch(unrelatedGoalPage, /<form class="decision-record candidate-decision"/);
 
-    const unsafeReferenceResponse = await fetch(`${origin}/api/reference?value=/etc/passwd`);
+    const unsafeReferenceResponse = await webFetch(`${origin}/api/reference?value=/etc/passwd`);
     assert.equal(unsafeReferenceResponse.status, 404);
 
-    const missingCandidateReason = await fetch(
+    const missingCandidateReason = await webFetch(
       `${origin}/api/candidates/${encodeURIComponent(candidate.candidate_id)}/decision`,
       {
         method: "POST",
@@ -1140,7 +1574,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     assert.equal(missingCandidateReason.status, 400);
     assert.match(await missingCandidateReason.text(), /请填写决定理由或修改意见/);
 
-    const decisionResponse = await fetch(
+    const decisionResponse = await webFetch(
       `${origin}/api/candidates/${encodeURIComponent(candidate.candidate_id)}/decision`,
       {
         method: "POST",
@@ -1159,7 +1593,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     assert.equal(result.candidate.state, "approved");
     assert.equal(result.candidate.decision.reason, "自动化测试接受示例 Candidate");
 
-    const afterCandidateResponse = await fetch(`${origin}/api/board`);
+    const afterCandidateResponse = await webFetch(`${origin}/api/board`);
     const afterCandidate = (await afterCandidateResponse.json()) as {
       snapshot: {
         rewires: Array<{ rewire_id: string; state: string }>;
@@ -1170,7 +1604,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     };
     const rewire = afterCandidate.snapshot.rewires.find((item) => item.state === "pending");
     assert.ok(rewire);
-    const pendingDecisionPage = await (await fetch(`${origin}/decisions`)).text();
+    const pendingDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(pendingDecisionPage, /拒绝关系调整/);
     assert.match(pendingDecisionPage, /<form class="decision-record rewire-decision"/);
     assert.match(pendingDecisionPage, /name="decision" value="confirmed"/);
@@ -1188,11 +1622,11 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
       (run) => run.run_id === candidateAfterApproval?.discovered_in_run_id,
     )?.goal_id;
     assert.ok(ownerGoalId);
-    const ownerPageWithDecision = await (await fetch(`${origin}/goals/${encodeURIComponent(ownerGoalId)}`)).text();
+    const ownerPageWithDecision = await (await webFetch(`${origin}/goals/${encodeURIComponent(ownerGoalId)}`)).text();
     assert.match(ownerPageWithDecision, /前往处理/);
     assert.doesNotMatch(ownerPageWithDecision, /<form class="decision-record rewire-decision"/);
     const relationCountBefore = afterCandidate.snapshot.relations.length;
-    const missingRewireReason = await fetch(
+    const missingRewireReason = await webFetch(
       `${origin}/api/rewires/${encodeURIComponent(rewire.rewire_id)}/decision`,
       {
         method: "POST",
@@ -1202,7 +1636,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     );
     assert.equal(missingRewireReason.status, 400);
     assert.match(await missingRewireReason.text(), /请填写决定理由或修改意见/);
-    const rewireResponse = await fetch(
+    const rewireResponse = await webFetch(
       `${origin}/api/rewires/${encodeURIComponent(rewire.rewire_id)}/decision`,
       {
         method: "POST",
@@ -1220,7 +1654,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     };
     assert.equal(rewireResult.rewire.state, "rejected");
     assert.equal(rewireResult.rewire.impact.proposed_changes_applied, false);
-    const afterRewire = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const afterRewire = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: { relations: unknown[] };
     };
     assert.equal(afterRewire.snapshot.relations.length, relationCountBefore);
@@ -1396,12 +1830,12 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const page = await (await fetch(`${origin}/goals/FIRST-DRAFT`)).text();
+    const page = await (await webFetch(`${origin}/goals/FIRST-DRAFT`)).text();
     assert.match(page, /这还是一条待澄清的 Draft/);
     assert.match(page, /2 项等待你的决定/);
     assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT">前往处理<\/a>/);
     assert.doesNotMatch(page, /<form class="decision-record contract-proposal"/);
-    const decisionPage = await (await fetch(`${origin}/decisions`)).text();
+    const decisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(decisionPage, /Contract 补全提案/);
     assert.match(decisionPage, /确认后会更新同一个 Goal，不会创建新 Goal/);
     assert.match(decisionPage, /用户回答 · 可信度 95% · 待你确认/);
@@ -1418,7 +1852,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
         decisionPage.indexOf(`data-contract-proposal-id="${proposal.proposal_id}"`),
     );
 
-    const rewireDecision = await fetch(
+    const rewireDecision = await webFetch(
       `${origin}/api/rewires/${encodeURIComponent(dependencyRewire.rewire_id)}/decision`,
       {
         method: "POST",
@@ -1431,7 +1865,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
       },
     );
     assert.equal(rewireDecision.status, 200, await rewireDecision.text());
-    const resolvedPage = await (await fetch(`${origin}/decisions`)).text();
+    const resolvedPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(resolvedPage, /依赖决定已经完成，可以确认 Contract/);
     assert.match(resolvedPage, /确认并设为可执行/);
     assert.doesNotMatch(
@@ -1439,7 +1873,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
       /name="decision" value="approved"[^>]*disabled/,
     );
 
-    const missingContractReason = await fetch(
+    const missingContractReason = await webFetch(
       `${origin}/api/contract-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
         method: "POST",
@@ -1450,7 +1884,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     assert.equal(missingContractReason.status, 400);
     assert.match(await missingContractReason.text(), /请填写决定理由或修改意见/);
 
-    const decision = await fetch(
+    const decision = await webFetch(
       `${origin}/api/contract-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
         method: "POST",
@@ -1463,17 +1897,17 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
       },
     );
     assert.equal(decision.status, 200, await decision.text());
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: { goals: Array<{ goal_id: string; definition_state: string; outcome: string }> };
     };
     const accepted = board.snapshot.goals.find((goal) => goal.goal_id === "FIRST-DRAFT");
     assert.equal(accepted?.definition_state, "accepted");
     assert.equal(accepted?.outcome, "新用户可以确认 Contract 并看到同一个 Goal 进入可执行状态");
-    const acceptedPage = await (await fetch(`${origin}/goals/FIRST-DRAFT`)).text();
+    const acceptedPage = await (await webFetch(`${origin}/goals/FIRST-DRAFT`)).text();
     assert.doesNotMatch(acceptedPage, /<form class="decision-record contract-proposal"/);
     assert.match(acceptedPage, /让新用户看懂第一次 Goal 领取/);
 
-    const minimalCreate = await fetch(`${origin}/api/goals`, {
+    const minimalCreate = await webFetch(`${origin}/api/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: "只先记录一个想法", idempotency_key: "title-only-web" }),
@@ -1549,7 +1983,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const draftPage = await (await fetch(`${origin}/goals/EDIT-ME`)).text();
+    const draftPage = await (await webFetch(`${origin}/goals/EDIT-ME`)).text();
     assert.match(draftPage, /data-draft-editor data-goal-id="EDIT-ME"/);
     assert.match(draftPage, /补全 Draft Contract/);
     assert.match(draftPage, /href="#acceptance-EDIT-ME">查看验收<\/a>/);
@@ -1565,7 +1999,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.match(draftPage, /data-policy-form/);
     assert.ok(draftPage.indexOf("验收清单") < draftPage.indexOf("补全 Draft Contract"));
 
-    const updateResponse = await fetch(`${origin}/api/goals/EDIT-ME/draft`, {
+    const updateResponse = await webFetch(`${origin}/api/goals/EDIT-ME/draft`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1603,7 +2037,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     });
     assert.equal(updateResponse.status, 200, await updateResponse.text());
 
-    const riskResponse = await fetch(`${origin}/api/goals/EDIT-ME/risks`, {
+    const riskResponse = await webFetch(`${origin}/api/goals/EDIT-ME/risks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1622,7 +2056,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     });
     assert.equal(riskResponse.status, 201, await riskResponse.text());
 
-    const impactResponse = await fetch(`${origin}/api/goals/EDIT-ME/impacts`, {
+    const impactResponse = await webFetch(`${origin}/api/goals/EDIT-ME/impacts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1635,7 +2069,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     });
     assert.equal(impactResponse.status, 201, await impactResponse.text());
 
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         goals: Array<{
           goal_id: string;
@@ -1664,15 +2098,15 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.ok(board.snapshot.risks.some((risk) => risk.description === "子 Goal 边界仍可能重叠" && risk.state === "open"));
     assert.ok(board.snapshot.impacts.some((impact) => impact.goal_id === "EDIT-ME" && impact.surface === "src/web" && impact.state === "confirmed"));
 
-    const updatedPage = await (await fetch(`${origin}/goals/EDIT-ME`)).text();
+    const updatedPage = await (await webFetch(`${origin}/goals/EDIT-ME`)).text();
     assert.match(updatedPage, /目标：100%/);
     assert.match(updatedPage, /证据：test、inspection/);
     assert.match(updatedPage, /子 Goal 边界仍可能重叠/);
     assert.match(updatedPage, /contract:\/\/EDIT-ME/);
 
-    const lockedPage = await (await fetch(`${origin}/goals/LOCKED`)).text();
+    const lockedPage = await (await webFetch(`${origin}/goals/LOCKED`)).text();
     assert.doesNotMatch(lockedPage, /data-draft-editor data-goal-id="LOCKED"/);
-    const lockedUpdate = await fetch(`${origin}/api/goals/LOCKED/draft`, {
+    const lockedUpdate = await webFetch(`${origin}/api/goals/LOCKED/draft`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1744,7 +2178,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const emptyPage = await (await fetch(`${origin}/goals/RISK-A`)).text();
+    const emptyPage = await (await webFetch(`${origin}/goals/RISK-A`)).text();
     assert.match(emptyPage, /data-risk-create-form/);
     assert.match(emptyPage, /name="description"/);
     assert.match(emptyPage, /name="affected_surfaces"/);
@@ -1754,7 +2188,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(emptyPage, /\.risk-facts, \.risk-form, \.risk-state-form \{ grid-template-columns: 1fr; \}/);
     assert.match(emptyPage, /\.risk-form input:not\(\[type=checkbox\]\).*font-size: 16px/);
 
-    const createResponse = await fetch(`${origin}/api/goals/RISK-A/risks`, {
+    const createResponse = await webFetch(`${origin}/api/goals/RISK-A/risks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1775,7 +2209,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     const created = (await createResponse.json()) as { risk: { risk_id: string } };
     assert.equal(createResponse.status, 201, JSON.stringify(created));
 
-    const populatedPage = await (await fetch(`${origin}/goals/RISK-A`)).text();
+    const populatedPage = await (await webFetch(`${origin}/goals/RISK-A`)).text();
     assert.match(populatedPage, /外部规则可能在交付前改变/);
     assert.match(populatedPage, /35%/);
     assert.match(populatedPage, /阻止完成/);
@@ -1786,7 +2220,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       assert.match(populatedPage, new RegExp(`option value="${state}"`));
     }
 
-    const updateResponse = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/update`, {
+    const updateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/update`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1807,7 +2241,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.equal(updateResponse.status, 200, await updateResponse.text());
 
     for (const state of ["triggered", "resolved", "accepted", "expired", "open"] as const) {
-      const stateResponse = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
+      const stateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1818,7 +2252,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       });
       assert.equal(stateResponse.status, 200, await stateResponse.text());
     }
-    const missingReason = await fetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
+    const missingReason = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ state: "resolved", reason: "" }),
@@ -1826,7 +2260,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.equal(missingReason.status, 400);
     assert.match(await missingReason.text(), /必须说明原因/);
 
-    const updatedPage = await (await fetch(`${origin}/goals/RISK-B`)).text();
+    const updatedPage = await (await webFetch(`${origin}/goals/RISK-B`)).text();
     assert.match(updatedPage, /外部规则已经进入确认窗口/);
     assert.match(updatedPage, /60%/);
     assert.match(updatedPage, /规避 \/ 阻止领取/);
@@ -1916,7 +2350,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const emptyPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    const emptyPage = await (await webFetch(`${origin}/goals/IMPACT-A`)).text();
     assert.match(emptyPage, /data-impact-create-form/);
     assert.match(emptyPage, /name="surface"/);
     for (const access of ["read", "write", "decide", "exclusive"]) {
@@ -1927,7 +2361,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     assert.match(emptyPage, /\.impact-facts, \.impact-form \{ grid-template-columns: 1fr; \}/);
     assert.match(emptyPage, /\.impact-form input.*font-size: 16px/);
 
-    const createResponse = await fetch(`${origin}/api/goals/IMPACT-A/impacts`, {
+    const createResponse = await webFetch(`${origin}/api/goals/IMPACT-A/impacts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1950,7 +2384,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
       afterCreate.close();
     }
 
-    const populatedPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    const populatedPage = await (await webFetch(`${origin}/goals/IMPACT-A`)).text();
     assert.match(populatedPage, /src\/web\/render\.ts/);
     assert.match(populatedPage, /读取当前渲染 Contract/);
     assert.match(populatedPage, /只读取该区域，并已固定输入快照/);
@@ -1958,7 +2392,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     assert.match(populatedPage, /data-impact-deactivate-form/);
     assert.match(populatedPage, /href="https:\/\/example\.com\/render-contract"/);
 
-    const updateResponse = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
+    const updateResponse = await webFetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1973,12 +2407,12 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
       }),
     });
     assert.equal(updateResponse.status, 200, await updateResponse.text());
-    const proposedPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    const proposedPage = await (await webFetch(`${origin}/goals/IMPACT-A`)).text();
     assert.match(proposedPage, /src\/domain\/goal\.ts/);
     assert.match(proposedPage, /独占 \/ 提议中/);
     assert.match(proposedPage, /尚未确认，不会形成 Runtime 领取门禁/);
 
-    const missingAuditReason = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
+    const missingAuditReason = await webFetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/update`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1993,7 +2427,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     assert.equal(missingAuditReason.status, 400);
     assert.match(await missingAuditReason.text(), /必须说明修改原因/);
 
-    const deactivateResponse = await fetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/deactivate`, {
+    const deactivateResponse = await webFetch(`${origin}/api/impacts/${encodeURIComponent(created.binding_id)}/deactivate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2002,7 +2436,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
       }),
     });
     assert.equal(deactivateResponse.status, 200, await deactivateResponse.text());
-    const historyPage = await (await fetch(`${origin}/goals/IMPACT-A`)).text();
+    const historyPage = await (await webFetch(`${origin}/goals/IMPACT-A`)).text();
     assert.match(historyPage, /已停用记录/);
     assert.match(historyPage, /领域修改已迁移到后续 Goal/);
     assert.match(historyPage, /只作为历史保留，不再参与 Runtime 领取冲突判断/);
@@ -2062,7 +2496,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const projectPolicy = await fetch(`${origin}/api/policy-bindings`, {
+    const projectPolicy = await webFetch(`${origin}/api/policy-bindings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2080,7 +2514,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       }),
     });
     assert.equal(projectPolicy.status, 200, await projectPolicy.text());
-    const goalPolicy = await fetch(`${origin}/api/policy-bindings`, {
+    const goalPolicy = await webFetch(`${origin}/api/policy-bindings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2153,7 +2587,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.ok(obligation);
     runtimeStore.close();
 
-    const page = await (await fetch(`${origin}/goals/POLICY-WEB`)).text();
+    const page = await (await webFetch(`${origin}/goals/POLICY-WEB`)).text();
     assert.match(page, /当前最终生效规则/);
     assert.match(page, /项目默认规则/);
     assert.match(page, /当前 Goal 额外规则/);
@@ -2184,7 +2618,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);
     assert.match(page, /\.top-action\[data-view-action\]:not\(\[data-decisions-link\]\) \{ display: none; \}/);
 
-    const reviewDecisionPage = await (await fetch(`${origin}/decisions`)).text();
+    const reviewDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(reviewDecisionPage, /等待你的决定/);
     assert.match(reviewDecisionPage, /维护 Runtime 与 Review Policy/);
     assert.match(reviewDecisionPage, /等待你的最终确认/);
@@ -2195,7 +2629,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(reviewDecisionPage, /<option value="inconclusive">证据不足<\/option>/);
     assert.match(reviewDecisionPage, new RegExp(evidence.evidence_id));
 
-    const missingReason = await fetch(
+    const missingReason = await webFetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
       {
         method: "POST",
@@ -2206,7 +2640,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.equal(missingReason.status, 400);
     assert.match(await missingReason.text(), /Review 必须说明判断理由/);
 
-    const reviewed = await fetch(
+    const reviewed = await webFetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
       {
         method: "POST",
@@ -2317,12 +2751,12 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const beforeSubmit = await (await fetch(`${origin}/goals/EVIDENCE-WEB`)).text();
+    const beforeSubmit = await (await webFetch(`${origin}/goals/EVIDENCE-WEB`)).text();
     assert.match(beforeSubmit, /data-evidence-form/);
     assert.match(beforeSubmit, /提交人工 Evidence/);
     assert.match(beforeSubmit, /完整事件账本/);
 
-    const missingCriterion = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+    const missingCriterion = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind: "attestation", result: "passed", locator: "notes/evidence.txt" }),
@@ -2330,7 +2764,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(missingCriterion.status, 400);
     assert.match(await missingCriterion.text(), /至少选择一条验收条件/);
 
-    const submitted = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+    const submitted = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2348,7 +2782,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(submittedResult.evidence.producer_actor_id, "web-user");
     assert.equal(submittedResult.evidence.run_id, null);
 
-    const externalEvidence = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+    const externalEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2360,7 +2794,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     });
     assert.equal(externalEvidence.status, 201, await externalEvidence.text());
 
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       goals: Array<{
         goal: { goal_id: string };
         evidence: Array<{ evidence_id: string }>;
@@ -2376,7 +2810,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
       assert.ok(evidenceGoal.events.some((event) => event.type === type), `missing ${type}`);
     }
 
-    const goalPage = await (await fetch(`${origin}/goals/EVIDENCE-WEB`)).text();
+    const goalPage = await (await webFetch(`${origin}/goals/EVIDENCE-WEB`)).text();
     assert.match(goalPage, new RegExp(submittedResult.evidence.evidence_id));
     assert.match(goalPage, /href="\/api\/project-references\/notes%2Fevidence\.txt"/);
     assert.match(goalPage, /data-project-reference/);
@@ -2386,27 +2820,27 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.match(goalPage, /relation\.added/);
     assert.match(goalPage, /policy\.added/);
 
-    const opened = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}`);
+    const opened = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}`);
     assert.equal(opened.status, 200, await opened.clone().text());
     assert.match(opened.headers.get("content-type") ?? "", /text\/plain/);
     assert.match(await opened.text(), /用户手工检查/);
 
-    const escaped = await fetch(`${origin}/api/project-references/${encodeURIComponent("project://../outside.txt")}`);
+    const escaped = await webFetch(`${origin}/api/project-references/${encodeURIComponent("project://../outside.txt")}`);
     assert.equal(escaped.status, 400);
     assert.match(await escaped.text(), /不能跳出项目目录/);
-    const absolute = await fetch(`${origin}/api/project-references/${encodeURIComponent("project:///etc/passwd")}`);
+    const absolute = await webFetch(`${origin}/api/project-references/${encodeURIComponent("project:///etc/passwd")}`);
     assert.equal(absolute.status, 400);
     assert.match(await absolute.text(), /必须是相对路径/);
-    const directoryReference = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes")}`);
+    const directoryReference = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes")}`);
     assert.equal(directoryReference.status, 400);
     assert.match(await directoryReference.text(), /普通文件/);
-    const symlinkEscape = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/outside-link.txt")}`);
+    const symlinkEscape = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/outside-link.txt")}`);
     assert.equal(symlinkEscape.status, 400);
     assert.match(await symlinkEscape.text(), /不能通过链接跳出项目目录/);
-    const binary = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/binary.bin")}`);
+    const binary = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/binary.bin")}`);
     assert.equal(binary.status, 415);
     assert.match(await binary.text(), /文本引用/);
-    const large = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/large.txt")}`);
+    const large = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/large.txt")}`);
     assert.equal(large.status, 413);
     assert.match(await large.text(), /文件过大/);
   } finally {
@@ -2515,13 +2949,13 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const goalPage = await (await fetch(`${origin}/goals/TRASH-UI-READY`)).text();
+    const goalPage = await (await webFetch(`${origin}/goals/TRASH-UI-READY`)).text();
     assert.match(goalPage, /data-open-goal-trash/);
     assert.match(goalPage, /移入回收站/);
     assert.match(goalPage, /操作可恢复/);
     assert.match(goalPage, /href="\/trash" aria-label="查看回收站"/);
 
-    const missingConfirmation = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+    const missingConfirmation = await webFetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ trashed: true, reason: "没有确认不应修改" }),
@@ -2529,7 +2963,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     assert.equal(missingConfirmation.status, 400);
     assert.match(await missingConfirmation.text(), /请先在 GoalBoard 中确认此操作/);
 
-    const blocked = await fetch(`${origin}/api/goals/TRASH-UI-ACTIVE/trash`, {
+    const blocked = await webFetch(`${origin}/api/goals/TRASH-UI-ACTIVE/trash`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ trashed: true, user_confirmed: true, reason: "验证活跃工作提示" }),
@@ -2544,7 +2978,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     assert.deepEqual(blockedResult.blocking_claim_ids, [activeDecision.claim!.claim_id]);
     assert.deepEqual(blockedResult.blocking_run_ids, [activeDecision.run!.run_id]);
 
-    const trashed = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+    const trashed = await webFetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ trashed: true, user_confirmed: true, reason: "暂时从日常列表移出" }),
@@ -2557,7 +2991,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     assert.equal(trashedResult.status, "trashed");
     assert.deepEqual(trashedResult.deactivated_relation_ids, [relationId]);
 
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       goals: Array<{ goal: { goal_id: string } }>;
       archived_goals: Array<{ goal: { goal_id: string } }>;
       trashed_goals: Array<{ goal: { goal_id: string; trashed_at: string | null } }>;
@@ -2566,22 +3000,22 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     assert.equal(board.archived_goals.some((item) => item.goal.goal_id === "TRASH-UI-READY"), false);
     assert.equal(board.trashed_goals.find((item) => item.goal.goal_id === "TRASH-UI-READY")?.goal.trashed_at == null, false);
 
-    const currentTree = await (await fetch(`${origin}/`)).text();
+    const currentTree = await (await webFetch(`${origin}/`)).text();
     assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="TRASH-UI-READY"/);
-    const trashPage = await (await fetch(`${origin}/trash/goals/TRASH-UI-READY`)).text();
+    const trashPage = await (await webFetch(`${origin}/trash/goals/TRASH-UI-READY`)).text();
     assert.match(trashPage, /data-board-view="trash"/);
     assert.doesNotMatch(trashPage, /class="tree-heading"/);
     assert.match(trashPage, /data-tree-item data-goal-id="TRASH-UI-READY"/);
     assert.match(trashPage, /data-open-goal-restore/);
     assert.match(trashPage, /Goal 的 Contract、Run、Evidence 与事件历史都已保留/);
     const trashFragment = await (
-      await fetch(`${origin}/api/goals/TRASH-UI-READY/document?view=trash`)
+      await webFetch(`${origin}/api/goals/TRASH-UI-READY/document?view=trash`)
     ).text();
     assert.match(trashFragment, /data-goal-view="TRASH-UI-READY"/);
     assert.match(trashFragment, /data-open-goal-restore/);
     assert.doesNotMatch(trashFragment, /<!doctype html>/);
 
-    const restored = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+    const restored = await webFetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ trashed: false, user_confirmed: true, reason: "重新纳入日常工作" }),
@@ -2593,7 +3027,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     };
     assert.equal(restoredResult.status, "restored");
     assert.deepEqual(restoredResult.restored_relation_ids, [relationId]);
-    const restoredGoal = await (await fetch(`${origin}/goals/TRASH-UI-READY`)).text();
+    const restoredGoal = await (await webFetch(`${origin}/goals/TRASH-UI-READY`)).text();
     assert.match(restoredGoal, /data-tree-item data-goal-id="TRASH-UI-READY"/);
     assert.match(restoredGoal, /data-open-goal-trash/);
   } finally {
@@ -2645,11 +3079,11 @@ test("Web archives only completed Goals and provides a reversible archive view",
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
-    const completedPage = await (await fetch(`${origin}/goals/ARCHIVE-WEB`)).text();
+    const completedPage = await (await webFetch(`${origin}/goals/ARCHIVE-WEB`)).text();
     assert.match(completedPage, /data-goal-archive="true"/);
     assert.match(completedPage, /href="\/archive" aria-label="查看已归档 Goal"/);
 
-    const rejected = await fetch(`${origin}/api/goals/ARCHIVE-UNMET/archive`, {
+    const rejected = await webFetch(`${origin}/api/goals/ARCHIVE-UNMET/archive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ archived: true, reason: "不应允许" }),
@@ -2657,13 +3091,13 @@ test("Web archives only completed Goals and provides a reversible archive view",
     assert.equal(rejected.status, 400);
     assert.match(await rejected.text(), /只有已完成的 Goal 可以归档/);
 
-    const archived = await fetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
+    const archived = await webFetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ archived: true, reason: "整理已完成 Goal" }),
     });
     assert.equal(archived.status, 200, await archived.text());
-    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       goals: Array<{ goal: { goal_id: string } }>;
       archived_goals: Array<{ goal: { goal_id: string; fulfillment_state: string } }>;
     };
@@ -2671,28 +3105,28 @@ test("Web archives only completed Goals and provides a reversible archive view",
     assert.equal(board.archived_goals[0]?.goal.fulfillment_state, "satisfied");
     assert.ok(board.archived_goals.some((item) => item.goal.goal_id === "ARCHIVE-WEB"));
 
-    const currentTree = await (await fetch(`${origin}/`)).text();
+    const currentTree = await (await webFetch(`${origin}/`)).text();
     assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
-    const archivePage = await (await fetch(`${origin}/archive/goals/ARCHIVE-WEB`)).text();
+    const archivePage = await (await webFetch(`${origin}/archive/goals/ARCHIVE-WEB`)).text();
     assert.match(archivePage, /data-board-view="archive"/);
     assert.doesNotMatch(archivePage, /class="tree-heading"/);
     assert.match(archivePage, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
     assert.match(archivePage, /data-goal-archive="false"/);
     assert.match(archivePage, /可归档的已完成 Goal/);
     const archiveFragment = await (
-      await fetch(`${origin}/api/goals/ARCHIVE-WEB/document?view=archive`)
+      await webFetch(`${origin}/api/goals/ARCHIVE-WEB/document?view=archive`)
     ).text();
     assert.match(archiveFragment, /data-goal-view="ARCHIVE-WEB"/);
     assert.match(archiveFragment, /data-goal-archive="false"/);
     assert.doesNotMatch(archiveFragment, /<!doctype html>/);
 
-    const restored = await fetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
+    const restored = await webFetch(`${origin}/api/goals/ARCHIVE-WEB/archive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ archived: false, reason: "恢复到当前 Tree" }),
     });
     assert.equal(restored.status, 200, await restored.text());
-    const restoredTree = await (await fetch(`${origin}/goals/ARCHIVE-WEB`)).text();
+    const restoredTree = await (await webFetch(`${origin}/goals/ARCHIVE-WEB`)).text();
     assert.match(restoredTree, /data-tree-item data-goal-id="ARCHIVE-WEB"/);
     assert.match(restoredTree, /data-goal-archive="true"/);
   } finally {

@@ -271,6 +271,16 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Behavior:** Holds brand, source context, sync state, the only Tree search field, status filter, Create Goal, counted Decision Center entry, archive, recycle bin, and Tree actions. The Tree pane does not repeat these controls. The Decision Center link receives `aria-current` on `/decisions`, remains visible when lower-priority controls disappear at 900px, and becomes a labeled user icon for assistive technology while its visible text hides below 760px.
 - **Icons:** Uses the shipped Lucide sprite and keeps icon strokes rounded and legible at compact sizes.
 
+### Global Settings
+
+- **One control surface:** `/settings/runtimes`, `/settings/projects`, and `/settings/diagnostics` share the same 58px desktop / 52px mobile top bar as the project index and Goal workbench. A compact settings directory sits beside one continuous document; setup is not a separate wizard or a dashboard of decorative cards.
+- **Runtime writes are preview-first:** each Runtime record shows detection state and the relevant executable, config, and Skill paths. A modal lists field-level changes, backup destination, and restart instructions. Apply stays disabled until the user explicitly confirms the current plan; installation itself never counts as that confirmation.
+- **Projects stay human-facing:** the project name is the primary identity. Its independent DB path appears only as auxiliary expanded information. Creating, importing, renaming, or opening a project uses the same catalog service as Runtime/MCP flows and never changes a Runtime Session binding.
+- **Known Sessions are manageable, not guessable:** project settings list only active work-entry bindings that were already confirmed through a Runtime handshake. Each row uses a non-reversible short label rather than the host Session ID, names the current project, and keeps switch and unbind behind separate disclosure-and-confirm flows. Opening the page never creates a Session, and fresh Session suggestions remain in the corresponding Runtime conversation until the user confirms one.
+- **Local writes carry invisible proof:** project, Runtime, Session, Goal, and decision forms use one shared same-origin request helper. The current server token and one-time request key are transport details, never user-facing fields; a rejected local-control check returns a concise error without echoing Origin, token, Runtime config, or Session identity. Confirmation copy remains visible because transport proof never substitutes for user intent.
+- **Diagnostics stay read-only:** installation version, GoalBoard home, release, launcher state, and project count are facts, not repair buttons. Missing pieces point to an explicit installation command instead of modifying Runtime or project state automatically.
+- **First use is skippable:** an empty project index links to the same Runtime and project settings pages used later. It does not create another onboarding state machine, force a modal, or write configuration merely because the page opened.
+
 ### Search Fields
 
 - **Style:** White 34px field, 5px corners, compact horizontal padding, search icon, and a gray boundary.

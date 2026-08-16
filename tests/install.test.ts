@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,20 +11,48 @@ const execFileAsync = promisify(execFile);
 
 async function fixtureSource(root: string, version: string): Promise<string> {
   const source = join(root, `source-${version}`);
+  const dependencyDirectory = join(
+    source,
+    "node_modules",
+    ".pnpm",
+    "fixture-dependency@1.0.0",
+    "node_modules",
+    "fixture-dependency",
+  );
   await Promise.all([
     mkdir(join(source, "dist", "cli"), { recursive: true }),
     mkdir(join(source, "dist", "mcp"), { recursive: true }),
     mkdir(join(source, "dist", "web"), { recursive: true }),
     mkdir(join(source, "skills", "goal-advance"), { recursive: true }),
-    mkdir(join(source, "node_modules"), { recursive: true }),
+    mkdir(dependencyDirectory, { recursive: true }),
   ]);
+  const fixtureEntry = (name: string) =>
+    `import { marker } from "fixture-dependency";\nconsole.log("${name}:" + marker);\n`;
   await Promise.all([
-    writeFile(join(source, "package.json"), JSON.stringify({ name: "fixture-goalboard", version, type: "module" })),
-    writeFile(join(source, "dist", "cli", "main.js"), "export {};\n"),
-    writeFile(join(source, "dist", "mcp", "server.js"), "export {};\n"),
-    writeFile(join(source, "dist", "web", "server.js"), "export {};\n"),
+    writeFile(
+      join(source, "package.json"),
+      JSON.stringify({
+        name: "fixture-goalboard",
+        version,
+        type: "module",
+        dependencies: { "fixture-dependency": "1.0.0" },
+      }),
+    ),
+    writeFile(join(source, "dist", "cli", "main.js"), fixtureEntry("cli")),
+    writeFile(join(source, "dist", "mcp", "server.js"), fixtureEntry("mcp")),
+    writeFile(join(source, "dist", "web", "server.js"), fixtureEntry("web")),
     writeFile(join(source, "skills", "goal-advance", "SKILL.md"), "# Fixture Skill\n"),
+    writeFile(
+      join(dependencyDirectory, "package.json"),
+      JSON.stringify({ name: "fixture-dependency", version: "1.0.0", type: "module", exports: "./index.js" }),
+    ),
+    writeFile(join(dependencyDirectory, "index.js"), "export const marker = 'embedded';\n"),
   ]);
+  await symlink(
+    ".pnpm/fixture-dependency@1.0.0/node_modules/fixture-dependency",
+    join(source, "node_modules", "fixture-dependency"),
+    "dir",
+  );
   return source;
 }
 
@@ -49,11 +77,17 @@ test("home install is scoped, idempotent, and produces an owned release layout",
     await writeFile(runtimeConfig, "{\"runtime\":\"unchanged\"}");
     await mkdir(home, { recursive: true });
     await writeFile(join(home, "notes.txt"), "user-owned");
+    await mkdir(join(home, "config", "postinstall-project-selections"), { recursive: true });
+    await writeFile(join(home, "config", "postinstall-project-selections", "obsolete.json"), "{}\n");
 
     const first = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
     assert.equal(first.status, "installed");
-    assert.deepEqual(first.post_install.default_selected_action_ids, []);
-    assert.match(first.post_install.question, /还没有创建、导入、启用或启动任何项目/);
+    assert.equal(first.runtime_layout, "self_contained");
+    assert.match(first.next_steps.message, /没有创建项目/);
+    assert.deepEqual(first.next_steps.web_command, [first.launchers.web, "--home", home]);
+    assert.equal((await lstat(join(first.release_directory, "node_modules"))).isSymbolicLink(), false);
+    assert.deepEqual(first.removed_paths, [join(home, "config", "postinstall-project-selections")]);
+    await assert.rejects(stat(join(home, "config", "postinstall-project-selections")));
     assert.equal(await readFile(projectFile, "utf8"), "do-not-touch");
     assert.equal(await readFile(runtimeConfig, "utf8"), "{\"runtime\":\"unchanged\"}");
     assert.equal(await readFile(join(home, "notes.txt"), "utf8"), "user-owned");
@@ -119,6 +153,38 @@ test("repair replaces a broken owned release without changing its current versio
   });
 });
 
+test("repair upgrades the obsolete linked release layout in place", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const home = join(directory, "home", ".goalboard");
+    const first = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    await rm(join(first.release_directory, "node_modules"), { recursive: true, force: true });
+    await symlink(join(source, "node_modules"), join(first.release_directory, "node_modules"), "dir");
+    await writeFile(
+      join(first.release_directory, "release.json"),
+      `${JSON.stringify({
+        schema_version: 1,
+        installer: "goalboard-home-install-v1",
+        version: "1.0.0",
+        source_directory: source,
+        created_at: "2026-08-16T00:00:00.000Z",
+      }, null, 2)}\n`,
+    );
+
+    const repaired = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    assert.equal(repaired.status, "repaired");
+    assert.equal((await lstat(join(repaired.release_directory, "node_modules"))).isSymbolicLink(), false);
+    const manifest = JSON.parse(await readFile(join(repaired.release_directory, "release.json"), "utf8")) as {
+      schema_version: number;
+      dependencies: string;
+      source_directory?: string;
+    };
+    assert.equal(manifest.schema_version, 2);
+    assert.equal(manifest.dependencies, "embedded");
+    assert.equal(manifest.source_directory, undefined);
+  });
+});
+
 test("home install refuses to overwrite unknown launcher files", async () => {
   await withTemporaryDirectory(async (directory) => {
     const source = await fixtureSource(directory, "1.0.0");
@@ -135,17 +201,120 @@ test("home install refuses to overwrite unknown launcher files", async () => {
   });
 });
 
-test("installed CLI launcher can run from the home release", async () => {
+test("home install rejects dependency links that would escape the installed release", async () => {
   await withTemporaryDirectory(async (directory) => {
-    const home = join(directory, "home", ".goalboard");
-    const result = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: process.cwd() });
-    const output = await execFileAsync(process.execPath, [result.launchers.cli, "--help"], { cwd: directory });
-    assert.match(output.stdout, /goalboard v1/);
+    const source = await fixtureSource(directory, "1.0.0");
+    const externalDependency = join(directory, "external-dependency");
+    await mkdir(externalDependency, { recursive: true });
+    await symlink(
+      externalDependency,
+      join(
+        source,
+        "node_modules",
+        ".pnpm",
+        "fixture-dependency@1.0.0",
+        "node_modules",
+        "fixture-dependency",
+        "external-dependency",
+      ),
+      "dir",
+    );
+
+    await assert.rejects(
+      () => installGoalBoardHome({ homeDirectory: join(directory, "home", ".goalboard"), sourceDirectory: source }),
+      (error: unknown) =>
+        error instanceof GoalBoardHomeInstallError &&
+        error.code === "source.invalid" &&
+        /指向安装 release 外部/.test(error.message),
+    );
   });
 });
 
-test("public install command writes only the requested GoalBoard home", async () => {
+test("home install resolves production dependencies from a standard ancestor node_modules", async () => {
   await withTemporaryDirectory(async (directory) => {
+    const packageDirectory = join(directory, "runtime", "node_modules", "fixture-goalboard");
+    const dependencyDirectory = join(directory, "runtime", "node_modules", "fixture-dependency");
+    await Promise.all([
+      mkdir(join(packageDirectory, "dist", "cli"), { recursive: true }),
+      mkdir(join(packageDirectory, "dist", "mcp"), { recursive: true }),
+      mkdir(join(packageDirectory, "dist", "web"), { recursive: true }),
+      mkdir(join(packageDirectory, "skills", "goal-advance"), { recursive: true }),
+      mkdir(dependencyDirectory, { recursive: true }),
+    ]);
+    const fixtureEntry = (name: string) =>
+      `import { marker } from "fixture-dependency";\nconsole.log("${name}:" + marker);\n`;
+    await Promise.all([
+      writeFile(
+        join(packageDirectory, "package.json"),
+        JSON.stringify({
+          name: "fixture-goalboard",
+          version: "1.0.0",
+          type: "module",
+          dependencies: { "fixture-dependency": "1.0.0" },
+        }),
+      ),
+      writeFile(join(packageDirectory, "dist", "cli", "main.js"), fixtureEntry("cli")),
+      writeFile(join(packageDirectory, "dist", "mcp", "server.js"), fixtureEntry("mcp")),
+      writeFile(join(packageDirectory, "dist", "web", "server.js"), fixtureEntry("web")),
+      writeFile(join(packageDirectory, "skills", "goal-advance", "SKILL.md"), "# Fixture Skill\n"),
+      writeFile(
+        join(dependencyDirectory, "package.json"),
+        JSON.stringify({ name: "fixture-dependency", version: "1.0.0", type: "module", exports: "./index.js" }),
+      ),
+      writeFile(join(dependencyDirectory, "index.js"), "export const marker = 'ancestor';\n"),
+    ]);
+
+    const home = join(directory, "home", ".goalboard");
+    const installed = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: packageDirectory });
+    await rm(join(directory, "runtime"), { recursive: true, force: true });
+
+    for (const [name, launcher] of Object.entries(installed.launchers)) {
+      const output = await execFileAsync(process.execPath, [launcher], { cwd: directory });
+      assert.equal(output.stdout.trim(), `${name}:ancestor`);
+    }
+  });
+});
+
+test("home install rejects a declared production dependency that cannot be resolved", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    await writeFile(
+      join(source, "package.json"),
+      JSON.stringify({
+        name: "fixture-goalboard",
+        version: "1.0.0",
+        type: "module",
+        dependencies: { "missing-fixture-dependency": "1.0.0" },
+      }),
+    );
+
+    await assert.rejects(
+      () => installGoalBoardHome({ homeDirectory: join(directory, "home", ".goalboard"), sourceDirectory: source }),
+      (error: unknown) =>
+        error instanceof GoalBoardHomeInstallError &&
+        error.code === "source.asset_missing" &&
+        /missing-fixture-dependency/.test(error.message),
+    );
+  });
+});
+
+test("all installed launchers keep running after the installation source is deleted", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const home = join(directory, "home", ".goalboard");
+    const result = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    await rm(source, { recursive: true, force: true });
+
+    for (const [name, launcher] of Object.entries(result.launchers)) {
+      const output = await execFileAsync(process.execPath, [launcher], { cwd: directory });
+      assert.equal(output.stdout.trim(), `${name}:embedded`);
+    }
+  });
+});
+
+test("public install command is human-readable by default and JSON when requested", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
     const home = join(directory, "custom-home", ".goalboard");
     const projectFile = join(directory, "project", "unchanged.txt");
     await mkdir(join(directory, "project"), { recursive: true });
@@ -153,53 +322,28 @@ test("public install command writes only the requested GoalBoard home", async ()
 
     const output = await execFileAsync(
       process.execPath,
-      [join(process.cwd(), "dist", "cli", "main.js"), "install", "--home", home],
+      [join(process.cwd(), "dist", "cli", "main.js"), "install", "--home", home, "--source", source],
       { cwd: directory },
     );
-    const result = JSON.parse(output.stdout) as {
+    assert.match(output.stdout, /GoalBoard 安装完成/);
+    assert.match(output.stdout, /没有创建项目，也没有修改 Runtime 配置或用户项目文件/);
+    assert.doesNotMatch(output.stdout, /^\s*\{/);
+
+    const jsonOutput = await execFileAsync(
+      process.execPath,
+      [join(process.cwd(), "dist", "cli", "main.js"), "install", "--home", home, "--source", source, "--json"],
+      { cwd: directory },
+    );
+    const result = JSON.parse(jsonOutput.stdout) as {
       home_directory: string;
       status: string;
-      post_install: { default_selected_action_ids: string[] };
+      runtime_layout: string;
+      next_steps: { web_command: string[] };
     };
     assert.equal(result.home_directory, home);
-    assert.equal(result.status, "installed");
-    assert.deepEqual(result.post_install.default_selected_action_ids, []);
+    assert.equal(result.status, "unchanged");
+    assert.equal(result.runtime_layout, "self_contained");
+    assert.deepEqual(result.next_steps.web_command, [join(home, "bin", "goalboard-web"), "--home", home]);
     assert.equal(await readFile(projectFile, "utf8"), "unchanged");
-  });
-});
-
-test("public project-setup command requires explicit action IDs and can skip all", async () => {
-  await withTemporaryDirectory(async (directory) => {
-    const home = join(directory, "home", ".goalboard");
-    const output = await execFileAsync(
-      process.execPath,
-      [
-        join(process.cwd(), "dist", "cli", "main.js"),
-        "project-setup",
-        "--home",
-        home,
-        "--json",
-        JSON.stringify({
-          actions: [
-            {
-              action_id: "not-confirmed",
-              kind: "create",
-              display_name: "不会被默认创建",
-              actor_id: "user-1",
-            },
-          ],
-          confirmed_action_ids: [],
-          idempotency_key: "cli-project-setup-skip-all",
-        }),
-      ],
-      { cwd: directory },
-    );
-    const result = JSON.parse(output.stdout) as {
-      executed_action_ids: string[];
-      skipped_action_ids: string[];
-    };
-    assert.deepEqual(result.executed_action_ids, []);
-    assert.deepEqual(result.skipped_action_ids, ["not-confirmed"]);
-    await assert.rejects(stat(join(home, "projects", "catalog.db")));
   });
 });

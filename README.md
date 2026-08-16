@@ -28,10 +28,10 @@ pnpm test
 goalboard install
 
 # Web 只从 GoalBoard 自己的项目目录列出可浏览项目
-node dist/web/server.js --home "$HOME/.goalboard"
+"$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-先在当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目，再打开 `http://127.0.0.1:4173` 选择项目。这个选择只改变网页浏览位置，不会创建项目、也不会绑定或切换当前 Runtime Session。已有旧 DB 只能从项目列表中的“迁移已有 GoalBoard 数据”入口显式确认后迁入项目。
+打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Codex / Claude Code 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。
 
 ### 安装边界
 
@@ -39,28 +39,15 @@ node dist/web/server.js --home "$HOME/.goalboard"
 
 项目目录使用不可变的 `project_id` 区分项目，显示名称可以改名或重名；每个项目都有自己的 `goalboard.db`。`projects/catalog.db` 保存项目身份、DB 位置，以及用户明确建立的 `Runtime 工作入口 → project_id` 绑定、切换、解绑、当前 Session 的候选拒绝和删除收据历史；不复制 Goal 事实，也不会扫描 Git、目录名或聊天内容来猜项目。宿主可以为新 Session 提供非权威线索，GoalBoard 也可把同一 Runtime 最近确认过的项目作为候选来排序；两者都绝不自动建立绑定。解绑只移除一个当前工作入口的绑定；删除项目及其 DB 必须单独确认，并会拒绝仍有有效 Claim 或未结束 Run 的项目。
 
-### 安装后的项目选择
+### 安装后的下一步
 
-安装命令会返回一个默认全空的安装后提示：“尚未创建、导入、启用或启动任何项目”。当前 Runtime 的统一 Skill 会在用户明确要设置时用 MCP 询问并逐项执行；不要求用户先打开 Web。
+`goalboard install` 只完成 GoalBoard 本体安装，默认输出安装位置、CLI/MCP/Web 启动器和安全边界；自动化可以使用 `goalboard install --json`。安装不会顺带创建项目、关联 Session、启动服务或修改 Runtime 配置。
 
-管理入口也可以显式提交同一份选择，不存在“安装即授权”的总开关：
+安装后的 Runtime 接入由同一领域服务完成。当前 adapter 会只读探测 Codex 和 Claude Code，并先生成包含配置路径、GoalBoard MCP entry、Skill 链接、备份位置和重启说明的预览；只有用户对当前 Runtime 和当前 plan 明确确认后才会写入。MCP 与 Skill 作为一个事务验证，失败会恢复原配置字节和原 Skill 状态。移除时只撤销 GoalBoard ownership receipt 记录且仍未被用户改写的内容。未知同名配置或 Skill 会显示冲突，不会被覆盖。
 
-```bash
-goalboard project-setup --home "$HOME/.goalboard" --json '{
-  "actions": [
-    {
-      "action_id": "create-novel",
-      "kind": "create",
-      "display_name": "NovelRPG",
-      "actor_id": "user"
-    }
-  ],
-  "confirmed_action_ids": ["create-novel"],
-  "idempotency_key": "postinstall-create-novel"
-}'
-```
+项目创建和当前 Session 关联是独立操作：用户在当前 Runtime 调用统一 Skill 后，Skill 使用 `context-list-projects`、`context-bind` 或 `context-create-and-bind`，并且只在用户明确选择后写入 GoalBoard 自己的项目目录。Web 可创建、导入、改名和打开项目，也可管理已经确认过的 Session 关联；网页中的项目选择本身不会改变 Runtime Session 绑定，新 Session 仍要先在对应 Runtime 对话里询问并确认。
 
-只有 `confirmed_action_ids` 中的每个操作会执行；其余操作会明确返回为跳过。`create`、`import`、`enable` 和 `start` 是独立选择，不会互相隐式触发。相同 `idempotency_key` 重试完全相同的已确认选择时会返回原结果，不会重复创建项目或启动服务。CLI 不会偷偷拉起后台服务；`start` 只有在支持它的 Runtime/桌面宿主提供启动器、且该项目已被明确启用后才会执行。未支持时返回失败结果，不会改配置或留下进程。
+Web 只监听 loopback 地址。每次启动都会生成只存在于本机页面中的随机控制令牌；所有 Web API 写请求还必须通过同源 Origin、控制令牌和一次性操作键校验。非本机 Host、第三方页面盲发、缺少凭据或重复请求都会在进入项目 catalog、Runtime 配置服务或 Goal Coordinator 前被拒绝。这个浏览器门禁不替代各领域流程原有的用户确认和幂等规则。
 
 ## Goal Contract
 
@@ -74,7 +61,7 @@ accepted Contract 不原地改版本。后续新需求创建新的 Candidate Goa
 
 统一 GoalBoard Skill 被用户调用后，先解析当前 Runtime 宿主提供的稳定工作入口：已绑定则恢复该项目的固定 MCP 连接；新 Session 若有宿主线索或同一 Runtime 的已确认项目历史则返回候选项目和通用原因，但仍保持未绑定，当前 Runtime 必须问用户“要关联这个项目吗”；没有候选才在当前对话让用户选择已有项目或明确命名一个新项目。用户明确同意候选或已有项目时才调用 `context-bind`，明确拒绝一个候选时调用 `context-reject-suggestion`，它只停止当前 Session 重复提示该候选，不删除任何数据或影响其他 Session。新建项目才调用 `context-create-and-bind`；只有用户明确选择后才会写入绑定。已有入口切换到其他项目时还必须再次明确确认。用户明确要求“只在这里停用”时调用 `context-unbind`，只移除当前入口绑定；用户明确要求删除某一个命名项目及其数据时才调用 `project-delete`，它会先保护有效 Claim 和未结束 Run。宿主没有提供可靠入口时，Runtime 只能说明不能可靠关联并询问用户，不能从 Git、目录或聊天内容猜测。这个解析不会在 Runtime 启动或普通对话时后台发生。
 
-用户在安装后明确要求项目设置时，Skill 可以调用 `postinstall-project-selection`。它把创建、导入、启用和启动作为带独立 action ID 的选项；只有当前对话中逐项确认的 ID 会执行。这个复合 MCP 用于安装后选择，不取代平常的 `context-create-and-bind` 当前项目入口。
+Skill 的正常回复先用用户当前语言说明“我理解了什么、为什么还要确认这一点、接下来只问或做什么”，不会把 MCP 工具名和内部 ID 当作回答。新想法、已有 Draft 恢复和方向变化会显示可修改的结构化 checkpoint，明确区分用户已确认事实、可查项目事实、Runtime 假设和建议；每个实质回答先写入 dialogue turn，再继续下一问。提案就绪时用可读 Goal Tree 汇总结果、非目标、关系依赖、叶子验收、风险和确认后的状态，用户可以整份决定或点名修改条目。
 
 项目连接明确后，当前 Runtime 再读取 `available` 和所选 Goal 的 Contract，并自己决定是否选择其中一项。GoalBoard 不返回“唯一下一份”；Claim 是带时限的占用，不是任务分配。
 
@@ -117,16 +104,18 @@ GoalBoard 通过统一 Skill 的“工作入口绑定”连接项目：Runtime �
 
 ### Runtime 工作入口绑定（推荐）
 
-Runtime 宿主只在自己能保证稳定性的情况下提供入口 ID；它不是 Git 地址、目录名、仓库结构或模型从对话中推断的字符串。复用同一个不透明 ID 只表示恢复同一个宿主 Session／工作入口；真正的新 Session 必须拿到新的 ID。宿主还可以单独提供工作空间、目录、会话标题、最近项目等非权威线索来排序新 Session 的候选；GoalBoard 也只会把同一 Runtime 最近确认的其他 Session 项目作为建议。不能把任何线索当作 ID 或自动绑定。安装不会写入下面任何 Runtime 配置，用户明确同意 Runtime 集成后，宿主才可传入这些值：
+Runtime 宿主只在自己能保证稳定性的情况下提供入口 ID；它不是 Git 地址、目录名、仓库结构或模型从对话中推断的字符串。复用同一个不透明 ID 只表示恢复同一个宿主 Session／工作入口；真正的新 Session 必须拿到新的 ID。Codex adapter 使用宿主提供给 MCP 子进程的 `CODEX_THREAD_ID`，Claude Code adapter 使用 Claude Code 的 Session ID 环境信号；两者都不会把 ID 固化进用户配置。宿主还可以单独提供工作空间、目录、会话标题、最近项目等非权威线索来排序新 Session 的候选；GoalBoard 也只会把同一 Runtime 最近确认的其他 Session 项目作为建议。不能把任何线索当作 ID 或自动绑定。
+
+安装本身不会写入 Runtime 配置。Codex 和 Claude Code 应由用户在接入预览中确认后使用稳定 launcher；其他 Runtime host 可以显式提供同一组环境值：
 
 ```bash
 GOALBOARD_HOME="$HOME/.goalboard" \
-GOALBOARD_RUNTIME_ID="codex" \
+GOALBOARD_RUNTIME_ID="<runtime-id>" \
 GOALBOARD_WORK_CONTEXT_ID="<宿主提供的稳定工作入口 ID>" \
 GOALBOARD_WORK_CONTEXT_STABLE="true" \
 GOALBOARD_WEB_URL="http://127.0.0.1:4173" \
 GOALBOARD_MCP_AUDIENCE="runtime" \
-node dist/mcp/server.js
+"$HOME/.goalboard/bin/goalboard-mcp"
 ```
 
 这个 MCP 进程启动时仍是“未连接项目”状态，不会打开某个 Board。统一 Skill 先调用 `goalboard_v1_context_resolve`：
@@ -141,7 +130,7 @@ node dist/mcp/server.js
 - 用户明确要求仅解绑当前工作入口时，Skill 调用 `goalboard_v1_context_unbind` 并传入 `user_confirmed=true`。它不删除项目、DB 或其他 Runtime 的绑定。
 - 删除项目及其 DB 是另一项单独确认：用户明确点名项目并确认删除后，Skill 调用 `goalboard_v1_project_delete` 并传入 `delete_confirmed=true` 和幂等键。项目有有效 Claim 或未结束 Run 时会被拒绝；成功后返回删除收据，Runtime 不能继续使用旧连接。
 
-Web 是可选查看和用户确认界面。GoalBoard 不会为解析绑定而启动、重启或切换 Web；普通 Web 启动后先显示项目列表，用户选择的只是当前浏览项目，不会读取、创建、解绑或重绑 Runtime Session。网页不会自动创建或启用项目；旧 DB 的迁移必须由用户在项目列表中明确选择并确认，迁移后仍只是打开新的项目页面。
+Web 是可选查看和用户确认界面。GoalBoard 不会为解析绑定而启动、重启或切换 Web；普通 Web 启动后先显示项目列表，用户选择的只是当前浏览项目。项目设置可以管理已经确认过的 Session 关联，但不会展示或猜测未知 Session；切换和解绑各自需要明确确认。项目创建、Runtime 配置和旧 DB 迁移也都先展示影响或要求单独确认。
 
 Runtime audience 只暴露工作入口解析/显式绑定、读取、Available/原子选择/Run、Contract/Candidate/Dependency Proposal、Goal Tree Proposal/Decision、重新验证、Evidence、Runtime Review、完成检查和释放。`goal-tree-decide` 不是 Runtime 自己的用户权限：只有宿主提供当前用户对话与消息的可信上下文时，它才能携带用户的决定写入。它不能通过工具参数覆盖已解析的项目连接。
 

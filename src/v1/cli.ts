@@ -39,7 +39,6 @@ Operations:
 Complex payloads may use --file payload.json instead of --json.
 The SQLite database defaults to ${DEFAULT_DATABASE}.`);
   console.log("\nInstall GoalBoard itself: goalboard install [--home PATH]");
-  console.log("Explicit post-install project choices: goalboard project-setup [--home PATH] --json '{...}'");
 }
 
 export async function runV1Cli(args: string[]): Promise<number> {

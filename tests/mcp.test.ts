@@ -50,7 +50,7 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_context_unbind"));
     assert.ok(names.includes("goalboard_v1_context_create_and_bind"));
     assert.ok(names.includes("goalboard_v1_project_delete"));
-    assert.ok(names.includes("goalboard_v1_postinstall_project_selection"));
+    assert.ok(!names.includes("goalboard_v1_postinstall_project_selection"));
     assert.ok(names.includes("goalboard_v1_available"));
     assert.ok(names.includes("goalboard_v1_select_goal"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
@@ -168,8 +168,7 @@ describe("mcp server", () => {
     assert.match(skill, /`goalboard_v1_context_unbind`/);
     assert.match(skill, /`goalboard_v1_context_create_and_bind`/);
     assert.match(skill, /`goalboard_v1_project_delete`/);
-    assert.match(skill, /`goalboard_v1_postinstall_project_selection`/);
-    assert.match(skill, /default is also no project action/);
+    assert.doesNotMatch(skill, /goalboard_v1_postinstall_project_selection/);
     assert.match(skill, /rebind_confirmed=true/);
     assert.match(skill, /result is `suggested`/);
     assert.match(skill, /Silence, a timeout, an ambiguous answer, or “not now” is not confirmation/);
@@ -205,10 +204,6 @@ describe("mcp server", () => {
     assert.match(protocol, /context_unbind\(actor_id, user_confirmed=true\)/);
     assert.match(protocol, /project_delete\(project_id, actor_id, delete_confirmed=true, idempotency_key\)/);
     assert.match(protocol, /valid Claims and unfinished Runs/);
-    assert.match(protocol, /Optional post-install project selection/);
-    assert.match(protocol, /confirmed_action_ids\[only the IDs the user explicitly confirmed\]/);
-    assert.match(protocol, /Omitted or unconfirmed IDs are returned as `skipped`/);
-    assert.match(protocol, /model cannot select a different Session or work entry/);
     assert.match(protocol, /context_create_and_bind/);
     assert.match(protocol, /does not write SQLite, call the management CLI, alter project files, or alter Runtime configuration/);
     assert.match(protocol, /reuses the Draft, atomically creates its first clarifier Claim\/Run/);
@@ -225,6 +220,39 @@ describe("mcp server", () => {
     assert.match(protocol, /do not create another Board, change configuration, swap databases, or use a CLI fallback/);
     assert.doesNotMatch(skill, /GOALBOARD_DATABASE/);
     assert.doesNotMatch(protocol, /GOALBOARD_DATABASE/);
+  });
+
+  it("Runtime Skill defines natural, resumable, and structured forward conversations", () => {
+    const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
+    const protocol = fs.readFileSync(
+      path.join(ROOT, "skills/goal-advance/references/protocol.md"),
+      "utf8",
+    );
+    assert.ok(skill.split("\n").length <= 500);
+    assert.match(skill, /Reply in the user's current language/);
+    assert.match(skill, /what you currently understand from the user's words/);
+    assert.match(skill, /why the remaining uncertainty matters/);
+    assert.match(skill, /Ask only one question at a time/);
+    assert.match(skill, /never walk the user through a Contract field checklist/);
+    assert.match(skill, /two or three genuinely different options/);
+    assert.match(skill, /Treat a correction as new authority/);
+    assert.match(skill, /\*\*已确认\*\*/);
+    assert.match(skill, /\*\*项目事实\*\*/);
+    assert.match(skill, /\*\*仍是我的假设\*\*/);
+    assert.match(skill, /\*\*我的建议\*\*/);
+    assert.match(skill, /must remain distinct in both the visible summary and the MCP payload/);
+    assert.match(skill, /persist every material answer with `goalboard_v1_draft_dialogue_turn`/);
+    assert.match(skill, /它只是候选，还没有关联/);
+    assert.match(skill, /上次已确认 \/ 仍待确认 \/ 现在只需要决定的一件事/);
+    assert.match(skill, /After selecting from Available, state which Goal you chose, why it fits/);
+    assert.match(skill, /user-visible summary must show/);
+    assert.match(skill, /what work state each affected Goal will have after confirmation/);
+    assert.match(skill, /confirm the whole named proposal, reject it, or revise specific named items/);
+    assert.match(protocol, /Persist first, then continue the conversation/);
+    assert.match(protocol, /Do not ask a new question and postpone persistence/);
+    assert.match(protocol, /If the call fails, say that the progress was not saved and stop/);
+    assert.match(protocol, /The immediately preceding proposal message must be decision-complete/);
+    assert.match(protocol, /A vague “可以”“继续” is whole confirmation only when/);
   });
 
   it("unknown method", async () => {
@@ -1007,100 +1035,7 @@ describe("mcp server", () => {
     }
   });
 
-  it("lets the current Runtime apply only explicitly confirmed post-install project actions", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-postinstall-"));
-    const home = path.join(directory, "home", ".goalboard");
-    const host = {
-      homeDirectory: home,
-      runtimeContext: {
-        runtime_id: "codex",
-        stable_work_context_id: "postinstall-runtime-entry",
-        host_declares_stable: true,
-      },
-    };
-    const runtime = new GoalBoardServer("runtime", null, host);
-    const call = async (name: string, args: Record<string, unknown>) =>
-      runtime.handleMessage({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name, arguments: args },
-      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
-    try {
-      const skip = await call("goalboard_v1_postinstall_project_selection", {
-        actions: [
-          {
-            action_id: "create-not-confirmed",
-            kind: "create",
-            display_name: "不能默认创建",
-            actor_id: "runtime-codex",
-          },
-        ],
-        confirmed_action_ids: [],
-        idempotency_key: "mcp-postinstall-skip",
-      });
-      assert.equal(skip.result.isError, false, skip.result.content[0]?.text);
-      const skipped = JSON.parse(skip.result.content[0]?.text ?? "{}") as {
-        executed_action_ids: string[];
-        skipped_action_ids: string[];
-      };
-      assert.deepEqual(skipped.executed_action_ids, []);
-      assert.deepEqual(skipped.skipped_action_ids, ["create-not-confirmed"]);
-      assert.equal(fs.existsSync(path.join(home, "projects", "catalog.db")), false);
-
-      const create = await call("goalboard_v1_postinstall_project_selection", {
-        actions: [
-          {
-            action_id: "create-confirmed",
-            kind: "create",
-            display_name: "用户明确创建的项目",
-            actor_id: "runtime-codex",
-          },
-        ],
-        confirmed_action_ids: ["create-confirmed"],
-        idempotency_key: "mcp-postinstall-create",
-      });
-      assert.equal(create.result.isError, false, create.result.content[0]?.text);
-      const created = JSON.parse(create.result.content[0]?.text ?? "{}") as {
-        action_results: Array<{ project: { project_id: string } | null }>;
-      };
-      const projectId = created.action_results[0]?.project?.project_id;
-      assert.ok(projectId);
-      assert.equal(runtime.runtimeConnection, null);
-
-      const enable = await call("goalboard_v1_postinstall_project_selection", {
-        actions: [
-          {
-            action_id: "enable-confirmed",
-            kind: "enable",
-            project_id: projectId,
-            actor_id: "runtime-codex",
-            context: {
-              runtime_id: "forged-runtime",
-              stable_work_context_id: "forged-entry",
-              host_declares_stable: true,
-            },
-          },
-        ],
-        confirmed_action_ids: ["enable-confirmed"],
-        idempotency_key: "mcp-postinstall-enable",
-      });
-      assert.equal(enable.result.isError, false, enable.result.content[0]?.text);
-      const enabled = JSON.parse(enable.result.content[0]?.text ?? "{}") as {
-        executed_action_ids: string[];
-      };
-      assert.deepEqual(enabled.executed_action_ids, ["enable-confirmed"]);
-
-      const resolved = await call("goalboard_v1_context_resolve", {});
-      assert.equal(resolved.result.isError, false, resolved.result.content[0]?.text);
-      assert.match(resolved.result.content[0]?.text ?? "", new RegExp(projectId!));
-      assert.equal(runtime.runtimeConnection?.boardId, projectId);
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps project setup, a rough idea, Available selection, and an explicit Goal in one Runtime MCP flow", async () => {
+  it("keeps project creation, a rough idea, Available selection, and an explicit Goal in one Runtime MCP flow", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-skill-flow-"));
     const home = path.join(directory, "home", ".goalboard");
     const host = {

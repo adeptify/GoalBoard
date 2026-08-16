@@ -53,27 +53,6 @@ Use `context_list_projects` to let the user name an existing project; it is not 
 
 `project_delete` is a different, destructive decision. Ask the user to identify the exact project and separately confirm deletion of its GoalBoard DB; a broad “switch project”, “disable GoalBoard”, or “clean up” is insufficient. GoalBoard refuses if the project has any still-valid Claim or unended Run. The result includes an idempotent deletion receipt. Reuse its key only for the exact retry; a changed project/key combination is rejected. If its `cleanup_state` is `pending`, state that physical cleanup has not finished and retry the same request rather than reconnecting the deleted project.
 
-### Optional post-install project selection
-
-`goalboard install` returns a zero-selection prompt: it does not create, import, enable, or start a project. If the user wants to do setup immediately, explain that default first. Then call `goalboard_v1_postinstall_project_selection` only after the user has selected each action separately:
-
-```text
-actions[
-  { action_id, kind: create, display_name, actor_id },
-  { action_id, kind: import, legacy_database_path, display_name?, actor_id },
-  { action_id, kind: enable, project_id, actor_id, rebind_confirmed? },
-  { action_id, kind: start, project_id, actor_id }
-],
-confirmed_action_ids[only the IDs the user explicitly confirmed],
-idempotency_key
-```
-
-Do not turn a broad “set it up” into every action. Omitted or unconfirmed IDs are returned as `skipped` and do not open the catalog, create a DB, bind a Runtime, or start a service. The Runtime host overwrites the context for `enable` and `start`; the model cannot select a different Session or work entry. `start` invokes only a host-provided project starter after the target is already enabled. If no starter exists, the action is returned as `failed` and no background process or configuration is created.
-
-Use one `idempotency_key` only for an exact repeat of the same actions and confirmed IDs. GoalBoard records the first selected result under its own home directory and returns it on replay, so retries do not create another project or start another service. A changed selection with the same key is rejected before it runs.
-
-Use `context_create_and_bind` for the usual one-project current-conversation path. Use this selection tool when the user specifically wants the post-install choices, a legacy DB import, or separately controlled enable/start behavior. After a successful enable, call `context_resolve` again to obtain the active project connection.
-
 ## Recoverable Goal deletion in the current conversation
 
 Goal deletion is not project deletion and not permanent erasure. It moves one Goal into the current project's recoverable trash: the same `goal_id`, Contract, Claim/Run history, Evidence, Candidate, Risk, events, and only the Relation facts that were active before deletion are retained. Web is optional and never required.
@@ -166,6 +145,21 @@ idempotency_key
 
 Only record `user_answer`, `repository_fact`, or `document_fact` as facts. Runtime reasoning belongs in `assumptions` and requires user confirmation. Ask at most one consequential next question. When the important unknowns are resolved, write `proposal_summary` instead of inventing another question.
 
+### Persist first, then continue the conversation
+
+For a material user answer, keep this order:
+
+1. classify the user's exact answer, traceable project/document facts, Runtime assumptions, and Runtime recommendations separately;
+2. call `draft_dialogue_turn` with the updated understanding and either one `next_question` or one `proposal_summary`;
+3. translate the returned state into plain language; and
+4. ask the saved question or present the saved proposal checkpoint.
+
+Do not ask a new question and postpone persistence until a later turn. If the call fails, say that the progress was not saved and stop rather than continuing from private chat memory.
+
+On resume, read the persisted turns and present only the latest useful checkpoint: confirmed facts, unresolved assumptions, and the saved next question. Do not make the user repeat an answer that already appears as a confirmed `user_answer`, and do not print the entire event history.
+
+When a question benefits from choices, choices are user-facing guidance only. The chosen answer is persisted as `user_answer`; the alternatives do not become facts. A recommendation remains a Runtime recommendation until the user accepts it. Tool names, actor/claim/run/binding IDs, idempotency keys, and raw JSON stay out of normal user-visible prose.
+
 Use one `goalboard_v1_goal_tree_propose` for the complete proposed change set. Each item needs source references, a reason, confidence, and its affected objects. The tree can include a compound parent, a family of children, and children split more finely again. When the user is confirming that a parent’s decomposition is complete, the same proposal must include that parent’s Goal/Contract update to `definition_state="accepted"` and `decomposition_state="closed_compound"`; confirming only child Goals and `part_of` relations intentionally preserves a Draft parent for further clarification. Split on independently deliverable and reviewable business outcomes, not on code files or a fixed hierarchy depth.
 
 Read and check the proposal before asking for a decision. Explain it in plain language in the current conversation. Then call `goalboard_v1_goal_tree_decide` with:
@@ -177,6 +171,8 @@ reason?, idempotency_key
 ```
 
 The Runtime MCP host injects the trusted user identity, conversation reference, and message reference. Never send or synthesize those values. `confirm_all_pending=true` is allowed only if the immediately preceding Runtime message asked the user to confirm exactly one whole proposal and the host marks that context as such. Otherwise ask which items the user means.
+
+The immediately preceding proposal message must be decision-complete without exposing raw payloads. It names the intended outcome and non-goals, shows the proposed Goal tree, summarizes changed relations/dependencies, leaf acceptance, Risks/Policy, unresolved assumptions, and the post-confirmation work state. The final question distinguishes whole-proposal confirmation from a revision to named items. A vague “可以”“继续” is whole confirmation only when that exact whole proposal was the single explicit choice in the prior message and the trusted host marks it accordingly.
 
 A proposed item is not canonical before the user decision. A confirmed safe item materializes atomically; a rejected item remains historical; a revised item creates a new pending version; stale, dangling, or cyclic items remain conflicts without discarding unrelated confirmed items. Re-read the affected state after each decision.
 

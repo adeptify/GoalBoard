@@ -670,6 +670,21 @@ export class GoalBoardProjectCatalog {
     return (rows as Array<Record<string, unknown>>).map(mapRuntimeContextBindingEvent);
   }
 
+  /**
+   * Returns only currently active, explicitly confirmed Runtime work-entry
+   * bindings. Callers must not treat this list as permission to expose the
+   * opaque host identity; Web uses the GoalBoard-owned binding ID instead.
+   */
+  listRuntimeContextBindings(): GoalBoardRuntimeContextBinding[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM runtime_context_bindings
+        ORDER BY updated_at DESC, runtime_id, stable_work_context_id
+      `)
+      .all();
+    return (rows as Array<Record<string, unknown>>).map(mapRuntimeContextBinding);
+  }
+
   private projectSelections(): GoalBoardProjectSelection[] {
     return this.listProjects().map((project) => ({
       project_id: project.project_id,

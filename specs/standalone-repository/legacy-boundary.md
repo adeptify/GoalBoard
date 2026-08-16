@@ -52,7 +52,6 @@
 | `README.md` | 只讲 GoalBoard 的产品模型、启动协议、CLI/MCP/Web、Runtime Skill 和一次性导入 | “仓库同时保留 V3”、旧安装/命令/结构/MCP tools 说明 |
 | `tests/mcp.test.ts` | 保留 V1 MCP audience、连接、Contract URL、权限与协议测试；移除旧 full scenario | 任何对旧 `goalboard_init/strategy/...` 工具的成功路径断言 |
 | `package.json` | 测试列表只含 V1/Web/MCP；files 不再包含 `domains`；移除 `yaml` | 编译后 `dist/core/**`、`dist/renderers/**` 和领域资料进入 tarball |
-| `trick.json` | 描述和 usage 改成 GoalBoard V1/Runtime Skill | “无 Goal 自动澄清生成”、旧 profile/context 用法 |
 
 ### 4.3 完整删除的旧实现
 
@@ -178,13 +177,13 @@ pnpm exec tsx --test --test-name-pattern "V3 import preserves" tests/v1.test.ts
 3. 把 CLI 主入口改成 V1-only，保留显式 `v1 import-v3`。
 4. 收窄 `src/index.ts` 公共导出。
 5. 删除 `src/core/**`、`src/renderers/**`、`domains/**`、旧 tests、旧设计和旧 Skill 残片。
-6. 收敛 README、`trick.json`、package files/dependencies/scripts。
+6. 收敛 README 与 package files/dependencies/scripts。
 7. 执行 typecheck、V1/MCP/Web 定向测试、全量测试、build、pack dry-run；确认 tarball 中没有 `dist/core/**`、`dist/renderers/**` 或 `domains/**`。
 
 这组顺序先切断消费方，再删实现，避免用临时兼容层掩盖第二套 Runtime。
 
 ## 8. 本 Goal 验收对照
 
-- **C1：每个旧文件族都有决定。** 已覆盖 Core、Renderer、Domain、CLI、MCP、公共导出、README、package、trick、Skill、tests 和旧设计；没有把混合 `tests/mcp.test.ts` 整文件误删。
+- **C1：每个旧文件族都有决定。** 已覆盖 Core、Renderer、Domain、CLI、MCP、公共导出、README、package、Skill、tests 和旧设计；没有把混合 `tests/mcp.test.ts` 整文件误删。
 - **C2：最小输入和夹具可运行。** 已列出 `LegacyV3ImportInput`、逐字段映射、明确 regenerate/drop 的旧类型、唯一 CLI/MCP 入口与可独立执行的定向测试命令。
 - **非目标遵守。** 本文没有删除产品代码、创建远端仓库或改变 active dependency。

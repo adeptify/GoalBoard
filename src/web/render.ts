@@ -21,6 +21,7 @@ import type {
   RunRecord,
 } from "../v1/types.js";
 import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
+import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
 
 export type WebGoalStatus = GoalWorkState;
@@ -127,6 +128,46 @@ export interface WebProjectNavigation {
   display_name: string;
 }
 
+export type WebSettingsSection = "runtimes" | "projects" | "diagnostics";
+
+export interface WebSettingsProject extends WebProjectNavigation {
+  database_path: string;
+  source: "created" | "migrated";
+  created_at: string;
+}
+
+export interface WebSettingsConnection {
+  binding_id: string;
+  runtime_id: string;
+  runtime_name: string;
+  context_label: string;
+  project_id: string;
+  project_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebInstallationDiagnostics {
+  home_directory: string;
+  installation_state: "ready" | "missing" | "invalid";
+  version: string | null;
+  release_directory: string | null;
+  project_count: number;
+  launchers: Array<{
+    name: "CLI" | "MCP" | "Web";
+    path: string;
+    state: "ready" | "missing";
+  }>;
+}
+
+export interface GoalBoardSettingsView {
+  section: WebSettingsSection;
+  runtimes: RuntimeIntegrationDetection[];
+  projects: WebSettingsProject[];
+  connections: WebSettingsConnection[];
+  diagnostics: WebInstallationDiagnostics;
+}
+
 export interface GoalBoardWebView {
   snapshot: BoardSnapshot;
   project: WebProjectNavigation | null;
@@ -227,6 +268,10 @@ function escapeHtml(value: unknown): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function controlTokenMeta(controlToken: string): string {
+  return `<meta name="goalboard-control-token" content="${escapeHtml(controlToken)}">`;
 }
 
 function dataJson(view: GoalBoardWebView): string {
@@ -2755,6 +2800,7 @@ const RESPONSIVE_STYLES = `
 const PROJECT_INDEX_STYLES = `
   body.project-index-page { overflow: auto; background: var(--page); }
   .project-index-page > .topbar { height: 58px; }
+  .project-index-page .brand { color: inherit; text-decoration: none; }
   .project-index { min-height: calc(100dvh - 58px); padding: clamp(40px, 10vh, 112px) 24px; display: grid; place-items: start center; }
   .project-index-panel { width: min(100%, 760px); border: 1px solid var(--line-strong); background: var(--paper); box-shadow: var(--shadow); }
   .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
@@ -2773,6 +2819,10 @@ const PROJECT_INDEX_STYLES = `
   .project-index-empty { padding: 42px 30px 46px; color: var(--muted); }
   .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
   .project-index-empty p { max-width: 48ch; margin: 0; }
+  .project-index-start { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 9px; }
+  .project-index-start a { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; display: inline-flex; align-items: center; font-weight: 650; text-decoration: none; }
+  .project-index-start a:first-child { border-color: var(--blue); color: #fff; background: var(--blue); }
+  .project-index-start a:hover { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
   .project-index-migration { padding: 16px 30px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; background: #fbfcfd; }
   .project-index-migration > div { min-width: 0; }
   .project-index-migration strong { display: block; font-size: 13px; }
@@ -2803,6 +2853,7 @@ const PROJECT_INDEX_STYLES = `
   @media (max-width: 760px) {
     .project-index-page > .topbar { height: 52px; }
     .project-index { min-height: calc(100dvh - 52px); }
+    .project-index-page .project-context small { display: none; }
   }
   @media (max-width: 620px) {
     .project-index { padding: 28px 14px; place-items: start stretch; }
@@ -2814,6 +2865,18 @@ const PROJECT_INDEX_STYLES = `
     .project-index-note { padding-inline: 20px; }
     .project-migration-form > header, .project-migration-form > .project-migration-body, .project-migration-form > footer { padding-inline: 18px; }
   }
+`;
+
+const CONTROL_CLIENT_SCRIPT = `
+  globalThis.goalboardControlHeaders = () => {
+    const token = document.querySelector('meta[name="goalboard-control-token"]')?.content || "";
+    const requestKey = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+    return {
+      "content-type": "application/json",
+      "x-goalboard-control-token": token,
+      "x-goalboard-idempotency-key": requestKey,
+    };
+  };
 `;
 
 const PROJECT_INDEX_CLIENT_SCRIPT = `
@@ -2849,7 +2912,7 @@ const PROJECT_INDEX_CLIENT_SCRIPT = `
       try {
         const response = await fetch("/api/projects/migrate", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: goalboardControlHeaders(),
           body: JSON.stringify({
             legacy_database_path: String(values.get("legacy_database_path") || "").trim(),
             display_name: String(values.get("display_name") || "").trim(),
@@ -2865,6 +2928,362 @@ const PROJECT_INDEX_CLIENT_SCRIPT = `
         submit.disabled = false;
       }
     });
+  })();
+`;
+
+const SETTINGS_STYLES = `
+  body.settings-page { min-height: 100%; overflow: hidden; background: var(--page); }
+  .settings-page > .topbar { height: 58px; }
+  .settings-page .brand { color: inherit; text-decoration: none; }
+  .settings-shell { height: calc(100dvh - 58px); min-width: 0; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+  .settings-navigation { min-height: 0; padding: 18px 10px; border-right: 1px solid var(--line-strong); background: #fbfcfd; display: flex; flex-direction: column; gap: 3px; }
+  .settings-navigation a { min-height: 50px; padding: 7px 10px; border-radius: 5px; color: #343b46; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 9px; text-decoration: none; }
+  .settings-navigation a:hover { background: #f0f3f7; }
+  .settings-navigation a[aria-current=page] { color: var(--blue-dark); background: var(--blue-soft); }
+  .settings-navigation a > svg { font-size: 17px; }
+  .settings-navigation a > span { min-width: 0; display: grid; }
+  .settings-navigation strong { font-size: 13px; }
+  .settings-navigation small { color: var(--muted); font-size: 11px; }
+  .settings-content { min-width: 0; min-height: 0; overflow: auto; background: var(--paper); }
+  .settings-document { width: min(100%, 980px); min-height: 100%; padding: 38px 42px 80px; }
+  .settings-heading { max-width: 72ch; padding-bottom: 25px; border-bottom: 1px solid var(--line-strong); }
+  .settings-heading h1 { margin: 0; font-size: clamp(24px, 2.1vw, 30px); line-height: 1.25; letter-spacing: -.03em; }
+  .settings-heading p { margin: 8px 0 0; color: var(--muted); }
+  .settings-record-list { border-bottom: 1px solid var(--line-strong); }
+  .settings-record { border-bottom: 1px solid var(--line); }
+  .settings-record:last-child { border-bottom: 0; }
+  .settings-record > header { min-height: 92px; padding: 19px 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+  .settings-record-title { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
+  .settings-record-title .record-icon { width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; color: var(--blue-dark); background: #fbfcfd; }
+  .settings-record-title h2, .settings-record-title h3 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
+  .settings-record-title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  .settings-record-action { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; }
+  .settings-record-action button, .settings-button, .settings-action-section button, .settings-import-row button, .project-record-tools form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .settings-record-action button:hover, .settings-button:hover, .settings-action-section button:hover, .settings-import-row button:hover, .project-record-tools form button:hover { border-color: #b8d3f5; background: var(--blue-soft); }
+  .settings-record-action button:disabled { color: var(--faint); background: #f5f6f8; cursor: not-allowed; }
+  .settings-state { display: inline-flex; align-items: center; white-space: nowrap; font-size: 12px; font-weight: 650; }
+  .settings-state--success { color: var(--green); }
+  .settings-state--warning { color: #8a5100; }
+  .settings-state--danger { color: var(--red); }
+  .settings-state--neutral { color: var(--muted); }
+  .settings-paths { margin: 0; padding: 0 0 18px 46px; display: grid; gap: 5px; }
+  .settings-paths > div { min-width: 0; display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 9px; }
+  .settings-paths dt, .project-db-details dt, .diagnostics-summary dt, .runtime-plan-meta dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+  .settings-paths dd, .project-db-details dd, .diagnostics-summary dd, .runtime-plan-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #3b4350; font-size: 12px; }
+  .settings-footnote { max-width: 72ch; margin: 20px 0 0; color: var(--muted); font-size: 12px; }
+  .settings-footnote code { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; color: #3d4552; background: #fbfcfd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .settings-empty { padding: 34px 0 38px; color: var(--muted); }
+  .settings-empty h2 { margin: 0; color: var(--ink); font-size: 16px; }
+  .settings-empty p { margin: 5px 0 0; }
+  .settings-action-section, .settings-import-row { padding: 24px 0; border-bottom: 1px solid var(--line-strong); display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 30px; align-items: start; }
+  .settings-action-section h2, .settings-import-row h2, .launcher-section h2, .diagnostics-summary h2 { margin: 0; font-size: 16px; }
+  .settings-action-section > div > p, .settings-import-row > div > p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+  .inline-settings-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+  .inline-settings-form > label:first-child { min-width: 0; display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
+  .inline-settings-form input[type=text], .project-record-tools input { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: #fff; }
+  .inline-settings-form .inline-confirm { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+  .inline-settings-form .settings-form-error { grid-column: 1 / -1; }
+  .settings-form-error { margin: 0; color: var(--red); font-size: 12px; }
+  .project-record-tools { margin: -8px 0 16px 46px; display: flex; gap: 8px; }
+  .project-record-tools details { min-width: min(100%, 280px); }
+  .project-record-tools summary { min-height: 32px; padding: 0 7px; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; list-style: none; }
+  .project-record-tools summary::-webkit-details-marker { display: none; }
+  .project-record-tools summary svg:last-child { font-size: 11px; }
+  .project-record-tools details[open] summary svg:last-child { transform: rotate(180deg); }
+  .project-record-tools form, .project-db-details { width: min(100%, 440px); margin: 5px 0 0; padding: 13px; border: 1px solid var(--line); background: #fbfcfd; }
+  .project-record-tools form { display: grid; gap: 9px; }
+  .project-record-tools form label { display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
+  .project-record-tools form button { justify-self: end; }
+  .project-db-details { display: grid; gap: 7px; }
+  .project-db-details > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
+  .connection-settings-section { margin-top: 30px; padding-top: 28px; border-top: 1px solid var(--line-strong); }
+  .connection-settings-heading { max-width: 72ch; margin-bottom: 8px; }
+  .connection-settings-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+  .connection-settings-heading p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+  .connection-record-list { border-bottom: 1px solid var(--line-strong); }
+  .connection-record .settings-record-title p strong { color: #3b4350; }
+  .connection-record-tools { margin: -6px 0 17px 46px; display: flex; align-items: flex-start; gap: 10px; }
+  .connection-record-tools details { min-width: min(100%, 300px); }
+  .connection-record-tools summary { min-height: 32px; padding: 0 7px; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; list-style: none; }
+  .connection-record-tools summary::-webkit-details-marker { display: none; }
+  .connection-record-tools summary svg:last-child { font-size: 11px; }
+  .connection-record-tools details[open] summary svg:last-child { transform: rotate(180deg); }
+  .connection-action-form { width: min(100%, 460px); margin-top: 5px; padding: 13px; border: 1px solid var(--line); background: #fbfcfd; display: grid; gap: 10px; }
+  .connection-action-form > label:not(.inline-confirm) { display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
+  .connection-action-form select { width: 100%; min-height: 36px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: #fff; }
+  .connection-action-form .inline-confirm { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+  .connection-action-form .inline-confirm input { margin-top: 2px; }
+  .connection-action-form > button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; justify-self: end; color: var(--blue-dark); background: #fff; font-weight: 650; cursor: pointer; }
+  .connection-action-form--danger > button { color: var(--red); }
+  .settings-import-row { border-top: 1px solid var(--line-strong); margin-top: 24px; }
+  .settings-import-row > button { justify-self: end; }
+  .diagnostics-summary { padding: 25px 0; border-bottom: 1px solid var(--line-strong); }
+  .diagnostics-summary > div { display: flex; justify-content: space-between; gap: 20px; }
+  .diagnostics-summary dl { margin: 19px 0 0; display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+  .diagnostics-summary dl > div { min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; }
+  .diagnostics-summary dl > div:nth-child(odd) { padding-right: 22px; }
+  .launcher-section { padding: 25px 0 0; }
+  .launcher-section ul { list-style: none; margin: 14px 0 0; padding: 0; border-top: 1px solid var(--line); }
+  .launcher-section li { min-height: 60px; padding: 10px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+  .launcher-section li > span:first-child { min-width: 0; display: grid; grid-template-columns: 22px 50px minmax(0, 1fr); align-items: center; gap: 8px; }
+  .launcher-section li small { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  .runtime-plan-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(760px, calc(100dvh - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); box-shadow: var(--shadow); }
+  .runtime-plan-dialog::backdrop { background: rgba(27, 35, 45, .34); }
+  .runtime-plan-shell { max-height: min(760px, calc(100dvh - 28px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .runtime-plan-shell > header { padding: 21px 24px 17px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .runtime-plan-shell h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
+  .runtime-plan-shell header p { margin: 5px 0 0; color: var(--muted); }
+  .runtime-plan-body { min-height: 0; overflow: auto; padding: 20px 24px; }
+  .runtime-change-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .runtime-change-list li { padding: 13px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px 12px; }
+  .runtime-change-list li > strong { font-size: 12px; }
+  .runtime-change-list li > div { min-width: 0; }
+  .runtime-change-list li p { margin: 0; overflow-wrap: anywhere; }
+  .runtime-change-list li small { display: block; margin-top: 3px; color: var(--muted); overflow-wrap: anywhere; }
+  .runtime-plan-meta { margin: 18px 0 0; display: grid; gap: 7px; }
+  .runtime-plan-meta > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 12px; }
+  .runtime-plan-confirm { margin-top: 18px; padding: 12px; border: 1px solid #c8d9ef; background: #f5f9ff; display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+  .runtime-plan-confirm input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }
+  .runtime-plan-shell > footer { padding: 14px 24px; border-top: 1px solid var(--line); background: #fbfcfd; display: flex; justify-content: flex-end; gap: 9px; }
+  .runtime-plan-shell > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer; }
+  .runtime-plan-shell > footer .runtime-plan-apply { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
+  .runtime-plan-shell > footer .runtime-plan-apply:disabled { opacity: .55; cursor: not-allowed; }
+  .settings-page .toast { position: fixed; right: 22px; bottom: 22px; z-index: 30; }
+  @media (max-width: 760px) {
+    .settings-page > .topbar { height: 52px; }
+    .settings-page .project-context small { display: none; }
+    .settings-shell { height: calc(100dvh - 52px); grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .settings-navigation { padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--line-strong); flex-direction: row; overflow-x: auto; }
+    .settings-navigation a { min-width: max-content; min-height: 40px; grid-template-columns: 18px auto; }
+    .settings-navigation small { display: none; }
+    .settings-document { padding: 25px 18px 60px; }
+    .settings-record > header { align-items: flex-start; }
+    .settings-record-action { align-items: flex-end; flex-direction: column; }
+    .settings-paths { padding-left: 0; }
+    .settings-action-section, .settings-import-row { grid-template-columns: 1fr; gap: 14px; }
+    .inline-settings-form { grid-template-columns: 1fr; }
+    .inline-settings-form .inline-confirm, .inline-settings-form .settings-form-error { grid-column: 1; }
+    .project-record-tools { margin-left: 0; flex-wrap: wrap; }
+    .connection-record-tools { margin-left: 0; flex-wrap: wrap; }
+    .connection-record-tools details { min-width: 100%; }
+    .connection-action-form { width: 100%; }
+    .connection-action-form select { font-size: 16px; }
+    .settings-import-row > button { justify-self: start; }
+    .diagnostics-summary dl { grid-template-columns: 1fr; }
+    .diagnostics-summary dl > div:nth-child(odd) { padding-right: 0; }
+    .runtime-plan-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
+    .runtime-plan-shell { max-height: 100vh; height: 100%; }
+    .runtime-change-list li { grid-template-columns: 1fr; gap: 3px; }
+    .launcher-section li > span:first-child { grid-template-columns: 20px 42px minmax(0, 1fr); }
+    .inline-settings-form input[type=text], .project-record-tools input { font-size: 16px; }
+  }
+`;
+
+const SETTINGS_CLIENT_SCRIPT = `
+  (() => {
+    const dialog = document.querySelector("[data-runtime-plan-dialog]");
+    if (!dialog) return;
+    const title = dialog.querySelector("[data-runtime-plan-title]");
+    const message = dialog.querySelector("[data-runtime-plan-message]");
+    const changes = dialog.querySelector("[data-runtime-change-list]");
+    const backup = dialog.querySelector("[data-runtime-plan-backup]");
+    const restart = dialog.querySelector("[data-runtime-plan-restart]");
+    const confirmRow = dialog.querySelector("[data-runtime-confirm-row]");
+    const confirmInput = dialog.querySelector("[data-runtime-confirm]");
+    const confirmLabel = dialog.querySelector("[data-runtime-confirm-label]");
+    const applyButton = dialog.querySelector("[data-runtime-plan-apply]");
+    const errorBox = dialog.querySelector("[data-runtime-plan-error]");
+    const toast = document.querySelector("[data-settings-toast]");
+    let activePlan = null;
+    let reloadOnClose = false;
+    const showToast = (text) => {
+      if (!toast) return;
+      toast.textContent = text;
+      toast.classList.add("is-visible");
+      setTimeout(() => toast.classList.remove("is-visible"), 2600);
+    };
+    const closeDialog = () => {
+      dialog.close();
+      if (reloadOnClose) location.reload();
+    };
+    dialog.querySelectorAll("[data-runtime-plan-close]").forEach((button) => button.addEventListener("click", closeDialog));
+    confirmInput?.addEventListener("change", () => {
+      applyButton.disabled = !confirmInput.checked || !activePlan || activePlan.status !== "ready";
+    });
+    document.querySelectorAll("[data-runtime-plan]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runtimeId = button.dataset.runtimePlan;
+        const action = button.dataset.runtimeAction;
+        activePlan = null;
+        reloadOnClose = false;
+        title.textContent = "正在准备接入预览";
+        message.textContent = "GoalBoard 正在只读检查当前 Runtime 配置。";
+        changes.innerHTML = "";
+        backup.textContent = "检查中";
+        restart.textContent = "检查中";
+        confirmRow.hidden = true;
+        confirmInput.checked = false;
+        applyButton.disabled = true;
+        applyButton.hidden = false;
+        applyButton.textContent = "确认应用";
+        errorBox.hidden = true;
+        dialog.showModal();
+        try {
+          const response = await fetch("/api/settings/runtimes/" + encodeURIComponent(runtimeId) + "/plan", {
+            method: "POST",
+            headers: goalboardControlHeaders(),
+            body: JSON.stringify({ action }),
+          });
+          const plan = await response.json();
+          if (!response.ok) throw new Error(plan.error || "无法生成 Runtime 接入预览");
+          activePlan = plan;
+          title.textContent = plan.display_name + (plan.action === "remove" ? " · 移除预览" : " · 接入预览");
+          message.textContent = plan.message;
+          changes.innerHTML = (plan.changes || []).map((change) => "<li><strong>" + escapeText(change.operation === "remove" ? "移除" : change.operation === "replace" ? "替换" : "新增") + "</strong><div><p>" + escapeText(change.target_path) + "</p><small>" + escapeText(change.before) + " → " + escapeText(change.after) + "</small></div></li>").join("") || "<li><strong>无变更</strong><div><p>当前状态无需写入。</p></div></li>";
+          backup.textContent = plan.backup_path || "当前变更无须备份";
+          restart.textContent = (plan.restart_instructions || []).join(" ") || "无须重启";
+          confirmRow.hidden = plan.status !== "ready";
+          confirmLabel.textContent = plan.confirmation;
+          applyButton.hidden = plan.status !== "ready";
+        } catch (error) {
+          errorBox.textContent = error.message || "无法生成 Runtime 接入预览";
+          errorBox.hidden = false;
+          message.textContent = "没有修改任何配置。";
+        }
+      });
+    });
+    applyButton?.addEventListener("click", async () => {
+      if (!activePlan || !confirmInput.checked) return;
+      applyButton.disabled = true;
+      applyButton.textContent = "正在验证…";
+      errorBox.hidden = true;
+      try {
+        const response = await fetch("/api/settings/runtimes/" + encodeURIComponent(activePlan.runtime_id) + "/confirm", {
+          method: "POST",
+          headers: goalboardControlHeaders(),
+          body: JSON.stringify({ plan_id: activePlan.plan_id, decision: "confirmed" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || result.error || "Runtime 接入未完成");
+        message.textContent = result.message;
+        changes.innerHTML = "<li><strong>完成</strong><div><p>" + escapeText(result.message) + "</p></div></li>";
+        confirmRow.hidden = true;
+        applyButton.hidden = true;
+        reloadOnClose = true;
+        showToast(result.message);
+      } catch (error) {
+        errorBox.textContent = error.message || "Runtime 接入未完成";
+        errorBox.hidden = false;
+        applyButton.disabled = false;
+        applyButton.textContent = "重新确认";
+      }
+    });
+    const createForm = document.querySelector("[data-project-create]");
+    createForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(createForm);
+      const error = createForm.querySelector(".settings-form-error");
+      if (values.get("user_confirmed") !== "on") {
+        error.textContent = "请先确认创建这个项目。";
+        error.hidden = false;
+        return;
+      }
+      const submit = createForm.querySelector("button[type=submit]");
+      submit.disabled = true;
+      error.hidden = true;
+      try {
+        const response = await fetch("/api/settings/projects", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ display_name: String(values.get("display_name") || "").trim(), user_confirmed: true }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "项目创建失败");
+        location.assign(result.project_path);
+      } catch (caught) {
+        error.textContent = caught.message || "项目创建失败";
+        error.hidden = false;
+        submit.disabled = false;
+      }
+    });
+    document.querySelectorAll("[data-project-rename]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const error = form.querySelector(".settings-form-error");
+        const submit = form.querySelector("button[type=submit]");
+        submit.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/projects/" + encodeURIComponent(form.dataset.projectRename) + "/rename", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ display_name: String(values.get("display_name") || "").trim() }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "项目改名失败");
+          showToast("项目已改名为“" + result.project.display_name + "”");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          error.textContent = caught.message || "项目改名失败";
+          error.hidden = false;
+          submit.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-connection-rebind]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const error = form.querySelector(".settings-form-error");
+        const submit = form.querySelector("button[type=submit]");
+        if (values.get("user_confirmed") !== "on") {
+          error.textContent = "请先确认要切换这个 Session 的项目关联。";
+          error.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionRebind) + "/rebind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Session 项目切换失败");
+          showToast("Session 已切换到“" + result.connection.project_name + "”");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          error.textContent = caught.message || "Session 项目切换失败";
+          error.hidden = false;
+          submit.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-connection-unbind]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const error = form.querySelector(".settings-form-error");
+        const submit = form.querySelector("button[type=submit]");
+        if (values.get("user_confirmed") !== "on") {
+          error.textContent = "请先确认只解绑这个 Session。";
+          error.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionUnbind) + "/unbind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Session 解绑失败");
+          showToast("Session 已解绑；项目和其他关联保持不变");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          error.textContent = caught.message || "Session 解绑失败";
+          error.hidden = false;
+          submit.disabled = false;
+        }
+      });
+    });
+    function escapeText(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, (character) => {
+        if (character === "&") return "&amp;";
+        if (character === "<") return "&lt;";
+        if (character === ">") return "&gt;";
+        if (character === '"') return "&quot;";
+        return "&#039;";
+      });
+    }
   })();
 `;
 
@@ -3152,7 +3571,7 @@ const CLIENT_SCRIPT = `
       try {
         const response = await fetch(route("/api/goals/" + encodeURIComponent(trashIntent.goalId) + "/trash"), {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: goalboardControlHeaders(),
           body: JSON.stringify({
             trashed: trashIntent.trashed,
             reason,
@@ -3514,7 +3933,7 @@ const CLIENT_SCRIPT = `
       try {
         const response = await fetch(route(endpoint), {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: goalboardControlHeaders(),
           body: JSON.stringify({ decision, reason }),
         });
         const result = await response.json();
@@ -3763,7 +4182,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(goalId) + "/active"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({ reason: "用户在 GoalBoard 设为当前 Goal" }),
           });
           const result = await response.json();
@@ -3783,7 +4202,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(goalId) + "/archive"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               archived,
               reason: archived ? "用户在 GoalBoard 手动归档已完成 Goal" : "用户在 GoalBoard 恢复归档 Goal",
@@ -3858,7 +4277,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(relationForm.dataset.goalId) + "/relations"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               direction: values.get("direction"),
               type: values.get("type"),
@@ -3889,7 +4308,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/relations/" + encodeURIComponent(relationDeactivateForm.dataset.relationId) + "/deactivate"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({ reason }),
           });
           const result = await response.json();
@@ -3931,7 +4350,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(draftForm.dataset.goalId) + "/draft"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               title: String(values.get("title") || "").trim(),
               outcome: String(values.get("outcome") || "").trim(),
@@ -3971,7 +4390,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(riskCreateForm.dataset.goalId) + "/risks"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify(readRiskPayload(values)),
           });
           const result = await response.json();
@@ -3997,7 +4416,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/risks/" + encodeURIComponent(riskEditForm.dataset.riskId) + "/update"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify(readRiskPayload(values)),
           });
           const result = await response.json();
@@ -4023,7 +4442,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/risks/" + encodeURIComponent(riskStateForm.dataset.riskId) + "/state"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               state: values.get("state"),
               reason: String(values.get("reason") || "").trim(),
@@ -4052,7 +4471,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(impactCreateForm.dataset.goalId) + "/impacts"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify(readImpactPayload(values)),
           });
           const result = await response.json();
@@ -4078,7 +4497,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/impacts/" + encodeURIComponent(impactEditForm.dataset.impactId) + "/update"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify(readImpactPayload(values)),
           });
           const result = await response.json();
@@ -4104,7 +4523,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/impacts/" + encodeURIComponent(impactDeactivateForm.dataset.impactId) + "/deactivate"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({ reason: String(values.get("reason") || "").trim() }),
           });
           const result = await response.json();
@@ -4136,7 +4555,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(evidenceForm.dataset.goalId) + "/evidence"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               criterion_ids: criterionIds,
               kind: values.get("kind"),
@@ -4172,7 +4591,7 @@ const CLIENT_SCRIPT = `
         try {
           const response = await fetch(route("/api/policy-bindings"), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: goalboardControlHeaders(),
             body: JSON.stringify({
               scope: values.get("scope"),
               goal_id: values.get("goal_id") || undefined,
@@ -4220,7 +4639,7 @@ const CLIENT_SCRIPT = `
               "/review"),
             {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers: goalboardControlHeaders(),
               body: JSON.stringify({
                 verdict: values.get("verdict"),
                 evidence_refs: evidenceRefs,
@@ -4262,7 +4681,7 @@ const CLIENT_SCRIPT = `
       try {
         const response = await fetch(route("/api/goals"), {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: goalboardControlHeaders(),
           body: JSON.stringify(payload),
         });
         const result = await response.json();
@@ -4335,7 +4754,10 @@ function renderProjectMigrationDialog(): string {
 </dialog>`;
 }
 
-export function renderGoalBoardProjectIndex(projects: readonly WebProjectNavigation[]): string {
+export function renderGoalBoardProjectIndex(
+  projects: readonly WebProjectNavigation[],
+  controlToken = "",
+): string {
   const projectRows = projects
     .map(
       (project) => `<li><a href="/projects/${encodeURIComponent(project.project_id)}"><span><strong>${escapeHtml(project.display_name)}</strong><span>打开这个项目的 Goal Tree</span></span>${icon("chevron-down")}</a></li>`,
@@ -4346,37 +4768,161 @@ export function renderGoalBoardProjectIndex(projects: readonly WebProjectNavigat
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${controlTokenMeta(controlToken)}
   <title>选择项目 · GoalBoard</title>
   <style>${STYLES}${PROJECT_INDEX_STYLES}</style>
 </head>
 <body class="project-index-page">
   ${renderIconSprite()}
   <header class="topbar">
-    <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
+    <a class="brand" href="/" aria-label="GoalBoard 项目列表">${icon("brand")}<strong>GoalBoard</strong></a>
     <div class="project-context"><strong>项目列表</strong><small>选择后只改变当前网页浏览位置</small></div>
+    <div class="top-spacer"></div>
+    <a class="top-action" href="/settings/runtimes">${icon("settings")}<span>设置</span></a>
   </header>
   <main class="project-index">
     <section class="project-index-panel" aria-labelledby="project-index-title">
       <header class="project-index-heading">
         <h1 id="project-index-title">选择一个项目</h1>
-        <p>项目由你在当前 Runtime 中通过 GoalBoard Skill 创建、连接或迁移。网页不会创建项目，也不会绑定或切换 Runtime Session。</p>
+        <p>你可以在网页创建、导入和打开项目，也可以在 Runtime 中通过 GoalBoard Skill 连接。网页选择项目不会自动绑定或切换 Runtime Session。</p>
       </header>
       ${projects.length
         ? `<ul class="project-list">${projectRows}</ul>`
-        : `<div class="project-index-empty"><h2>还没有 GoalBoard 项目</h2><p>请在当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目。这个页面不会自动创建项目。</p></div>`}
+        : `<div class="project-index-empty"><h2>从一个真实项目开始</h2><p>你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。</p><div class="project-index-start"><a href="/settings/projects">创建第一个项目</a><a href="/settings/runtimes">设置 Runtime 接入</a></div></div>`}
       <section class="project-index-migration"><div><strong>已有一份旧的 GoalBoard DB？</strong><small>只有你明确选择并确认后，才会迁移它并保留已有历史。</small></div><button class="project-index-migrate" type="button" data-open-project-migration>迁移已有 GoalBoard 数据</button></section>
       <p class="project-index-note">选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。</p>
     </section>
   </main>
   ${renderProjectMigrationDialog()}
-  <script>${PROJECT_INDEX_CLIENT_SCRIPT}</script>
+  <script>${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
 }
 
+function runtimeStatePresentation(state: RuntimeIntegrationDetection["connection_state"]): {
+  label: string;
+  tone: "neutral" | "success" | "warning" | "danger";
+  description: string;
+} {
+  if (state === "connected") return { label: "已接入", tone: "success", description: "MCP 与 GoalBoard Skill 都指向当前安装。" };
+  if (state === "needs_repair") return { label: "需要修复", tone: "warning", description: "检测到旧版或不完整的 GoalBoard 接入。" };
+  if (state === "conflict") return { label: "存在冲突", tone: "danger", description: "同名配置或 Skill 不属于 GoalBoard，不会自动覆盖。" };
+  if (state === "goalboard_unavailable") return { label: "本体不完整", tone: "danger", description: "请先查看诊断并修复 GoalBoard 本体安装。" };
+  if (state === "not_detected") return { label: "未检测到", tone: "neutral", description: "这台设备上没有找到对应 Runtime。" };
+  return { label: "未接入", tone: "neutral", description: "尚未把 GoalBoard MCP 与 Skill 写入这个 Runtime。" };
+}
+
+function renderRuntimeSettings(view: GoalBoardSettingsView): string {
+  const rows = view.runtimes.map((runtime) => {
+    const state = runtimeStatePresentation(runtime.connection_state);
+    const unavailable = runtime.connection_state === "not_detected" || runtime.connection_state === "goalboard_unavailable";
+    const action = runtime.connection_state === "connected" ? "remove" : "connect";
+    const actionLabel = action === "remove" ? "预览移除" : runtime.connection_state === "needs_repair" ? "预览修复" : "查看并接入";
+    return `<article class="settings-record runtime-record" data-runtime-row="${escapeHtml(runtime.runtime_id)}">
+      <header>
+        <div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h2>${escapeHtml(runtime.display_name)}</h2><p>${escapeHtml(state.description)}</p></div></div>
+        <div class="settings-record-action"><span class="settings-state settings-state--${state.tone}">${escapeHtml(state.label)}</span><button type="button" data-runtime-plan="${escapeHtml(runtime.runtime_id)}" data-runtime-action="${action}"${unavailable ? " disabled" : ""}>${escapeHtml(actionLabel)}</button></div>
+      </header>
+      <dl class="settings-paths"><div><dt>Runtime</dt><dd>${runtime.executable_path ? escapeHtml(runtime.executable_path) : "未找到可执行文件"}</dd></div><div><dt>配置</dt><dd>${escapeHtml(runtime.config_path)}</dd></div><div><dt>Skill</dt><dd>${escapeHtml(runtime.skill_path)}</dd></div></dl>
+    </article>`;
+  }).join("");
+  return `<section class="settings-document" aria-labelledby="settings-title">
+    <header class="settings-heading"><h1 id="settings-title">Runtime 接入</h1><p>先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。</p></header>
+    <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>没有可探测的 Runtime</h2><p>GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。</p></div>`}</div>
+    <p class="settings-footnote">当前自动适配 Codex 和 Claude Code。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。</p>
+  </section>`;
+}
+
+function renderConnectionSettings(view: GoalBoardSettingsView): string {
+  const rows = view.connections.map((connection) => {
+    const alternateProjects = view.projects.filter((project) => project.project_id !== connection.project_id);
+    const switchForm = alternateProjects.length
+      ? `<form class="connection-action-form" data-connection-rebind="${escapeHtml(connection.binding_id)}"><label>切换到<select name="project_id" required>${alternateProjects.map((project) => `<option value="${escapeHtml(project.project_id)}">${escapeHtml(project.display_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认只把这个 Session 从“${escapeHtml(connection.project_name)}”切换到所选项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">确认切换</button></form>`
+      : `<div class="connection-action-form"><p class="settings-footnote">当前没有其他项目可切换。先创建或导入另一个项目。</p></div>`;
+    return `<article class="settings-record connection-record" data-connection-row="${escapeHtml(connection.binding_id)}">
+      <header><div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h3>${escapeHtml(connection.context_label)}</h3><p>${escapeHtml(connection.runtime_name)} · 当前项目 <strong>${escapeHtml(connection.project_name)}</strong></p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">已关联</span></div></header>
+      <div class="connection-record-tools"><details><summary>${icon("refresh")}<span>切换项目</span>${icon("chevron-down")}</summary>${switchForm}</details><details><summary>${icon("blocked")}<span>解绑</span>${icon("chevron-down")}</summary><form class="connection-action-form connection-action-form--danger" data-connection-unbind="${escapeHtml(connection.binding_id)}"><p class="settings-footnote">只停止这个 Session 使用 GoalBoard；不会删除“${escapeHtml(connection.project_name)}”或其他 Session 关联。</p><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认解绑这个 Session</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">确认解绑</button></form></details></div>
+    </article>`;
+  }).join("");
+  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">已关联的 Runtime Session</h2><p>这里只显示你已经在对应 Runtime 对话里确认过的 Session。新 Session 会先询问你要不要关联，不会自动出现在这里。</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>还没有已确认的 Session 关联</h3><p>在 Runtime 中使用 GoalBoard Skill 后，当前 Session 会先询问你要连接哪个项目。</p></div>`}</div></section>`;
+}
+
+function renderProjectSettings(view: GoalBoardSettingsView): string {
+  const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
+    <header>
+      <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.source === "migrated" ? "由已有 GoalBoard 数据迁入" : "在 GoalBoard 中创建"}</p></div></div>
+      <div class="settings-record-action"><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">打开 Goal Tree</a></div>
+    </header>
+    <div class="project-record-tools">
+      <details><summary>${icon("settings")}<span>改名</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>项目名称<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">保存名称</button></form></details>
+      <details><summary>${icon("database")}<span>DB 信息</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>项目 ID</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>数据库</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
+    </div>
+  </article>`).join("");
+  return `<section class="settings-document" aria-labelledby="settings-title">
+    <header class="settings-heading"><h1 id="settings-title">项目</h1><p>每个项目有独立 DB；项目名称用于识别，DB 路径只是辅助信息。网页项目选择不会改变 Runtime Session 绑定。</p></header>
+    <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">创建项目</h2><p>创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。</p></div><form class="inline-settings-form" data-project-create><label>项目名称<input name="display_name" required maxlength="160" placeholder="例如：新产品发布"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认创建这个项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">创建并打开</button></form></section>
+    <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>还没有项目</h2><p>在上方创建第一个项目，或从下方迁入一份已有 GoalBoard DB。</p></div>`}</div>
+    ${renderConnectionSettings(view)}
+    <section class="settings-import-row"><div><h2>导入已有 GoalBoard DB</h2><p>明确选择并确认后，来源 DB 会移入 GoalBoard 的项目目录。</p></div><button type="button" data-open-project-migration>选择 DB 并预览迁移</button></section>
+    <p class="settings-footnote">项目删除暂不在这里开放：当前服务还没有可恢复的项目删除，GoalBoard 不提供半套不可逆体验。</p>
+  </section>`;
+}
+
+function renderDiagnosticsSettings(view: GoalBoardSettingsView): string {
+  const diagnostics = view.diagnostics;
+  const installation = diagnostics.installation_state === "ready"
+    ? { label: "安装完整", tone: "success" }
+    : diagnostics.installation_state === "missing"
+      ? { label: "尚未安装本体", tone: "warning" }
+      : { label: "安装清单无效", tone: "danger" };
+  const launchers = diagnostics.launchers.map((launcher) => `<li><span>${icon(launcher.state === "ready" ? "check" : "blocked")}<strong>${launcher.name}</strong><small>${escapeHtml(launcher.path)}</small></span><span class="settings-state settings-state--${launcher.state === "ready" ? "success" : "danger"}">${launcher.state === "ready" ? "可用" : "缺失"}</span></li>`).join("");
+  return `<section class="settings-document" aria-labelledby="settings-title">
+    <header class="settings-heading"><h1 id="settings-title">诊断</h1><p>这里只读取 GoalBoard 自己的安装状态，不扫描项目内容，也不会自动修复或修改 Runtime。</p></header>
+    <section class="diagnostics-summary"><div><h2>GoalBoard 本体</h2><span class="settings-state settings-state--${installation.tone}">${installation.label}</span></div><dl><div><dt>版本</dt><dd>${escapeHtml(diagnostics.version ?? "未识别")}</dd></div><div><dt>Home</dt><dd>${escapeHtml(diagnostics.home_directory)}</dd></div><div><dt>Release</dt><dd>${escapeHtml(diagnostics.release_directory ?? "未找到")}</dd></div><div><dt>项目数</dt><dd>${diagnostics.project_count}</dd></div></dl></section>
+    <section class="launcher-section" aria-labelledby="launcher-title"><h2 id="launcher-title">启动入口</h2><ul>${launchers}</ul></section>
+    <p class="settings-footnote">如果本体不完整，请在终端重新运行 <code>goalboard install</code>。这个页面不会在未确认时替你执行修复。</p>
+  </section>`;
+}
+
+function renderRuntimePlanDialog(): string {
+  return `<dialog class="runtime-plan-dialog" data-runtime-plan-dialog aria-labelledby="runtime-plan-title">
+    <div class="runtime-plan-shell">
+      <header><div><h2 id="runtime-plan-title" data-runtime-plan-title>Runtime 接入预览</h2><p data-runtime-plan-message>正在读取变更计划…</p></div><button class="icon-button" type="button" data-runtime-plan-close aria-label="关闭预览">${icon("x")}</button></header>
+      <div class="runtime-plan-body"><ul class="runtime-change-list" data-runtime-change-list></ul><dl class="runtime-plan-meta"><div><dt>备份</dt><dd data-runtime-plan-backup>无须备份</dd></div><div><dt>完成后</dt><dd data-runtime-plan-restart>按页面提示重启 Runtime</dd></div></dl><label class="runtime-plan-confirm" data-runtime-confirm-row><input type="checkbox" data-runtime-confirm><span data-runtime-confirm-label>我已查看并确认这份变更</span></label><p class="settings-form-error" data-runtime-plan-error role="alert" hidden></p></div>
+      <footer><button type="button" data-runtime-plan-close>取消</button><button class="runtime-plan-apply" type="button" data-runtime-plan-apply disabled>确认应用</button></footer>
+    </div>
+  </dialog>`;
+}
+
+export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = ""): string {
+  const title = view.section === "runtimes" ? "Runtime 接入" : view.section === "projects" ? "项目" : "诊断";
+  const content = view.section === "runtimes"
+    ? renderRuntimeSettings(view)
+    : view.section === "projects"
+      ? renderProjectSettings(view)
+      : renderDiagnosticsSettings(view);
+  return `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · GoalBoard 设置</title><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}</style></head>
+<body class="settings-page" data-settings-section="${view.section}">
+  ${renderIconSprite()}
+  <header class="topbar"><a class="brand" href="/" aria-label="返回 GoalBoard 项目列表">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"><strong>设置</strong><small>Runtime、项目与诊断</small></div><div class="top-spacer"></div><a class="top-action" href="/">${icon("folder")}<span>项目列表</span></a></header>
+  <main class="settings-shell">
+    <nav class="settings-navigation" aria-label="GoalBoard 设置"><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>Runtime 接入</strong><small>MCP 与 Skill</small></span></a><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>项目</strong><small>创建、导入与改名</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>诊断</strong><small>安装与启动入口</small></span></a></nav>
+    <div class="settings-content">${content}</div>
+  </main>
+  ${renderRuntimePlanDialog()}
+  ${renderProjectMigrationDialog()}
+  <div class="toast" data-settings-toast role="status" aria-live="polite"></div>
+  <script>${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${SETTINGS_CLIENT_SCRIPT}</script>
+</body></html>`;
+}
+
 function prefixLocalLinks(html: string, routePrefix: string): string {
   const prefixed = routePrefix ? html.replaceAll('href="/', `href="${routePrefix}/`) : html;
-  return prefixed.replaceAll('href="__PROJECT_INDEX__"', 'href="/"');
+  return prefixed
+    .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
+    .replaceAll('href="__SETTINGS__"', 'href="/settings/runtimes"');
 }
 
 export function renderGoalBoardWeb(
@@ -4385,6 +4931,7 @@ export function renderGoalBoardWeb(
   archiveView = false,
   decisionView = false,
   trashView = false,
+  controlToken = "",
 ): string {
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
@@ -4442,6 +4989,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${controlTokenMeta(controlToken)}
   <title>${escapeHtml(title)}</title>
   <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
@@ -4461,6 +5009,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
       <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? "返回 Goal Tree" : "查看已归档 Goal"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
       <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? "返回 Goal Tree" : "查看回收站"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
+      <a class="top-action" href="__SETTINGS__" aria-label="打开 GoalBoard 设置">${icon("settings")}<span>设置</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>
@@ -4479,7 +5028,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   ${renderGoalTrashDialog()}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
-  <script>${CLIENT_SCRIPT}</script>
+  <script>${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}</script>
 </body>
 </html>`;
   return prefixLocalLinks(html, view.route_prefix);

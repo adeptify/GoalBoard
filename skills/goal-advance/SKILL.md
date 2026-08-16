@@ -20,12 +20,39 @@ The current Runtime stays in the current conversation. GoalBoard supplies shared
 
 `role` is only the kind of work that the current Runtime is doing for one MCP operation. It does not mean a different Runtime or a different Session must take over.
 
+## Conversation contract
+
+Reply in the user's current language. Speak about their project and Goal, not about MCP plumbing. The user should not have to interrogate you to learn what is happening, what will change, or what comes next.
+
+An ordinary clarification turn must make three things clear in natural prose:
+
+1. what you currently understand from the user's words;
+2. why the remaining uncertainty matters; and
+3. one consequential question, or the concrete action you are taking now.
+
+Do not render those as fixed headings every time. Keep the turn conversational. Ask only one question at a time, and never walk the user through a Contract field checklist. If a decision is hard to answer from a blank prompt, offer two or three genuinely different options, put the best-supported option first, and state the practical tradeoff in one sentence. Do not invent choices just to satisfy a format.
+
+Use plain-language state translations. Say “我已经把这项工作标记为开始，接下来会……” rather than dumping `claim_id`, `run_id`, `role`, `binding_id`, tool names, or raw payloads. Mention an internal ID only when the user needs it to distinguish two otherwise identical items or asked for technical details.
+
+Treat a correction as new authority. Briefly restate the corrected understanding, persist it in the next dialogue turn, and continue from it. Do not defend an old Runtime inference or ask a question the user already answered.
+
+Show a compact structured checkpoint when resuming a conversation, after the direction materially changes, after several substantive answers, or when a proposal is ready. Include only relevant sections:
+
+- **已确认** — facts the user actually confirmed;
+- **项目事实** — repository or document facts with a traceable source;
+- **仍是我的假设** — Runtime inferences that still need confirmation;
+- **我的建议** — decomposition or product choices, clearly labelled as advice;
+- **下一步** — the one decision or action that advances the Goal.
+
+This checkpoint is editable, not a verdict. User-confirmed facts, project facts, Runtime assumptions, and suggestions must remain distinct in both the visible summary and the MCP payload. Before asking the next question, persist every material answer with `goalboard_v1_draft_dialogue_turn`; do not rely on chat memory alone.
+
 ## 1. Explicitly resolve the current project
 
 At the beginning of a user-invoked GoalBoard flow, call `goalboard_v1_context_resolve`.
 
 - If the result is `bound`, use the returned connection and `board_id`. Do not substitute another Board or database.
 - If the result is `suggested`, the current Session is still unbound. Show the candidate project names and their returned generic reasons, explain that they are only host hints, and ask the user whether to associate a named candidate.
+  - Phrase it naturally: “我找到一个可能相关的项目：X。它只是候选，还没有关联。要把当前 Session 关联到它吗？” Add the returned generic reason only when it helps the decision; never expose the raw clue.
   - Only after an explicit “yes, use this project” call `goalboard_v1_context_bind` with that `project_id` and `user_confirmed=true`.
   - After an explicit “no, not this project”, call `goalboard_v1_context_reject_suggestion` with that `project_id` and `user_confirmed=true`. It does not delete or hide the project from other Sessions. Read its returned resolution: ask about another `suggested` candidate, or use the normal list/create path after `unbound`.
   - Silence, a timeout, an ambiguous answer, or “not now” is not confirmation. Keep the Session unbound and do not call either binding or rejection.
@@ -46,8 +73,6 @@ When the user explicitly asks to manage projects, stay in this same conversation
 
 Do not treat “use another project”, “not this suggestion”, “stop using GoalBoard here”, and “delete this project” as the same consent. Switching uses the existing `context_bind` plus its separate `rebind_confirmed=true`; suggestion rejection, unbinding, and deletion have their own confirmations.
 
-Immediately after installation, the default is also no project action. If the user asks to set up projects now, first say that nothing has been created, imported, enabled, or started yet. Let them select each action separately, then call `goalboard_v1_postinstall_project_selection` with all proposed `actions`, only the exact user-confirmed `confirmed_action_ids`, and a fresh `idempotency_key`. Unconfirmed IDs are skipped. Reuse that key only to retry the same selection; a changed selection needs a new key. Use this optional setup route for a named import or an explicitly selected enabled/startable project; for the normal current-project path, prefer `context_create_and_bind` because it creates and binds one selected project atomically. A selected `start` succeeds only when the Runtime host provides a project starter; otherwise report its failed result without launching anything or changing configuration. After an enable action, call `context_resolve` again before ordinary Goal work.
-
 ## 2. Route the user's request in the same conversation
 
 After a project is connected, take exactly the route that matches the user's request.
@@ -60,6 +85,10 @@ After a project is connected, take exactly the route that matches the user's req
 | A specified accepted Goal | Read its Contract, then find that Goal in `goalboard_v1_available`. If it is available, call `goalboard_v1_select_goal` with that item's returned `role`. If it is not available, call `goalboard_v1_explain` and report the real blocker instead of claiming it anyway. |
 | Ask what is in the trash | Call `goalboard_v1_goal_trash_list`; it is read-only and stays in this conversation. |
 | Explicitly delete or restore one Goal | First identify the exact `goal_id` and explain that deletion is recoverable. Only after the user's clear current-conversation instruction call `goalboard_v1_goal_trash` or `goalboard_v1_goal_restore` with `user_confirmed=true`. |
+
+After a new rough idea starts, tell the user in plain language that you have saved it as a Draft that can be refined in this same conversation; then ask the single highest-impact question. When resuming a Draft, summarize “上次已确认 / 仍待确认 / 现在只需要决定的一件事” before continuing the saved question. Do not replay the full stored transcript.
+
+After selecting from Available, state which Goal you chose, why it fits the user's request and current constraints, and that its work state has already been updated. Then begin the work. Do not ask the user to choose from Available unless their intent or a genuine product tradeoff requires their decision.
 
 Use a new `idempotency_key` for a changed operation. Reuse a key only to retry the exact same request.
 
@@ -95,9 +124,20 @@ Stay in this conversation. After each material user answer, call `goalboard_v1_d
 
 Ask only questions that could change the Goal's outcome, boundary, acceptance direction, relationship, or decomposition. Do not make the user fill a Web form field by field.
 
+For each material answer, save the user's words before composing the next question. In `known_facts`, use `user_answer` only for what the user actually said; use `repository_fact` or `document_fact` only when a traceable source supports it. Put Runtime interpretations in `assumptions` even when they seem obvious. A suggestion belongs in the visible “我的建议” or in the pending Goal Tree proposal, never in canonical facts.
+
 When a proposal is ready, call `goalboard_v1_goal_tree_propose`, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Propose the complete change set: parent Goal, child Goals, relations, dependencies, Risks, Policy, Candidates, and Rewires where applicable. When the user is confirming a completed decomposition, include a Goal/Contract update for every completed parent that sets `definition_state=accepted` and `decomposition_state=closed_compound`; merely confirming `part_of` relations deliberately leaves that parent Draft and “待澄清”. A child Goal may itself have finer child Goals; split by independent business outcomes, not by files, technical layers, or a fixed tree depth.
 
-Explain the proposal in ordinary language and ask the user to confirm, reject, or revise the whole proposal or named items. Then call `goalboard_v1_goal_tree_decide` with the Runtime actor, the selected item decisions, the user's reason, and a fresh key. The host supplies trusted user/conversation/message context. If it cannot, stop at the decision boundary; do not use an untrusted user-authority tool.
+Explain the proposal in ordinary language before asking for a decision. The user-visible summary must show:
+
+- the intended outcome and explicit non-goals;
+- the proposed Goal family/tree, including any child that can split further;
+- parent/child, dependency, replacement, or other changed relations;
+- acceptance conditions for executable leaves;
+- material Risks, Policy changes, and unresolved assumptions; and
+- what work state each affected Goal will have after confirmation.
+
+Use a readable tree or short list, not the raw proposal payload. End with an unambiguous choice: confirm the whole named proposal, reject it, or revise specific named items. If the user corrects one item, restate the changed item and keep the unaffected items pending rather than forcing a restart. Then call `goalboard_v1_goal_tree_decide` with the Runtime actor, the selected item decisions, the user's reason, and a fresh key. The host supplies trusted user/conversation/message context. If it cannot, stop at the decision boundary; do not use an untrusted user-authority tool.
 
 Before the user decides, proposals are not canonical Goal facts, active relations, Risks, or Policy. After a decision, re-read the affected Contract or state and continue by the table above. Report the clarification Run and release its Claim when the dialogue has reached a recorded decision or a real blocking point.
 
@@ -117,7 +157,6 @@ If the conversation is interrupted during Draft clarification, call `goalboard_v
 |---|---|
 | List, resolve, accept/reject a suggestion, choose, create, or switch a project | `context_list_projects` / `context_resolve` / `context_reject_suggestion` / `context_bind` / `context_create_and_bind` |
 | Stop using the current project or erase a selected managed project | `context_unbind` / `project_delete` |
-| Apply an explicitly selected post-install project setup | `postinstall_project_selection` |
 | Read work and blockers | `snapshot` / `contract` / `available` / `explain` |
 | Atomically start selected work | `select_goal` |
 | Start or restore Draft dialogue | `draft_dialogue_start` / `draft_dialogue_turn` / `draft_dialogue_resume` |

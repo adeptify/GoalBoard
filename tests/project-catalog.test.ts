@@ -255,6 +255,7 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
         catalog.resolveRuntimeContext(stableContext("codex", "same-name-as-project")).status,
         "unbound",
       );
+      assert.deepEqual(catalog.listRuntimeContextBindings(), []);
 
       assert.throws(
         () =>
@@ -285,6 +286,17 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
       });
       assert.equal(secondRuntime.connection?.board_id, initial.connection?.board_id);
       assert.equal(secondRuntime.connection?.database_path, initial.connection?.database_path);
+      assert.deepEqual(
+        catalog.listRuntimeContextBindings().map((binding) => [
+          binding.runtime_id,
+          binding.stable_work_context_id,
+          binding.project_id,
+        ]).sort(),
+        [
+          ["claude-code", "workspace-entry-01", first.project_id],
+          ["codex", "workspace-entry-01", first.project_id],
+        ],
+      );
 
       assert.throws(
         () =>
@@ -309,6 +321,10 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
       });
       assert.equal(rebound.connection?.project_id, second.project_id);
       assert.equal(catalog.resolveRuntimeContext(claudeEntry).connection?.project_id, first.project_id);
+      assert.equal(
+        catalog.listRuntimeContextBindings().find((binding) => binding.runtime_id === "codex")?.project_id,
+        second.project_id,
+      );
       assert.deepEqual(
         catalog.listRuntimeContextBindingEvents(codexEntry).map((event) => [
           event.type,
@@ -337,6 +353,7 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
         reopened.resolveRuntimeContext(stableContext("claude-code", "workspace-entry-01")).status,
         "bound",
       );
+      assert.equal(reopened.listRuntimeContextBindings().length, 2);
     } finally {
       reopened.close();
     }

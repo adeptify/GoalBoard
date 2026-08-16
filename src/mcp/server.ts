@@ -9,11 +9,6 @@ import {
   type RuntimeProjectSuggestionClue,
   type RuntimeWorkContext,
 } from "../projects/catalog.js";
-import {
-  applyPostInstallProjectSelection,
-  type GoalBoardPostInstallProjectAction,
-  type GoalBoardPostInstallProjectStarter,
-} from "../install/postinstall-project-selection.js";
 import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { ClaimRequest, CreateGoalInput, GoalTrashResult } from "../v1/types.js";
@@ -114,8 +109,6 @@ export interface GoalBoardRuntimeContextHost {
    * Runtime MCP tool argument.
    */
   projectSuggestionClues?: readonly RuntimeProjectSuggestionClue[];
-  /** Optional host-owned launcher for an explicitly confirmed project start action. */
-  postInstallProjectStarter?: GoalBoardPostInstallProjectStarter;
 }
 
 /**
@@ -930,20 +923,6 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
       required: ["project_id", "actor_id", "delete_confirmed", "idempotency_key"],
     },
   },
-  {
-    name: "goalboard_v1_postinstall_project_selection",
-    description:
-      "安装后由当前 Runtime 根据用户逐项确认的 action_id 执行项目创建、导入、启用或启动；默认全跳过，不修改项目文件或 Runtime 配置。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        actions: { type: "array", items: { type: "object" } },
-        confirmed_action_ids: { type: "array", items: V1_STRING },
-        idempotency_key: V1_STRING,
-      },
-      required: ["actions", "confirmed_action_ids", "idempotency_key"],
-    },
-  },
 ];
 
 const TOOLS: McpToolDefinition[] = [...V1_TOOLS, ...CONTEXT_TOOLS];
@@ -986,7 +965,6 @@ const RUNTIME_CONTEXT_TOOL_NAMES = new Set([
   "goalboard_v1_context_unbind",
   "goalboard_v1_context_create_and_bind",
   "goalboard_v1_project_delete",
-  "goalboard_v1_postinstall_project_selection",
 ]);
 
 const RUNTIME_TOOL_NAMES = new Set([...RUNTIME_V1_TOOL_NAMES, ...RUNTIME_CONTEXT_TOOL_NAMES]);
@@ -1021,36 +999,45 @@ const RUNTIME_TOOLS = TOOLS
   .filter((tool) => RUNTIME_TOOL_NAMES.has(tool.name))
   .map(runtimeToolDefinition);
 
-function runtimeContextHostFromEnvironment(): GoalBoardRuntimeContextHost | null {
-  const runtimeId = process.env.GOALBOARD_RUNTIME_ID;
+export function runtimeContextHostFromEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+  currentWorkingDirectory: string = process.cwd(),
+): GoalBoardRuntimeContextHost | null {
+  const runtimeId = environment.GOALBOARD_RUNTIME_ID;
   if (!runtimeId) return null;
+  const explicitContextId = environment.GOALBOARD_WORK_CONTEXT_ID?.trim() || null;
+  const runtimeContextId = explicitContextId ?? stableRuntimeSessionId(runtimeId, environment);
+  const projectSuggestionClues: RuntimeProjectSuggestionClue[] = [];
+  const workspace = environment.PWD?.trim() || currentWorkingDirectory.trim();
+  if (workspace && path.isAbsolute(workspace)) {
+    projectSuggestionClues.push({ kind: "workspace", value: workspace });
+  }
+  const sessionTitle = environment.CLAUDE_CODE_SESSION_NAME?.trim();
+  if (sessionTitle) projectSuggestionClues.push({ kind: "session_title", value: sessionTitle });
   return {
-    homeDirectory: process.env.GOALBOARD_HOME,
+    homeDirectory: environment.GOALBOARD_HOME,
     runtimeContext: {
       runtime_id: runtimeId,
-      stable_work_context_id: process.env.GOALBOARD_WORK_CONTEXT_ID ?? null,
-      host_declares_stable: process.env.GOALBOARD_WORK_CONTEXT_STABLE === "true",
+      stable_work_context_id: runtimeContextId,
+      host_declares_stable: explicitContextId
+        ? environment.GOALBOARD_WORK_CONTEXT_STABLE === "true"
+        : runtimeContextId != null,
     },
-    webBaseUrl: process.env.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
-    // Environment fallback intentionally provides no project clues. A Runtime
-    // host must opt in to supplying its own non-authoritative hints; GoalBoard
-    // never scans a workspace or derives them from environment paths.
-    projectSuggestionClues: [],
+    webBaseUrl: environment.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
+    // The working directory and title are ranking hints only. They can make a
+    // fresh Session suggestion useful, but never become identity or a binding.
+    projectSuggestionClues,
   };
 }
 
-/** The model cannot choose a different Runtime work entry for enable/start. */
-function runtimePostInstallActions(
-  value: unknown,
-  context: RuntimeWorkContext,
-): GoalBoardPostInstallProjectAction[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return item as GoalBoardPostInstallProjectAction;
-    const action = item as Record<string, unknown>;
-    if (action.kind !== "enable" && action.kind !== "start") return action as GoalBoardPostInstallProjectAction;
-    return { ...action, context } as GoalBoardPostInstallProjectAction;
-  });
+function stableRuntimeSessionId(runtimeId: string, environment: NodeJS.ProcessEnv): string | null {
+  if (runtimeId === "codex") return environment.CODEX_THREAD_ID?.trim() || null;
+  if (runtimeId === "claude-code") {
+    return environment.CLAUDE_CODE_SESSION_ID?.trim()
+      || environment.CLAUDE_SESSION_ID?.trim()
+      || null;
+  }
+  return null;
 }
 
 export class GoalBoardServer {
@@ -1097,7 +1084,6 @@ export class GoalBoardServer {
     if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_);
     if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_);
     if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_);
-    if (name === "goalboard_v1_postinstall_project_selection") return this.applyPostInstallProjectSelection(arguments_);
     return this.callV1Tool(name, arguments_);
   }
 
@@ -1284,23 +1270,6 @@ export class GoalBoardServer {
     } finally {
       catalog.close();
     }
-  }
-
-  private async applyPostInstallProjectSelection(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
-    return JSON.stringify(
-      await applyPostInstallProjectSelection({
-        home_directory: host.homeDirectory,
-        actions: runtimePostInstallActions(arguments_.actions, host.runtimeContext),
-        confirmed_action_ids: Array.isArray(arguments_.confirmed_action_ids)
-          ? arguments_.confirmed_action_ids.map((value) => String(value))
-          : [],
-        idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
-        starter: host.postInstallProjectStarter,
-      }),
-      null,
-      2,
-    );
   }
 
   private contextResolutionResponse(

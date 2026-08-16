@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
@@ -9,20 +10,33 @@ import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
 import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
-import type { GoalBoardProjectRecord } from "../projects/catalog.js";
+import type {
+  GoalBoardProjectRecord,
+  GoalBoardRuntimeContextBinding,
+  RuntimeWorkContext,
+} from "../projects/catalog.js";
+import {
+  RuntimeIntegrationService,
+  type SupportedRuntimeId,
+} from "../install/runtime-integration.js";
 import {
   renderGoalDocumentFragment,
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
+  renderGoalBoardSettings,
   WEB_GOAL_STATUSES,
   type GoalBoardWebView,
   type WebCoverageItem,
   type WebEventRecord,
   type WebGoalStatus,
   type WebInputBinding,
+  type WebInstallationDiagnostics,
   type WebPolicyBinding,
   type WebProjectNavigation,
   type WebRiskRecord,
+  type WebSettingsConnection,
+  type WebSettingsProject,
+  type WebSettingsSection,
 } from "./render.js";
 
 export interface WebServerOptions {
@@ -40,6 +54,10 @@ export interface WebServerOptions {
    * The server never exposes an arbitrary local path.
    */
   projectRoot?: string;
+  /** Shared in-process Runtime integration service. Tests may inject a fixture. */
+  runtimeIntegrationService?: RuntimeIntegrationService;
+  /** Test-only deterministic local Web control token. Production generates one per server process. */
+  controlToken?: string;
 }
 
 interface ResolvedWebBoardOptions {
@@ -61,6 +79,8 @@ type ResolvedWebRequest =
   | { kind: "catalog_index"; projects: WebProjectNavigation[] }
   | { kind: "project_not_found" }
   | { kind: "board"; pathname: string; options: ResolvedWebBoardOptions };
+
+const SETTINGS_SECTIONS = new Set<WebSettingsSection>(["runtimes", "projects", "diagnostics"]);
 
 const REVIEW_LABELS: Record<string, string> = {
   self_verifier: "自检",
@@ -485,6 +505,91 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.end(JSON.stringify(value));
 }
 
+type LocalMutationState = "in_flight" | "complete";
+
+function localHostname(value: string): boolean {
+  const hostname = value.toLowerCase();
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
+}
+
+function requestHost(request: IncomingMessage): string | null {
+  const value = request.headers.host?.trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(`http://${value}`);
+    return localHostname(parsed.hostname) ? parsed.host : null;
+  } catch {
+    return null;
+  }
+}
+
+function controlTokenMatches(expected: string, actual: string | string[] | undefined): boolean {
+  if (typeof actual !== "string") return false;
+  const expectedBytes = Buffer.from(expected);
+  const actualBytes = Buffer.from(actual);
+  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
+}
+
+function authorizeLocalWebRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  controlToken: string,
+  mutationKeys: Map<string, LocalMutationState>,
+): boolean {
+  const host = requestHost(request);
+  if (!host) {
+    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    return false;
+  }
+  if (!request.method || ["GET", "HEAD"].includes(request.method)) return true;
+  if (!url.pathname.startsWith("/api/")) return true;
+  const originValue = request.headers.origin;
+  let origin: URL;
+  try {
+    if (typeof originValue !== "string") throw new Error("missing origin");
+    origin = new URL(originValue);
+  } catch {
+    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    return false;
+  }
+  if (origin.protocol !== "http:" || !localHostname(origin.hostname) || origin.host !== host) {
+    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    return false;
+  }
+  if (!controlTokenMatches(controlToken, request.headers["x-goalboard-control-token"])) {
+    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    return false;
+  }
+  const idempotencyKey = request.headers["x-goalboard-idempotency-key"];
+  if (
+    typeof idempotencyKey !== "string"
+    || idempotencyKey.length < 8
+    || idempotencyKey.length > 200
+  ) {
+    sendJson(response, 400, { error: "请求缺少有效的一次性操作键" });
+    return false;
+  }
+  if (mutationKeys.has(idempotencyKey)) {
+    sendJson(response, 409, { error: "这次操作已经提交，不会重复执行" });
+    return false;
+  }
+  mutationKeys.set(idempotencyKey, "in_flight");
+  response.once("finish", () => {
+    if (response.statusCode >= 200 && response.statusCode < 400) {
+      mutationKeys.set(idempotencyKey, "complete");
+      while (mutationKeys.size > 4096) {
+        const oldest = mutationKeys.keys().next().value as string | undefined;
+        if (!oldest) break;
+        mutationKeys.delete(oldest);
+      }
+    } else {
+      mutationKeys.delete(idempotencyKey);
+    }
+  });
+  return true;
+}
+
 function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -509,6 +614,129 @@ function projectNavigation(project: GoalBoardProjectRecord): WebProjectNavigatio
     project_id: project.project_id,
     display_name: project.display_name,
   };
+}
+
+function settingsProject(project: GoalBoardProjectRecord): WebSettingsProject {
+  return {
+    project_id: project.project_id,
+    display_name: project.display_name,
+    database_path: project.database_path,
+    source: project.source,
+    created_at: project.created_at,
+  };
+}
+
+function runtimeDisplayName(runtimeId: string): string {
+  if (runtimeId === "codex") return "Codex";
+  if (runtimeId === "claude-code") return "Claude Code";
+  return runtimeId;
+}
+
+function settingsConnection(
+  binding: GoalBoardRuntimeContextBinding,
+  projects: Map<string, WebSettingsProject>,
+): WebSettingsConnection | null {
+  const project = projects.get(binding.project_id);
+  if (!project) return null;
+  const fingerprint = createHash("sha256")
+    .update(`${binding.runtime_id}\0${binding.stable_work_context_id}`)
+    .digest("hex")
+    .slice(0, 6)
+    .toUpperCase();
+  const runtimeName = runtimeDisplayName(binding.runtime_id);
+  return {
+    binding_id: binding.binding_id,
+    runtime_id: binding.runtime_id,
+    runtime_name: runtimeName,
+    context_label: `${runtimeName} Session · ${fingerprint}`,
+    project_id: project.project_id,
+    project_name: project.display_name,
+    created_at: binding.created_at,
+    updated_at: binding.updated_at,
+  };
+}
+
+async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promise<{
+  projects: WebSettingsProject[];
+  connections: WebSettingsConnection[];
+}> {
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  try {
+    const projects = catalog.listProjects().map(settingsProject);
+    const projectMap = new Map(projects.map((project) => [project.project_id, project]));
+    return {
+      projects,
+      connections: catalog.listRuntimeContextBindings()
+        .map((binding) => settingsConnection(binding, projectMap))
+        .filter((connection): connection is WebSettingsConnection => connection !== null),
+    };
+  } finally {
+    catalog.close();
+  }
+}
+
+async function settingsProjects(homeDirectory: string | undefined): Promise<WebSettingsProject[]> {
+  return (await settingsCatalogSnapshot(homeDirectory)).projects;
+}
+
+function bindingRuntimeContext(binding: GoalBoardRuntimeContextBinding): RuntimeWorkContext {
+  return {
+    runtime_id: binding.runtime_id,
+    stable_work_context_id: binding.stable_work_context_id,
+    host_declares_stable: true,
+  };
+}
+
+function installationDiagnostics(
+  homeDirectory: string | undefined,
+  projectCount: number,
+): WebInstallationDiagnostics {
+  const home = path.resolve(homeDirectory ?? path.join(os.homedir(), ".goalboard"));
+  const manifestPath = path.join(home, "config", "installation.json");
+  let installationState: WebInstallationDiagnostics["installation_state"] = "missing";
+  let version: string | null = null;
+  let releaseDirectory: string | null = null;
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+        installer?: unknown;
+        version?: unknown;
+        release_path?: unknown;
+      };
+      if (
+        manifest.installer === "goalboard-home-install-v1"
+        && typeof manifest.version === "string"
+        && typeof manifest.release_path === "string"
+      ) {
+        version = manifest.version;
+        releaseDirectory = path.resolve(home, manifest.release_path);
+        installationState = "ready";
+      } else {
+        installationState = "invalid";
+      }
+    } catch {
+      installationState = "invalid";
+    }
+  }
+  return {
+    home_directory: home,
+    installation_state: installationState,
+    version,
+    release_directory: releaseDirectory,
+    project_count: projectCount,
+    launchers: ([
+      ["CLI", "goalboard"],
+      ["MCP", "goalboard-mcp"],
+      ["Web", "goalboard-web"],
+    ] as const).map(([name, file]) => {
+      const launcherPath = path.join(home, "bin", file);
+      return { name, path: launcherPath, state: fs.existsSync(launcherPath) ? "ready" : "missing" };
+    }),
+  };
+}
+
+function supportedRuntimeId(value: string): SupportedRuntimeId | null {
+  return value === "codex" || value === "claude-code" ? value : null;
 }
 
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
@@ -559,7 +787,14 @@ async function resolveWebRequest(
   try {
     const records = catalog.listProjects();
     const projects = records.map(projectNavigation);
-    if (pathname === "/" || pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/")) {
+    if (
+      pathname === "/"
+      || pathname === "/health"
+      || pathname === "/api"
+      || pathname.startsWith("/api/")
+      || pathname === "/settings"
+      || pathname.startsWith("/settings/")
+    ) {
       return { kind: "catalog_index", projects };
     }
     const match = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
@@ -596,12 +831,195 @@ async function resolveWebRequest(
 
 export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): http.Server {
   const fixture = fixtureWebBoardOptions(serverOptions);
+  const runtimeIntegrations = serverOptions.runtimeIntegrationService ?? new RuntimeIntegrationService({
+    homeDirectory: serverOptions.homeDirectory,
+  });
+  const controlToken = serverOptions.controlToken?.trim() || randomBytes(32).toString("base64url");
+  if (controlToken.length < 32 || controlToken.length > 512) {
+    throw new Error("Web control token 长度无效");
+  }
+  const mutationKeys = new Map<string, LocalMutationState>();
   if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
   return http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
+      if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
       const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
+        if (request.method === "GET" && url.pathname === "/settings") {
+          response.writeHead(302, { location: "/settings/runtimes", "cache-control": "no-store" });
+          response.end();
+          return;
+        }
+        const settingsPageMatch = url.pathname.match(/^\/settings\/(runtimes|projects|diagnostics)$/);
+        if (request.method === "GET" && settingsPageMatch) {
+          const section = settingsPageMatch[1] as WebSettingsSection;
+          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
+          const projects = catalogSettings.projects;
+          const runtimes = section === "runtimes" ? await runtimeIntegrations.detectAll() : [];
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+          });
+          response.end(renderGoalBoardSettings({
+            section,
+            runtimes,
+            projects,
+            connections: catalogSettings.connections,
+            diagnostics: installationDiagnostics(serverOptions.homeDirectory, projects.length),
+          }, controlToken));
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/runtimes") {
+          sendJson(response, 200, { runtimes: await runtimeIntegrations.detectAll() });
+          return;
+        }
+        const runtimePlanMatch = url.pathname.match(/^\/api\/settings\/runtimes\/([^/]+)\/plan$/);
+        if (request.method === "POST" && runtimePlanMatch) {
+          const runtimeId = supportedRuntimeId(decodeURIComponent(runtimePlanMatch[1]));
+          const body = await readBody(request);
+          const action = body.action === "connect" || body.action === "remove" ? body.action : null;
+          if (!runtimeId || !action) {
+            sendJson(response, 400, { error: "Runtime 或接入操作无效" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await runtimeIntegrations.prepare(runtimeId, action));
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
+        const runtimeConfirmMatch = url.pathname.match(/^\/api\/settings\/runtimes\/([^/]+)\/confirm$/);
+        if (request.method === "POST" && runtimeConfirmMatch) {
+          const runtimeId = supportedRuntimeId(decodeURIComponent(runtimeConfirmMatch[1]));
+          const body = await readBody(request);
+          const decision = body.decision === "confirmed" || body.decision === "declined" ? body.decision : null;
+          const planId = typeof body.plan_id === "string" ? body.plan_id.trim() : "";
+          if (!runtimeId || !decision || !planId) {
+            sendJson(response, 400, { error: "Runtime 接入确认缺少 plan 或明确决定" });
+            return;
+          }
+          const result = await runtimeIntegrations.confirm({ runtime_id: runtimeId, plan_id: planId, decision });
+          const successful = ["connected", "already_connected", "removed", "already_removed", "declined"].includes(result.status);
+          sendJson(response, successful ? 200 : 409, result);
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/projects") {
+          sendJson(response, 200, { projects: await settingsProjects(serverOptions.homeDirectory) });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/connections") {
+          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
+          sendJson(response, 200, { connections: catalogSettings.connections });
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/projects") {
+          const body = await readBody(request);
+          const displayName = typeof body.display_name === "string" ? body.display_name.trim() : "";
+          if (body.user_confirmed !== true || !displayName) {
+            sendJson(response, 400, { error: "请确认并填写项目名称" });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const project = await catalog.createProject({ display_name: displayName, actor_id: "web-user" });
+            sendJson(response, 201, {
+              project: settingsProject(project),
+              project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+            });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        const projectRenameMatch = url.pathname.match(/^\/api\/settings\/projects\/([^/]+)\/rename$/);
+        if (request.method === "POST" && projectRenameMatch) {
+          const body = await readBody(request);
+          const displayName = typeof body.display_name === "string" ? body.display_name.trim() : "";
+          if (!displayName) {
+            sendJson(response, 400, { error: "项目名称不能为空" });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const project = catalog.renameProject(decodeURIComponent(projectRenameMatch[1]), displayName, "web-user");
+            sendJson(response, 200, { project: settingsProject(project) });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        const connectionActionMatch = url.pathname.match(
+          /^\/api\/settings\/connections\/([^/]+)\/(rebind|unbind)$/,
+        );
+        if (request.method === "POST" && connectionActionMatch) {
+          const body = await readBody(request);
+          if (body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请先明确确认这次 Session 关联变更" });
+            return;
+          }
+          const bindingId = decodeURIComponent(connectionActionMatch[1]);
+          const action = connectionActionMatch[2];
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const binding = catalog.listRuntimeContextBindings()
+              .find((candidate) => candidate.binding_id === bindingId);
+            if (!binding) {
+              sendJson(response, 404, { error: "这条 Session 关联已不存在，请刷新页面" });
+              return;
+            }
+            if (action === "rebind") {
+              const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
+              if (!projectId) {
+                sendJson(response, 400, { error: "请选择要切换到的项目" });
+                return;
+              }
+              catalog.bindRuntimeContext({
+                context: bindingRuntimeContext(binding),
+                project_id: projectId,
+                actor_id: "web-user",
+                user_confirmed: true,
+                rebind_confirmed: true,
+              });
+              const rebound = catalog.listRuntimeContextBindings()
+                .find((candidate) => candidate.binding_id === bindingId);
+              const projects = catalog.listProjects().map(settingsProject);
+              const safeConnection = rebound
+                ? settingsConnection(rebound, new Map(projects.map((project) => [project.project_id, project])))
+                : null;
+              if (!safeConnection) throw new Error("Session 切换后无法读取关联结果");
+              sendJson(response, 200, { connection: safeConnection });
+              return;
+            }
+            const result = catalog.unbindRuntimeContext({
+              context: bindingRuntimeContext(binding),
+              actor_id: "web-user",
+              user_confirmed: true,
+            });
+            sendJson(response, 200, {
+              binding_id: bindingId,
+              changed: result.changed,
+              unbound_project: result.unbound_project,
+            });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardProjectCatalogError && error.code === "catalog.project_not_found" ? 404 : 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/diagnostics") {
+          sendJson(response, 200, installationDiagnostics(serverOptions.homeDirectory, resolved.projects.length));
+          return;
+        }
         if (request.method === "POST" && url.pathname === "/api/projects/migrate") {
           let catalog: GoalBoardProjectCatalog | null = null;
           try {
@@ -638,7 +1056,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             "cache-control": "no-store",
             "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
           });
-          response.end(renderGoalBoardProjectIndex(resolved.projects));
+          response.end(renderGoalBoardProjectIndex(resolved.projects, controlToken));
           return;
         }
         if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
@@ -1574,7 +1992,14 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
             return;
           }
-          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView, decisionIndex, trashView);
+          const html = renderGoalBoardWeb(
+            view,
+            requestedGoalId,
+            archiveView,
+            decisionIndex,
+            trashView,
+            controlToken,
+          );
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",

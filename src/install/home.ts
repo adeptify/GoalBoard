@@ -1,15 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  postInstallProjectPrompt,
-  type GoalBoardPostInstallProjectPrompt,
-} from "./postinstall-project-selection.js";
 
 const INSTALLER_ID = "goalboard-home-install-v1";
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
 
@@ -33,6 +30,7 @@ export interface GoalBoardHomeInstallOptions {
 
 export interface GoalBoardHomeInstallResult {
   status: GoalBoardHomeInstallStatus;
+  runtime_layout: "self_contained";
   home_directory: string;
   version: string;
   release_directory: string;
@@ -45,17 +43,22 @@ export interface GoalBoardHomeInstallResult {
     mcp: string;
     web: string;
   };
-  /** A user-facing, zero-selection prompt; installation never executes it. */
-  post_install: GoalBoardPostInstallProjectPrompt;
+  next_steps: {
+    message: string;
+    web_command: string[];
+  };
   written_paths: string[];
   preserved_paths: string[];
+  removed_paths: string[];
 }
 
 interface ReleaseManifest {
   schema_version: number;
   installer: string;
   version: string;
-  source_directory: string;
+  dependencies?: "embedded";
+  /** Present only in the obsolete schema-1 linked layout. */
+  source_directory?: string;
   created_at: string;
 }
 
@@ -71,6 +74,12 @@ interface PromotedRelease {
   releaseDirectory: string;
   created: boolean;
   backupDirectory: string | null;
+}
+
+interface RuntimeDependencyPackage {
+  name: string;
+  version: string;
+  directory: string;
 }
 
 interface TextMutation {
@@ -117,6 +126,7 @@ export async function installGoalBoardHome(
   const installManifestPath = path.join(configDirectory, "installation.json");
   const writtenPaths: string[] = [];
   const preservedPaths: string[] = [];
+  const removedPaths: string[] = [];
   const mutations: TextMutation[] = [];
   let promoted: PromotedRelease | null = null;
 
@@ -188,6 +198,19 @@ export async function installGoalBoardHome(
       await fs.rm(promoted.backupDirectory, { recursive: true, force: true });
     }
 
+    const obsoletePostInstallSelections = path.join(configDirectory, "postinstall-project-selections");
+    const obsoleteState = await pathState(obsoletePostInstallSelections);
+    if (obsoleteState?.isDirectory()) {
+      try {
+        await fs.rm(obsoletePostInstallSelections, { recursive: true, force: true });
+        removedPaths.push(obsoletePostInstallSelections);
+      } catch {
+        preservedPaths.push(obsoletePostInstallSelections);
+      }
+    } else if (obsoleteState) {
+      preservedPaths.push(obsoletePostInstallSelections);
+    }
+
     const status: GoalBoardHomeInstallStatus = releaseChanged
       ? promoted?.backupDirectory
         ? "repaired"
@@ -200,6 +223,7 @@ export async function installGoalBoardHome(
 
     return {
       status,
+      runtime_layout: "self_contained",
       home_directory: homeDirectory,
       version: source.version,
       release_directory: releaseDirectory,
@@ -208,9 +232,14 @@ export async function installGoalBoardHome(
       project_directory: projectDirectory,
       logs_directory: logsDirectory,
       launchers,
-      post_install: postInstallProjectPrompt(homeDirectory),
+      next_steps: {
+        message:
+          "GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入和项目设置必须通过后续单独的显式流程完成。",
+        web_command: [launchers.web, "--home", homeDirectory],
+      },
       written_paths: writtenPaths,
       preserved_paths: preservedPaths,
+      removed_paths: removedPaths,
     };
   } catch (error) {
     await rollbackTextMutations(mutations);
@@ -222,19 +251,24 @@ export async function installGoalBoardHome(
 async function inspectSource(
   sourceDirectory: string,
   requestedVersion: string | undefined,
-): Promise<{ directory: string; version: string; nodeModules: string }> {
+): Promise<{ directory: string; version: string; runtimeDependencies: RuntimeDependencyPackage[] }> {
   const sourceState = await pathState(sourceDirectory);
   if (!sourceState?.isDirectory()) {
     throw new GoalBoardHomeInstallError("source.invalid", `GoalBoard 安装源不存在或不是目录: ${sourceDirectory}`);
   }
   const packageJson = path.join(sourceDirectory, "package.json");
   const packageText = await readText(packageJson, "source.asset_missing");
-  let packageVersion: string;
+  let packageMetadata: {
+    version?: unknown;
+    dependencies?: Record<string, unknown>;
+    optionalDependencies?: Record<string, unknown>;
+  };
   try {
-    packageVersion = String((JSON.parse(packageText) as { version?: unknown }).version ?? "").trim();
+    packageMetadata = JSON.parse(packageText) as typeof packageMetadata;
   } catch {
     throw new GoalBoardHomeInstallError("source.invalid", `GoalBoard 安装源 package.json 无法解析: ${packageJson}`);
   }
+  const packageVersion = String(packageMetadata.version ?? "").trim();
   const version = (requestedVersion ?? packageVersion).trim();
   safeReleaseName(version);
 
@@ -243,18 +277,121 @@ async function inspectSource(
     "dist/mcp/server.js",
     "dist/web/server.js",
     "skills/goal-advance/SKILL.md",
-    "node_modules",
   ]) {
     const assetPath = path.join(sourceDirectory, asset);
     if (!(await pathState(assetPath))) {
       throw new GoalBoardHomeInstallError("source.asset_missing", `GoalBoard 安装源缺少 ${asset}: ${assetPath}`);
     }
   }
-  const nodeModules = path.join(sourceDirectory, "node_modules");
-  if (!(await directoryState(nodeModules))?.isDirectory()) {
-    throw new GoalBoardHomeInstallError("source.asset_missing", `GoalBoard 安装源 node_modules 不可用: ${nodeModules}`);
+  const runtimeDependencies = await collectRuntimeDependencies(packageJson, packageMetadata);
+  return { directory: sourceDirectory, version, runtimeDependencies };
+}
+
+async function collectRuntimeDependencies(
+  rootPackageJson: string,
+  rootMetadata: {
+    dependencies?: Record<string, unknown>;
+    optionalDependencies?: Record<string, unknown>;
+  },
+): Promise<RuntimeDependencyPackage[]> {
+  const packages = new Map<string, RuntimeDependencyPackage>();
+  const pending: Array<{ name: string; fromPackageJson: string; optional: boolean }> = [];
+  const enqueue = (
+    metadata: { dependencies?: Record<string, unknown>; optionalDependencies?: Record<string, unknown> },
+    fromPackageJson: string,
+  ) => {
+    for (const name of Object.keys(metadata.dependencies ?? {})) {
+      pending.push({ name, fromPackageJson, optional: false });
+    }
+    for (const name of Object.keys(metadata.optionalDependencies ?? {})) {
+      if (!(name in (metadata.dependencies ?? {}))) {
+        pending.push({ name, fromPackageJson, optional: true });
+      }
+    }
+  };
+  enqueue(rootMetadata, rootPackageJson);
+
+  while (pending.length > 0) {
+    const candidate = pending.shift()!;
+    let resolvedPackageJson: string;
+    try {
+      resolvedPackageJson = await resolveDependencyPackageJson(candidate.name, candidate.fromPackageJson);
+    } catch (error) {
+      if (candidate.optional) continue;
+      throw new GoalBoardHomeInstallError(
+        "source.asset_missing",
+        `GoalBoard 安装源缺少运行时依赖 ${candidate.name}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    let metadata: {
+      name?: unknown;
+      version?: unknown;
+      dependencies?: Record<string, unknown>;
+      optionalDependencies?: Record<string, unknown>;
+    };
+    try {
+      metadata = JSON.parse(await fs.readFile(resolvedPackageJson, "utf8")) as typeof metadata;
+    } catch {
+      throw new GoalBoardHomeInstallError(
+        "source.invalid",
+        `运行时依赖 package.json 无法解析: ${resolvedPackageJson}`,
+      );
+    }
+    const name = String(metadata.name ?? candidate.name);
+    const version = String(metadata.version ?? "").trim();
+    if (name !== candidate.name || !version) {
+      throw new GoalBoardHomeInstallError(
+        "source.invalid",
+        `运行时依赖身份无效: ${candidate.name} (${resolvedPackageJson})`,
+      );
+    }
+    const existing = packages.get(name);
+    if (existing) {
+      if (existing.version !== version) {
+        throw new GoalBoardHomeInstallError(
+          "source.invalid",
+          `运行时依赖存在无法平铺的版本冲突: ${name}@${existing.version} / ${name}@${version}`,
+        );
+      }
+      continue;
+    }
+    packages.set(name, {
+      name,
+      version,
+      directory: path.dirname(resolvedPackageJson),
+    });
+    enqueue(metadata, resolvedPackageJson);
   }
-  return { directory: sourceDirectory, version, nodeModules };
+
+  return [...packages.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function resolveDependencyPackageJson(name: string, fromPackageJson: string): Promise<string> {
+  const resolver = createRequire(fromPackageJson);
+  try {
+    return resolver.resolve(`${name}/package.json`);
+  } catch (packageJsonError) {
+    let resolvedEntry: string;
+    try {
+      resolvedEntry = resolver.resolve(name);
+    } catch {
+      throw packageJsonError;
+    }
+    let directory = path.dirname(resolvedEntry);
+    while (true) {
+      const candidate = path.join(directory, "package.json");
+      try {
+        const metadata = JSON.parse(await fs.readFile(candidate, "utf8")) as { name?: unknown };
+        if (metadata.name === name) return candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+    throw packageJsonError;
+  }
 }
 
 function safeReleaseName(version: string): string {
@@ -266,10 +403,12 @@ function safeReleaseName(version: string): string {
 
 async function createRelease(
   stagingDirectory: string,
-  source: { directory: string; version: string; nodeModules: string },
+  source: { directory: string; version: string; runtimeDependencies: RuntimeDependencyPackage[] },
   version: string,
 ): Promise<void> {
   await fs.mkdir(stagingDirectory, { recursive: false });
+  const embeddedNodeModules = path.join(stagingDirectory, "node_modules");
+  await fs.mkdir(embeddedNodeModules, { recursive: true });
   await Promise.all([
     fs.cp(path.join(source.directory, "dist"), path.join(stagingDirectory, "dist"), {
       recursive: true,
@@ -284,10 +423,33 @@ async function createRelease(
       dereference: true,
     }),
   ]);
-  await fs.symlink(source.nodeModules, path.join(stagingDirectory, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  for (const dependency of source.runtimeDependencies) {
+    const target = path.join(embeddedNodeModules, dependency.name);
+    await assertContainedDependencyLinks(dependency.directory);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.cp(dependency.directory, target, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      dereference: true,
+    });
+  }
+  await assertContainedDependencyLinks(embeddedNodeModules);
   await writeAtomic(
     path.join(stagingDirectory, "package.json"),
-    `${JSON.stringify({ name: "@adeptify/goalboard-home-runtime", private: true, type: "module", version }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: "@adeptify/goalboard-home-runtime",
+        private: true,
+        type: "module",
+        version,
+        dependencies: Object.fromEntries(
+          source.runtimeDependencies.map((dependency) => [dependency.name, dependency.version]),
+        ),
+      },
+      null,
+      2,
+    )}\n`,
   );
   await writeAtomic(
     path.join(stagingDirectory, "release.json"),
@@ -296,13 +458,37 @@ async function createRelease(
         schema_version: SCHEMA_VERSION,
         installer: INSTALLER_ID,
         version,
-        source_directory: source.directory,
+        dependencies: "embedded",
         created_at: new Date().toISOString(),
       } satisfies ReleaseManifest,
       null,
       2,
     )}\n`,
   );
+}
+
+async function assertContainedDependencyLinks(rootDirectory: string): Promise<void> {
+  const pending = [rootDirectory];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      const target = await fs.readlink(entryPath);
+      const resolved = path.resolve(path.dirname(entryPath), target);
+      const relative = path.relative(rootDirectory, resolved);
+      if (path.isAbsolute(target) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+        throw new GoalBoardHomeInstallError(
+          "source.invalid",
+          `GoalBoard 依赖链接指向安装 release 外部，无法生成自包含安装: ${entryPath}`,
+        );
+      }
+    }
+  }
 }
 
 async function inspectRelease(
@@ -318,6 +504,9 @@ async function inspectRelease(
   if (!manifest || manifest.installer !== INSTALLER_ID || manifest.version !== version) {
     throw new GoalBoardHomeInstallError("release.conflict", `已存在未知 GoalBoard release 目录: ${releaseDirectory}`);
   }
+  if (manifest.schema_version !== SCHEMA_VERSION || manifest.dependencies !== "embedded") {
+    return "repairable";
+  }
   const required = [
     "dist/cli/main.js",
     "dist/mcp/server.js",
@@ -326,9 +515,10 @@ async function inspectRelease(
     "node_modules",
     "package.json",
   ];
-  return (await Promise.all(required.map((item) => pathState(path.join(releaseDirectory, item))))).every(Boolean)
-    ? "valid"
-    : "repairable";
+  const states = await Promise.all(required.map((item) => pathState(path.join(releaseDirectory, item))));
+  if (!states.every(Boolean)) return "repairable";
+  const nodeModulesState = states[4];
+  return nodeModulesState?.isDirectory() && !nodeModulesState.isSymbolicLink() ? "valid" : "repairable";
 }
 
 async function promoteRelease(
@@ -444,8 +634,16 @@ const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
   env: process.env,
   stdio: "inherit",
 });
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    if (!child.killed) child.kill(signal);
+  });
+}
 child.once("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
+  if (signal) {
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  }
   else process.exitCode = code ?? 1;
 });
 `;
@@ -458,15 +656,6 @@ async function runStep(options: GoalBoardHomeInstallOptions, step: GoalBoardHome
 async function pathState(filePath: string) {
   try {
     return await fs.lstat(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function directoryState(filePath: string) {
-  try {
-    return await fs.stat(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;

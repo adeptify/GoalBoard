@@ -39,7 +39,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm clean && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/postinstall-project-selection.test.ts tests/project-catalog.test.ts tests/runtime-config.test.ts tests/mcp.test.ts tests/v1.test.ts tests/web.test.ts",
+    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/project-catalog.test.ts tests/runtime-integration.test.ts tests/mcp.test.ts tests/v1.test.ts tests/web.test.ts tests/e2e.test.ts",
     "prepack": "pnpm build",
     "cli": "tsx src/cli/main.ts",
     "mcp": "tsx src/mcp/server.ts",
