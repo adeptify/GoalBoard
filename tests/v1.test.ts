@@ -334,6 +334,11 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   );
   assert.ok(
     reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 13")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_trash_records'")
       .get(),
   );
@@ -419,6 +424,40 @@ test("migration 12 reconciles historical Runs and clarification sessions exactly
   reopened.close();
 });
 
+test("migration 13 clears a historical completed Active Goal exactly once", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "migration-active-completed");
+  coordinator.setActiveGoal(
+    "board-1",
+    { goal_id: "migration-active-completed", reason: "模拟历史进行中目标" },
+    { actor_id: "user-1", idempotency_key: "migration-active-goal" },
+  );
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("migration-active-completed");
+  store.db.prepare("DELETE FROM schema_migrations WHERE migration_id = 13").run();
+  const databasePath = store.path;
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  assert.equal(migrated.snapshot("board-1").board.active_goal_id, null);
+  const repairEvents = migrated.db
+    .prepare("SELECT type, object_id FROM events WHERE actor_id = ? ORDER BY seq")
+    .all("goalboard:migration-13") as Array<{ type: string; object_id: string }>;
+  assert.deepEqual(repairEvents, [
+    { type: "board.active_goal_cleared", object_id: "migration-active-completed" },
+  ]);
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 13").get());
+  migrated.close();
+
+  const reopened = new SqliteGoalBoardStore(databasePath);
+  const repairEventCount = reopened.db
+    .prepare("SELECT COUNT(*) AS count FROM events WHERE actor_id = ?")
+    .get("goalboard:migration-13") as { count: number };
+  assert.equal(repairEventCount.count, 1);
+  reopened.close();
+});
+
 test("only satisfied Goals can be archived and restoration preserves completion facts", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "archive-target");
@@ -432,14 +471,14 @@ test("only satisfied Goals can be archived and restoration preserves completion 
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal.not_satisfied",
   );
 
-  store.db
-    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
-    .run("archive-target");
   coordinator.setActiveGoal(
     "board-1",
     { goal_id: "archive-target", reason: "验证归档当前 Goal" },
     { actor_id: "user-1", idempotency_key: "archive-active" },
   );
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("archive-target");
   setNow("2026-08-15T01:00:00.000Z");
   const archived = coordinator.setGoalArchived(
     "board-1",
@@ -1374,6 +1413,11 @@ test("reusing an idempotency key with another request is rejected", () => {
 test("Run, Evidence, independent Review, and completion form one enforceable loop", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "delivery");
+  coordinator.setActiveGoal(
+    "board-1",
+    { goal_id: "delivery", reason: "当前正在推进这份交付" },
+    { actor_id: "user-1", idempotency_key: "delivery-active-goal" },
+  );
   coordinator.setPolicy(
     "board-1",
     { goal_id: "delivery", policy: { cross_reviewers: 1 }, reason: "交付结果需要另一人复核" },
@@ -1468,6 +1512,19 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
   });
   assert.equal(completion.satisfied, true);
   assert.equal(store.getGoal("delivery")?.fulfillment_state, "satisfied");
+  assert.equal(store.snapshot("board-1").board.active_goal_id, null);
+  const completionEvent = store.db
+    .prepare("SELECT payload_json FROM events WHERE type = 'goal.satisfied' AND object_id = ?")
+    .get("delivery") as { payload_json: string };
+  assert.equal(JSON.parse(completionEvent.payload_json).active_goal_cleared, true);
+  assert.throws(
+    () => coordinator.setActiveGoal(
+      "board-1",
+      { goal_id: "delivery", reason: "不能把已完成 Goal 重新设为进行中" },
+      { actor_id: "user-1", idempotency_key: "delivery-reactivate-completed" },
+    ),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal.already_satisfied",
+  );
   assert.equal(coordinator.queryReady({ board_id: "board-1", actor_id: "runtime-c" }).ready.length, 0);
   store.close();
 });
@@ -4863,6 +4920,11 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     { from_goal_id: "child", to_goal_id: "parent", type: "part_of", reason: "这是父 Goal 的必需子结果" },
     { actor_id: "user-1", idempotency_key: "compound-parent-child" },
   );
+  coordinator.setActiveGoal(
+    "board-1",
+    { goal_id: "parent", reason: "当前推进这个复合结果" },
+    { actor_id: "user-1", idempotency_key: "compound-parent-active" },
+  );
   assert.equal(
     coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "waiting_children",
@@ -4946,6 +5008,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
   });
   assert.equal(completion.satisfied, true);
   assert.equal(store.getGoal("parent")?.fulfillment_state, "satisfied");
+  assert.equal(store.snapshot("board-1").board.active_goal_id, null);
   assert.equal(
     coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "satisfied",
@@ -4954,6 +5017,14 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     (store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'goal.compound_satisfied'").get() as { count: number }).count,
     1,
   );
+  const childCompletionEvent = store.db
+    .prepare("SELECT payload_json FROM events WHERE type = 'goal.satisfied' AND object_id = 'child'")
+    .get() as { payload_json: string };
+  const parentCompletionEvent = store.db
+    .prepare("SELECT payload_json FROM events WHERE type = 'goal.compound_satisfied' AND object_id = 'parent'")
+    .get() as { payload_json: string };
+  assert.equal(JSON.parse(childCompletionEvent.payload_json).active_goal_cleared, false);
+  assert.equal(JSON.parse(parentCompletionEvent.payload_json).active_goal_cleared, true);
   createLeaf(coordinator, "new-child", 50);
   coordinator.addRelation(
     "board-1",

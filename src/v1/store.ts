@@ -563,6 +563,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (12, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (13, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -611,6 +614,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 12")
       .get();
     if (!lifecycleReconciliationApplied) this.migrateLifecycleState();
+    const activeGoalLifecycleApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 13")
+      .get();
+    if (!activeGoalLifecycleApplied) this.migrateActiveGoalLifecycle();
   }
 
   private migrateClarifierRoles(): void {
@@ -1131,6 +1138,69 @@ export class SqliteGoalBoardStore {
 
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (12, ?)")
+        .run(migratedAt);
+    });
+  }
+
+  private migrateActiveGoalLifecycle(): void {
+    this.immediate(() => {
+      const migratedAt = new Date().toISOString();
+      const migrationActor = "goalboard:migration-13";
+      const staleActiveGoals = this.db
+        .prepare(`
+          SELECT
+            b.board_id,
+            b.active_goal_id,
+            g.goal_id,
+            g.fulfillment_state,
+            g.archived_at,
+            g.trashed_at
+          FROM boards b
+          LEFT JOIN goals g
+            ON g.board_id = b.board_id AND g.goal_id = b.active_goal_id
+          WHERE b.active_goal_id IS NOT NULL
+            AND (
+              g.goal_id IS NULL
+              OR g.fulfillment_state = 'satisfied'
+              OR g.archived_at IS NOT NULL
+              OR g.trashed_at IS NOT NULL
+            )
+          ORDER BY b.board_id
+        `)
+        .all() as Row[];
+      for (const row of staleActiveGoals) {
+        const boardId = text(row.board_id);
+        const goalId = text(row.active_goal_id);
+        const reason = row.goal_id == null
+          ? "Active Goal 已不存在，迁移时清空历史指针"
+          : row.trashed_at != null
+            ? "Active Goal 已在回收站，迁移时清空历史指针"
+            : row.archived_at != null
+              ? "Active Goal 已归档，迁移时清空历史指针"
+              : "Active Goal 已完成，迁移时清空历史指针";
+        this.db
+          .prepare("UPDATE boards SET active_goal_id = NULL, updated_at = ? WHERE board_id = ? AND active_goal_id = ?")
+          .run(migratedAt, boardId, goalId);
+        this.appendEvent({
+          eventId: randomUUID(),
+          boardId,
+          actorId: migrationActor,
+          type: "board.active_goal_cleared",
+          objectType: "goal",
+          objectId: goalId,
+          reason,
+          payload: {
+            previous_active_goal_id: goalId,
+            fulfillment_state: optionalText(row.fulfillment_state),
+            recovery: true,
+            migration_id: 13,
+          },
+          at: migratedAt,
+        });
+      }
+
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (13, ?)")
         .run(migratedAt);
     });
   }

@@ -1712,6 +1712,16 @@ export class GoalBoardCoordinator {
     };
   }
 
+  private clearActiveGoalIfMatches(boardId: string, goalId: string, at: string): boolean {
+    return this.store.db
+      .prepare(`
+        UPDATE boards
+        SET active_goal_id = NULL, updated_at = ?
+        WHERE board_id = ? AND active_goal_id = ?
+      `)
+      .run(at, boardId, goalId).changes > 0;
+  }
+
   setActiveGoal(
     boardId: string,
     input: { goal_id: string; reason: string },
@@ -1736,6 +1746,9 @@ export class GoalBoardCoordinator {
       }
       if (goal.archived_at) {
         throw new GoalBoardV1Error("goal.archived", "已归档 Goal 需要先恢复，才能设为当前产品目标");
+      }
+      if (goal.fulfillment_state === "satisfied") {
+        throw new GoalBoardV1Error("goal.already_satisfied", "已完成的 Goal 不能成为当前进行中的 Goal");
       }
       const now = this.clock().toISOString();
       this.store.db
@@ -1793,15 +1806,9 @@ export class GoalBoardCoordinator {
       this.store.db
         .prepare("UPDATE goals SET archived_at = ?, archived_by = ?, updated_at = ? WHERE goal_id = ?")
         .run(input.archived ? now : null, input.archived ? write.actor_id : null, now, input.goal_id);
-      const board = this.store.db
-        .prepare("SELECT active_goal_id FROM boards WHERE board_id = ?")
-        .get(boardId) as Row;
-      const activeGoalCleared = input.archived && asNullableText(board.active_goal_id) === input.goal_id;
-      if (activeGoalCleared) {
-        this.store.db
-          .prepare("UPDATE boards SET active_goal_id = NULL, updated_at = ? WHERE board_id = ?")
-          .run(now, boardId);
-      }
+      const activeGoalCleared = input.archived
+        ? this.clearActiveGoalIfMatches(boardId, input.goal_id, now)
+        : false;
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
@@ -1948,15 +1955,7 @@ export class GoalBoardCoordinator {
           deactivatedRelationIds.push(relationId);
         }
 
-        const board = this.store.db
-          .prepare("SELECT active_goal_id FROM boards WHERE board_id = ?")
-          .get(boardId) as Row;
-        const activeGoalCleared = asNullableText(board.active_goal_id) === input.goal_id;
-        if (activeGoalCleared) {
-          this.store.db
-            .prepare("UPDATE boards SET active_goal_id = NULL, updated_at = ? WHERE board_id = ?")
-            .run(now, boardId);
-        }
+        const activeGoalCleared = this.clearActiveGoalIfMatches(boardId, input.goal_id, now);
         const cursor = this.store.appendEvent({
           eventId: randomUUID(),
           boardId,
@@ -4404,6 +4403,11 @@ export class GoalBoardCoordinator {
       this.store.db
         .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
         .run(now, input.goal_id);
+      const activeGoalCleared = this.clearActiveGoalIfMatches(
+        input.board_id,
+        input.goal_id,
+        now,
+      );
       this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -4412,7 +4416,7 @@ export class GoalBoardCoordinator {
         objectType: "goal",
         objectId: input.goal_id,
         reason: "全部验收证据和 Review 要求已满足",
-        payload: {},
+        payload: { active_goal_cleared: activeGoalCleared },
         at: now,
       });
       const cursor = this.reconcileCompoundAncestors(
@@ -7904,6 +7908,7 @@ export class GoalBoardCoordinator {
     this.store.db
       .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
       .run(at, goalId);
+    const activeGoalCleared = this.clearActiveGoalIfMatches(boardId, goalId, at);
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId,
@@ -7912,7 +7917,10 @@ export class GoalBoardCoordinator {
       objectType: "goal",
       objectId: goalId,
       reason: "所有必需子 Goal 已完成，复合父 Goal 自动完成",
-      payload: { child_goal_ids: children.map((child) => asText(child.goal_id)) },
+      payload: {
+        child_goal_ids: children.map((child) => asText(child.goal_id)),
+        active_goal_cleared: activeGoalCleared,
+      },
       at,
     });
     return true;
