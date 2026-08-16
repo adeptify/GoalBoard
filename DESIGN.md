@@ -88,6 +88,12 @@ components:
     rounded: "{rounded.compact}"
     height: "34px"
     padding: "3px 8px"
+  tree-status-filter:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.ink}"
+    typography: "{typography.label}"
+    rounded: "0"
+    padding: "13px 14px 12px"
   runtime-grid:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
@@ -153,7 +159,7 @@ The visual character is compact, calm, and operational. Hairline borders and sma
 **Key Characteristics:**
 
 - Light 58px toolbar over a two-pane desktop workspace.
-- Searchable, resizable IDE-style Goal Tree with Goal names primary and IDs secondary.
+- Searchable, resizable IDE-style Goal Tree with Goal names primary, IDs secondary, and a compact multi-state filter.
 - Continuous white document surface with strong reading order and minimal ornament.
 - Draft-only Contract authoring, structured acceptance, full Risk and Impact registers, and Policy remain in the Goal document; Human Review belongs to the Decision Center.
 - One Decision Center groups every pending user-owned judgment by its Goal instead of repeating full decision forms in Goal documents.
@@ -218,7 +224,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 ## Layout
 
-The desktop workspace starts beneath a 58px toolbar and divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line.
+The desktop workspace starts beneath a 58px toolbar and divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line. The Tree filter icon opens a local status panel below search rather than silently moving focus: users may select several currently present work states, combine them with the keyword query, and still see the ancestor path of each direct match.
 
 The selected Goal is itself an inline-size container. Its stable core order begins with `业务逻辑 → 阻塞项 → 验收清单 → 补全 Draft Contract`; the editor is omitted unless the Goal is still a Draft. When that Goal has pending user-owned work, a short blue-edged notice appears between business logic and blockers with a count and deep link to its `/decisions` group; the full forms do not appear in the Goal document. When the usable document width falls to 660px, Draft and acceptance fields, Risk fact and lifecycle forms, Impact forms, and Human Review labels stack above their controls. Policy keeps its effective summary at two columns, turns the inheritance path vertical, hides source descriptions and saved subtext, and moves every editing control to one column. Footers become vertical. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
 
@@ -228,7 +234,7 @@ At 1360px and below, the toolbar tightens brand/source padding, truncates the so
 
 **The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface ordered from intent through execution, evidence, risk, and history, while unresolved user authority remains in the Decision Center.
 
-**The Stable Workspace Rule.** A cursor-driven refresh updates the Tree and atomically replaces prepared Goal views instead of clearing the document pane, including the Decision Center and its toolbar count, while preserving selection, collapsed branches, searches, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If any `data-live-form` owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh without a white frame.
+**The Stable Workspace Rule.** A cursor-driven refresh updates the Tree and atomically replaces prepared Goal views instead of clearing the document pane, including the Decision Center and its toolbar count, while preserving selection, collapsed branches, keyword and status filters, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. If any `data-live-form` owns focus, background refresh defers and reports “编辑中”; a successful submission forces the authoritative refresh without a white frame.
 
 **The Single Decision Door Rule.** `/decisions` is the only place where users approve, reject, return, or review pending work. A Goal document may show its own short count-and-link notice, but it never duplicates the full Contract Proposal, Candidate, Rewire, Human Review, or Risk decision context.
 
@@ -238,7 +244,7 @@ At 1360px and below, the toolbar tightens brand/source padding, truncates the so
 
 ## Elevation & Depth
 
-The system is flat by default. Page, Tree, and paper are separated primarily by background tone and hairline borders. The create dialog is the only sustained interactive surface that floats above the workspace; transient toasts share its ambient shadow only while reporting an action. The toolbar and active mobile tab use much lighter structural shadows, and the selected Tree node uses an inset edge rather than lifted depth.
+The system is flat by default. Page, Tree, and paper are separated primarily by background tone and hairline borders. The create dialog is the only sustained interactive surface that floats above the workspace; transient toasts and the local Tree filter disclosure use controlled ambient shadows only while open. The toolbar and active mobile tab use much lighter structural shadows, and the selected Tree node uses an inset edge rather than lifted depth.
 
 ### Shadow Vocabulary
 
@@ -247,6 +253,7 @@ The system is flat by default. Page, Tree, and paper are separated primarily by 
 - **Selected Tree Edge** (`inset 0 0 0 1px rgba(14, 94, 199, .22)`): Definition inside the blue selected row without lifting it.
 - **Active Mobile Tab** (`0 1px 3px rgba(22, 31, 43, .1)`): Small separation for the chosen Tree or Goal正文 tab.
 - **Policy Switch Thumb** (`0 1px 2px rgba(20, 30, 42, .2)`): Local definition inside compact Policy switch rows, not surface elevation.
+- **Tree Filter Disclosure** (`0 9px 24px rgba(25, 34, 45, .14)`): Brief local depth for the status selector while it is open; it never changes the document layout or becomes a persistent card.
 
 The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, Policy source chevrons and switches respond over `.16s ease`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
 
@@ -274,7 +281,14 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 
 - **Default:** Dense rows with disclosure control, Goal name as the 13px primary line, 9px Goal ID below it, and text-and-icon status.
 - **Selected:** Blue vertical gradient, white text and icons, 4px corners, and an inset blue edge.
-- **Behavior:** Selection opens the Goal at a stable URL; collapsed branches, search, and Tree scroll survive live updates.
+- **Behavior:** Selection opens the Goal at a stable URL; collapsed branches, keyword and status filters, and Tree scroll survive live updates. A filtered child keeps its ancestor path visible and expanded, while the footer counts direct matches rather than inflating the result with context nodes.
+
+### Goal Tree Status Filter
+
+- **Entry:** The funnel icon is an explicit disclosure trigger with `aria-expanded` and `aria-controls`; it opens the panel and focuses the first status instead of silently changing the search-field focus.
+- **Selection:** Native compact checkboxes allow several currently present derived work states. Selection is OR-based and combines with the existing keyword query; a clear action removes only status choices, while the empty result action clears both filters.
+- **Feedback:** The panel states how many status kinds are selected; the Tree footer reports direct matches as `显示 N / 总数`. No matching Goal receives a readable empty state rather than a frozen-looking pane.
+- **Keyboard:** Escape closes the disclosure and returns focus to its trigger. Clicking outside closes it without losing the current selection.
 
 ### Tree Resizer
 
@@ -439,3 +453,4 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Don't** use an edit request to move an Impact silently between Goals, or let an inactive record look like an active Runtime-claim constraint.
 - **Don't** collapse Policy into anonymous label/value rows; keep localized modes, switches, reviewer purpose, and audit context visible.
 - **Don't** hide the inheritance chain or blur Project Default and Goal Override into one unsourced rule.
+- **Don't** make the Tree filter an invisible focus jump or a single-select status badge; it is a visible, multi-select local disclosure that preserves the reader’s Tree context.

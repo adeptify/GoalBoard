@@ -12,6 +12,7 @@ import type {
   GoalPolicy,
   GoalRecord,
   GoalRelationRecord,
+  GoalWorkState,
   ImpactBindingRecord,
   ReviewObligationRecord,
   ReviewRecord,
@@ -22,7 +23,27 @@ import type {
 import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
 
-export type WebGoalStatus = "ready" | "claimed" | "blocked" | "waiting" | "satisfied" | "archived";
+export type WebGoalStatus = GoalWorkState;
+
+export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
+  "clarification_pending",
+  "clarifying",
+  "clarification_blocked",
+  "waiting_children",
+  "execution_pending",
+  "executing",
+  "execution_blocked",
+  "review_pending",
+  "reviewing",
+  "review_blocked",
+  "revalidation_pending",
+  "revalidating",
+  "revalidation_blocked",
+  "invalidated",
+  "satisfied",
+  "trashed",
+  "archived",
+];
 
 export interface WebCoverageItem {
   requirement_id: string;
@@ -79,6 +100,7 @@ export interface WebRiskRecord extends RiskRecord {
 export interface WebGoalView {
   goal: GoalRecord;
   status: WebGoalStatus;
+  work_state: GoalWorkState;
   status_label: string;
   reasons: DecisionReason[];
   active_claim_actor: string | null;
@@ -100,14 +122,22 @@ export interface WebGoalView {
   pending_reviews: string[];
 }
 
+export interface WebProjectNavigation {
+  project_id: string;
+  display_name: string;
+}
+
 export interface GoalBoardWebView {
   snapshot: BoardSnapshot;
-  source_label: string;
-  database_path: string;
+  project: WebProjectNavigation | null;
+  projects: WebProjectNavigation[];
+  /** Empty only for in-process test fixtures; normal Web URLs are project-scoped. */
+  route_prefix: string;
   demo: boolean;
   active_goal_id: string | null;
   goals: WebGoalView[];
   archived_goals: WebGoalView[];
+  trashed_goals: WebGoalView[];
   counts: Record<WebGoalStatus, number>;
   coverage: WebCoverageItem[];
   input_bindings: WebInputBinding[];
@@ -116,20 +146,42 @@ export interface GoalBoardWebView {
 }
 
 const STATUS_LABELS: Record<WebGoalStatus, string> = {
-  ready: "可开始",
-  claimed: "进行中",
-  blocked: "已阻塞",
-  waiting: "待澄清",
+  clarification_pending: "待澄清",
+  clarifying: "澄清中",
+  clarification_blocked: "澄清受阻",
+  waiting_children: "已澄清，等待子 Goal",
+  execution_pending: "待执行",
+  executing: "执行中",
+  execution_blocked: "执行受阻",
+  review_pending: "待复核",
+  reviewing: "复核中",
+  review_blocked: "复核受阻",
+  revalidation_pending: "待重新验证",
+  revalidating: "重新验证中",
+  revalidation_blocked: "重新验证受阻",
+  invalidated: "已失效",
   satisfied: "已完成",
+  trashed: "已移入回收站",
   archived: "已归档",
 };
 
 const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
-  ready: "ready",
-  claimed: "play",
-  blocked: "blocked",
-  waiting: "waiting",
+  clarification_pending: "waiting",
+  clarifying: "play",
+  clarification_blocked: "blocked",
+  waiting_children: "tree",
+  execution_pending: "ready",
+  executing: "play",
+  execution_blocked: "blocked",
+  review_pending: "review",
+  reviewing: "review",
+  review_blocked: "blocked",
+  revalidation_pending: "refresh",
+  revalidating: "refresh",
+  revalidation_blocked: "blocked",
+  invalidated: "alert",
   satisfied: "completed",
+  trashed: "archive",
   archived: "archive",
 };
 
@@ -195,9 +247,24 @@ function formatDate(value: string | null | undefined): string {
   }).format(date);
 }
 
+function isProjectReference(value: string): boolean {
+  const reference = value.trim();
+  if (!reference || /^https?:\/\//i.test(reference)) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(reference) && !reference.startsWith("project://")) return false;
+  const projectPath = reference.startsWith("project://")
+    ? reference.slice("project://".length)
+    : reference;
+  if (!projectPath || /^[\\/]/.test(projectPath)) return false;
+  if (projectPath.split(/[\\/]+/).some((segment) => segment === "..")) return false;
+  return /[./\\]/.test(reference);
+}
+
 function renderReference(value: string, label = value): string {
   if (/^https?:\/\//i.test(value)) {
     return `<a class="inline-ref" href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${icon("external")}<span>${escapeHtml(label)}</span></a>`;
+  }
+  if (isProjectReference(value)) {
+    return `<a class="inline-ref" href="/api/project-references/${encodeURIComponent(value)}" target="_blank" rel="noreferrer" data-project-reference>${icon("external")}<span>${escapeHtml(label)}</span></a>`;
   }
   return `<button class="inline-ref" type="button" data-copy-value="${escapeHtml(value)}" title="复制引用">${icon("copy")}<span>${escapeHtml(label)}</span></button>`;
 }
@@ -247,7 +314,7 @@ function renderGoalTree(
     const nodeChildren = sortGoals(children.get(item.goal.goal_id) ?? []);
     const hasChildren = nodeChildren.length > 0;
     const searchValue = (item.goal.goal_id + " " + item.goal.title).toLowerCase();
-    return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}">
+    return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
       <div class="tree-row">
         ${
           hasChildren
@@ -268,6 +335,20 @@ function renderGoalTree(
     .map((item) => renderNode(item, 0))
     .join("");
   return `<ul class="goal-tree" data-tree-root>${rendered}${leftovers}</ul>`;
+}
+
+function renderTreeStatusFilter(items: WebGoalView[]): string {
+  const counts = new Map<WebGoalStatus, number>();
+  for (const item of items) counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
+  const options = WEB_GOAL_STATUSES.filter((status) => (counts.get(status) ?? 0) > 0);
+  return `<section class="tree-filter" id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选">
+    <header><strong>按状态筛选</strong><button type="button" data-clear-status-filter disabled>清除</button></header>
+    <p>可同时选择多个状态；会与关键词搜索一起生效。</p>
+    <div class="tree-filter-options" role="group" aria-label="Goal 状态">
+      ${options.length ? options.map((status) => `<label class="tree-filter-option"><input type="checkbox" value="${status}" data-status-filter><span>${renderStatus(status)}</span><small>${counts.get(status)}</small></label>`).join("") : `<p class="empty-row">当前没有可筛选的 Goal。</p>`}
+    </div>
+    <p class="tree-filter-summary" data-tree-filter-summary aria-live="polite">显示全部状态</p>
+  </section>`;
 }
 
 function relationRow(
@@ -398,16 +479,67 @@ function renderRunCell(item: WebGoalView): string {
   }`;
 }
 
-function renderEvidenceCell(item: WebGoalView): string {
-  if (!item.evidence.length) return '<p class="empty-row">尚未提交验收证据</p>';
-  return `<div class="evidence-list">${item.evidence
-    .slice()
-    .reverse()
+const EVIDENCE_KIND_LABELS: Record<EvidenceRecord["kind"], string> = {
+  test: "测试",
+  measurement: "测量",
+  artifact: "产物",
+  inspection: "检查",
+  attestation: "人工陈述",
+  human_verdict: "人工结论",
+};
+
+const EVIDENCE_RESULT_LABELS: Record<EvidenceRecord["result"], string> = {
+  passed: "通过",
+  failed: "失败",
+  inconclusive: "证据不足",
+};
+
+function evidenceResultIcon(result: EvidenceRecord["result"]): GoalBoardIcon {
+  return result === "passed" ? "completed" : result === "failed" ? "blocked" : "waiting";
+}
+
+function renderEvidenceRecord(evidence: EvidenceRecord): string {
+  return `<article class="evidence-record">
+    <span class="evidence-result evidence-result--${evidence.result}">${icon(evidenceResultIcon(evidence.result))}</span>
+    <div><header><strong>${escapeHtml(EVIDENCE_KIND_LABELS[evidence.kind])} · ${escapeHtml(EVIDENCE_RESULT_LABELS[evidence.result])}</strong><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="复制 Evidence ID">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join("、") || "未绑定验收项")}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}</div>
+  </article>`;
+}
+
+function renderEvidenceSubmitForm(item: WebGoalView): string {
+  const criteria = item.goal.acceptance_criteria;
+  if (item.goal.archived_at || item.goal.trashed_at) return "";
+  if (!criteria.length) {
+    return '<p class="evidence-submit-note">这条 Goal 还没有验收条件，无法绑定人工 Evidence。请先通过当前 Runtime 或 Draft 流程补齐 Contract。</p>';
+  }
+  const criterionChoices = criteria
     .map(
-      (evidence) =>
-        `<div class="evidence-row"><span class="evidence-result evidence-result--${evidence.result}">${icon(evidence.result === "passed" ? "completed" : evidence.result === "failed" ? "blocked" : "waiting")}</span><span><strong>${escapeHtml(evidence.kind)}</strong>${renderReference(evidence.locator)}<small>${escapeHtml(evidence.criterion_ids.join("、") || "未绑定验收项")}</small></span></div>`,
+      (criterion) =>
+        `<label><input type="checkbox" name="criterion_ids" value="${escapeHtml(criterion.criterion_id)}"><span><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.criterion_id)}</small></span></label>`,
     )
-    .join("")}</div>`;
+    .join("");
+  const kindChoices = (Object.entries(EVIDENCE_KIND_LABELS) as Array<[EvidenceRecord["kind"], string]>)
+    .map(([kind, label]) => `<option value="${kind}"${kind === "attestation" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+  const resultChoices = (Object.entries(EVIDENCE_RESULT_LABELS) as Array<[EvidenceRecord["result"], string]>)
+    .map(([result, label]) => `<option value="${result}"${result === "passed" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+  return `<details class="evidence-submit" data-persist-open="evidence-submit-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("evidence")}<strong>提交人工 Evidence</strong><small>用户直接记录的验收事实会进入同一完成门禁</small></span>${icon("chevron-down")}</summary>
+    <form data-evidence-form data-live-form="evidence-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+      <fieldset class="evidence-criteria"><legend>绑定验收条件</legend><div>${criterionChoices}</div></fieldset>
+      <div class="evidence-form-row"><label><span>Evidence 类型</span><select name="kind">${kindChoices}</select></label><label><span>本次结果</span><select name="result">${resultChoices}</select></label></div>
+      <label><span>定位引用</span><textarea name="locator" rows="2" required placeholder="https://…、project://src/… 或项目内相对路径"></textarea><small>HTTP(S) 和安全的项目内相对路径可打开；其他引用会保留为可复制文本。</small></label>
+      <label><span>补充说明 <small>可选</small></span><textarea name="digest" rows="2" placeholder="说明观察到的事实、版本或可复核线索"></textarea></label>
+      <p class="form-error" data-evidence-error role="alert" hidden></p>
+      <footer><span>这条 Evidence 由当前 Web 用户提交，不会伪造 Runtime Run。</span><button class="button-primary" type="submit">提交 Evidence</button></footer>
+    </form>
+  </details>`;
+}
+
+function renderEvidenceCell(item: WebGoalView): string {
+  const records = item.evidence.length
+    ? `<div class="evidence-list">${item.evidence.slice().reverse().map(renderEvidenceRecord).join("")}</div>`
+    : '<p class="empty-row">尚未提交验收证据</p>';
+  return `${records}${renderEvidenceSubmitForm(item)}`;
 }
 
 function renderReviewCell(item: WebGoalView): string {
@@ -889,21 +1021,36 @@ function renderHistory(item: WebGoalView): string {
     .join("")}</ol>`;
 }
 
+function renderEventPayload(payload: unknown): string {
+  if (payload == null) return "无结构化详情";
+  try {
+    return JSON.stringify(payload, null, 2) ?? "无结构化详情";
+  } catch {
+    return String(payload);
+  }
+}
+
 function renderFullRecords(item: WebGoalView): string {
-  return `<details class="full-records"><summary>查看完整 Claim、Run、Review 与策略绑定记录</summary><div class="record-grid">
+  const events = item.events.slice().sort((left, right) => right.seq - left.seq);
+  return `<details class="full-records"><summary>查看完整事实记录与事件账本 <span>${events.length} 条事件</span></summary><div class="record-grid">
     <section><h3>Claim 历史</h3>${
       item.claims.length
-        ? item.claims.map((claim) => `<p><strong>${escapeHtml(claim.actor_id)}</strong><small>${escapeHtml(claim.role)} · ${escapeHtml(claim.state)} · ${formatDate(claim.claimed_at)}</small></p>`).join("")
+        ? item.claims.map((claim) => `<p><strong>${escapeHtml(claim.actor_id)}</strong><small>${escapeHtml(claim.claim_id)} · ${escapeHtml(claim.role)} · ${escapeHtml(claim.state)} · ${formatDate(claim.claimed_at)}${claim.release_reason ? ` · ${escapeHtml(claim.release_reason)}` : ""}</small></p>`).join("")
         : '<p class="empty-row">暂无 Claim</p>'
     }</section>
     <section><h3>Run 历史</h3>${
       item.runs.length
-        ? item.runs.map((run) => `<p><strong>${escapeHtml(run.run_id)}</strong><small>${escapeHtml(run.state)} · ${escapeHtml(run.actor_id)} · ${formatDate(run.started_at)}</small></p>`).join("")
+        ? item.runs.map((run) => `<p><strong>${escapeHtml(run.run_id)}</strong><small>${escapeHtml(run.state)} · ${escapeHtml(run.actor_id)} · ${formatDate(run.started_at)}${run.block_reason ? ` · ${escapeHtml(run.block_reason)}` : ""}</small></p>`).join("")
         : '<p class="empty-row">暂无 Run</p>'
+    }</section>
+    <section><h3>Evidence 记录</h3>${
+      item.evidence.length
+        ? item.evidence.map((evidence) => `<p><strong>${escapeHtml(evidence.evidence_id)}</strong><small>${escapeHtml(EVIDENCE_KIND_LABELS[evidence.kind])} · ${escapeHtml(EVIDENCE_RESULT_LABELS[evidence.result])} · ${escapeHtml(evidence.criterion_ids.join("、"))} · ${escapeHtml(evidence.producer_actor_id)}</small></p>`).join("")
+        : '<p class="empty-row">暂无 Evidence</p>'
     }</section>
     <section><h3>Review 记录</h3>${
       item.reviews.length
-        ? item.reviews.map((review) => `<p><strong>${escapeHtml(review.verdict)}</strong><small>${escapeHtml(review.actor_id)} · ${escapeHtml(review.reasoning)}</small></p>`).join("")
+        ? item.reviews.map((review) => `<p><strong>${escapeHtml(review.verdict)}</strong><small>${escapeHtml(review.review_id)} · ${escapeHtml(review.actor_id)} · ${escapeHtml(review.reasoning)}${review.evidence_refs.length ? ` · ${escapeHtml(review.evidence_refs.join("、"))}` : ""}</small></p>`).join("")
         : '<p class="empty-row">暂无 Review</p>'
     }</section>
     <section><h3>策略绑定</h3>${
@@ -911,7 +1058,7 @@ function renderFullRecords(item: WebGoalView): string {
         ? item.policy_bindings.map((binding) => `<p><strong>${escapeHtml(binding.scope)}</strong><small>${escapeHtml(binding.state)} · ${escapeHtml(binding.reason)} · ${escapeHtml(JSON.stringify(binding.policy))}</small></p>`).join("")
         : '<p class="empty-row">使用默认策略</p>'
     }</section>
-  </div></details>`;
+  </div><section class="event-ledger"><header><h3>完整事件账本</h3><p>按时间倒序保留 Claim、Run、Evidence、Review、Policy、Risk、Relation、Candidate、Rewire、Contract/Goal Tree Proposal 和澄清相关事件。</p></header>${events.length ? `<ol>${events.map((event) => `<li><details><summary><time>${formatDate(event.at)}</time><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.actor_id)} · ${escapeHtml(event.object_type)} · ${escapeHtml(event.object_id)} · #${event.seq}</small></span></summary><dl><div><dt>事件 ID</dt><dd>${escapeHtml(event.event_id)}</dd></div><div><dt>理由</dt><dd>${escapeHtml(event.reason || "未记录")}</dd></div></dl><pre>${escapeHtml(renderEventPayload(event.payload))}</pre></details></li>`).join("")}</ol>` : '<p class="empty-row">暂无与这条 Goal 关联的事件</p>'}</section></details>`;
 }
 
 const DEPENDENCY_BASIS_LABELS: Record<string, string> = {
@@ -1414,14 +1561,21 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
   const goal = item.goal;
   const owner = item.active_claim_actor ?? goal.accepted_by ?? "未指定";
   const priorityLabel = goal.priority >= 80 ? "高" : goal.priority >= 40 ? "中" : "普通";
+  const activeGoalAction =
+    goal.definition_state === "accepted" && !goal.archived_at && !goal.trashed_at
+      ? view.snapshot.board.active_goal_id === goal.goal_id
+        ? `<span class="document-action document-action--current" role="status" title="当前产品聚焦 Goal；不表示 Runtime 正在执行">${icon("target")}<span>当前 Goal</span></span>`
+        : `<button class="document-action" type="button" data-set-active-goal data-goal-id="${escapeHtml(goal.goal_id)}" title="设为 Board 当前聚焦；不会领取或启动 Runtime 执行">${icon("target")}<span>设为当前 Goal</span></button>`
+      : "";
   const archiveAction = goal.archived_at
     ? `<button class="document-action" type="button" data-goal-archive="false" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("refresh")}<span>恢复</span></button>`
     : goal.fulfillment_state === "satisfied"
       ? `<button class="document-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("archive")}<span>归档</span></button>`
       : "";
+  const trashAction = `<button class="document-action document-action--danger" type="button" data-open-goal-trash data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("archive")}<span>移入回收站</span></button>`;
   return `<article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${archiveAction}</div></div>
+      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${activeGoalAction}${archiveAction}${trashAction}</div></div>
       <dl class="goal-meta"><div>${icon("clock")}<dt>创建于</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>更新于</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>负责人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>优先级</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>归档于</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
     </header>
     <section class="document-section">
@@ -1466,6 +1620,45 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       ${renderFullRecords(item)}
     </section>
   </article>`;
+}
+
+function renderTrashGoalDocument(item: WebGoalView, selected: boolean): string {
+  const goal = item.goal;
+  const trashEvent = item.events.find((event) => event.type === "goal.trashed");
+  const owner = goal.trashed_by ?? trashEvent?.actor_id ?? "未记录";
+  return `<article class="goal-document trash-goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
+    <header class="goal-header">
+      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus("trashed")}<button class="document-action" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>恢复</span></button></div></div>
+      <dl class="goal-meta"><div>${icon("archive")}<dt>移入于</dt><dd>${formatDate(goal.trashed_at)}</dd></div><div>${icon("user")}<dt>操作人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("history")}<dt>最近更新</dt><dd>${formatDate(goal.updated_at)}</dd></div></dl>
+    </header>
+    <section class="document-section">
+      ${sectionHeading("archive", "回收站状态", "这不是永久删除；恢复后仍是同一个 Goal")}
+      <div class="trash-summary"><p><strong>Goal 的 Contract、Run、Evidence 与事件历史都已保留。</strong>移入时仍生效的关联关系会临时停止；恢复时，只有两端都不在回收站的关系才会安全恢复。</p>${trashEvent ? `<p><strong>移入原因：</strong>${escapeHtml(trashEvent.reason)}</p>` : ""}</div>
+    </section>
+    <section class="document-section">
+      ${sectionHeading("book", "原始目标")}
+      <div class="business-copy"><p class="outcome"><strong>要得到的结果：</strong>${escapeHtml(goal.outcome || "待澄清")}</p><p><strong>为什么做：</strong>${escapeHtml(goal.why || "待澄清")}</p><p><strong>事情如何运转：</strong>${escapeHtml(goal.business_logic || "待澄清")}</p></div>
+    </section>
+    <section class="document-section">
+      ${sectionHeading("refresh", "恢复到 Goal Tree", "恢复不会创建新 Goal，也不会自动启动 Runtime")}
+      <div class="trash-restore-row"><p>确认恢复后，这条 Goal 会回到原来的日常列表；如果有关联仍不能安全恢复，系统会保留它们为待处理事实。</p><button class="button-primary" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>恢复这个 Goal</span></button></div>
+    </section>
+  </article>`;
+}
+
+function renderGoalTrashDialog(): string {
+  return `<dialog class="create-dialog goal-trash-dialog" data-goal-trash-dialog aria-labelledby="goal-trash-dialog-title">
+    <form method="dialog" class="dialog-shell" data-goal-trash-form data-live-form="goal-trash">
+      <header><div><span class="dialog-icon dialog-icon--danger" data-goal-trash-icon>${icon("archive")}</span><div><h2 id="goal-trash-dialog-title" data-goal-trash-title>移入回收站</h2><p data-goal-trash-description>请先确认这条 Goal 和本次操作原因。</p></div></div><button class="icon-button" type="button" data-close-goal-trash aria-label="关闭">${icon("x")}</button></header>
+      <div class="dialog-body">
+        <p class="goal-trash-target"><strong data-goal-trash-target-title>未选择 Goal</strong><small data-goal-trash-target-id></small></p>
+        <p class="goal-trash-note" data-goal-trash-note>该操作可恢复：Goal 历史会保留，当前仍生效的关联关系会暂时停止。若还有有效 Claim 或执行中的 Run，系统不会改动 Goal，而会告诉你先结束哪项工作。</p>
+        <label><span data-goal-trash-reason-label>移入原因</span><textarea name="reason" rows="3" required maxlength="4000" placeholder="说明为什么暂时不再保留这条 Goal"></textarea></label>
+        <p class="form-error" data-goal-trash-error role="alert" hidden></p>
+      </div>
+      <footer><button type="button" data-close-goal-trash>取消</button><button class="button-danger" type="submit" data-goal-trash-submit>移入回收站</button></footer>
+    </form>
+  </dialog>`;
 }
 
 function renderCreateDialog(view: GoalBoardWebView): string {
@@ -1527,8 +1720,10 @@ const STYLES = `
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
   .brand strong { font-size: 19px; letter-spacing: -.02em; }
-  .source { height: 100%; padding: 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; }
-  .source small { color: var(--muted); }
+  .project-context { height: 100%; padding: 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; }
+  .project-context small { color: var(--muted); }
+  .project-context a { color: var(--blue-dark); font-size: 12px; font-weight: 650; text-decoration: none; }
+  .project-context a:hover { text-decoration: underline; }
   .sync-state { margin-left: 4px; padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 11px; }
   .sync-state::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--green); }
   .sync-state.is-syncing::before { background: var(--blue); animation: pulse 1s infinite; }
@@ -1545,7 +1740,7 @@ const STYLES = `
   .top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
   .workspace { min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
-  .tree-pane { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
+  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
   .tree-resizer:hover::after, .tree-resizer:focus-visible::after, .tree-resizer.is-dragging::after { width: 2px; background: var(--blue); }
@@ -1554,12 +1749,30 @@ const STYLES = `
   .tree-heading span { margin-left: 8px; color: var(--muted); font-weight: 500; font-size: 12px; }
   .tree-heading-actions { margin-left: auto; display: flex; gap: 4px; }
   .icon-button { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; display: grid; place-items: center; cursor: pointer; }
-  .icon-button:hover { background: #eef1f4; color: var(--blue); }
+  .icon-button:hover, .icon-button.is-active { background: #eef1f4; color: var(--blue); }
   .tree-search { margin: 10px 15px; position: relative; }
   .tree-search svg { position: absolute; left: 12px; top: 10px; color: var(--faint); }
   .tree-search input { width: 100%; height: 34px; padding: 0 12px 0 35px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+  .tree-filter { position: absolute; z-index: 7; top: 112px; right: 15px; left: 15px; max-height: min(430px, calc(100dvh - 166px)); overflow: auto; padding: 13px 14px 12px; color: var(--ink); background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); }
+  .tree-filter[hidden] { display: none; }
+  .tree-filter > header { display: flex; align-items: baseline; gap: 10px; }
+  .tree-filter > header strong { font-size: 13px; }
+  .tree-filter > header button { margin-left: auto; padding: 0; border: 0; color: var(--blue-dark); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+  .tree-filter > header button:disabled { color: var(--faint); cursor: default; }
+  .tree-filter > p { margin: 5px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .tree-filter-options { display: grid; max-height: 280px; overflow: auto; scrollbar-width: none; }
+  .tree-filter-options::-webkit-scrollbar { display: none; }
+  .tree-filter-option { min-width: 0; min-height: 34px; padding: 5px 2px; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 17px minmax(0, 1fr) auto; align-items: center; gap: 8px; cursor: pointer; }
+  .tree-filter-option:first-child { border-top: 0; }
+  .tree-filter-option input { width: 15px; height: 15px; margin: 0; accent-color: var(--blue); }
+  .tree-filter-option .goal-status { min-width: 0; white-space: normal; font-size: 12px; }
+  .tree-filter-option small { color: var(--muted); font-size: 11px; }
+  .tree-filter-summary { margin-bottom: 0 !important; padding-top: 9px; border-top: 1px solid var(--line); }
   .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 16px; scrollbar-width: none; -ms-overflow-style: none; }
   .tree-scroll::-webkit-scrollbar { display: none; }
+  .tree-filter-empty { margin: 28px 5px; padding: 14px 12px; color: var(--muted); background: #f5f7f9; font-size: 13px; line-height: 1.5; text-align: center; }
+  .tree-filter-empty p { margin: 0 0 8px; }
+  .tree-filter-empty button { border: 0; color: var(--blue-dark); background: transparent; font: inherit; cursor: pointer; }
   .goal-tree, .tree-children { list-style: none; padding: 0; margin: 0; }
   .tree-item { position: relative; }
   .tree-children { margin-left: 18px; padding-left: 8px; border-left: 1px solid #d9dee5; }
@@ -1578,11 +1791,12 @@ const STYLES = `
   .tree-node.is-selected .tree-copy small { color: rgba(255, 255, 255, .75); }
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
-  .goal-status--ready, .goal-status--claimed { color: var(--blue); }
-  .goal-status--blocked { color: var(--red); }
-  .goal-status--waiting { color: #555d68; }
+  .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
+  .goal-status--clarification_pending, .goal-status--execution_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
+  .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
+  .goal-status--waiting_children { color: #555d68; }
   .goal-status--satisfied { color: var(--green); }
-  .goal-status--archived { color: #626b76; }
+  .goal-status--trashed, .goal-status--archived { color: #626b76; }
   .tree-node.is-selected .goal-status { color: #fff; }
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
   .tree-footer small { margin-left: auto; color: var(--muted); }
@@ -1597,6 +1811,9 @@ const STYLES = `
   .goal-title-actions > .goal-status { padding: 7px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; font-size: 14px; }
   .document-action { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
   .document-action:hover { color: var(--blue); border-color: color-mix(in srgb, var(--blue), var(--line) 60%); }
+  .document-action--current { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); cursor: default; }
+  .document-action--danger { color: #a52e2e; }
+  .document-action--danger:hover { color: #a52e2e; border-color: #dfbaba; background: var(--red-soft); }
   .document-action:disabled { opacity: .55; cursor: wait; }
   .archive-empty { min-height: 100%; padding: 72px 28px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
   .archive-empty svg { width: 30px; height: 30px; margin-bottom: 12px; color: var(--faint); }
@@ -1617,6 +1834,11 @@ const STYLES = `
   .business-copy { padding-left: 31px; color: #303641; }
   .business-copy p { margin: 6px 0; }
   .business-copy .outcome { color: var(--ink); }
+  .trash-summary { margin-left: 31px; color: #303641; }
+  .trash-summary p { margin: 6px 0; }
+  .trash-restore-row { margin-left: 31px; display: flex; align-items: center; justify-content: space-between; gap: 18px; color: #303641; }
+  .trash-restore-row p { max-width: 62ch; margin: 0; }
+  .trash-restore-row .button-primary { min-height: 36px; padding: 0 14px; border: 1px solid var(--blue); border-radius: 4px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; white-space: nowrap; }
   .draft-gaps { margin: 2px 0 12px 31px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--amber-soft); display: flex; align-items: center; gap: 14px; }
   .draft-gaps > div { min-width: 0; flex: 1; }
   .draft-gaps strong { color: var(--amber); }
@@ -1654,9 +1876,39 @@ const MORE_STYLES = `
   .inline-ref:hover span { text-decoration: underline; }
   .inline-ref svg { flex: 0 0 auto; font-size: 13px; }
   .inline-ref span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
-  .evidence-row, .review-row { display: flex; align-items: flex-start; gap: 8px; }
-  .evidence-row > span:last-child, .review-row > span:last-child { min-width: 0; display: grid; }
-  .evidence-row small, .review-row small { color: var(--muted); }
+  .evidence-record, .review-row { display: flex; align-items: flex-start; gap: 8px; }
+  .evidence-record > div, .review-row > span:last-child { min-width: 0; display: grid; gap: 3px; }
+  .evidence-record header { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; }
+  .evidence-record small, .review-row small { color: var(--muted); overflow-wrap: anywhere; }
+  .evidence-record p { margin: 1px 0 0; color: #3c4652; font-size: 12px; overflow-wrap: anywhere; }
+  .record-id { min-width: 0; padding: 0; border: 0; background: transparent; color: var(--blue-dark); font: inherit; font-size: 10px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+  .record-id:hover { text-decoration: underline; }
+  .evidence-submit { margin-top: 13px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line); }
+  .evidence-submit > summary { min-height: 54px; padding: 9px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; list-style: none; cursor: pointer; }
+  .evidence-submit > summary::-webkit-details-marker { display: none; }
+  .evidence-submit > summary > span { min-width: 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 0 8px; }
+  .evidence-submit > summary > span > svg { grid-row: span 2; color: var(--blue-dark); }
+  .evidence-submit > summary strong { font-size: 13px; }
+  .evidence-submit > summary small, .evidence-submit-note { color: var(--muted); font-size: 11px; }
+  .evidence-submit > summary > svg { color: var(--muted); transition: transform .16s ease; }
+  .evidence-submit[open] > summary > svg { transform: rotate(180deg); }
+  .evidence-submit form { padding: 12px 0 15px; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+  .evidence-submit label { min-width: 0; display: grid; gap: 5px; }
+  .evidence-submit label > span, .evidence-submit legend { font-weight: 650; }
+  .evidence-submit label small { color: var(--muted); font-weight: 400; }
+  .evidence-submit textarea, .evidence-submit select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .evidence-criteria { min-width: 0; margin: 0; padding: 0; border: 0; }
+  .evidence-criteria > div { max-height: 154px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; }
+  .evidence-criteria label { min-width: 0; padding: 8px 10px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; border-bottom: 1px solid #edf0f3; cursor: pointer; }
+  .evidence-criteria label:last-child { border-bottom: 0; }
+  .evidence-criteria input { margin-top: 3px; }
+  .evidence-criteria label span { min-width: 0; display: grid; gap: 1px; }
+  .evidence-criteria label small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .evidence-form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .evidence-submit footer { padding-top: 11px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .evidence-submit footer > span { color: var(--muted); font-size: 11px; }
+  .evidence-submit footer button { min-height: 34px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 4px; cursor: pointer; }
+  .evidence-submit-note { margin: 12px 0 0; }
   .human-review-list { margin-top: 12px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
   .human-review-list > header { padding: 11px 0; display: flex; align-items: baseline; gap: 12px; }
   .human-review-list > header p { margin: 0; color: var(--muted); font-size: 12px; }
@@ -2208,6 +2460,7 @@ const MORE_STYLES = `
   .create-dialog header { padding: 18px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; }
   .create-dialog header > div { display: flex; gap: 11px; }
   .dialog-icon { width: 34px; height: 34px; border-radius: 6px; background: var(--blue-soft); color: var(--blue); display: grid; place-items: center; font-size: 18px; }
+  .dialog-icon--danger { color: var(--red); background: var(--red-soft); }
   .create-dialog h2 { margin: 0; font-size: 19px; }
   .create-dialog header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
   .dialog-body { padding: 18px 20px 22px; overflow: auto; display: grid; gap: 13px; }
@@ -2215,6 +2468,12 @@ const MORE_STYLES = `
   .dialog-body label > span, .dialog-body legend { font-weight: 650; }
   .dialog-body small { color: var(--muted); font-weight: 400; }
   .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select { width: 100%; border: 1px solid var(--line-strong); border-radius: 5px; padding: 8px 10px; background: #fff; resize: vertical; }
+  .goal-trash-dialog { width: min(560px, calc(100vw - 32px)); }
+  .goal-trash-dialog .dialog-body { align-content: start; grid-auto-rows: max-content; }
+  .goal-trash-target { margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); display: grid; gap: 2px; }
+  .goal-trash-target strong { overflow-wrap: anywhere; }
+  .goal-trash-target small { font-size: 11px; }
+  .goal-trash-note { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 5px; color: #39424e; background: #fbfcfd; font-size: 12px; }
   .field-row { display: grid; gap: 12px; }
   .field-row--split { grid-template-columns: 1fr 120px; }
   .dialog-body fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -2239,7 +2498,8 @@ const MORE_STYLES = `
   .bound-list article { min-width: 0; display: grid; }
   .bound-list small { color: var(--muted); overflow-wrap: anywhere; }
   .full-records { margin-top: 14px; border: 1px solid var(--line); border-radius: 5px; }
-  .full-records summary { padding: 9px 12px; color: var(--muted); cursor: pointer; background: #fbfcfd; }
+  .full-records > summary { padding: 9px 12px; color: var(--muted); cursor: pointer; background: #fbfcfd; }
+  .full-records > summary span { float: right; color: var(--faint); font-size: 11px; }
   .record-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--line); }
   .record-grid section { min-width: 0; padding: 11px 13px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
   .record-grid section:nth-child(2n) { border-right: 0; }
@@ -2247,6 +2507,22 @@ const MORE_STYLES = `
   .record-grid h3 { margin: 0 0 6px; font-size: 13px; }
   .record-grid p { margin: 5px 0; display: grid; }
   .record-grid small { color: var(--muted); overflow-wrap: anywhere; }
+  .event-ledger { padding: 14px 13px; border-top: 1px solid var(--line); }
+  .event-ledger > header { margin-bottom: 10px; }
+  .event-ledger h3 { margin: 0; font-size: 13px; }
+  .event-ledger header p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .event-ledger > ol { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  .event-ledger li { border-bottom: 1px solid var(--line); }
+  .event-ledger details > summary { min-width: 0; padding: 10px 0; display: grid; grid-template-columns: 126px minmax(0, 1fr); gap: 10px; cursor: pointer; }
+  .event-ledger time { color: var(--muted); font-size: 11px; }
+  .event-ledger summary span { min-width: 0; display: grid; gap: 1px; }
+  .event-ledger summary strong, .event-ledger summary small { overflow-wrap: anywhere; }
+  .event-ledger summary small { color: var(--muted); font-size: 10px; }
+  .event-ledger dl { margin: 0 0 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 4px; background: #fbfcfd; display: grid; gap: 5px; }
+  .event-ledger dl div { min-width: 0; display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; }
+  .event-ledger dt { color: var(--muted); font-size: 11px; }
+  .event-ledger dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .event-ledger pre { max-height: 300px; margin: 0 0 11px; padding: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: #f7f9fb; color: #36404c; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
   @keyframes document-in { from { opacity: .5; transform: translateY(5px); } }
   @keyframes pulse { 50% { opacity: .35; } }
 `;
@@ -2258,6 +2534,11 @@ const RESPONSIVE_STYLES = `
     .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
     .human-review-form footer { align-items: stretch; flex-direction: column; }
     .human-review-form footer button { align-self: flex-end; }
+    .evidence-form-row { grid-template-columns: 1fr; }
+    .evidence-submit footer { align-items: stretch; flex-direction: column; }
+    .evidence-submit footer button { align-self: flex-end; }
+    .event-ledger details > summary { grid-template-columns: 1fr; gap: 3px; }
+    .event-ledger dl div { grid-template-columns: 1fr; gap: 2px; }
     .policy-effective > header { grid-template-columns: auto minmax(0, 1fr); }
     .policy-effective-state { grid-column: 2; width: fit-content; }
     .policy-effective dl { grid-template-columns: 1fr 1fr; }
@@ -2306,16 +2587,16 @@ const RESPONSIVE_STYLES = `
   }
   @media (max-width: 1360px) {
     .brand { min-width: 160px; padding-inline: 20px; }
-    .source { min-width: 0; padding-inline: 14px; }
-    .source > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context { min-width: 0; padding-inline: 14px; }
+    .project-context > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
     .global-search { min-width: 180px; max-width: 220px; }
     .top-action { padding-inline: 9px; }
   }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
-    .source { min-width: 0; padding-inline: 16px; }
-    .source > span:not(.sync-state) { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context { min-width: 0; padding-inline: 16px; }
+    .project-context > span:not(.sync-state) { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
     .global-search { min-width: 190px; }
     .top-action { padding-inline: 10px; }
     .runtime-grid { grid-template-columns: 1fr 1fr; }
@@ -2323,7 +2604,12 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
   }
   @media (max-width: 900px) {
-    .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .top-spacer { display: none; }
+    .project-context { min-width: 0; flex: 1 1 auto; padding-inline: 12px; }
+    .project-context > strong, .project-context small, .project-context .sync-state { display: none; }
+    .project-context > span:not(.sync-state) { min-width: 0; flex: 1 1 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context a { flex: 0 0 auto; }
   }
   @media (max-width: 760px) {
     body { overflow: hidden; }
@@ -2331,7 +2617,9 @@ const RESPONSIVE_STYLES = `
     .topbar { grid-row: 1; }
     .brand { min-width: 0; padding: 0 15px; border-right: 0; }
     .brand strong { font-size: 17px; }
-    .source, .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .global-search, .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
+    .project-context { padding-inline: 8px; }
+    .project-context > span:not(.sync-state) { max-width: 132px; }
     .top-spacer { flex: 1; }
     .top-action { margin-right: 8px; border-left: 0; }
     .top-action span { display: none; }
@@ -2347,6 +2635,9 @@ const RESPONSIVE_STYLES = `
     .goal-title-row { display: grid; gap: 10px; }
     .goal-title-actions { justify-content: space-between; }
     .goal-meta { gap: 8px 16px; }
+    .trash-summary, .trash-restore-row { margin-left: 0; }
+    .trash-restore-row { align-items: stretch; flex-direction: column; }
+    .trash-restore-row .button-primary { align-self: flex-start; }
     .runtime-grid { grid-template-columns: 1fr; }
     .runtime-grid > section { min-height: 0; border-right: 0 !important; border-bottom: 1px solid var(--line) !important; }
     .runtime-grid > section:last-child { border-bottom: 0 !important; }
@@ -2356,6 +2647,9 @@ const RESPONSIVE_STYLES = `
     .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
     .human-review-form footer { align-items: stretch; flex-direction: column; }
     .human-review-form footer button { align-self: flex-end; }
+    .evidence-form-row { grid-template-columns: 1fr; }
+    .evidence-submit footer { align-items: stretch; flex-direction: column; }
+    .evidence-submit footer button { align-self: flex-end; }
     .policy-effective { padding-inline: 14px; }
     .policy-effective dl { grid-template-columns: 1fr 1fr; }
     .policy-inheritance { grid-template-columns: 1fr; gap: 5px; }
@@ -2404,13 +2698,124 @@ const RESPONSIVE_STYLES = `
     .decision-actions { justify-content: flex-end; }
     .field-row--split, .goal-choice-list { grid-template-columns: 1fr; }
     .relation-field-heading, .relation-field > legend { grid-template-columns: 1fr; gap: 6px; }
-    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea, .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select, .impact-form input, .impact-form textarea, .impact-form select, .impact-deactivate textarea { font-size: 16px; }
+    .dialog-body input:not([type=checkbox]), .dialog-body textarea, .dialog-body select, .policy-form input:not([type=checkbox]), .policy-form textarea, .policy-form select, .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select, .evidence-submit textarea, .evidence-submit select, .draft-contract-form input:not([type=radio]), .draft-contract-form textarea, .draft-contract-form select, .draft-aux-form input, .draft-aux-form textarea, .draft-aux-form select, .relation-form input, .relation-form textarea, .relation-form select, .relation-deactivate-form textarea, .risk-form input:not([type=checkbox]), .risk-form textarea, .risk-form select, .risk-state-form textarea, .risk-state-form select, .impact-form input, .impact-form textarea, .impact-form select, .impact-deactivate textarea { font-size: 16px; }
     .create-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; }
     .dialog-shell { max-height: 100vh; height: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
   }
+`;
+
+const PROJECT_INDEX_STYLES = `
+  body.project-index-page { overflow: auto; background: var(--page); }
+  .project-index { min-height: 100%; padding: clamp(40px, 10vh, 112px) 24px; display: grid; place-items: start center; }
+  .project-index-panel { width: min(100%, 760px); border: 1px solid var(--line-strong); background: var(--paper); box-shadow: var(--shadow); }
+  .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
+  .project-index-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
+  .project-index-heading p { max-width: 52ch; margin: 7px 0 0; color: var(--muted); }
+  .project-list { list-style: none; margin: 0; padding: 0; }
+  .project-list li + li { border-top: 1px solid var(--line); }
+  .project-list a { min-height: 74px; padding: 16px 24px 16px 30px; color: inherit; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 18px; text-decoration: none; }
+  .project-list a:hover { background: #f7faff; }
+  .project-list a:focus-visible { outline-offset: -3px; }
+  .project-list a > span { min-width: 0; display: grid; gap: 2px; }
+  .project-list strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+  .project-list span { color: var(--muted); font-size: 12px; }
+  .project-list svg { color: var(--faint); }
+  .project-list a:hover svg { color: var(--blue); transform: rotate(-90deg); }
+  .project-index-empty { padding: 42px 30px 46px; color: var(--muted); }
+  .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
+  .project-index-empty p { max-width: 48ch; margin: 0; }
+  .project-index-migration { padding: 16px 30px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; background: #fbfcfd; }
+  .project-index-migration > div { min-width: 0; }
+  .project-index-migration strong { display: block; font-size: 13px; }
+  .project-index-migration small { display: block; margin-top: 2px; color: var(--muted); }
+  .project-index-migrate { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; white-space: nowrap; cursor: pointer; }
+  .project-index-migrate:hover { border-color: #b8d3f5; background: var(--blue-soft); }
+  .project-migration-dialog { width: min(100% - 28px, 580px); padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); box-shadow: var(--shadow); }
+  .project-migration-dialog::backdrop { background: rgba(27, 35, 45, .32); }
+  .project-migration-form { display: grid; }
+  .project-migration-form > header { padding: 22px 24px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .project-migration-form h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
+  .project-migration-form header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .project-migration-form > .project-migration-body { padding: 20px 24px; display: grid; gap: 15px; }
+  .project-migration-form label:not(.project-migration-confirm) { display: grid; gap: 5px; color: #38414d; font-size: 13px; font-weight: 650; }
+  .project-migration-form label small { color: var(--muted); font-weight: 400; }
+  .project-migration-form input[type=text] { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; color: var(--ink); }
+  .project-migration-form input[type=text]:focus { border-color: var(--blue); outline: 0; box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue), transparent 84%); }
+  .project-migration-warning { margin: 0; padding: 10px 11px; color: #654300; border: 1px solid #efd49c; background: var(--amber-soft); font-size: 12px; line-height: 1.55; }
+  .project-migration-confirm { display: flex; align-items: flex-start; gap: 9px; color: #303944; font-size: 13px; line-height: 1.45; cursor: pointer; }
+  .project-migration-confirm input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }
+  .project-migration-error { margin: 0; color: var(--red); font-size: 13px; }
+  .project-migration-form > footer { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 9px; background: #fbfcfd; }
+  .project-migration-form > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer; }
+  .project-migration-form > footer .project-migration-submit { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
+  .project-migration-form > footer .project-migration-submit:hover { background: var(--blue-dark); }
+  .project-migration-form > footer .project-migration-submit:disabled { opacity: .58; cursor: wait; }
+  .project-index-note { margin: 0; padding: 12px 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: #fbfcfd; }
+  @media (max-width: 620px) {
+    .project-index { padding: 28px 14px; place-items: start stretch; }
+    .project-index-panel { width: 100%; }
+    .project-index-heading, .project-index-empty { padding-inline: 20px; }
+    .project-list a { padding-inline: 20px; }
+    .project-index-migration { padding-inline: 20px; align-items: stretch; flex-direction: column; }
+    .project-index-migrate { align-self: flex-start; }
+    .project-index-note { padding-inline: 20px; }
+    .project-migration-form > header, .project-migration-form > .project-migration-body, .project-migration-form > footer { padding-inline: 18px; }
+  }
+`;
+
+const PROJECT_INDEX_CLIENT_SCRIPT = `
+  (() => {
+    const dialog = document.querySelector("[data-project-migration-dialog]");
+    const form = document.querySelector("[data-project-migration-form]");
+    const errorBox = document.querySelector("[data-project-migration-error]");
+    const open = () => {
+      if (!dialog) return;
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+      dialog.showModal();
+      requestAnimationFrame(() => form?.elements.legacy_database_path?.focus());
+    };
+    document.querySelectorAll("[data-open-project-migration]").forEach((button) => {
+      button.addEventListener("click", open);
+    });
+    document.querySelectorAll("[data-close-project-migration]").forEach((button) => {
+      button.addEventListener("click", () => dialog?.close());
+    });
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const confirmed = values.get("user_confirmed") === "on";
+      if (!confirmed) {
+        errorBox.textContent = "请先确认你要迁移这份已有 GoalBoard 数据。";
+        errorBox.hidden = false;
+        return;
+      }
+      const submit = form.querySelector("[data-project-migration-submit]");
+      submit.disabled = true;
+      errorBox.hidden = true;
+      try {
+        const response = await fetch("/api/projects/migrate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            legacy_database_path: String(values.get("legacy_database_path") || "").trim(),
+            display_name: String(values.get("display_name") || "").trim(),
+            user_confirmed: true,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "迁移失败，请检查来源 DB 后重试");
+        location.assign(result.project_path);
+      } catch (error) {
+        errorBox.textContent = error.message || "迁移失败，请检查来源 DB 后重试";
+        errorBox.hidden = false;
+        submit.disabled = false;
+      }
+    });
+  })();
 `;
 
 const CLIENT_SCRIPT = `
@@ -2422,22 +2827,37 @@ const CLIENT_SCRIPT = `
     const treeResizer = document.querySelector("[data-tree-resizer]");
     const treeScroll = document.querySelector("[data-tree-scroll]");
     const treeSearch = document.querySelector("[data-tree-search]");
+    const treeFilter = document.querySelector("[data-tree-filter]");
+    const treeFilterTrigger = document.querySelector("[data-tree-filter-trigger]");
     const globalSearch = document.querySelector("[data-global-search]");
     const dialog = document.querySelector("[data-create-dialog]");
     const form = document.querySelector("[data-create-form]");
     const formError = document.querySelector("[data-create-error]");
+    const trashDialog = document.querySelector("[data-goal-trash-dialog]");
+    const trashForm = document.querySelector("[data-goal-trash-form]");
+    const trashError = document.querySelector("[data-goal-trash-error]");
+    const trashSubmit = document.querySelector("[data-goal-trash-submit]");
     const toast = document.querySelector("[data-toast]");
     const syncState = document.querySelector("[data-sync-state]");
     const archiveView = document.body.dataset.boardView === "archive";
+    const trashView = document.body.dataset.boardView === "trash";
     const decisionView = document.body.dataset.boardView === "decisions";
-    const visibleGoals = (source = state) => archiveView ? source.archived_goals : source.goals;
-    const storageKey = "goalboard-ui:" + state.snapshot.board.board_id;
-    let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (archiveView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
+    const collectionView = archiveView || trashView;
+    const routePrefix = document.body.dataset.routePrefix || "";
+    const route = (pathname) => routePrefix + pathname;
+    const localPathname = () => routePrefix && location.pathname.startsWith(routePrefix)
+      ? location.pathname.slice(routePrefix.length) || "/"
+      : location.pathname;
+    const visibleGoals = (source = state) => trashView ? source.trashed_goals : archiveView ? source.archived_goals : source.goals;
+    const storageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
+    let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
+    let trashIntent = null;
     let toastTimer;
     let syncing = false;
     let saveTimer;
     let resizeStartX = 0;
     let resizeStartWidth = 0;
+    let selectedStatuses = new Set();
 
     const updateRelationPreviews = () => {
       if (!form) return;
@@ -2610,6 +3030,103 @@ const CLIENT_SCRIPT = `
       toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2200);
     };
 
+    const goalPageBase = () => route(trashView ? "/trash/goals/" : archiveView ? "/archive/goals/" : "/goals/");
+
+    const openGoalTrashDialog = (trigger, trashed) => {
+      if (!trashDialog || !trashForm) return;
+      const goalId = String(trigger.dataset.goalId || "").trim();
+      const goalTitle = String(trigger.dataset.goalTitle || goalId).trim();
+      if (!goalId) return;
+      trashIntent = { goalId, goalTitle, trashed };
+      trashError.hidden = true;
+      trashError.textContent = "";
+      trashForm.elements.reason.value = "";
+      trashDialog.querySelector("[data-goal-trash-title]").textContent = trashed ? "移入回收站" : "恢复 Goal";
+      trashDialog.querySelector("[data-goal-trash-description]").textContent = trashed
+        ? "请确认这条 Goal 和本次操作原因。"
+        : "请确认把这条 Goal 恢复到日常 Goal Tree。";
+      trashDialog.querySelector("[data-goal-trash-target-title]").textContent = goalTitle;
+      trashDialog.querySelector("[data-goal-trash-target-id]").textContent = goalId;
+      trashDialog.querySelector("[data-goal-trash-note]").textContent = trashed
+        ? "该操作可恢复：Goal 历史会保留，当前仍生效的关联关系会暂时停止。若还有有效 Claim 或执行中的 Run，系统不会改动 Goal，而会告诉你先结束哪项工作。"
+        : "恢复不会创建新 Goal，也不会自动启动 Runtime。系统只会恢复两端都不在回收站的关联关系；其余关系会保留为待处理事实。";
+      trashDialog.querySelector("[data-goal-trash-reason-label]").textContent = trashed ? "移入原因" : "恢复原因";
+      trashForm.elements.reason.placeholder = trashed
+        ? "说明为什么暂时不再保留这条 Goal"
+        : "说明为什么现在要恢复这条 Goal";
+      trashSubmit.classList.toggle("button-danger", trashed);
+      trashSubmit.classList.toggle("button-primary", !trashed);
+      trashSubmit.textContent = trashed ? "移入回收站" : "恢复到 Goal Tree";
+      trashDialog.showModal();
+      if (!matchMedia("(max-width: 760px)").matches) {
+        requestAnimationFrame(() => trashForm.elements.reason.focus());
+      }
+    };
+
+    const closeGoalTrashDialog = () => {
+      if (!trashDialog?.open) return;
+      trashDialog.close();
+      trashIntent = null;
+      refreshBoard();
+    };
+
+    const describeTrashBlock = (result) => {
+      const claims = Array.isArray(result.blocking_claim_ids) ? result.blocking_claim_ids : [];
+      const runs = Array.isArray(result.blocking_run_ids) ? result.blocking_run_ids : [];
+      const records = [
+        claims.length ? "有效 Claim：" + claims.join("、") : "",
+        runs.length ? "执行中 Run：" + runs.join("、") : "",
+      ].filter(Boolean).join("；");
+      return "现在无法移入回收站：这条 Goal 仍有正在进行的 Runtime 工作。" +
+        (records ? records + "。" : "") +
+        "请先结束或释放这些工作，再重新确认。";
+    };
+
+    const submitGoalTrashForm = async () => {
+      if (!trashIntent || !trashForm || !trashError || !trashSubmit) return;
+      const reason = String(new FormData(trashForm).get("reason") || "").trim();
+      if (!reason) {
+        trashError.textContent = "请说明本次操作原因。";
+        trashError.hidden = false;
+        trashForm.elements.reason.focus();
+        return;
+      }
+      trashError.hidden = true;
+      trashSubmit.disabled = true;
+      let redirecting = false;
+      try {
+        const response = await fetch(route("/api/goals/" + encodeURIComponent(trashIntent.goalId) + "/trash"), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            trashed: trashIntent.trashed,
+            reason,
+            user_confirmed: true,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "操作失败");
+        if (result.status === "blocked") {
+          trashError.textContent = describeTrashBlock(result);
+          trashError.hidden = false;
+          return;
+        }
+        const expected = trashIntent.trashed
+          ? ["trashed", "already_trashed"]
+          : ["restored", "already_active"];
+        if (!expected.includes(result.status)) throw new Error("GoalBoard 返回了无法识别的回收站状态");
+        redirecting = true;
+        trashDialog.close();
+        sessionStorage.removeItem(storageKey);
+        location.assign(route((trashIntent.trashed ? "/trash/goals/" : "/goals/") + encodeURIComponent(trashIntent.goalId)));
+      } catch (error) {
+        trashError.textContent = error.message || "操作失败，请检查后重试";
+        trashError.hidden = false;
+      } finally {
+        if (!redirecting) trashSubmit.disabled = false;
+      }
+    };
+
     const setSyncState = (label, mode = "") => {
       syncState.textContent = label;
       syncState.classList.toggle("is-syncing", mode === "syncing");
@@ -2642,6 +3159,7 @@ const CLIENT_SCRIPT = `
       documentTop: documentPane.scrollTop,
       treeWidth: treePane.getBoundingClientRect().width,
       query: treeSearch.value,
+      statuses: [...selectedStatuses],
       mobileView: workspace.dataset.mobileView || "tree",
     });
 
@@ -2659,6 +3177,7 @@ const CLIENT_SCRIPT = `
       });
       treeSearch.value = ui?.query || "";
       globalSearch.value = ui?.query || "";
+      setSelectedStatuses(ui?.statuses || []);
       filterTree(ui?.query || "");
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
       documentPane.scrollTop = ui?.selected === selected ? Number(ui?.documentTop || 0) : 0;
@@ -2705,25 +3224,56 @@ const CLIENT_SCRIPT = `
 
     const selectGoal = (goalId, updateHistory = true) => {
       if (decisionView) {
-        location.assign("/goals/" + encodeURIComponent(goalId));
+        location.assign(route("/goals/" + encodeURIComponent(goalId)));
         return;
       }
       if (!applySelection(goalId, true)) return;
       if (updateHistory) {
-        const base = archiveView ? "/archive/goals/" : "/goals/";
-        history.pushState({ goalId }, "", base + encodeURIComponent(goalId));
+        history.pushState({ goalId }, "", goalPageBase() + encodeURIComponent(goalId));
       }
       if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
       saveUiState();
     };
 
+    function setSelectedStatuses(values) {
+      const available = new Set([...document.querySelectorAll("[data-status-filter]")].map((input) => input.value));
+      selectedStatuses = new Set((Array.isArray(values) ? values : []).filter((status) => available.has(status)));
+      document.querySelectorAll("[data-status-filter]").forEach((input) => {
+        input.checked = selectedStatuses.has(input.value);
+      });
+      const selectedCount = selectedStatuses.size;
+      const summary = treeFilter?.querySelector("[data-tree-filter-summary]");
+      const clear = treeFilter?.querySelector("[data-clear-status-filter]");
+      if (summary) summary.textContent = selectedCount ? "已选择 " + selectedCount + " 种状态" : "显示全部状态";
+      if (clear) clear.disabled = selectedCount === 0;
+      treeFilterTrigger?.classList.toggle("is-active", selectedCount > 0);
+      treeFilterTrigger?.setAttribute("aria-label", selectedCount ? "筛选目标，已选择 " + selectedCount + " 种状态" : "筛选目标");
+    }
+
+    function setTreeFilterOpen(open, focusFirst = false) {
+      if (!treeFilter || !treeFilterTrigger) return;
+      treeFilter.hidden = !open;
+      treeFilterTrigger.setAttribute("aria-expanded", String(open));
+      if (open && focusFirst) {
+        requestAnimationFrame(() => {
+          if (treeFilter.hidden) return;
+          const firstStatusFilter = treeFilter.querySelector("[data-status-filter]");
+          if (firstStatusFilter instanceof HTMLElement) firstStatusFilter.focus({ preventScroll: true });
+        });
+      }
+    }
+
     function filterTree(value) {
       const query = value.trim().toLowerCase();
-      document.querySelectorAll("[data-tree-item]").forEach((item) => {
-        item.hidden = Boolean(query && !item.dataset.goalSearch.includes(query));
+      const items = [...document.querySelectorAll("[data-tree-item]")];
+      const matched = items.filter((item) => {
+        const matchesQuery = !query || String(item.dataset.goalSearch || "").includes(query);
+        const matchesStatus = selectedStatuses.size === 0 || selectedStatuses.has(item.dataset.goalStatus);
+        item.hidden = !(matchesQuery && matchesStatus);
+        return !item.hidden;
       });
-      if (query) {
-        document.querySelectorAll("[data-tree-item]:not([hidden])").forEach((item) => {
+      if (query || selectedStatuses.size) {
+        matched.forEach((item) => {
           let parent = item.parentElement?.closest("[data-tree-item]");
           while (parent) {
             parent.hidden = false;
@@ -2732,6 +3282,15 @@ const CLIENT_SCRIPT = `
           }
         });
       }
+      const count = document.querySelector("[data-tree-filter-count]");
+      const empty = treeScroll.querySelector("[data-tree-filter-empty]");
+      const suffix = count?.dataset.treeSuffix || "";
+      if (count) {
+        count.textContent = !query && selectedStatuses.size === 0
+          ? "共 " + items.length + " 个" + suffix + "目标"
+          : "显示 " + matched.length + " / " + items.length + " 个" + suffix + "目标";
+      }
+      if (empty) empty.hidden = matched.length > 0 || items.length === 0;
     }
 
     const syncGoalViews = (nextDocument) => {
@@ -2758,7 +3317,7 @@ const CLIENT_SCRIPT = `
       }
       syncing = true;
       try {
-        const boardResponse = await fetch("/api/board", { cache: "no-store" });
+        const boardResponse = await fetch(route("/api/board"), { cache: "no-store" });
         if (!boardResponse.ok) throw new Error("无法读取 GoalBoard");
         const nextState = await boardResponse.json();
         if (nextState.snapshot.cursor === state.snapshot.cursor) {
@@ -2773,20 +3332,21 @@ const CLIENT_SCRIPT = `
           ? ""
           : goalStillExists
             ? selected
-            : archiveView
+            : collectionView
               ? nextGoals[0]?.goal.goal_id
               : nextState.active_goal_id || nextGoals[0]?.goal.goal_id;
         if (!decisionView && !nextSelected) {
-          location.assign(archiveView ? "/archive" : "/");
+          location.assign(route(trashView ? "/trash" : archiveView ? "/archive" : "/"));
           return;
         }
-        const pageBase = archiveView ? "/archive/goals/" : "/goals/";
-        const pageResponse = await fetch(decisionView ? "/decisions" : pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
+        const pageBase = goalPageBase();
+        const pageResponse = await fetch(decisionView ? route("/decisions") : pageBase + encodeURIComponent(nextSelected), { cache: "no-store" });
         if (!pageResponse.ok) throw new Error("无法更新 Goal 页面");
         const parsed = new DOMParser().parseFromString(await pageResponse.text(), "text/html");
         const nextTree = parsed.querySelector("[data-tree-scroll]");
         const nextDocument = parsed.querySelector("[data-document-pane]");
         const nextFooter = parsed.querySelector("[data-tree-footer]");
+        const nextFilter = parsed.querySelector("[data-tree-filter]");
         const nextCount = parsed.querySelector("[data-tree-count]");
         const nextDialog = parsed.querySelector("[data-create-dialog]");
         const nextDecisionsLink = parsed.querySelector("[data-decisions-link]");
@@ -2796,6 +3356,7 @@ const CLIENT_SCRIPT = `
         treeScroll.innerHTML = nextTree.innerHTML;
         if (decisionView) documentPane.replaceChildren(...nextDocument.childNodes);
         else syncGoalViews(nextDocument);
+        if (nextFilter && treeFilter) treeFilter.innerHTML = nextFilter.innerHTML;
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
         if (nextDecisionsLink) {
@@ -2832,7 +3393,7 @@ const CLIENT_SCRIPT = `
       buttons.forEach((button) => { button.disabled = true; });
       errorBox.hidden = true;
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetch(route(endpoint), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ decision, reason }),
@@ -2880,11 +3441,22 @@ const CLIENT_SCRIPT = `
       if (event.target.matches?.("[data-persist-open]")) queueSave();
     }, true);
     document.addEventListener("change", (event) => {
-      const relationForm = event.target.closest?.("[data-relation-form]");
+      const changed = event.target instanceof Element ? event.target : null;
+      if (!changed) return;
+      const statusFilter = changed.closest("[data-status-filter]");
+      if (statusFilter) {
+        if (statusFilter.checked) selectedStatuses.add(statusFilter.value);
+        else selectedStatuses.delete(statusFilter.value);
+        setSelectedStatuses([...selectedStatuses]);
+        filterTree(treeSearch.value);
+        queueSave();
+        return;
+      }
+      const relationForm = changed.closest("[data-relation-form]");
       if (relationForm) updateRelationFormPreview(relationForm);
-      const riskStateForm = event.target.closest?.("[data-risk-state-form]");
+      const riskStateForm = changed.closest("[data-risk-state-form]");
       if (riskStateForm) updateRiskStatePreview(riskStateForm);
-      const riskGoalPicker = event.target.closest?.(".risk-goal-picker");
+      const riskGoalPicker = changed.closest(".risk-goal-picker");
       if (riskGoalPicker) updateRiskGoalCount(riskGoalPicker);
     });
     document.addEventListener("input", (event) => {
@@ -2920,8 +3492,30 @@ const CLIENT_SCRIPT = `
       setTreeWidth(treePane.getBoundingClientRect().width + (event.key === "ArrowRight" ? 16 : -16));
     });
 
+    treeFilterTrigger?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setTreeFilterOpen(treeFilter?.hidden !== false, true);
+    });
+
     document.addEventListener("click", async (event) => {
-      const target = event.target;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      if (!treeFilter?.hidden && !target.closest("[data-tree-filter]")) setTreeFilterOpen(false);
+      if (target.closest("[data-clear-status-filter]")) {
+        setSelectedStatuses([]);
+        filterTree(treeSearch.value);
+        queueSave();
+        return;
+      }
+      if (target.closest("[data-clear-tree-filter]")) {
+        treeSearch.value = "";
+        globalSearch.value = "";
+        setSelectedStatuses([]);
+        filterTree("");
+        queueSave();
+        return;
+      }
       const treeToggle = target.closest("[data-tree-toggle]");
       if (treeToggle) {
         const item = treeToggle.closest("[data-tree-item]");
@@ -2947,8 +3541,18 @@ const CLIENT_SCRIPT = `
         refreshBoard();
         return;
       }
-      if (target.closest("[data-focus-filter]")) {
-        treeSearch.focus();
+      const trashAction = target.closest("[data-open-goal-trash]");
+      if (trashAction) {
+        openGoalTrashDialog(trashAction, true);
+        return;
+      }
+      const restoreAction = target.closest("[data-open-goal-restore]");
+      if (restoreAction) {
+        openGoalTrashDialog(restoreAction, false);
+        return;
+      }
+      if (target.closest("[data-close-goal-trash]")) {
+        closeGoalTrashDialog();
         return;
       }
       if (target.closest("[data-collapse-all]")) {
@@ -3029,12 +3633,32 @@ const CLIENT_SCRIPT = `
         return;
       }
       const archiveAction = target.closest("[data-goal-archive]");
+      const activeGoalAction = target.closest("[data-set-active-goal]");
+      if (activeGoalAction) {
+        activeGoalAction.disabled = true;
+        const goalId = activeGoalAction.dataset.goalId;
+        try {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(goalId) + "/active"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason: "用户在 GoalBoard 设为当前 Goal" }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "无法设为当前 Goal");
+          await refreshBoard(true);
+          showToast("已设为当前 Goal；Runtime 的执行状态没有改变");
+        } catch (error) {
+          activeGoalAction.disabled = false;
+          showToast(error.message || "无法设为当前 Goal", true);
+        }
+        return;
+      }
       if (archiveAction) {
         archiveAction.disabled = true;
         const archived = archiveAction.dataset.goalArchive === "true";
         const goalId = archiveAction.dataset.goalId;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(goalId) + "/archive", {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(goalId) + "/archive"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -3044,7 +3668,7 @@ const CLIENT_SCRIPT = `
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "操作失败");
-          location.assign((archived ? "/archive/goals/" : "/goals/") + encodeURIComponent(goalId));
+          location.assign(route((archived ? "/archive/goals/" : "/goals/") + encodeURIComponent(goalId)));
         } catch (error) {
           archiveAction.disabled = false;
           showToast(error.message || "操作失败", true);
@@ -3055,6 +3679,12 @@ const CLIENT_SCRIPT = `
 
     document.addEventListener("submit", async (event) => {
       const submittedForm = event.target;
+      const goalTrashForm = submittedForm.closest?.("[data-goal-trash-form]");
+      if (goalTrashForm) {
+        event.preventDefault();
+        await submitGoalTrashForm();
+        return;
+      }
       const contractDecisionForm = submittedForm.closest?.("[data-contract-decision-form]");
       if (contractDecisionForm) {
         event.preventDefault();
@@ -3103,7 +3733,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(relationForm.dataset.goalId) + "/relations", {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(relationForm.dataset.goalId) + "/relations"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -3134,7 +3764,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/relations/" + encodeURIComponent(relationDeactivateForm.dataset.relationId) + "/deactivate", {
+          const response = await fetch(route("/api/relations/" + encodeURIComponent(relationDeactivateForm.dataset.relationId) + "/deactivate"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ reason }),
@@ -3176,7 +3806,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(draftForm.dataset.goalId) + "/draft", {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(draftForm.dataset.goalId) + "/draft"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -3216,7 +3846,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(riskCreateForm.dataset.goalId) + "/risks", {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(riskCreateForm.dataset.goalId) + "/risks"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(readRiskPayload(values)),
@@ -3242,7 +3872,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/risks/" + encodeURIComponent(riskEditForm.dataset.riskId) + "/update", {
+          const response = await fetch(route("/api/risks/" + encodeURIComponent(riskEditForm.dataset.riskId) + "/update"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(readRiskPayload(values)),
@@ -3268,7 +3898,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/risks/" + encodeURIComponent(riskStateForm.dataset.riskId) + "/state", {
+          const response = await fetch(route("/api/risks/" + encodeURIComponent(riskStateForm.dataset.riskId) + "/state"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -3297,7 +3927,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/goals/" + encodeURIComponent(impactCreateForm.dataset.goalId) + "/impacts", {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(impactCreateForm.dataset.goalId) + "/impacts"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(readImpactPayload(values)),
@@ -3323,7 +3953,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/impacts/" + encodeURIComponent(impactEditForm.dataset.impactId) + "/update", {
+          const response = await fetch(route("/api/impacts/" + encodeURIComponent(impactEditForm.dataset.impactId) + "/update"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(readImpactPayload(values)),
@@ -3349,7 +3979,7 @@ const CLIENT_SCRIPT = `
         submit.disabled = true;
         errorBox.hidden = true;
         try {
-          const response = await fetch("/api/impacts/" + encodeURIComponent(impactDeactivateForm.dataset.impactId) + "/deactivate", {
+          const response = await fetch(route("/api/impacts/" + encodeURIComponent(impactDeactivateForm.dataset.impactId) + "/deactivate"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ reason: String(values.get("reason") || "").trim() }),
@@ -3360,6 +3990,44 @@ const CLIENT_SCRIPT = `
           showToast("Impact 已停用并保留在历史中");
         } catch (error) {
           errorBox.textContent = error.message || "Impact 停用失败，请检查输入";
+          errorBox.hidden = false;
+          submit.disabled = false;
+        }
+        return;
+      }
+
+      const evidenceForm = submittedForm.closest?.("[data-evidence-form]");
+      if (evidenceForm) {
+        event.preventDefault();
+        const submit = evidenceForm.querySelector('button[type="submit"]');
+        const errorBox = evidenceForm.querySelector("[data-evidence-error]");
+        const values = new FormData(evidenceForm);
+        const criterionIds = [...new Set(values.getAll("criterion_ids").map(String).map((value) => value.trim()).filter(Boolean))];
+        if (!criterionIds.length) {
+          errorBox.textContent = "至少选择一条验收条件";
+          errorBox.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        errorBox.hidden = true;
+        try {
+          const response = await fetch(route("/api/goals/" + encodeURIComponent(evidenceForm.dataset.goalId) + "/evidence"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              criterion_ids: criterionIds,
+              kind: values.get("kind"),
+              result: values.get("result"),
+              locator: String(values.get("locator") || "").trim(),
+              digest: String(values.get("digest") || "").trim(),
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Evidence 提交失败");
+          await refreshBoard(true);
+          showToast("人工 Evidence 已记录");
+        } catch (error) {
+          errorBox.textContent = error.message || "Evidence 提交失败，请检查输入";
           errorBox.hidden = false;
           submit.disabled = false;
         }
@@ -3379,7 +4047,7 @@ const CLIENT_SCRIPT = `
           .map((item) => item.trim())
           .filter(Boolean);
         try {
-          const response = await fetch("/api/policy-bindings", {
+          const response = await fetch(route("/api/policy-bindings"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -3424,9 +4092,9 @@ const CLIENT_SCRIPT = `
         errorBox.hidden = true;
         try {
           const response = await fetch(
-            "/api/goals/" + encodeURIComponent(reviewForm.dataset.goalId) +
+            route("/api/goals/" + encodeURIComponent(reviewForm.dataset.goalId) +
               "/review-obligations/" + encodeURIComponent(reviewForm.dataset.obligationId) +
-              "/review",
+              "/review"),
             {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -3469,7 +4137,7 @@ const CLIENT_SCRIPT = `
         acceptance_criteria: String(values.get("acceptance_criteria") || "").split("\\n").map((line) => line.trim()).filter(Boolean),
       };
       try {
-        const response = await fetch("/api/goals", {
+        const response = await fetch(route("/api/goals"), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
@@ -3486,7 +4154,9 @@ const CLIENT_SCRIPT = `
     });
 
     addEventListener("popstate", () => {
-      const match = location.pathname.match(archiveView ? /^\\/archive\\/goals\\/(.+)$/ : /^\\/goals\\/(.+)$/);
+      const match = localPathname().match(
+        trashView ? /^\\/trash\\/goals\\/(.+)$/ : archiveView ? /^\\/archive\\/goals\\/(.+)$/ : /^\\/goals\\/(.+)$/,
+      );
       if (match) applySelection(decodeURIComponent(match[1]), true);
     });
     addEventListener("pagehide", saveUiState);
@@ -3495,10 +4165,17 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         globalSearch?.focus();
       }
+      if (event.key === "Escape" && !treeFilter?.hidden) {
+        event.preventDefault();
+        setTreeFilterOpen(false);
+        treeFilterTrigger?.focus();
+        return;
+      }
       if (event.key === "Escape" && dialog.open) {
         dialog.close();
         refreshBoard();
       }
+      if (event.key === "Escape" && trashDialog?.open) closeGoalTrashDialog();
     });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refreshBoard();
@@ -3516,27 +4193,125 @@ const CLIENT_SCRIPT = `
   })();
 `;
 
+function renderProjectMigrationDialog(): string {
+  return `<dialog class="project-migration-dialog" data-project-migration-dialog aria-labelledby="project-migration-title">
+  <form class="project-migration-form" data-project-migration-form>
+    <header>
+      <div><h2 id="project-migration-title">迁移已有 GoalBoard 数据</h2><p>这是一次单独确认的文件迁移，不会绑定或切换任何 Runtime Session。</p></div>
+      <button class="icon-button" type="button" data-close-project-migration aria-label="关闭迁移窗口">${icon("x")}</button>
+    </header>
+    <div class="project-migration-body">
+      <label>已有 GoalBoard DB<input name="legacy_database_path" type="text" required autocomplete="off" placeholder="/绝对路径/到/goalboard.db"><small>请输入你明确要迁移的本机 GoalBoard 数据库路径。</small></label>
+      <label>迁移后项目名 <small>可选</small><input name="display_name" type="text" maxlength="160" autocomplete="off" placeholder="留空则使用旧 Board 的名称"></label>
+      <p class="project-migration-warning">确认后，来源 DB 会由 GoalBoard 的受管理项目目录接管，原位置不再保留该 DB；Goal、Claim、Run、Evidence 和审计历史会原样迁入。迁移失败时来源 DB 不会被移动。</p>
+      <label class="project-migration-confirm"><input name="user_confirmed" type="checkbox"><span>我确认要迁移这份已有 GoalBoard 数据，并理解成功后来源 DB 将移入 GoalBoard 管理目录。</span></label>
+      <p class="project-migration-error" data-project-migration-error role="alert" hidden></p>
+    </div>
+    <footer><button type="button" data-close-project-migration>取消</button><button class="project-migration-submit" type="submit" data-project-migration-submit>确认迁移</button></footer>
+  </form>
+</dialog>`;
+}
+
+export function renderGoalBoardProjectIndex(projects: readonly WebProjectNavigation[]): string {
+  const projectRows = projects
+    .map(
+      (project) => `<li><a href="/projects/${encodeURIComponent(project.project_id)}"><span><strong>${escapeHtml(project.display_name)}</strong><span>打开这个项目的 Goal Tree</span></span>${icon("chevron-down")}</a></li>`,
+    )
+    .join("");
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>选择项目 · GoalBoard</title>
+  <style>${STYLES}${PROJECT_INDEX_STYLES}</style>
+</head>
+<body class="project-index-page">
+  ${renderIconSprite()}
+  <header class="topbar">
+    <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
+    <div class="project-context"><strong>项目列表</strong><small>选择后只改变当前网页浏览位置</small></div>
+  </header>
+  <main class="project-index">
+    <section class="project-index-panel" aria-labelledby="project-index-title">
+      <header class="project-index-heading">
+        <h1 id="project-index-title">选择一个项目</h1>
+        <p>项目由你在当前 Runtime 中通过 GoalBoard Skill 创建、连接或迁移。网页不会创建项目，也不会绑定或切换 Runtime Session。</p>
+      </header>
+      ${projects.length
+        ? `<ul class="project-list">${projectRows}</ul>`
+        : `<div class="project-index-empty"><h2>还没有 GoalBoard 项目</h2><p>请在当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目。这个页面不会自动创建项目。</p></div>`}
+      <section class="project-index-migration"><div><strong>已有一份旧的 GoalBoard DB？</strong><small>只有你明确选择并确认后，才会迁移它并保留已有历史。</small></div><button class="project-index-migrate" type="button" data-open-project-migration>迁移已有 GoalBoard 数据</button></section>
+      <p class="project-index-note">选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。</p>
+    </section>
+  </main>
+  ${renderProjectMigrationDialog()}
+  <script>${PROJECT_INDEX_CLIENT_SCRIPT}</script>
+</body>
+</html>`;
+}
+
+function prefixLocalLinks(html: string, routePrefix: string): string {
+  const prefixed = routePrefix ? html.replaceAll('href="/', `href="${routePrefix}/`) : html;
+  return prefixed.replaceAll('href="__PROJECT_INDEX__"', 'href="/"');
+}
+
 export function renderGoalBoardWeb(
   view: GoalBoardWebView,
   requestedGoalId?: string,
   archiveView = false,
   decisionView = false,
+  trashView = false,
 ): string {
-  const visibleGoals = archiveView ? view.archived_goals : view.goals;
+  const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
+  const collectionView = archiveView || trashView;
+  const collectionTitle = trashView ? "回收站" : archiveView ? "已归档" : "Goal Tree";
+  const searchPlaceholder = trashView
+    ? "筛选回收站 Goal"
+    : archiveView
+      ? "筛选已归档 Goal"
+      : "筛选 ID 或标题";
+  const collectionSuffix = trashView ? "回收站" : archiveView ? "归档" : "";
   const selected = decisionView
     ? undefined
     : visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
-      (archiveView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
+      (collectionView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
       visibleGoals[0];
   const selectedId = selected?.goal.goal_id ?? "";
   const title = decisionView
     ? "等待你的决定 · GoalBoard"
     : selected
     ? selected.goal.title + " · GoalBoard"
+    : trashView
+      ? "回收站 · GoalBoard"
     : archiveView
       ? "已归档 Goal · GoalBoard"
       : "GoalBoard";
-  return `<!--
+  const phaseSummary = [
+    { label: "澄清中", count: view.counts.clarifying },
+    { label: "执行中", count: view.counts.executing },
+    { label: "复核中", count: view.counts.reviewing },
+    { label: "重新验证中", count: view.counts.revalidating },
+  ]
+    .filter((item) => item.count > 0)
+    .map((item) => `${item.label} ${item.count}`)
+    .join(" · ");
+  const blockedCount =
+    view.counts.clarification_blocked +
+    view.counts.execution_blocked +
+    view.counts.review_blocked +
+    view.counts.revalidation_blocked +
+    view.counts.invalidated;
+  const footerStatus = [phaseSummary, blockedCount > 0 ? `受阻 ${blockedCount}` : ""]
+    .filter(Boolean)
+    .join(" · ") || "当前没有进行中的 Goal";
+  const collectionNote = trashView
+    ? "可恢复；历史与关联处理记录会保留"
+    : archiveView
+      ? "可随时恢复"
+      : footerStatus;
+  const projectContext = `<div class="project-context"><strong>项目：</strong><span>${escapeHtml(view.project?.display_name ?? "当前项目")}</span>${view.project ? '<a href="__PROJECT_INDEX__">切换项目</a>' : ""}${view.demo ? "<small>示例数据</small>" : ""}<span class="sync-state" data-sync-state>已同步</span></div>`;
+  const html = `<!--
 THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
 OWN-WORLD: 使用参考图的高密度桌面工作台语言：顶部全局栏、左侧 IDE Goal Tree、右侧连续文档。
 STORY: 从 Tree 选择 Goal，依次读业务逻辑、阻塞、验收、Runtime 闭环、上下游关系与风险历史。
@@ -3552,37 +4327,41 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <title>${escapeHtml(title)}</title>
   <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
-<body data-board-view="${decisionView ? "decisions" : archiveView ? "archive" : "current"}">
+<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}">
   ${renderIconSprite()}
   <div class="app">
     <header class="topbar">
       <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
-      <div class="source"><strong>数据源:</strong> <span>${escapeHtml(view.source_label)}</span> <small>${view.demo ? "示例数据" : "（本地）"}</small> ${icon("chevron-down")}<span class="sync-state" data-sync-state>已同步</span></div>
+      ${projectContext}
       <div class="top-spacer"></div>
-      <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="在当前 Goal Tree 内搜索" aria-label="搜索 Goal"><kbd>⌘F</kbd></label>
+      <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="${trashView ? "在回收站内搜索" : archiveView ? "在已归档 Goal 中搜索" : "在当前 Goal Tree 内搜索"}" aria-label="${trashView ? "搜索回收站" : archiveView ? "搜索已归档 Goal" : "搜索 Goal"}"><kbd>⌘F</kbd></label>
       <button class="top-action" type="button" data-open-create aria-label="新建目标">${icon("plus")}<span>新建目标</span></button>
       <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
-      <a class="top-action" data-view-action href="${archiveView ? "/" : "/archive"}">${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
+      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
+      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>
     <main class="workspace" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
-        <header class="tree-heading"><h2>${archiveView ? "已归档" : "Goal Tree"}</h2><span data-tree-count>${visibleGoals.length}</span><div class="tree-heading-actions">${archiveView ? `<a class="icon-button" href="/" aria-label="返回 Goal Tree">${icon("tree")}</a>` : `<button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button><a class="icon-button" href="/archive" aria-label="查看已归档 Goal">${icon("archive")}</a>`}<button class="icon-button" type="button" data-focus-filter aria-label="筛选目标">${icon("filter")}</button></div></header>
-        <label class="tree-search">${icon("search")}<input type="search" data-tree-search placeholder="${archiveView ? "筛选已归档 Goal" : "筛选 ID 或标题"}" aria-label="筛选 Goal Tree"></label>
-        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="Goal Tree 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}</div>
-        <footer class="tree-footer" data-tree-footer><span>共 ${visibleGoals.length} 个${archiveView ? "归档" : ""}目标</span><small>${archiveView ? "可随时恢复" : `${view.counts.claimed} 进行中 · ${view.counts.blocked} 阻塞`}</small></footer>
+        <header class="tree-heading"><h2>${collectionTitle}</h2><span data-tree-count>${visibleGoals.length}</span><div class="tree-heading-actions">${collectionView ? `<a class="icon-button" href="/" aria-label="返回 Goal Tree">${icon("tree")}</a>` : `<button class="icon-button" type="button" data-open-create aria-label="新建目标">${icon("plus")}</button>`}${!archiveView ? `<a class="icon-button" href="/archive" aria-label="查看已归档 Goal">${icon("archive")}</a>` : ""}${!trashView ? `<a class="icon-button" href="/trash" aria-label="查看回收站">${icon("archive")}</a>` : ""}<button class="icon-button" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="筛选目标">${icon("filter")}</button></div></header>
+        <label class="tree-search">${icon("search")}<input type="search" data-tree-search placeholder="${searchPlaceholder}" aria-label="筛选${collectionTitle}"></label>
+        ${renderTreeStatusFilter(visibleGoals)}
+        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="Goal Tree 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>没有符合当前筛选条件的 Goal。</p><button type="button" data-clear-tree-filter>清除所有筛选</button></div></div>
+        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${collectionSuffix}">共 ${visibleGoals.length} 个${collectionSuffix}目标</span><small>${collectionNote}</small></footer>
       </aside>
       <div class="tree-resizer" role="separator" aria-label="调整 Goal Tree 宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${decisionView ? renderDecisionCenter(view) : visibleGoals.length ? visibleGoals.map((item) => renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
+        ${decisionView ? renderDecisionCenter(view) : visibleGoals.length ? visibleGoals.map((item) => trashView ? renderTrashGoalDocument(item, item.goal.goal_id === selectedId) : renderGoalDocument(item, view, item.goal.goal_id === selectedId)).join("") : trashView ? `<div class="archive-empty">${icon("archive")}<h1>回收站是空的</h1><p>移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。</p><a href="/">返回 Goal Tree</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
       </section>
     </main>
   </div>
   ${renderCreateDialog(view)}
+  ${renderGoalTrashDialog()}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
   <script>${CLIENT_SCRIPT}</script>
 </body>
 </html>`;
+  return prefixLocalLinks(html, view.route_prefix);
 }

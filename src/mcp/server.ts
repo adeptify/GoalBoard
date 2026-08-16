@@ -3,9 +3,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import {
+  GoalBoardProjectCatalog,
+  type GoalBoardRuntimeContextResolution,
+  type RuntimeProjectSuggestionClue,
+  type RuntimeWorkContext,
+} from "../projects/catalog.js";
+import {
+  applyPostInstallProjectSelection,
+  type GoalBoardPostInstallProjectAction,
+  type GoalBoardPostInstallProjectStarter,
+} from "../install/postinstall-project-selection.js";
 import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
-import type { ClaimRequest, CreateGoalInput } from "../v1/types.js";
+import type { ClaimRequest, CreateGoalInput, GoalTrashResult } from "../v1/types.js";
 import { importV3Board, type LegacyV3ImportInput } from "../v1/migration.js";
 
 const SERVER_INFO = { name: "goalboard-mcp", version: "1.0.0" };
@@ -17,11 +28,68 @@ const V1_COMMON = {
 
 const V1_CLAIM_ROLE = {
   type: "string",
-  enum: ["clarifier", "executor", "cross_reviewer", "adversarial_reviewer", "revalidator"],
+  enum: ["clarifier", "executor", "self_verifier", "cross_reviewer", "adversarial_reviewer", "revalidator"],
 };
 
 const V1_STRING = { type: "string" };
 const V1_STRING_ARRAY = { type: "array", items: V1_STRING };
+const DRAFT_DIALOGUE_FACT = {
+  type: "object",
+  properties: {
+    statement: V1_STRING,
+    source_kind: { type: "string", enum: ["user_answer", "repository_fact", "document_fact"] },
+    source_refs: V1_STRING_ARRAY,
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    confirmed_by_user: { type: "boolean" },
+  },
+  required: ["statement", "source_kind"],
+};
+const DRAFT_DIALOGUE_ASSUMPTION = {
+  type: "object",
+  properties: {
+    statement: V1_STRING,
+    source_refs: V1_STRING_ARRAY,
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+  },
+  required: ["statement"],
+};
+const GOAL_TREE_AFFECTED_OBJECT = {
+  type: "object",
+  properties: {
+    object_type: { type: "string", enum: ["goal", "relation", "risk", "policy", "candidate", "rewire"] },
+    object_id: V1_STRING,
+  },
+  required: ["object_type", "object_id"],
+};
+const GOAL_TREE_ITEM = {
+  type: "object",
+  properties: {
+    item_id: V1_STRING,
+    kind: {
+      type: "string",
+      enum: ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
+    },
+    operation: { type: "string", enum: ["create", "update", "deactivate"] },
+    payload: { type: "object" },
+    source_refs: V1_STRING_ARRAY,
+    reason: V1_STRING,
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    affected_objects: { type: "array", items: GOAL_TREE_AFFECTED_OBJECT },
+    requires_user_confirmation: { type: "boolean" },
+    supersedes_item_id: { type: ["string", "null"] },
+  },
+  required: ["kind", "operation", "payload", "source_refs", "reason", "confidence", "affected_objects"],
+};
+const GOAL_TREE_ITEM_DECISION = {
+  type: "object",
+  properties: {
+    item_id: V1_STRING,
+    decision: { type: "string", enum: ["confirm", "reject", "revise"] },
+    reason: V1_STRING,
+    revised_item: GOAL_TREE_ITEM,
+  },
+  required: ["item_id", "decision"],
+};
 
 export type GoalBoardMcpAudience = "runtime" | "management";
 
@@ -30,6 +98,38 @@ export interface GoalBoardRuntimeConnection {
   boardId: string;
   webBaseUrl: string;
 }
+
+/**
+ * Host-only context for a Runtime MCP process. The model never supplies this
+ * identity through a tool argument: it comes from the Runtime host and is used
+ * only after the GoalBoard Skill explicitly asks to resolve it.
+ */
+export interface GoalBoardRuntimeContextHost {
+  homeDirectory?: string;
+  runtimeContext: RuntimeWorkContext;
+  webBaseUrl?: string;
+  /**
+   * Host-only non-authoritative hints for a fresh Session. They may rank
+   * projects, but never establish a binding and are never supplied by a
+   * Runtime MCP tool argument.
+   */
+  projectSuggestionClues?: readonly RuntimeProjectSuggestionClue[];
+  /** Optional host-owned launcher for an explicitly confirmed project start action. */
+  postInstallProjectStarter?: GoalBoardPostInstallProjectStarter;
+}
+
+/**
+ * The MCP host supplies this from the actual user conversation/session. A
+ * Runtime model never gets to choose it in a tool argument.
+ */
+export interface GoalBoardTrustedUserDecisionContext {
+  actor_id: string;
+  conversation_ref: string;
+  message_ref: string;
+  whole_confirmation_prompted?: boolean;
+}
+
+export type GoalBoardTrustedUserDecisionProvider = () => GoalBoardTrustedUserDecisionContext | null;
 
 interface McpToolDefinition {
   name: string;
@@ -129,6 +229,21 @@ const V1_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: "goalboard_v1_available",
+    description:
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；Runtime 自主选择，不派发唯一下一份。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        actor_id: { type: "string" },
+        capabilities: { type: "array", items: { type: "string" } },
+        goal_mode_attestation: { type: "boolean" },
+      },
+      required: ["board_id", "actor_id"],
+    },
+  },
+  {
     name: "goalboard_v1_explain",
     description: "解释一个 Goal 为什么现在可做或被什么阻塞。",
     inputSchema: {
@@ -163,9 +278,183 @@ const V1_TOOLS: McpToolDefinition[] = [
       required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
     },
   },
+  {
+    name: "goalboard_v1_select_goal",
+    description:
+      "当前 Runtime 从 Available 集合选择一项后，原子创建 Claim 和工作 Run；成功后返回唯一 work_state。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        goal_id: { type: "string" },
+        actor_id: { type: "string" },
+        role: V1_CLAIM_ROLE,
+        capabilities: { type: "array", items: { type: "string" } },
+        goal_mode_attestation: { type: "boolean" },
+        lease_seconds: { type: "integer" },
+        strengthen_policy: { type: "object" },
+        idempotency_key: { type: "string" },
+      },
+      required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_draft_dialogue_start",
+    description:
+      "用户在当前 Runtime 输入粗略想法后，原子创建最小 Draft、clarifier Claim 和 Run；不会把推断写成 canonical Contract。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        rough_idea: V1_STRING,
+        draft_title: V1_STRING,
+        goal_id: V1_STRING,
+        actor_id: V1_STRING,
+        capabilities: V1_STRING_ARRAY,
+        goal_mode_attestation: { type: "boolean" },
+        lease_seconds: { type: "integer" },
+        idempotency_key: V1_STRING,
+      },
+      required: ["board_id", "rough_idea", "actor_id", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_draft_dialogue_turn",
+    description:
+      "持久化用户本轮自然语言回答、当前理解、可追溯事实、明确假设及唯一下一步；没有关键未知项时写入待确认提案摘要。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        goal_id: V1_STRING,
+        run_id: V1_STRING,
+        actor_id: V1_STRING,
+        user_message: V1_STRING,
+        current_understanding: V1_STRING,
+        known_facts: { type: "array", items: DRAFT_DIALOGUE_FACT },
+        assumptions: { type: "array", items: DRAFT_DIALOGUE_ASSUMPTION },
+        next_question: { type: ["string", "null"] },
+        proposal_summary: { type: ["string", "null"] },
+        idempotency_key: V1_STRING,
+      },
+      required: [
+        "board_id",
+        "goal_id",
+        "run_id",
+        "actor_id",
+        "user_message",
+        "current_understanding",
+        "idempotency_key",
+      ],
+    },
+  },
+  {
+    name: "goalboard_v1_draft_dialogue_resume",
+    description:
+      "在新 Session 中读取已持久化的 Draft 澄清进度；若没有活跃 Run，当前 Runtime 原子恢复 clarifier Claim 和 Run。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        goal_id: V1_STRING,
+        actor_id: V1_STRING,
+        capabilities: V1_STRING_ARRAY,
+        goal_mode_attestation: { type: "boolean" },
+        lease_seconds: { type: "integer" },
+        idempotency_key: V1_STRING,
+      },
+      required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_goal_tree_propose",
+    description:
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        actor_id: V1_STRING,
+        discovered_in_run_id: V1_STRING,
+        root_goal_id: { type: ["string", "null"] },
+        summary: V1_STRING,
+        items: { type: "array", items: GOAL_TREE_ITEM },
+        base_event_cursor: { type: "integer", minimum: 0 },
+        supersedes_proposal_id: { type: ["string", "null"] },
+        idempotency_key: V1_STRING,
+      },
+      required: ["board_id", "actor_id", "discovered_in_run_id", "summary", "items", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_goal_tree_read",
+    description:
+      "读取原生 Goal Tree 提案与无损映射的历史 Contract Proposal、Candidate、Rewire；可按 proposal_id 或 root Goal 恢复对话。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        proposal_id: V1_STRING,
+        root_goal_id: V1_STRING,
+        include_legacy: { type: "boolean" },
+      },
+      required: ["board_id"],
+    },
+  },
+  {
+    name: "goalboard_v1_goal_tree_check",
+    description:
+      "按每个条目保存的对象基准检查并持久化并发冲突；某个条目冲突不会丢弃未冲突条目。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        proposal_id: V1_STRING,
+        actor_id: V1_STRING,
+        idempotency_key: V1_STRING,
+      },
+      required: ["board_id", "proposal_id", "actor_id", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_goal_tree_decide",
+    description:
+      "把当前对话中用户对 Goal Tree 提案的逐项确认、拒绝或修订原子物化；每个决定都记录可信用户与消息引用。Runtime 不能自行充当用户。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        proposal_id: V1_STRING,
+        runtime_actor_id: V1_STRING,
+        authority: {
+          type: "object",
+          properties: {
+            actor_id: V1_STRING,
+            actor_kind: { type: "string", enum: ["user"] },
+            authority_source: { type: "string", enum: ["runtime_trusted_host", "web", "management"] },
+            conversation_ref: V1_STRING,
+            message_ref: V1_STRING,
+            whole_confirmation_prompted: { type: "boolean" },
+          },
+          required: ["actor_id", "actor_kind", "authority_source", "conversation_ref", "message_ref"],
+        },
+        decisions: { type: "array", minItems: 1, items: GOAL_TREE_ITEM_DECISION },
+        reason: V1_STRING,
+        confirm_all_pending: { type: "boolean" },
+        idempotency_key: V1_STRING,
+      },
+      required: ["board_id", "proposal_id", "authority", "idempotency_key"],
+    },
+  },
   v1PayloadTool(
     "goalboard_v1_release",
     "由领取者释放 Claim。",
+    { claim_id: V1_STRING, actor_id: V1_STRING, reason: V1_STRING, idempotency_key: V1_STRING },
+    ["claim_id", "actor_id", "reason", "idempotency_key"],
+  ),
+  v1PayloadTool(
+    "goalboard_v1_revoke_claim",
+    "管理入口或恢复流程撤销失效 Claim，并在同一事务中中断其未结束 Run；不向 Runtime MCP 暴露。",
     { claim_id: V1_STRING, actor_id: V1_STRING, reason: V1_STRING, idempotency_key: V1_STRING },
     ["claim_id", "actor_id", "reason", "idempotency_key"],
   ),
@@ -276,6 +565,42 @@ const V1_TOOLS: McpToolDefinition[] = [
     "设置当前产品 Goal。",
     { goal_id: V1_STRING, reason: V1_STRING, actor_id: V1_STRING, idempotency_key: V1_STRING },
     ["goal_id", "reason", "actor_id", "idempotency_key"],
+  ),
+  v1PayloadTool(
+    "goalboard_v1_goal_trash",
+    "仅在当前用户已明确确认后，把当前项目的一条 Goal 移入可恢复回收站；不会物理删除历史。",
+    {
+      goal_id: V1_STRING,
+      actor_id: V1_STRING,
+      user_confirmed: {
+        type: "boolean",
+        description: "当前对话中的用户已明确要求移入回收站；含糊的“清理一下”不能传 true",
+      },
+      reason: V1_STRING,
+      idempotency_key: V1_STRING,
+    },
+    ["goal_id", "actor_id", "user_confirmed", "reason", "idempotency_key"],
+  ),
+  v1PayloadTool(
+    "goalboard_v1_goal_trash_list",
+    "读取当前项目回收站中的 Goal；只读，不要求用户确认，也不打开 Web。",
+    {},
+    [],
+  ),
+  v1PayloadTool(
+    "goalboard_v1_goal_restore",
+    "仅在当前用户已明确确认后，恢复当前项目回收站中的一条 Goal 及可安全恢复的 Relation。",
+    {
+      goal_id: V1_STRING,
+      actor_id: V1_STRING,
+      user_confirmed: {
+        type: "boolean",
+        description: "当前对话中的用户已明确要求恢复这条 Goal",
+      },
+      reason: V1_STRING,
+      idempotency_key: V1_STRING,
+    },
+    ["goal_id", "actor_id", "user_confirmed", "reason", "idempotency_key"],
   ),
   v1PayloadTool(
     "goalboard_v1_run_start",
@@ -511,14 +836,133 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
 ];
 
-const TOOLS: McpToolDefinition[] = V1_TOOLS;
+const CONTEXT_TOOLS: McpToolDefinition[] = [
+  {
+    name: "goalboard_v1_context_resolve",
+    description:
+      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；未绑定时返回当前对话应让用户选择或创建项目的结果。",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "goalboard_v1_context_list_projects",
+    description:
+      "列出 GoalBoard 自己管理的项目、当前 Runtime 工作入口状态及宿主建议；不暴露数据库路径，也不创建或修改绑定。",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "goalboard_v1_context_reject_suggestion",
+    description:
+      "用户在当前 Runtime 对话明确拒绝一个宿主建议项目后，停止在当前 Session 重复建议它；不绑定、不删除项目，也不影响其他 Session。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: V1_STRING,
+        actor_id: V1_STRING,
+        user_confirmed: { type: "boolean", description: "当前对话中用户已明确拒绝这个候选项目" },
+      },
+      required: ["project_id", "actor_id", "user_confirmed"],
+    },
+  },
+  {
+    name: "goalboard_v1_context_bind",
+    description:
+      "用户在当前 Runtime 对话明确选择项目后，绑定当前宿主工作入口；已有不同绑定时还必须明确确认切换。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: V1_STRING,
+        actor_id: V1_STRING,
+        user_confirmed: { type: "boolean", description: "当前对话中用户已明确选择此项目" },
+        rebind_confirmed: { type: "boolean", description: "已有绑定改到其他项目时，用户已明确确认切换" },
+      },
+      required: ["project_id", "actor_id", "user_confirmed"],
+    },
+  },
+  {
+    name: "goalboard_v1_context_unbind",
+    description:
+      "用户在当前 Runtime 对话明确要求后，解除当前工作入口与项目的绑定；不会删除项目、数据库或其他 Runtime 的绑定。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actor_id: V1_STRING,
+        user_confirmed: { type: "boolean", description: "当前对话中用户已明确要求解除当前工作入口的绑定" },
+      },
+      required: ["actor_id", "user_confirmed"],
+    },
+  },
+  {
+    name: "goalboard_v1_context_create_and_bind",
+    description:
+      "用户在当前 Runtime 对话明确要求新建项目时，在 GoalBoard 自己的数据目录创建项目并绑定当前工作入口；不修改项目文件或 Runtime 配置。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        display_name: V1_STRING,
+        actor_id: V1_STRING,
+        user_confirmed: { type: "boolean", description: "当前对话中用户已明确要求创建这个项目" },
+        rebind_confirmed: { type: "boolean", description: "已有绑定改到新项目时，用户已明确确认切换" },
+        idempotency_key: V1_STRING,
+      },
+      required: ["display_name", "actor_id", "user_confirmed", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_project_delete",
+    description:
+      "在当前对话获得独立删除确认后，删除一个 GoalBoard 托管项目、其绑定和数据库；有有效 Claim 或未结束 Run 时拒绝删除。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: V1_STRING,
+        actor_id: V1_STRING,
+        delete_confirmed: { type: "boolean", description: "用户已在当前对话单独明确确认删除此项目及其数据库" },
+        idempotency_key: V1_STRING,
+      },
+      required: ["project_id", "actor_id", "delete_confirmed", "idempotency_key"],
+    },
+  },
+  {
+    name: "goalboard_v1_postinstall_project_selection",
+    description:
+      "安装后由当前 Runtime 根据用户逐项确认的 action_id 执行项目创建、导入、启用或启动；默认全跳过，不修改项目文件或 Runtime 配置。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actions: { type: "array", items: { type: "object" } },
+        confirmed_action_ids: { type: "array", items: V1_STRING },
+        idempotency_key: V1_STRING,
+      },
+      required: ["actions", "confirmed_action_ids", "idempotency_key"],
+    },
+  },
+];
+
+const TOOLS: McpToolDefinition[] = [...V1_TOOLS, ...CONTEXT_TOOLS];
 
 const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_snapshot",
   "goalboard_v1_contract",
   "goalboard_v1_ready",
+  "goalboard_v1_available",
   "goalboard_v1_explain",
   "goalboard_v1_claim",
+  "goalboard_v1_select_goal",
+  "goalboard_v1_draft_dialogue_start",
+  "goalboard_v1_draft_dialogue_turn",
+  "goalboard_v1_draft_dialogue_resume",
+  "goalboard_v1_goal_tree_propose",
+  "goalboard_v1_goal_tree_read",
+  "goalboard_v1_goal_tree_check",
+  "goalboard_v1_goal_tree_decide",
   "goalboard_v1_release",
   "goalboard_v1_run_start",
   "goalboard_v1_revalidate",
@@ -526,16 +970,42 @@ const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_evidence_submit",
   "goalboard_v1_review_submit",
   "goalboard_v1_complete",
+  "goalboard_v1_goal_trash",
+  "goalboard_v1_goal_trash_list",
+  "goalboard_v1_goal_restore",
   "goalboard_v1_contract_propose",
   "goalboard_v1_candidate_submit",
   "goalboard_v1_dependency_propose",
 ]);
+
+const RUNTIME_CONTEXT_TOOL_NAMES = new Set([
+  "goalboard_v1_context_resolve",
+  "goalboard_v1_context_list_projects",
+  "goalboard_v1_context_reject_suggestion",
+  "goalboard_v1_context_bind",
+  "goalboard_v1_context_unbind",
+  "goalboard_v1_context_create_and_bind",
+  "goalboard_v1_project_delete",
+  "goalboard_v1_postinstall_project_selection",
+]);
+
+const RUNTIME_TOOL_NAMES = new Set([...RUNTIME_V1_TOOL_NAMES, ...RUNTIME_CONTEXT_TOOL_NAMES]);
 
 function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
   const clone = structuredClone(tool);
   const inputProperties = clone.inputSchema.properties as Record<string, unknown>;
   delete inputProperties.database_path;
   delete inputProperties.web_base_url;
+  if (tool.name === "goalboard_v1_goal_tree_decide") {
+    delete inputProperties.authority;
+    const required = clone.inputSchema.required as string[];
+    clone.inputSchema.required = required
+      .filter((field) => field !== "authority")
+      .concat(required.includes("runtime_actor_id") ? [] : ["runtime_actor_id"]);
+    clone.description =
+      "在当前 Runtime 对话中执行用户已经表达的逐项 Goal Tree 决定。可信用户身份、对话和消息引用由宿主注入；不要传递或伪造用户身份。";
+    return clone;
+  }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
   const payload = inputProperties.payload as { properties: Record<string, unknown> };
   payload.properties.actor_kind = {
@@ -547,23 +1017,64 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
   return clone;
 }
 
-const RUNTIME_TOOLS = V1_TOOLS
-  .filter((tool) => RUNTIME_V1_TOOL_NAMES.has(tool.name))
+const RUNTIME_TOOLS = TOOLS
+  .filter((tool) => RUNTIME_TOOL_NAMES.has(tool.name))
   .map(runtimeToolDefinition);
+
+function runtimeContextHostFromEnvironment(): GoalBoardRuntimeContextHost | null {
+  const runtimeId = process.env.GOALBOARD_RUNTIME_ID;
+  if (!runtimeId) return null;
+  return {
+    homeDirectory: process.env.GOALBOARD_HOME,
+    runtimeContext: {
+      runtime_id: runtimeId,
+      stable_work_context_id: process.env.GOALBOARD_WORK_CONTEXT_ID ?? null,
+      host_declares_stable: process.env.GOALBOARD_WORK_CONTEXT_STABLE === "true",
+    },
+    webBaseUrl: process.env.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
+    // Environment fallback intentionally provides no project clues. A Runtime
+    // host must opt in to supplying its own non-authoritative hints; GoalBoard
+    // never scans a workspace or derives them from environment paths.
+    projectSuggestionClues: [],
+  };
+}
+
+/** The model cannot choose a different Runtime work entry for enable/start. */
+function runtimePostInstallActions(
+  value: unknown,
+  context: RuntimeWorkContext,
+): GoalBoardPostInstallProjectAction[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item as GoalBoardPostInstallProjectAction;
+    const action = item as Record<string, unknown>;
+    if (action.kind !== "enable" && action.kind !== "start") return action as GoalBoardPostInstallProjectAction;
+    return { ...action, context } as GoalBoardPostInstallProjectAction;
+  });
+}
 
 export class GoalBoardServer {
   audience: GoalBoardMcpAudience;
   runtimeConnection: GoalBoardRuntimeConnection | null;
+  runtimeContextHost: GoalBoardRuntimeContextHost | null;
+  trustedUserDecisionProvider: GoalBoardTrustedUserDecisionProvider | null;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
     runtimeConnection?: GoalBoardRuntimeConnection | null,
+    runtimeContextHost?: GoalBoardRuntimeContextHost | null,
+    trustedUserDecisionProvider?: GoalBoardTrustedUserDecisionProvider | null,
   ) {
     this.audience =
       audience ?? (process.env.GOALBOARD_MCP_AUDIENCE === "management" ? "management" : "runtime");
+    // An explicitly supplied context host is the new connection mode. It must
+    // not accidentally inherit an unrelated legacy DB from the parent process
+    // before the Skill has asked to resolve the current entry.
+    const hasExplicitContextHost = runtimeContextHost != null;
     this.runtimeConnection =
       runtimeConnection ??
-      (process.env.GOALBOARD_DATABASE &&
+      (!hasExplicitContextHost &&
+      process.env.GOALBOARD_DATABASE &&
       process.env.GOALBOARD_BOARD_ID &&
       process.env.GOALBOARD_WEB_URL
         ? {
@@ -572,16 +1083,27 @@ export class GoalBoardServer {
             webBaseUrl: process.env.GOALBOARD_WEB_URL,
           }
         : null);
+    this.runtimeContextHost =
+      runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
+    this.trustedUserDecisionProvider = trustedUserDecisionProvider ?? null;
   }
 
   async callTool(name: string, arguments_: Record<string, unknown>): Promise<string> {
     this.assertToolAllowed(name, arguments_);
+    if (name === "goalboard_v1_context_resolve") return this.resolveRuntimeContext();
+    if (name === "goalboard_v1_context_list_projects") return this.listRuntimeProjects();
+    if (name === "goalboard_v1_context_reject_suggestion") return this.rejectRuntimeContextSuggestion(arguments_);
+    if (name === "goalboard_v1_context_bind") return this.bindRuntimeContext(arguments_);
+    if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_);
+    if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_);
+    if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_);
+    if (name === "goalboard_v1_postinstall_project_selection") return this.applyPostInstallProjectSelection(arguments_);
     return this.callV1Tool(name, arguments_);
   }
 
   private assertToolAllowed(name: string, arguments_: Record<string, unknown>): void {
     if (this.audience === "management") return;
-    if (!RUNTIME_V1_TOOL_NAMES.has(name)) {
+    if (!RUNTIME_TOOL_NAMES.has(name)) {
       throw new GoalBoardV1Error(
         "mcp.authority_denied",
         `MCP 权限拒绝：${name} 只允许用户或管理入口调用；Runtime 应提交 Candidate 或把决定交给用户`,
@@ -602,10 +1124,14 @@ export class GoalBoardServer {
         "MCP 连接拒绝：Runtime 不能覆盖宿主固定的 SQLite 或 goal_url",
       );
     }
+    if (RUNTIME_CONTEXT_TOOL_NAMES.has(name)) {
+      this.requireRuntimeContextHost();
+      return;
+    }
     if (!this.runtimeConnection) {
       throw new GoalBoardV1Error(
         "mcp.connection_incomplete",
-        "MCP 宿主配置不完整：Runtime 连接必须固定 GOALBOARD_DATABASE、GOALBOARD_BOARD_ID 和 GOALBOARD_WEB_URL",
+        "MCP 尚未连接项目：请先由统一 GoalBoard Skill 调用 goalboard_v1_context_resolve，或由宿主提供固定连接",
       );
     }
     if (arguments_.board_id !== this.runtimeConnection.boardId) {
@@ -614,6 +1140,187 @@ export class GoalBoardServer {
         `MCP 连接拒绝：Runtime 必须使用宿主固定的 board_id ${this.runtimeConnection.boardId}`,
       );
     }
+  }
+
+  private requireRuntimeContextHost(): GoalBoardRuntimeContextHost {
+    if (!this.runtimeContextHost) {
+      throw new GoalBoardV1Error(
+        "mcp.context_host_missing",
+        "MCP 宿主没有提供当前 Runtime 的稳定工作入口；无法解析或建立项目绑定",
+      );
+    }
+    return this.runtimeContextHost;
+  }
+
+  private async resolveRuntimeContext(): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    // A later resolve must never keep using an earlier in-process answer.
+    this.runtimeConnection = null;
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      return this.contextResolutionResponse(
+        catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues),
+        host,
+      );
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async listRuntimeProjects(): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const current = catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues);
+      if (current.status !== "bound") this.runtimeConnection = null;
+      return JSON.stringify(
+        {
+          context: current.context,
+          status: current.status,
+          reason: current.reason,
+          next_action: current.next_action,
+          current_project: current.project,
+          suggested_projects: current.suggested_projects,
+          projects: catalog.listProjects().map((project) => ({
+            project_id: project.project_id,
+            display_name: project.display_name,
+            board_id: project.board_id,
+            source: project.source,
+          })),
+        },
+        null,
+        2,
+      );
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async rejectRuntimeContextSuggestion(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const result = catalog.rejectRuntimeContextSuggestion({
+        context: host.runtimeContext,
+        project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
+        actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
+        user_confirmed: arguments_.user_confirmed === true,
+        suggestion_clues: host.projectSuggestionClues ?? [],
+      });
+      // A rejection only applies while unbound. Do not let an earlier process
+      // connection survive a new suggestion-first routing decision.
+      this.runtimeConnection = null;
+      return JSON.stringify(result, null, 2);
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async bindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const resolution = catalog.bindRuntimeContext({
+        context: host.runtimeContext,
+        project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
+        actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
+        user_confirmed: arguments_.user_confirmed === true,
+        rebind_confirmed: arguments_.rebind_confirmed === true,
+      });
+      return this.contextResolutionResponse(resolution, host);
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async unbindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const result = catalog.unbindRuntimeContext({
+        context: host.runtimeContext,
+        actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
+        user_confirmed: arguments_.user_confirmed === true,
+      });
+      this.runtimeConnection = null;
+      return JSON.stringify(result, null, 2);
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async createAndBindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const resolution = await catalog.createProjectAndBindRuntimeContext({
+        context: host.runtimeContext,
+        display_name: typeof arguments_.display_name === "string" ? arguments_.display_name : "",
+        actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
+        user_confirmed: arguments_.user_confirmed === true,
+        rebind_confirmed: arguments_.rebind_confirmed === true,
+        idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
+      });
+      return this.contextResolutionResponse(resolution, host);
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async deleteRuntimeProject(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      const result = await catalog.deleteProject({
+        project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
+        actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
+        delete_confirmed: arguments_.delete_confirmed === true,
+        idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
+      });
+      if (catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues).status !== "bound") {
+        this.runtimeConnection = null;
+      }
+      return JSON.stringify(result, null, 2);
+    } finally {
+      catalog.close();
+    }
+  }
+
+  private async applyPostInstallProjectSelection(arguments_: Record<string, unknown>): Promise<string> {
+    const host = this.requireRuntimeContextHost();
+    return JSON.stringify(
+      await applyPostInstallProjectSelection({
+        home_directory: host.homeDirectory,
+        actions: runtimePostInstallActions(arguments_.actions, host.runtimeContext),
+        confirmed_action_ids: Array.isArray(arguments_.confirmed_action_ids)
+          ? arguments_.confirmed_action_ids.map((value) => String(value))
+          : [],
+        idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
+        starter: host.postInstallProjectStarter,
+      }),
+      null,
+      2,
+    );
+  }
+
+  private contextResolutionResponse(
+    resolution: GoalBoardRuntimeContextResolution,
+    host: GoalBoardRuntimeContextHost,
+  ): string {
+    const webBaseUrl = host.webBaseUrl ?? "http://127.0.0.1:4173";
+    const connection = resolution.connection
+      ? { ...resolution.connection, web_base_url: webBaseUrl }
+      : null;
+    if (connection) {
+      this.runtimeConnection = {
+        databasePath: connection.database_path,
+        boardId: connection.board_id,
+        webBaseUrl,
+      };
+    } else {
+      this.runtimeConnection = null;
+    }
+    return JSON.stringify({ ...resolution, connection }, null, 2);
   }
 
   private callV1Tool(name: string, arguments_: Record<string, unknown>): string {
@@ -686,6 +1393,14 @@ export class GoalBoardServer {
             goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
           });
           break;
+        case "goalboard_v1_available":
+          result = coordinator.queryAvailable({
+            board_id: String(arguments_.board_id),
+            actor_id: String(arguments_.actor_id),
+            capabilities: (arguments_.capabilities as string[]) ?? [],
+            goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
+          });
+          break;
         case "goalboard_v1_explain":
           result = coordinator.explainGoal({
             board_id: String(arguments_.board_id),
@@ -699,8 +1414,86 @@ export class GoalBoardServer {
         case "goalboard_v1_claim":
           result = coordinator.claimGoal(arguments_ as unknown as ClaimRequest);
           break;
+        case "goalboard_v1_select_goal":
+          result = coordinator.selectGoalAndStart(arguments_ as unknown as ClaimRequest);
+          break;
+        case "goalboard_v1_draft_dialogue_start":
+          result = coordinator.startDraftDialogue(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["startDraftDialogue"]>[0],
+          );
+          break;
+        case "goalboard_v1_draft_dialogue_turn":
+          result = coordinator.recordDraftDialogueTurn(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["recordDraftDialogueTurn"]>[0],
+          );
+          break;
+        case "goalboard_v1_draft_dialogue_resume":
+          result = coordinator.resumeDraftDialogue(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["resumeDraftDialogue"]>[0],
+          );
+          break;
+        case "goalboard_v1_goal_tree_propose":
+          result = coordinator.submitGoalTreeProposal(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["submitGoalTreeProposal"]>[0],
+          );
+          break;
+        case "goalboard_v1_goal_tree_read":
+          result = coordinator.listGoalTreeProposals(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["listGoalTreeProposals"]>[0],
+          );
+          break;
+        case "goalboard_v1_goal_tree_check":
+          result = coordinator.checkGoalTreeProposal(
+            arguments_ as unknown as Parameters<GoalBoardCoordinator["checkGoalTreeProposal"]>[0],
+          );
+          break;
+        case "goalboard_v1_goal_tree_decide": {
+          if (this.audience === "runtime") {
+            const trusted = this.trustedUserDecisionProvider?.();
+            if (!trusted) {
+              throw new GoalBoardV1Error(
+                "mcp.trusted_decision_context_missing",
+                "当前 Runtime 宿主没有提供可信用户消息上下文；不能代替用户确认 Goal Tree 提案",
+              );
+            }
+            const runtimeActorId = typeof arguments_.runtime_actor_id === "string"
+              ? arguments_.runtime_actor_id.trim()
+              : "";
+            if (!runtimeActorId) {
+              throw new GoalBoardV1Error(
+                "mcp.runtime_actor_required",
+                "当前 Runtime 决定需要稳定的 runtime_actor_id，用于审计和恢复",
+              );
+            }
+            result = coordinator.decideGoalTreeProposal({
+              board_id: String(arguments_.board_id),
+              proposal_id: String(arguments_.proposal_id),
+              runtime_actor_id: runtimeActorId,
+              authority: {
+                actor_id: trusted.actor_id,
+                actor_kind: "user",
+                authority_source: "runtime_trusted_host",
+                conversation_ref: trusted.conversation_ref,
+                message_ref: trusted.message_ref,
+                whole_confirmation_prompted: trusted.whole_confirmation_prompted === true,
+              },
+              decisions: arguments_.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"],
+              reason: arguments_.reason == null ? undefined : String(arguments_.reason),
+              confirm_all_pending: arguments_.confirm_all_pending === true,
+              idempotency_key: String(arguments_.idempotency_key),
+            });
+          } else {
+            result = coordinator.decideGoalTreeProposal(
+              arguments_ as unknown as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0],
+            );
+          }
+          break;
+        }
         case "goalboard_v1_release":
           result = coordinator.releaseClaim(this.v1Payload(arguments_));
+          break;
+        case "goalboard_v1_revoke_claim":
+          result = coordinator.revokeClaim(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_relation_add": {
           const payload = this.v1Payload<{
@@ -761,6 +1554,59 @@ export class GoalBoardServer {
             idempotency_key: string;
           }>(arguments_);
           result = coordinator.setActiveGoal(payload.board_id, payload, payload);
+          break;
+        }
+        case "goalboard_v1_goal_trash": {
+          const payload = this.v1Payload<{
+            board_id: string;
+            goal_id: string;
+            actor_id: string;
+            user_confirmed: boolean;
+            reason: string;
+            idempotency_key: string;
+          }>(arguments_);
+          this.requireGoalTrashUserConfirmation(payload.user_confirmed, "移入回收站");
+          // The shared coordinator owns activity checks, Relation transitions,
+          // transactionality, history, and idempotency. MCP only adapts the
+          // user's confirmed current-conversation request.
+          result = this.presentGoalTrashResult(
+            coordinator,
+            payload.board_id,
+            coordinator.setGoalTrashed(
+              payload.board_id,
+              { goal_id: payload.goal_id, trashed: true, reason: payload.reason },
+              { actor_id: payload.actor_id, idempotency_key: payload.idempotency_key },
+            ),
+          );
+          break;
+        }
+        case "goalboard_v1_goal_trash_list": {
+          const boardId = String(arguments_.board_id);
+          result = {
+            goals: coordinator.listTrashedGoals(boardId),
+            observed_event_cursor: store.eventCursor(boardId),
+          };
+          break;
+        }
+        case "goalboard_v1_goal_restore": {
+          const payload = this.v1Payload<{
+            board_id: string;
+            goal_id: string;
+            actor_id: string;
+            user_confirmed: boolean;
+            reason: string;
+            idempotency_key: string;
+          }>(arguments_);
+          this.requireGoalTrashUserConfirmation(payload.user_confirmed, "恢复");
+          result = this.presentGoalTrashResult(
+            coordinator,
+            payload.board_id,
+            coordinator.setGoalTrashed(
+              payload.board_id,
+              { goal_id: payload.goal_id, trashed: false, reason: payload.reason },
+              { actor_id: payload.actor_id, idempotency_key: payload.idempotency_key },
+            ),
+          );
           break;
         }
         case "goalboard_v1_run_start":
@@ -826,6 +1672,69 @@ export class GoalBoardServer {
       ...(arguments_.payload as Record<string, unknown>),
       board_id: String(arguments_.board_id),
     } as T;
+  }
+
+  private requireGoalTrashUserConfirmation(userConfirmed: boolean, action: "移入回收站" | "恢复"): void {
+    if (userConfirmed) return;
+    throw new GoalBoardV1Error(
+      "mcp.user_confirmation_required",
+      `当前 Runtime 只有在用户明确要求${action}指定 Goal 后才能调用；请先在当前对话确认。`,
+    );
+  }
+
+  private presentGoalTrashResult<T extends GoalTrashResult>(
+    coordinator: GoalBoardCoordinator,
+    boardId: string,
+    result: T,
+  ): T & {
+    work_state: ReturnType<GoalBoardCoordinator["getGoalWorkState"]>;
+    next_action: { kind: string; message: string } | null;
+  } {
+    const workState = coordinator.getGoalWorkState({
+      board_id: boardId,
+      goal_id: result.goal.goal_id,
+    });
+    if (result.status === "blocked") {
+      return {
+        ...result,
+        work_state: workState,
+        next_action: {
+          kind: "finish_active_work",
+          message: "这条 Goal 仍有有效 Claim 或未结束 Run；先在当前工作流结束或释放它，再由用户重新确认删除。",
+        },
+      };
+    }
+    if (result.pending_relation_ids.length > 0) {
+      return {
+        ...result,
+        work_state: workState,
+        next_action: {
+          kind: "restore_related_goal",
+          message: "关联 Goal 仍在回收站，相关 Relation 会保持停用；恢复另一端后再查看结果。",
+        },
+      };
+    }
+    if (result.status === "trashed") {
+      return {
+        ...result,
+        work_state: workState,
+        next_action: {
+          kind: "report_recoverable_trash",
+          message: "Goal 已移入回收站，历史仍被保留；用户可在当前对话随时请求恢复。",
+        },
+      };
+    }
+    if (result.status === "restored") {
+      return {
+        ...result,
+        work_state: workState,
+        next_action: {
+          kind: "read_goal_contract",
+          message: "Goal 已恢复；读取其 Contract 或 Available，继续当前状态允许的工作。",
+        },
+      };
+    }
+    return { ...result, work_state: workState, next_action: null };
   }
 
   async handleMessage(

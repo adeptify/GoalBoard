@@ -10,7 +10,7 @@ web
 
 主要用户是同时使用 Codex、Claude Code、Cursor 等 AI Runtime 推进真实项目的个人开发者、产品负责人和小团队。他们需要在多个 Session 或 Runtime 之间持续工作，但不希望靠聊天记录猜测当前目标、下一步、风险和完成标准。
 
-V1 首先服务单设备、单 Workspace 的本地使用场景。Runtime 通过 CLI 或 MCP 主动领取工作；用户通过 Web UI 理解和确认目标，而不是管理 Runtime 进程。
+V1 首先服务单设备、单 Workspace 的本地使用场景。用户在正在对话的 Runtime 中调用统一 Skill；Runtime 通过 MCP 主动选择和领取工作，并在同一对话中澄清与承接用户决定。CLI 是管理和调试入口，Web 是可选查看与确认界面，不是 Runtime 的必经步骤。
 
 ## Product Purpose
 
@@ -40,13 +40,13 @@ GoalBoard 不是另一个 Kanban，也不是 Agent 调度器。它的差异机�
 
 V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 和 Web UI 使用同一套应用语义。
 
-宿主或管理入口负责在 Runtime 工作前启动并验证 `goalboard-mcp` 与 `goalboard-web`。两者必须绑定同一 SQLite、同一 `board_id`，并让 MCP Contract 返回的稳定 `goal_url` 打开 Web 中的同一个 Goal。Runtime 只检查这组固定连接；服务不可用或身份不一致时停止，不自行启动实例、切换数据库或创建另一个真相源。
+安装默认只写入 `~/.goalboard`，不会修改项目或 Runtime 配置，也不会创建、导入、启用或启动项目。安装后提示默认全空；用户在当前对话逐项选择创建、导入、启用或启动时，Skill 通过同一复合 MCP 执行，未选择项保持不变。用户在当前对话调用 Skill 后，Runtime 只通过宿主提供的稳定工作入口解析已确认的项目绑定；真正的新 Session 使用新入口 ID，宿主可提供非权威线索，GoalBoard 也可参考同一 Runtime 最近确认的项目来建议候选，但 Runtime 必须先在当前对话问用户是否关联，绝不自动绑定。用户明确拒绝一个建议时，只在该 Session 不再重复该建议；选择、切换、解绑和删除仍各自需要明确确认。每个 GoalBoard 项目有自己的 SQLite DB。Web 可选；Runtime 不因为 Web 未打开而停止澄清或执行。服务或项目连接不可用时，Runtime 报告事实，不自行创建另一个真相源、猜测项目或改写配置。
 
-典型流程：用户建立或确认 Goal → Board 展示当前 Goal Frontier → Runtime 查询 Ready Set 并原子领取 → Runtime 提交 Run 和 Evidence → Reviewer 或用户完成所需验证 → Board 计算 Goal 是否满足 → 新发现通过 Candidate/Rewire 流程进入 Spine。
+典型流程：用户在当前 Runtime 提出粗略想法或要求继续工作 → Skill 解析经用户确认的项目 → Runtime 对新想法开启 Draft 对话，或从 Available 自主选择一项并原子领取 → Runtime 回传 Run 和 Evidence，并在当前对话引导用户确认提案 → Board 派生一个工作状态并计算 Goal 是否满足 → 新发现通过 Candidate/Proposal 流程进入 Spine。
 
 ## Authority and Proposal Rules
 
-- 用户可以直接手工录入 `draft / abstract` Goal；普通 Runtime、clarifier 和 executor 不直接创建或修改 canonical Goal。
+- 用户可以直接手工录入 `draft / abstract` Goal；用户在当前 Runtime 提出粗略想法时，Runtime 可通过复合 MCP 创建最小 Draft 和澄清会话，但不把推断写成 accepted Contract 或 canonical 结构。
 - Runtime 发现新需求时只提交 Candidate Goal。用户是否接受 Candidate、是否确认它引起的 Rewire 是两个独立决定；接受新 Goal 不等于同意它阻塞当前 Goal。
 - 用户创建 Goal 时亲自指定的 `parent / depends_on` 可以直接成为 active；Runtime 发现的拆分、依赖或关系变化只能先成为 Proposal。
 - 依赖 Proposal 不由 GoalBoard 扫描代码自动产生。Runtime 应结合 Contract、代码、文档、测试、数据结构、业务顺序、影响冲突和风险策略给出依据。
@@ -55,7 +55,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - clarifier 认领手工 Draft 后，可以提出 Contract 补全建议；客观代码/文档事实可以标为 proposed/unconfirmed，业务意义、边界、优先级、验收和风险接受必须由用户确认。
 - Draft 只有在用户确认 Contract 补全后才成为 accepted/executable。accepted Contract 不原地改写；后续需求创建新 Goal 并重排关系。
 
-上述规则是产品 Contract。现阶段已具备 Candidate/Rewire、用户手工 Draft、完整 Dependency Proposal、同一 Draft 的 Contract 补全提案与用户原子确认，以及默认 Runtime MCP 暴露面收紧。普通 Runtime 只能读取、认领、执行、提交 Contract/Candidate/Dependency Proposal、证据和 Runtime Review，不能创建或裁决 canonical Goal；用户确认 Contract 前，当前 Draft、Policy、Impact 和 Risk 保持不变。宿主启动并验证 MCP/Web 双服务后，Runtime 只检查固定连接，不能自行换库、换 Board、改写 `goal_url` 或在服务故障时另起实例。
+上述规则是产品 Contract。现阶段已具备 Candidate/Rewire、用户手工或对话初始化的 Draft、完整 Dependency Proposal、同一 Draft 的 Goal Tree 提案与用户原子确认，以及默认 Runtime MCP 暴露面收紧。普通 Runtime 只能读取、选择、认领、执行、提交 Proposal、证据和 Runtime Review，不能自行裁决 canonical Goal；用户确认前，当前 Draft、Policy、Impact 和 Risk 保持不变。用户确认的复合父 Goal 显示“已澄清，等待子 Goal”，确认的叶子显示“待执行”，仍未确认的 Draft 才显示“待澄清”；这是一套派生工作状态，不再另设“澄清完毕”。
 
 依赖或风险变化把 Goal 标记为 `needs_revalidation` 后，executor 继续被阻止；只有有效 revalidator Claim/Run 可以提交核对证据。Coordinator 在 accepted Contract、active dependencies 和 blocking Risks 全部通过时才恢复 `valid`，且该入口不能修改 Contract、关系或完成状态。
 

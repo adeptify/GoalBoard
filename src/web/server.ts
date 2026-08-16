@@ -8,22 +8,58 @@ import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
+import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
+import type { GoalBoardProjectRecord } from "../projects/catalog.js";
 import {
   renderGoalBoardWeb,
+  renderGoalBoardProjectIndex,
+  WEB_GOAL_STATUSES,
   type GoalBoardWebView,
   type WebCoverageItem,
   type WebEventRecord,
   type WebGoalStatus,
   type WebInputBinding,
   type WebPolicyBinding,
+  type WebProjectNavigation,
   type WebRiskRecord,
 } from "./render.js";
 
 export interface WebServerOptions {
+  /**
+   * In-process fixture input. The public Web command always starts from the
+   * GoalBoard project catalog and never accepts a database path.
+   */
+  databasePath?: string;
+  boardId?: string;
+  /** GoalBoard-owned catalog directory. Defaults to ~/.goalboard. */
+  homeDirectory?: string;
+  demo?: boolean;
+  /**
+   * Read-only root for Evidence locators that name a project-relative file.
+   * The server never exposes an arbitrary local path.
+   */
+  projectRoot?: string;
+}
+
+interface ResolvedWebBoardOptions {
   databasePath: string;
   boardId: string;
   demo?: boolean;
+  projectRoot?: string;
+  project: WebProjectNavigation | null;
+  projects: WebProjectNavigation[];
+  routePrefix: string;
 }
+
+type WebViewOptions = Pick<
+  ResolvedWebBoardOptions,
+  "databasePath" | "boardId" | "demo" | "projectRoot"
+> & Partial<Pick<ResolvedWebBoardOptions, "project" | "projects" | "routePrefix">>;
+
+type ResolvedWebRequest =
+  | { kind: "catalog_index"; projects: WebProjectNavigation[] }
+  | { kind: "project_not_found" }
+  | { kind: "board"; pathname: string; options: ResolvedWebBoardOptions };
 
 const REVIEW_LABELS: Record<string, string> = {
   self_verifier: "自检",
@@ -66,6 +102,82 @@ function rowJson<T>(value: unknown, fallback: T): T {
 function uniqueTextArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))];
+}
+
+const MAX_PROJECT_REFERENCE_BYTES = 512 * 1024;
+
+class ProjectReferenceError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProjectReferenceError";
+  }
+}
+
+function isWithinDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function projectReferenceSegments(locator: string): string[] {
+  const value = locator.trim();
+  const encodedPath = value.startsWith("project://") ? value.slice("project://".length) : value;
+  if (!value) throw new ProjectReferenceError(400, "项目内引用不能为空");
+  if (value.startsWith("project://") && /^[/\\]/.test(encodedPath)) {
+    throw new ProjectReferenceError(400, "项目内引用必须是相对路径");
+  }
+  if (!value.startsWith("project://") && /^[a-z][a-z0-9+.-]*:/i.test(value)) {
+    throw new ProjectReferenceError(400, "只有项目内相对路径可以在 GoalBoard 中打开");
+  }
+  if (path.isAbsolute(encodedPath) || encodedPath.includes("\0")) {
+    throw new ProjectReferenceError(400, "项目内引用必须是安全的相对路径");
+  }
+  const segments = encodedPath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment && segment !== ".");
+  if (!segments.length || segments.some((segment) => segment === "..")) {
+    throw new ProjectReferenceError(400, "项目内引用不能跳出项目目录");
+  }
+  return segments;
+}
+
+function readProjectReference(projectRoot: string, locator: string): { content: Buffer; fileName: string } {
+  const root = path.resolve(projectRoot);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch {
+    throw new ProjectReferenceError(404, "项目引用根目录不可用");
+  }
+  const candidate = path.resolve(realRoot, ...projectReferenceSegments(locator));
+  if (!isWithinDirectory(candidate, realRoot)) {
+    throw new ProjectReferenceError(400, "项目内引用不能跳出项目目录");
+  }
+  let realFile: string;
+  try {
+    realFile = fs.realpathSync(candidate);
+  } catch {
+    throw new ProjectReferenceError(404, "项目内引用文件不存在");
+  }
+  if (!isWithinDirectory(realFile, realRoot)) {
+    throw new ProjectReferenceError(400, "项目内引用不能通过链接跳出项目目录");
+  }
+  const stat = fs.statSync(realFile);
+  if (!stat.isFile()) throw new ProjectReferenceError(400, "项目内引用必须指向普通文件");
+  if (stat.size > MAX_PROJECT_REFERENCE_BYTES) {
+    throw new ProjectReferenceError(413, "项目内引用文件过大，不能在 GoalBoard 中打开");
+  }
+  const content = fs.readFileSync(realFile);
+  if (content.includes(0) || content.toString("utf8").includes("\uFFFD")) {
+    throw new ProjectReferenceError(415, "GoalBoard 只能打开项目内的文本引用");
+  }
+  return {
+    content,
+    fileName: (path.basename(realFile) || "evidence.txt").replace(/[\r\n"]/g, ""),
+  };
 }
 
 function webRiskFacts(
@@ -120,7 +232,7 @@ function webImpactFacts(
 export function buildGoalBoardWebView(
   store: SqliteGoalBoardStore,
   coordinator: GoalBoardCoordinator,
-  options: WebServerOptions,
+  options: WebViewOptions,
 ): GoalBoardWebView {
   const snapshot = store.snapshot(options.boardId);
   const coverage = (store.db
@@ -186,27 +298,19 @@ export function buildGoalBoardWebView(
     ...risk,
     goal_ids: riskGoalIds.get(risk.risk_id) ?? [],
   }));
-  const now = new Date().toISOString();
-  const activeClaims = new Map(
-    snapshot.claims
-      .filter((claim) => claim.state === "active" && claim.expires_at > now)
-      .map((claim) => [claim.goal_id, claim]),
-  );
   const allGoals = snapshot.goals.map((goal) => {
-    const activeClaim = activeClaims.get(goal.goal_id);
+    const workState = coordinator.getGoalWorkState({
+      board_id: options.boardId,
+      goal_id: goal.goal_id,
+    });
+    const activeClaim = workState.active_claim;
     const explanation = coordinator.explainGoal({
       board_id: options.boardId,
       goal_id: goal.goal_id,
       actor_id: "web-observer",
       goal_mode_attestation: true,
     });
-    let status: WebGoalStatus;
-    if (goal.archived_at) status = "archived";
-    else if (goal.fulfillment_state === "satisfied") status = "satisfied";
-    else if (activeClaim) status = "claimed";
-    else if (goal.definition_state !== "accepted" || goal.decomposition_state !== "closed_leaf") status = "waiting";
-    else if (explanation.ready) status = "ready";
-    else status = "blocked";
+    const status: WebGoalStatus = workState.work_state;
     const passedCriteria = new Set<string>();
     for (const evidence of snapshot.evidence) {
       if (evidence.goal_id !== goal.goal_id || evidence.result !== "passed") continue;
@@ -231,6 +335,36 @@ export function buildGoalBoardWebView(
     );
     const reviews = snapshot.reviews.filter((item) => item.goal_id === goal.goal_id);
     const impacts = snapshot.impacts.filter((item) => item.goal_id === goal.goal_id);
+    const contractProposalIds = snapshot.contract_proposals
+      .filter((item) => item.goal_id === goal.goal_id)
+      .map((item) => item.proposal_id);
+    const clarificationSessionIds = snapshot.clarification_sessions
+      .filter((item) => item.goal_id === goal.goal_id)
+      .map((item) => item.session_id);
+    const clarificationTurnIds = snapshot.clarification_turns
+      .filter((item) => item.goal_id === goal.goal_id)
+      .map((item) => item.turn_id);
+    const goalTreeProposals = snapshot.goal_tree_proposals.filter((proposal) => {
+      if (proposal.root_goal_id === goal.goal_id) return true;
+      return proposal.items.some((item) => {
+        const objectTouchesGoal = [...item.affected_objects, ...item.materialized_objects].some(
+          (object) => object.object_type === "goal" && object.object_id === goal.goal_id,
+        );
+        if (objectTouchesGoal) return true;
+        const payloadGoalIds = [
+          item.payload.goal_id,
+          item.payload.from_goal_id,
+          item.payload.to_goal_id,
+          ...(Array.isArray(item.payload.goal_ids) ? item.payload.goal_ids : []),
+        ].map((value) => String(value ?? ""));
+        return payloadGoalIds.includes(goal.goal_id);
+      });
+    });
+    const goalTreeProposalIds = goalTreeProposals.map((item) => item.proposal_id);
+    const goalTreeProposalItemIds = goalTreeProposals.flatMap((item) => item.items.map((child) => child.item_id));
+    const visiblePolicyBindingIds = policyBindings
+      .filter((item) => item.goal_id == null || item.goal_id === goal.goal_id)
+      .map((item) => item.policy_binding_id);
     const relatedObjectIds = new Set<string>([
       goal.goal_id,
       ...relations.map((item) => item.relation_id),
@@ -241,20 +375,46 @@ export function buildGoalBoardWebView(
       ...evidence.map((item) => item.evidence_id),
       ...reviewObligations.map((item) => item.obligation_id),
       ...reviews.map((item) => item.review_id),
+      ...contractProposalIds,
+      ...clarificationSessionIds,
+      ...clarificationTurnIds,
+      ...goalTreeProposalIds,
+      ...goalTreeProposalItemIds,
+      ...visiblePolicyBindingIds,
     ]);
     const runIds = new Set(runs.map((item) => item.run_id));
-    const candidateIds = snapshot.candidates
+    const candidateIds = new Set(snapshot.candidates
       .filter((item) => item.discovered_in_run_id && runIds.has(item.discovered_in_run_id))
-      .map((item) => item.candidate_id);
+      .map((item) => item.candidate_id));
     candidateIds.forEach((id) => relatedObjectIds.add(id));
     snapshot.rewires
-      .filter((item) => item.candidate_id && candidateIds.includes(item.candidate_id))
+      .filter((item) => {
+        if (
+          (item.candidate_id != null && candidateIds.has(item.candidate_id)) ||
+          item.proposal.formal_goal_id === goal.goal_id
+        ) {
+          return true;
+        }
+        const relationTouchesGoal = (item.proposal.relations ?? []).some(
+          (relation) =>
+            String(relation.from_goal_id ?? "") === goal.goal_id ||
+            String(relation.to_goal_id ?? "") === goal.goal_id,
+        );
+        const impactTouchesGoal = (item.proposal.impacts ?? []).some(
+          (impact) => String(impact.goal_id ?? "") === goal.goal_id,
+        );
+        const riskTouchesGoal = (item.proposal.risks ?? []).some((risk) =>
+          Array.isArray(risk.goal_ids) && risk.goal_ids.some((goalId) => String(goalId) === goal.goal_id),
+        );
+        return relationTouchesGoal || impactTouchesGoal || riskTouchesGoal;
+      })
       .forEach((item) => relatedObjectIds.add(item.rewire_id));
     return {
       goal,
       status,
+      work_state: workState.work_state,
       status_label: status,
-      reasons: explanation.reasons.filter((item) => item.code !== "claim.already_active"),
+      reasons: workState.reasons,
       active_claim_actor: activeClaim?.actor_id ?? null,
       active_claim: activeClaim ?? null,
       claims,
@@ -276,29 +436,38 @@ export function buildGoalBoardWebView(
       pending_reviews: pendingReviews,
     };
   });
-  const goals = allGoals.filter((item) => !item.goal.archived_at);
-  const archivedGoals = allGoals.filter((item) => Boolean(item.goal.archived_at));
-  const counts: GoalBoardWebView["counts"] = {
-    ready: 0,
-    claimed: 0,
-    blocked: 0,
-    waiting: 0,
-    satisfied: 0,
-    archived: archivedGoals.length,
-  };
+  // Trash is intentionally absent from both the ordinary Tree and the
+  // completed-only archive. The dedicated trash view selects it through the
+  // shared coordinator read service instead of leaking it into normal work.
+  const trashedGoalIds = new Set(
+    coordinator.listTrashedGoals(options.boardId).map((goal) => goal.goal_id),
+  );
+  const goals = allGoals.filter((item) => !item.goal.archived_at && !item.goal.trashed_at);
+  const archivedGoals = allGoals.filter((item) => Boolean(item.goal.archived_at) && !item.goal.trashed_at);
+  const trashedGoals = allGoals.filter((item) => trashedGoalIds.has(item.goal.goal_id));
+  const counts = Object.fromEntries(WEB_GOAL_STATUSES.map((status) => [status, 0])) as GoalBoardWebView["counts"];
   for (const goal of goals) counts[goal.status]++;
-  const fallback = goals.find((item) => item.status === "claimed") ?? goals.find((item) => item.status === "ready") ?? goals[0];
+  const fallback =
+    goals.find((item) => ["clarifying", "executing", "reviewing", "revalidating"].includes(item.status)) ??
+    goals.find((item) => ["clarification_pending", "execution_pending", "review_pending", "revalidation_pending"].includes(item.status)) ??
+    goals[0];
   const activeGoalId = goals.some((item) => item.goal.goal_id === snapshot.board.active_goal_id)
     ? snapshot.board.active_goal_id
     : null;
   return {
-    snapshot,
-    source_label: path.basename(options.databasePath),
-    database_path: options.databasePath,
+    // The browser works with a project name and route. The storage board id is
+    // a server-side routing detail, so do not expose it in a project Web view.
+    snapshot: options.project
+      ? { ...snapshot, board: { ...snapshot.board, board_id: "" } }
+      : snapshot,
+    project: options.project ?? null,
+    projects: options.projects ?? [],
+    route_prefix: options.routePrefix ?? "",
     demo: Boolean(options.demo),
     active_goal_id: activeGoalId ?? fallback?.goal.goal_id ?? null,
     goals,
     archived_goals: archivedGoals,
+    trashed_goals: trashedGoals,
     counts,
     coverage,
     input_bindings: inputBindings,
@@ -334,11 +503,156 @@ function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-export function createGoalBoardWebServer(options: WebServerOptions): http.Server {
-  if (options.demo && !fs.existsSync(options.databasePath)) seedDemoBoard(options.databasePath);
+function projectNavigation(project: GoalBoardProjectRecord): WebProjectNavigation {
+  return {
+    project_id: project.project_id,
+    display_name: project.display_name,
+  };
+}
+
+function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
+  if (!options.databasePath) return null;
+  return {
+    databasePath: options.databasePath,
+    boardId: options.boardId ?? "default",
+    demo: options.demo,
+    projectRoot: options.projectRoot,
+    project: null,
+    projects: [],
+    routePrefix: "",
+  };
+}
+
+function webMigrationRequest(body: Record<string, unknown>): {
+  legacyDatabasePath: string;
+  displayName?: string;
+} {
+  if (body.user_confirmed !== true) {
+    throw new Error("请先明确确认要迁移这份已有 GoalBoard 数据");
+  }
+  const legacyDatabasePath = typeof body.legacy_database_path === "string"
+    ? body.legacy_database_path.trim()
+    : "";
+  if (!legacyDatabasePath) throw new Error("请选择要迁移的已有 GoalBoard DB");
+  if (legacyDatabasePath.length > 4_000) throw new Error("来源 DB 路径过长");
+  const displayName = typeof body.display_name === "string" ? body.display_name.trim() : "";
+  if (displayName.length > 160) throw new Error("迁移后项目名称过长");
+  return {
+    legacyDatabasePath,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+/**
+ * Resolving a Web request is deliberately read-only. In particular, opening a
+ * project in the browser must not create, bind, or rebind a Runtime Session.
+ */
+async function resolveWebRequest(
+  serverOptions: WebServerOptions,
+  pathname: string,
+): Promise<ResolvedWebRequest> {
+  const fixture = fixtureWebBoardOptions(serverOptions);
+  if (fixture) return { kind: "board", pathname, options: fixture };
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+  try {
+    const records = catalog.listProjects();
+    const projects = records.map(projectNavigation);
+    if (pathname === "/" || pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/")) {
+      return { kind: "catalog_index", projects };
+    }
+    const match = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
+    if (!match) return { kind: "project_not_found" };
+
+    let projectId: string;
+    try {
+      projectId = decodeURIComponent(match[1]);
+    } catch {
+      return { kind: "project_not_found" };
+    }
+    let project: GoalBoardProjectRecord;
+    try {
+      project = catalog.getProject(projectId);
+    } catch {
+      return { kind: "project_not_found" };
+    }
+    return {
+      kind: "board",
+      pathname: match[2] || "/",
+      options: {
+        databasePath: project.database_path,
+        boardId: project.board_id,
+        projectRoot: serverOptions.projectRoot,
+        project: projectNavigation(project),
+        projects,
+        routePrefix: `/projects/${encodeURIComponent(project.project_id)}`,
+      },
+    };
+  } finally {
+    catalog.close();
+  }
+}
+
+export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): http.Server {
+  const fixture = fixtureWebBoardOptions(serverOptions);
+  if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
   return http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
+      const resolved = await resolveWebRequest(serverOptions, url.pathname);
+      if (resolved.kind === "catalog_index") {
+        if (request.method === "POST" && url.pathname === "/api/projects/migrate") {
+          let catalog: GoalBoardProjectCatalog | null = null;
+          try {
+            const requestInput = webMigrationRequest(await readBody(request));
+            catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+            const project = await catalog.migrateLegacyDatabase({
+              legacy_database_path: requestInput.legacyDatabasePath,
+              ...(requestInput.displayName ? { display_name: requestInput.displayName } : {}),
+              actor_id: "web-user",
+            });
+            sendJson(response, 201, {
+              project: projectNavigation(project),
+              project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+            });
+          } catch (error) {
+            const message = error instanceof GoalBoardProjectCatalogError
+              ? error.message
+              : error instanceof Error
+                ? `迁移失败：${error.message}`
+                : "迁移失败，请检查来源 DB 后重试";
+            sendJson(response, 400, { error: message });
+          } finally {
+            catalog?.close();
+          }
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/health") {
+          sendJson(response, 200, { status: "ok", project_count: resolved.projects.length });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/") {
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+          });
+          response.end(renderGoalBoardProjectIndex(resolved.projects));
+          return;
+        }
+        if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
+          sendJson(response, 400, { error: "请先选择一个 GoalBoard 项目" });
+          return;
+        }
+        sendJson(response, 404, { error: "页面不存在" });
+        return;
+      }
+      if (resolved.kind === "project_not_found") {
+        sendJson(response, 404, { error: "找不到这个 GoalBoard 项目" });
+        return;
+      }
+      const options = resolved.options;
+      url.pathname = resolved.pathname;
       if (!fs.existsSync(options.databasePath)) {
         if (url.pathname.startsWith("/api/")) {
           sendJson(response, 404, { error: "GoalBoard 数据库不存在，请先初始化" });
@@ -357,6 +671,26 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
         }
         if (request.method === "GET" && url.pathname === "/api/board") {
           sendJson(response, 200, buildGoalBoardWebView(store, coordinator, options));
+          return;
+        }
+        const projectReferenceMatch = url.pathname.match(/^\/api\/project-references\/([^/]+)$/);
+        if (request.method === "GET" && projectReferenceMatch) {
+          try {
+            const reference = decodeURIComponent(projectReferenceMatch[1]);
+            const opened = readProjectReference(options.projectRoot ?? process.cwd(), reference);
+            response.writeHead(200, {
+              "content-type": "text/plain; charset=utf-8",
+              "cache-control": "no-store",
+              "content-disposition": `inline; filename="${opened.fileName.replaceAll('"', "")}"`,
+              "x-content-type-options": "nosniff",
+            });
+            response.end(opened.content);
+          } catch (error) {
+            const status = error instanceof ProjectReferenceError ? error.status : 400;
+            sendJson(response, status, {
+              error: error instanceof Error ? error.message : "项目内引用无法打开",
+            });
+          }
           return;
         }
         if (request.method === "POST" && url.pathname === "/api/goals") {
@@ -480,7 +814,7 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           }
           sendJson(response, 201, {
             goal: created.goal,
-            goal_path: `/goals/${encodeURIComponent(created.goal.goal_id)}`,
+            goal_path: `${options.routePrefix}/goals/${encodeURIComponent(created.goal.goal_id)}`,
             observed_event_cursor: store.snapshot(options.boardId).cursor,
           });
           return;
@@ -907,6 +1241,87 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           }
           return;
         }
+        const goalEvidenceMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/evidence$/);
+        if (request.method === "POST" && goalEvidenceMatch) {
+          const body = await readBody(request);
+          const criterionIds = uniqueTextArray(body.criterion_ids);
+          const kind = String(body.kind ?? "attestation");
+          const result = String(body.result ?? "passed");
+          const locator = String(body.locator ?? "").trim();
+          const digest = typeof body.digest === "string" ? body.digest.trim() : "";
+          if (!criterionIds.length) {
+            sendJson(response, 400, { error: "至少选择一条验收条件" });
+            return;
+          }
+          if (![
+            "test",
+            "measurement",
+            "artifact",
+            "inspection",
+            "attestation",
+            "human_verdict",
+          ].includes(kind)) {
+            sendJson(response, 400, { error: "Evidence 类型无效" });
+            return;
+          }
+          if (!["passed", "failed", "inconclusive"].includes(result)) {
+            sendJson(response, 400, { error: "Evidence 结果必须是 passed、failed 或 inconclusive" });
+            return;
+          }
+          if (!locator || locator.length > 4_000) {
+            sendJson(response, 400, { error: "Evidence 定位引用不能为空且不能超过 4000 个字符" });
+            return;
+          }
+          if (digest.length > 16_000) {
+            sendJson(response, 400, { error: "Evidence 摘要不能超过 16000 个字符" });
+            return;
+          }
+          try {
+            const resultValue = coordinator.submitEvidence({
+              board_id: options.boardId,
+              goal_id: decodeURIComponent(goalEvidenceMatch[1]),
+              actor_id: "web-user",
+              criterion_ids: criterionIds,
+              kind: kind as Parameters<GoalBoardCoordinator["submitEvidence"]>[0]["kind"],
+              locator,
+              digest: digest || null,
+              result: result as Parameters<GoalBoardCoordinator["submitEvidence"]>[0]["result"],
+              idempotency_key: String(body.idempotency_key ?? `web-evidence-${randomUUID()}`),
+            });
+            sendJson(response, 201, resultValue);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const activeGoalMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/active$/);
+        if (request.method === "POST" && activeGoalMatch) {
+          const body = await readBody(request);
+          const goalId = decodeURIComponent(activeGoalMatch[1]);
+          const reason = String(body.reason ?? "用户从 GoalBoard 设为当前 Goal").trim();
+          if (!reason) {
+            sendJson(response, 400, { error: "设为当前 Goal 时必须说明原因" });
+            return;
+          }
+          try {
+            const result = coordinator.setActiveGoal(
+              options.boardId,
+              { goal_id: goalId, reason },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-active-goal-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         const goalArchiveMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/archive$/);
         if (request.method === "POST" && goalArchiveMatch) {
           const body = await readBody(request);
@@ -939,9 +1354,78 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           }
           return;
         }
+        const goalTrashMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/trash$/);
+        if (request.method === "POST" && goalTrashMatch) {
+          const body = await readBody(request);
+          if (typeof body.trashed !== "boolean") {
+            sendJson(response, 400, { error: "trashed 必须是 boolean" });
+            return;
+          }
+          if (body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请先在 GoalBoard 中确认此操作" });
+            return;
+          }
+          const goalId = decodeURIComponent(goalTrashMatch[1]);
+          try {
+            const result = coordinator.setGoalTrashed(
+              options.boardId,
+              {
+                goal_id: goalId,
+                trashed: body.trashed,
+                reason: String(body.reason ?? "").trim(),
+              },
+              {
+                actor_id: "web-user",
+                idempotency_key: String(body.idempotency_key ?? `web-trash-${randomUUID()}`),
+              },
+            );
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         const contractProposalMatch = url.pathname.match(
           /^\/api\/contract-proposals\/([^/]+)\/decision$/,
         );
+        const goalTreeProposalMatch = url.pathname.match(
+          /^\/api\/goal-tree-proposals\/([^/]+)\/decision$/,
+        );
+        if (request.method === "POST" && goalTreeProposalMatch) {
+          const body = await readBody(request);
+          if (body.confirm_all_pending === true) {
+            sendJson(response, 400, {
+              error: "Web 入口不能验证上一轮是否明确请求整份确认；请逐项选择，或在当前 Runtime 对话中确认整份提案。",
+            });
+            return;
+          }
+          if (body.decisions != null && !Array.isArray(body.decisions)) {
+            sendJson(response, 400, { error: "decisions 必须是条目决定列表" });
+            return;
+          }
+          try {
+            const result = coordinator.decideGoalTreeProposal({
+              board_id: options.boardId,
+              proposal_id: decodeURIComponent(goalTreeProposalMatch[1]),
+              authority: {
+                actor_id: "web-user",
+                actor_kind: "user",
+                authority_source: "web",
+                conversation_ref: `web:${options.boardId}`,
+                message_ref: `web-decision:${randomUUID()}`,
+              },
+              decisions: body.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"],
+              reason: typeof body.reason === "string" ? body.reason.trim() : undefined,
+              idempotency_key: String(body.idempotency_key ?? `web-goal-tree-decision-${randomUUID()}`),
+            });
+            sendJson(response, 200, result);
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
         if (request.method === "POST" && contractProposalMatch) {
           const body = await readBody(request);
           const decision = String(body.decision);
@@ -1018,16 +1502,26 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
         }
         const goalPageMatch = url.pathname.match(/^\/goals\/([^/]+)$/);
         const archivePageMatch = url.pathname.match(/^\/archive\/goals\/([^/]+)$/);
+        const trashPageMatch = url.pathname.match(/^\/trash\/goals\/([^/]+)$/);
         const archiveIndex = url.pathname === "/archive";
+        const trashIndex = url.pathname === "/trash";
         const decisionIndex = url.pathname === "/decisions";
         if (
           request.method === "GET" &&
-          (url.pathname === "/" || goalPageMatch || archiveIndex || archivePageMatch || decisionIndex)
+          (
+            url.pathname === "/" ||
+            goalPageMatch ||
+            archiveIndex ||
+            archivePageMatch ||
+            trashIndex ||
+            trashPageMatch ||
+            decisionIndex
+          )
         ) {
           let requestedGoalId: string | undefined;
-          if (goalPageMatch || archivePageMatch) {
+          if (goalPageMatch || archivePageMatch || trashPageMatch) {
             try {
-              requestedGoalId = decodeURIComponent((goalPageMatch ?? archivePageMatch)![1]);
+              requestedGoalId = decodeURIComponent((goalPageMatch ?? archivePageMatch ?? trashPageMatch)![1]);
             } catch {
               sendJson(response, 404, { error: "Goal 页面不存在" });
               return;
@@ -1037,13 +1531,17 @@ export function createGoalBoardWebServer(options: WebServerOptions): http.Server
           const requestedArchived = requestedGoalId
             ? view.archived_goals.some((item) => item.goal.goal_id === requestedGoalId)
             : false;
-          const archiveView = archiveIndex || Boolean(archivePageMatch) || requestedArchived;
-          const collection = archiveView ? view.archived_goals : view.goals;
+          const requestedTrashed = requestedGoalId
+            ? view.trashed_goals.some((item) => item.goal.goal_id === requestedGoalId)
+            : false;
+          const trashView = trashIndex || Boolean(trashPageMatch) || requestedTrashed;
+          const archiveView = !trashView && (archiveIndex || Boolean(archivePageMatch) || requestedArchived);
+          const collection = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
           if (requestedGoalId && !collection.some((item) => item.goal.goal_id === requestedGoalId)) {
             sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
             return;
           }
-          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView, decisionIndex);
+          const html = renderGoalBoardWeb(view, requestedGoalId, archiveView, decisionIndex, trashView);
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
@@ -1070,13 +1568,19 @@ function flag(args: string[], name: string): string | undefined {
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
   const args = process.argv.slice(2);
-  const demo = args.includes("--demo");
-  const databasePath = path.resolve(flag(args, "--db") ?? (demo ? ".goalboard/demo.db" : ".goalboard/goalboard.db"));
-  const boardId = flag(args, "--board-id") ?? (demo ? DEMO_BOARD_ID : "default");
+  const homeArgument = flag(args, "--home");
   const port = Number(flag(args, "--port") ?? 4173);
-  const server = createGoalBoardWebServer({ databasePath, boardId, demo });
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`GoalBoard Web: http://127.0.0.1:${port}`);
-    console.log(`SQLite: ${databasePath}`);
-  });
+  const unsupported = ["--db", "--board-id", "--demo"].find((argument) => args.includes(argument));
+  if (unsupported) {
+    console.error(`GoalBoard Web 只按项目启动；${unsupported} 已不支持。请先在当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目。`);
+    process.exitCode = 1;
+  } else {
+    const server = createGoalBoardWebServer({
+      ...(homeArgument ? { homeDirectory: path.resolve(homeArgument) } : {}),
+    });
+    server.listen(port, "127.0.0.1", () => {
+      console.log(`GoalBoard Web: http://127.0.0.1:${port}`);
+      console.log("项目列表（网页不会修改 Runtime Session 绑定）");
+    });
+  }
 }

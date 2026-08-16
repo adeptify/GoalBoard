@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-16T03:56:11+08:00",
+  "generatedAt": "2026-08-16T14:31:32+08:00",
   "title": "Design System: GoalBoard Goal Workbench",
   "extensions": {
     "colorMeta": {
@@ -154,6 +154,14 @@
       "description": "A dense selected Goal row with title primary, ID secondary, and a readable status.",
       "html": "<button class=\"ds-tree-node ds-is-selected\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-tree-copy\"><strong>让 Goal Contract 可验证</strong><small>GOAL-CONTRACT-VERIFY</small></span><span class=\"ds-tree-status\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><path d=\"m9 12 2 2 4-4\"></path></svg><span>已认领</span></span></button>",
       "css": ".ds-tree-node { width: 100%; min-width: 0; min-height: 34px; padding: 3px 8px; border: 0; border-radius: 4px; color: #fff; background: linear-gradient(180deg, #328bff, #1677ed); box-shadow: inset 0 0 0 1px rgba(14, 94, 199, .22); display: flex; align-items: center; gap: 8px; cursor: pointer; text-align: left; font-family: Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-tree-copy { min-width: 0; flex: 1; display: grid; overflow: hidden; line-height: 1.2; } .ds-tree-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; } .ds-tree-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255, 255, 255, .75); font-size: 9px; letter-spacing: .02em; } .ds-tree-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; } .ds-icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-tree-node:hover { background: linear-gradient(180deg, #2582fb, #0d63d8); } .ds-tree-node:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
+    },
+    {
+      "name": "Goal Tree Status Filter",
+      "kind": "form",
+      "refersTo": "tree-status-filter",
+      "description": "A transient, multi-select Tree disclosure that combines currently present work states with keyword search while preserving parent context.",
+      "html": "<section class=\"ds-tree-filter\" aria-label=\"按状态筛选\"><header><strong>按状态筛选</strong><button type=\"button\">清除</button></header><p>可同时选择多个状态；会与关键词搜索一起生效。</p><label class=\"ds-tree-filter-option\"><input type=\"checkbox\" checked><span>待执行</span><small>3</small></label><label class=\"ds-tree-filter-option\"><input type=\"checkbox\" checked><span>执行中</span><small>1</small></label><label class=\"ds-tree-filter-option\"><input type=\"checkbox\"><span>已完成</span><small>8</small></label><footer>已选择 2 种状态</footer></section>",
+      "css": ".ds-tree-filter { width: min(100%, 330px); max-height: min(430px, calc(100dvh - 166px)); overflow: auto; padding: 13px 14px 12px; color: #171a21; background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); font: 12px/1.5 Inter, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif; } .ds-tree-filter header { display: flex; align-items: baseline; gap: 10px; } .ds-tree-filter header strong { font-size: 13px; } .ds-tree-filter header button { margin-left: auto; padding: 0; border: 0; color: #0d63d8; background: transparent; font: inherit; cursor: pointer; } .ds-tree-filter > p { margin: 5px 0 10px; color: #68707d; } .ds-tree-filter-option { min-width: 0; min-height: 34px; padding: 5px 2px; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 17px minmax(0, 1fr) auto; align-items: center; gap: 8px; cursor: pointer; } .ds-tree-filter-option:first-of-type { border-top: 0; } .ds-tree-filter-option input { width: 15px; height: 15px; margin: 0; accent-color: #1677ff; } .ds-tree-filter-option small { color: #68707d; } .ds-tree-filter footer { margin-top: 9px; padding-top: 9px; border-top: 1px solid #dfe3e8; color: #68707d; } .ds-tree-filter input:focus-visible, .ds-tree-filter button:focus-visible { outline: 2px solid color-mix(in srgb, #1677ff, transparent 30%); outline-offset: 2px; }"
     },
     {
       "name": "Runtime Work Loop",

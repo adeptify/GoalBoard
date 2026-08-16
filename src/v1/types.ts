@@ -9,9 +9,29 @@ export type FulfillmentState = "unmet" | "satisfied";
 export type ClaimRole =
   | "clarifier"
   | "executor"
+  | "self_verifier"
   | "cross_reviewer"
   | "adversarial_reviewer"
   | "revalidator";
+export type GoalWorkAction = "clarify" | "execute" | "review" | "revalidate";
+export type GoalWorkState =
+  | "clarification_pending"
+  | "clarifying"
+  | "clarification_blocked"
+  | "waiting_children"
+  | "execution_pending"
+  | "executing"
+  | "execution_blocked"
+  | "review_pending"
+  | "reviewing"
+  | "review_blocked"
+  | "revalidation_pending"
+  | "revalidating"
+  | "revalidation_blocked"
+  | "invalidated"
+  | "satisfied"
+  | "trashed"
+  | "archived";
 export type ClaimState = "active" | "released" | "expired" | "revoked";
 export type ImpactAccess = "read" | "write" | "decide" | "exclusive";
 export type RiskBlockingMode =
@@ -47,6 +67,9 @@ export interface GoalRecord {
   decomposition_state: DecompositionState;
   validity_state: ValidityState;
   fulfillment_state: FulfillmentState;
+  /** A recoverable deletion state. It is distinct from completed-Goal archival. */
+  trashed_at: string | null;
+  trashed_by: string | null;
   archived_at: string | null;
   archived_by: string | null;
   priority: number;
@@ -77,6 +100,24 @@ export interface GoalRelationRecord {
   created_by: string;
   created_at: string;
   deactivated_at: string | null;
+}
+
+export type GoalTrashStatus = "trashed" | "restored" | "already_trashed" | "already_active" | "blocked";
+
+/**
+ * Result from the one shared deletion/recovery domain operation. UI and MCP
+ * adapters may add their own confirmation rules, but must not duplicate this
+ * state transition or relation-recovery behavior.
+ */
+export interface GoalTrashResult {
+  status: GoalTrashStatus;
+  goal: GoalRecord;
+  active_goal_cleared: boolean;
+  deactivated_relation_ids: string[];
+  restored_relation_ids: string[];
+  pending_relation_ids: string[];
+  blocking_claim_ids: string[];
+  blocking_run_ids: string[];
 }
 
 export interface ImpactBindingRecord {
@@ -145,7 +186,7 @@ export interface RunRecord {
   goal_id: string;
   claim_id: string;
   actor_id: string;
-  role: "clarifier" | "executor" | "revalidator";
+  role: ClaimRole;
   state: "started" | "blocked" | "completed" | "failed" | "abandoned";
   block_reason: string | null;
   output_refs: string[];
@@ -277,6 +318,242 @@ export interface ContractProposalRecord {
   decided_at: string | null;
 }
 
+/**
+ * Dialogue facts live beside, rather than inside, the canonical Goal
+ * Contract. They let the current Runtime resume a Draft conversation without
+ * treating an inference or an unapproved structure as settled Goal truth.
+ */
+export type ClarificationSessionState = "clarifying" | "proposal_ready" | "closed";
+
+export interface ClarificationFact {
+  statement: string;
+  source_kind: "user_answer" | "repository_fact" | "document_fact";
+  source_refs: string[];
+  confidence: number;
+  confirmed_by_user: boolean;
+}
+
+export interface ClarificationAssumption {
+  statement: string;
+  source_refs: string[];
+  confidence: number;
+  requires_user_confirmation: true;
+}
+
+export interface ClarificationSessionRecord {
+  session_id: string;
+  board_id: string;
+  goal_id: string;
+  claim_id: string | null;
+  run_id: string | null;
+  rough_idea: string;
+  state: ClarificationSessionState;
+  current_understanding: string | null;
+  next_question: string | null;
+  proposal_summary: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+export interface ClarificationTurnRecord {
+  turn_id: string;
+  session_id: string;
+  board_id: string;
+  goal_id: string;
+  run_id: string | null;
+  actor_id: string;
+  turn_index: number;
+  turn_kind: "rough_idea" | "user_answer";
+  user_message: string;
+  current_understanding: string | null;
+  known_facts: ClarificationFact[];
+  assumptions: ClarificationAssumption[];
+  next_question: string | null;
+  proposal_summary: string | null;
+  created_at: string;
+}
+
+/**
+ * A proposed Goal Tree is deliberately separate from canonical Goals. It can
+ * describe a whole family of changes while the user is still deciding what
+ * should become real.
+ */
+export type GoalTreeProposalOrigin =
+  | "native"
+  | "legacy_contract_proposal"
+  | "legacy_candidate"
+  | "legacy_rewire";
+export type GoalTreeProposalState =
+  | "pending"
+  | "superseded"
+  | "approved"
+  | "partially_applied"
+  | "rejected"
+  | "dismissed"
+  | "closed";
+export type GoalTreeProposalItemKind =
+  | "goal"
+  | "contract"
+  | "relation"
+  | "dependency"
+  | "risk"
+  | "policy"
+  | "candidate"
+  | "rewire";
+export type GoalTreeProposalOperation = "create" | "update" | "deactivate";
+export type GoalTreeProposalItemState =
+  | "pending"
+  | "conflict"
+  | "superseded"
+  | "approved"
+  | "applied"
+  | "rejected"
+  | "dismissed";
+export type GoalTreeProposalDecisionAction = "confirm" | "reject" | "revise";
+export type GoalTreeProposalDecisionState = "confirmed" | "rejected" | "revised" | "conflict";
+export type ProposalAffectedObjectType = "goal" | "relation" | "risk" | "policy" | "candidate" | "rewire";
+
+export interface ProposalAffectedObject {
+  object_type: ProposalAffectedObjectType;
+  object_id: string;
+}
+
+export interface ProposalObjectVersion extends ProposalAffectedObject {
+  exists: boolean;
+  version: string;
+}
+
+/**
+ * The trusted user decision is recorded separately from the Runtime that
+ * carried it over MCP. Runtime identity is useful for recovery/debugging,
+ * but never substitutes for user authority.
+ */
+export interface GoalTreeProposalDecisionAuthority {
+  actor_id: string;
+  actor_kind: "user";
+  authority_source: "runtime_trusted_host" | "web" | "management";
+  conversation_ref: string;
+  message_ref: string;
+  whole_confirmation_prompted?: boolean;
+}
+
+export interface GoalTreeProposalDecisionRecord {
+  decision_id: string;
+  board_id: string;
+  proposal_id: string;
+  item_id: string;
+  decision: GoalTreeProposalDecisionState;
+  actor_id: string;
+  authority_source: GoalTreeProposalDecisionAuthority["authority_source"];
+  runtime_actor_id: string | null;
+  conversation_ref: string;
+  message_ref: string;
+  reason: string;
+  revision_proposal_id: string | null;
+  materialized_objects: ProposalAffectedObject[];
+  created_at: string;
+}
+
+export interface GoalTreeProposalItemRecord {
+  item_id: string;
+  proposal_id: string;
+  board_id: string;
+  ordinal: number;
+  kind: GoalTreeProposalItemKind;
+  operation: GoalTreeProposalOperation;
+  payload: Record<string, unknown>;
+  source_refs: string[];
+  reason: string;
+  confidence: number;
+  affected_objects: ProposalAffectedObject[];
+  baseline_versions: ProposalObjectVersion[];
+  requires_user_confirmation: boolean;
+  state: GoalTreeProposalItemState;
+  conflict: Record<string, unknown> | null;
+  decision: GoalTreeProposalDecisionRecord | null;
+  materialized_objects: ProposalAffectedObject[];
+  revision_proposal_id: string | null;
+  supersedes_item_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalTreeProposalRecord {
+  proposal_id: string;
+  board_id: string;
+  origin: GoalTreeProposalOrigin;
+  root_goal_id: string | null;
+  submitted_by: string;
+  discovered_in_run_id: string | null;
+  state: GoalTreeProposalState;
+  version: number;
+  supersedes_proposal_id: string | null;
+  base_event_cursor: number;
+  summary: string;
+  decision: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+  items: GoalTreeProposalItemRecord[];
+  decisions: GoalTreeProposalDecisionRecord[];
+}
+
+export interface GoalTreeProposalItemInput {
+  item_id?: string;
+  kind: GoalTreeProposalItemKind;
+  operation: GoalTreeProposalOperation;
+  payload: Record<string, unknown>;
+  source_refs: string[];
+  reason: string;
+  confidence: number;
+  affected_objects: ProposalAffectedObject[];
+  requires_user_confirmation?: boolean;
+  supersedes_item_id?: string | null;
+}
+
+export interface GoalTreeProposalSubmitInput {
+  board_id: string;
+  actor_id: string;
+  discovered_in_run_id: string;
+  root_goal_id?: string | null;
+  summary: string;
+  items: GoalTreeProposalItemInput[];
+  base_event_cursor?: number;
+  supersedes_proposal_id?: string | null;
+  idempotency_key: string;
+}
+
+export interface GoalTreeProposalCheckInput {
+  board_id: string;
+  proposal_id: string;
+  actor_id: string;
+  idempotency_key: string;
+}
+
+export interface GoalTreeProposalItemDecisionInput {
+  item_id: string;
+  decision: GoalTreeProposalDecisionAction;
+  reason: string;
+  /** A revised item becomes a new pending proposal version; it is never written as canonical directly. */
+  revised_item?: GoalTreeProposalItemInput;
+}
+
+export interface GoalTreeProposalDecideInput {
+  board_id: string;
+  proposal_id: string;
+  /** The current Runtime that carried the user message; null for direct Web/management decisions. */
+  runtime_actor_id?: string | null;
+  authority: GoalTreeProposalDecisionAuthority;
+  decisions?: GoalTreeProposalItemDecisionInput[];
+  /** Shared reason for a whole-proposal confirmation; item reasons take precedence. */
+  reason?: string;
+  /** Only a trusted host may attest that the preceding prompt requested whole-proposal confirmation. */
+  confirm_all_pending?: boolean;
+  idempotency_key: string;
+}
+
 export interface CandidateGoalRecord {
   candidate_id: string;
   board_id: string;
@@ -335,6 +612,28 @@ export interface ReadyGoal {
   relevant_surfaces: ImpactBindingRecord[];
 }
 
+/**
+ * The one user-facing work state for a Goal. It is derived from canonical
+ * Goal, relation, Claim, Run and Review facts; it is never a second mutable
+ * status field.
+ */
+export interface GoalWorkStateView {
+  goal_id: string;
+  work_state: GoalWorkState;
+  next_action: GoalWorkAction | null;
+  active_claim: ClaimRecord | null;
+  active_run: RunRecord | null;
+  pending_review_roles: Array<"self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver">;
+  child_goal_ids: string[];
+  reasons: DecisionReason[];
+}
+
+export interface AvailableGoal extends ReadyGoal {
+  work_state: GoalWorkState;
+  next_action: GoalWorkAction;
+  review_obligation_id: string | null;
+}
+
 export interface BoardSnapshot {
   board: {
     board_id: string;
@@ -356,6 +655,9 @@ export interface BoardSnapshot {
   candidates: CandidateGoalRecord[];
   contract_proposals: ContractProposalRecord[];
   rewires: RewireRecord[];
+  clarification_sessions: ClarificationSessionRecord[];
+  clarification_turns: ClarificationTurnRecord[];
+  goal_tree_proposals: GoalTreeProposalRecord[];
 }
 
 export interface GoalContractView {
@@ -363,6 +665,7 @@ export interface GoalContractView {
   observed_event_cursor: number;
   goal_path: string;
   goal: GoalRecord;
+  work_state: GoalWorkStateView;
   relations: GoalRelationRecord[];
   impacts: ImpactBindingRecord[];
   risks: RiskRecord[];
@@ -375,6 +678,9 @@ export interface GoalContractView {
   candidates: CandidateGoalRecord[];
   contract_proposals: ContractProposalRecord[];
   rewires: RewireRecord[];
+  clarification_sessions: ClarificationSessionRecord[];
+  clarification_turns: ClarificationTurnRecord[];
+  goal_tree_proposals: GoalTreeProposalRecord[];
 }
 
 export interface CreateGoalInput {
@@ -419,6 +725,72 @@ export interface ClaimDecision {
   reasons: DecisionReason[];
   claim: ClaimRecord | null;
   replayed: boolean;
+}
+
+export interface ClaimRunDecision {
+  allowed: boolean;
+  observed_event_cursor: number;
+  reasons: DecisionReason[];
+  claim: ClaimRecord | null;
+  run: RunRecord | null;
+  work_state: GoalWorkStateView | null;
+  replayed: boolean;
+}
+
+export interface DraftDialogueStartInput {
+  board_id: string;
+  actor_id: string;
+  rough_idea: string;
+  draft_title?: string;
+  goal_id?: string;
+  capabilities?: string[];
+  goal_mode_attestation?: boolean;
+  lease_seconds?: number;
+  idempotency_key: string;
+}
+
+export interface DraftDialogueTurnInput {
+  board_id: string;
+  goal_id: string;
+  run_id: string;
+  actor_id: string;
+  user_message: string;
+  current_understanding: string;
+  known_facts?: Array<{
+    statement: string;
+    source_kind: ClarificationFact["source_kind"];
+    source_refs?: string[];
+    confidence?: number;
+    confirmed_by_user?: boolean;
+  }>;
+  assumptions?: Array<{
+    statement: string;
+    source_refs?: string[];
+    confidence?: number;
+  }>;
+  next_question?: string | null;
+  proposal_summary?: string | null;
+  idempotency_key: string;
+}
+
+export interface DraftDialogueResumeInput {
+  board_id: string;
+  goal_id: string;
+  actor_id: string;
+  capabilities?: string[];
+  goal_mode_attestation?: boolean;
+  lease_seconds?: number;
+  idempotency_key: string;
+}
+
+export interface DraftDialogueView {
+  dialogue: ClarificationSessionRecord;
+  turns: ClarificationTurnRecord[];
+  goal: GoalRecord;
+  work_state: GoalWorkStateView;
+  claim: ClaimRecord | null;
+  run: RunRecord | null;
+  observed_event_cursor: number;
 }
 
 export interface RevalidationDecision {

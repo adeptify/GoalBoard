@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
+import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { renderGoalBoardWeb } from "../src/web/render.js";
 import { buildGoalBoardWebView, createGoalBoardWebServer } from "../src/web/server.js";
 
@@ -14,6 +16,84 @@ function webFixture() {
   const databasePath = join(directory, "demo.db");
   seedDemoBoard(databasePath);
   return { databasePath };
+}
+
+async function webProjectCatalogFixture() {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-catalog-"));
+  const alphaContext = {
+    runtime_id: "web-project-test-runtime",
+    stable_work_context_id: "web-project-alpha-session",
+    host_declares_stable: true,
+  };
+  const betaContext = {
+    runtime_id: "web-project-test-runtime",
+    stable_work_context_id: "web-project-beta-session",
+    host_declares_stable: true,
+  };
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  try {
+    const alphaResolution = await catalog.createProjectAndBindRuntimeContext({
+      context: alphaContext,
+      display_name: "产品 Alpha",
+      actor_id: "test-user",
+      user_confirmed: true,
+      idempotency_key: "web-project-alpha-create",
+    });
+    const betaResolution = await catalog.createProjectAndBindRuntimeContext({
+      context: betaContext,
+      display_name: "产品 Beta",
+      actor_id: "test-user",
+      user_confirmed: true,
+      idempotency_key: "web-project-beta-create",
+    });
+    assert.ok(alphaResolution.project);
+    assert.ok(betaResolution.project);
+    return {
+      homeDirectory,
+      alpha: catalog.getProject(alphaResolution.project.project_id),
+      beta: catalog.getProject(betaResolution.project.project_id),
+      alphaContext,
+      betaContext,
+      bindingEvents: catalog.listRuntimeContextBindingEvents(),
+    };
+  } finally {
+    catalog.close();
+  }
+}
+
+function addProjectGoal(
+  project: { database_path: string; board_id: string },
+  goalId: string,
+  title: string,
+): void {
+  const store = new SqliteGoalBoardStore(project.database_path);
+  try {
+    new GoalBoardCoordinator(store).createGoal(
+      project.board_id,
+      {
+        goal_id: goalId,
+        title,
+        outcome: "",
+        why: "",
+        business_logic: "",
+        definition_state: "draft",
+        decomposition_state: "abstract",
+        acceptance_criteria: [],
+      },
+      { actor_id: "test-user", idempotency_key: `web-project-goal-${goalId}` },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function boardSnapshot(databasePath: string, boardId: string) {
+  const store = new SqliteGoalBoardStore(databasePath);
+  try {
+    return store.snapshot(boardId);
+  } finally {
+    store.close();
+  }
 }
 
 test("Web view derives understandable Goal states from canonical SQLite facts", () => {
@@ -146,9 +226,11 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   });
   assert.equal(view.active_goal_id, "V1");
   assert.equal(view.counts.satisfied, 1);
-  assert.equal(view.counts.claimed, 1);
-  assert.equal(view.counts.blocked, 1);
-  assert.equal(view.counts.waiting, 2);
+  assert.equal(view.counts.executing, 1);
+  assert.equal(view.counts.execution_blocked, 1);
+  assert.equal(view.counts.clarification_pending, 1);
+  assert.equal(view.counts.waiting_children, 1);
+  assert.equal(view.goals.find((item) => item.goal.goal_id === "V1")?.status, "waiting_children");
   assert.match(
     view.goals.find((item) => item.goal.goal_id === "WEB")?.reasons[0]?.message ?? "",
     /前置 Goal/,
@@ -167,9 +249,51 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal(core.coverage[0]?.statement, "所有 Goal 事实都能在 Web 中找到");
   assert.equal(core.input_bindings[0]?.source_ref, "https://example.com/goalboard-contract");
   assert.ok(core.events.some((item) => item.object_id === "RISK-WEB-OVERLOAD"));
+  assert.ok(core.events.some((item) => item.type === "rewire.proposed"));
+  const interfaces = view.goals.find((item) => item.goal.goal_id === "INTERFACES");
+  assert.ok(interfaces?.events.some((item) => item.type === "candidate.submitted"));
+  const historyDialogue = coordinator.startDraftDialogue({
+    board_id: DEMO_BOARD_ID,
+    actor_id: "runtime-history-clarifier",
+    goal_id: "RELEASE",
+    rough_idea: "为发布检查补充一条影响接口交付的拆分建议。",
+    idempotency_key: "web-history-dialogue",
+  });
+  assert.ok(historyDialogue.run);
+  coordinator.submitGoalTreeProposal({
+    board_id: DEMO_BOARD_ID,
+    actor_id: "runtime-history-clarifier",
+    discovered_in_run_id: historyDialogue.run.run_id,
+    root_goal_id: "RELEASE",
+    summary: "从 RELEASE 的澄清上下文中补充 INTERFACES 的一条待确认变更。",
+    items: [
+      {
+        item_id: "web-history-cross-goal-item",
+        kind: "goal",
+        operation: "update",
+        payload: { goal_id: "INTERFACES", priority: 81 },
+        source_refs: ["tests/web.test.ts#event-ledger"],
+        reason: "验证非根 Goal 也能查到影响它的 Goal Tree Proposal。",
+        confidence: 0.9,
+        affected_objects: [{ object_type: "goal", object_id: "INTERFACES" }],
+      },
+    ],
+    idempotency_key: "web-history-cross-goal-tree-proposal",
+  });
+  const historyView = buildGoalBoardWebView(store, coordinator, {
+    databasePath,
+    boardId: DEMO_BOARD_ID,
+    demo: true,
+  });
+  assert.ok(
+    historyView.goals
+      .find((item) => item.goal.goal_id === "INTERFACES")
+      ?.events.some((item) => item.type === "goal_tree_proposal.submitted"),
+  );
   const html = renderGoalBoardWeb(view);
   const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
   assert.ok(html.startsWith("<!--\nTHESIS:"));
+  assert.match(html, /已澄清，等待子 Goal/);
   assert.match(html, /Runtime 工作闭环/);
   assert.match(html, /为什么做/);
   assert.match(html, /Goal Contract/);
@@ -208,6 +332,23 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-copy-value/);
   assert.match(html, /data-select-goal/);
   assert.match(html, /data-tree-search/);
+  assert.match(html, /data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter"/);
+  assert.match(html, /id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选"/);
+  assert.match(html, /可同时选择多个状态；会与关键词搜索一起生效。/);
+  assert.match(html, /data-status-filter/);
+  assert.match(html, /data-goal-status="executing"/);
+  assert.match(html, /data-clear-status-filter/);
+  assert.match(html, /data-clear-tree-filter/);
+  assert.match(html, /statuses: \[\.\.\.selectedStatuses\]/);
+  assert.match(html, /selectedStatuses\.size === 0 \|\| selectedStatuses\.has\(item\.dataset\.goalStatus\)/);
+  assert.match(html, /if \(event\.key === "Escape" && !treeFilter\?\.hidden\)/);
+  assert.match(html, /treeFilterTrigger\?\.addEventListener\("click", \(event\) =>/);
+  assert.match(html, /event\.stopPropagation\(\);/);
+  assert.match(html, /if \(treeFilter\.hidden\) return;/);
+  assert.match(html, /firstStatusFilter\.focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(html, /const filterTrigger = target\.closest\("\[data-tree-filter-trigger\]"\)/);
+  assert.match(html, /event\.target instanceof Element/);
+  assert.doesNotMatch(html, /data-focus-filter/);
   assert.match(html, /data-open-create/);
   assert.match(html, /data-open-create aria-label="新建目标"/);
   assert.match(html, /data-create-dialog/);
@@ -259,7 +400,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(decisionHtml, /CORE 消费 INTERFACES 的调用结果/);
   assert.match(decisionHtml, /可信度 88%/);
   assert.match(decisionHtml, /href="https:\/\/example.com\/contracts\/interfaces"/);
-  assert.match(decisionHtml, /data-copy-value="tests\/mcp.test.ts"/);
+  assert.match(decisionHtml, /href="\/api\/project-references\/tests%2Fmcp.test.ts"[^>]*data-project-reference/);
   assert.match(decisionHtml, /<form class="decision-record rewire-decision"/);
   assert.match(decisionHtml, /name="reason"[\s\S]*决定理由或修改意见|决定理由或修改意见[\s\S]*name="reason"/);
   assert.match(html, /\.decision-record \{ min-width: 0;/);
@@ -269,6 +410,452 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /\.create-dialog \{ width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; \}/);
   assert.doesNotMatch(html, /track-map|class="signal"|signal-box|railway/i);
   store.close();
+});
+
+test("Web project catalog switches browser scope without exposing storage or changing Runtime bindings", async () => {
+  const fixture = await webProjectCatalogFixture();
+  addProjectGoal(fixture.alpha, "ALPHA-ONLY", "仅 Alpha 可见的 Goal");
+  addProjectGoal(fixture.beta, "BETA-ONLY", "仅 Beta 可见的 Goal");
+
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const alphaPrefix = `/projects/${encodeURIComponent(fixture.alpha.project_id)}`;
+    const betaPrefix = `/projects/${encodeURIComponent(fixture.beta.project_id)}`;
+
+    const projectIndex = await (await fetch(`${origin}/`)).text();
+    assert.match(projectIndex, /选择一个项目/);
+    assert.match(projectIndex, /产品 Alpha/);
+    assert.match(projectIndex, /产品 Beta/);
+    assert.match(projectIndex, new RegExp(`href="${alphaPrefix}"`));
+    assert.match(projectIndex, new RegExp(`href="${betaPrefix}"`));
+    assert.doesNotMatch(projectIndex, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(projectIndex, /数据源:|board_id/);
+
+    const missingSelection = await fetch(`${origin}/api/board`);
+    assert.equal(missingSelection.status, 400);
+    assert.match(await missingSelection.text(), /请先选择一个 GoalBoard 项目/);
+
+    const alphaPage = await (await fetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY`)).text();
+    assert.match(alphaPage, /项目：<\/strong><span>产品 Alpha/);
+    assert.match(alphaPage, /切换项目/);
+    assert.match(alphaPage, /仅 Alpha 可见的 Goal/);
+    assert.doesNotMatch(alphaPage, /仅 Beta 可见的 Goal|数据源:|goalboard\.db/);
+    assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
+    assert.match(alphaPage, new RegExp(`href="${alphaPrefix}/decisions"`));
+
+    const betaPage = await (await fetch(`${origin}${betaPrefix}/goals/BETA-ONLY`)).text();
+    assert.match(betaPage, /项目：<\/strong><span>产品 Beta/);
+    assert.match(betaPage, /仅 Beta 可见的 Goal/);
+    assert.doesNotMatch(betaPage, /仅 Alpha 可见的 Goal/);
+
+    const alphaBoardResponse = await fetch(`${origin}${alphaPrefix}/api/board`);
+    assert.equal(alphaBoardResponse.status, 200);
+    const alphaBoardText = await alphaBoardResponse.text();
+    assert.doesNotMatch(alphaBoardText, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const alphaBoard = JSON.parse(alphaBoardText) as {
+      project: { display_name: string } | null;
+      snapshot: { board: { board_id: string } };
+      goals: Array<{ goal: { goal_id: string } }>;
+    };
+    assert.equal(alphaBoard.project?.display_name, "产品 Alpha");
+    assert.equal(alphaBoard.snapshot.board.board_id, "");
+    assert.ok(alphaBoard.goals.some((item) => item.goal.goal_id === "ALPHA-ONLY"));
+    assert.ok(!alphaBoard.goals.some((item) => item.goal.goal_id === "BETA-ONLY"));
+
+    const created = await fetch(`${origin}${alphaPrefix}/api/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: "ALPHA-WEB-CREATED",
+        title: "只在 Alpha 创建的 Draft",
+        outcome: "",
+        why: "",
+        business_logic: "",
+      }),
+    });
+    assert.equal(created.status, 201);
+    const createdPayload = (await created.json()) as { goal_path: string };
+    assert.equal(createdPayload.goal_path, `${alphaPrefix}/goals/ALPHA-WEB-CREATED`);
+
+    const betaBoard = (await (await fetch(`${origin}${betaPrefix}/api/board`)).json()) as {
+      goals: Array<{ goal: { goal_id: string } }>;
+    };
+    assert.ok(!betaBoard.goals.some((item) => item.goal.goal_id === "ALPHA-WEB-CREATED"));
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+  try {
+    assert.deepEqual(catalog.listRuntimeContextBindingEvents(), fixture.bindingEvents);
+    assert.equal(catalog.resolveRuntimeContext(fixture.alphaContext).project?.project_id, fixture.alpha.project_id);
+    assert.equal(catalog.resolveRuntimeContext(fixture.betaContext).project?.project_id, fixture.beta.project_id);
+  } finally {
+    catalog.close();
+  }
+});
+
+test("Web project catalog empty state does not create a project or Runtime binding", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-empty-"));
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const page = await (await fetch(`http://127.0.0.1:${address.port}/`)).text();
+    assert.match(page, /还没有 GoalBoard 项目/);
+    assert.match(page, /当前 Runtime 使用 GoalBoard Skill 创建、连接或迁移项目/);
+    assert.doesNotMatch(page, /data-open-create|新建项目/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  try {
+    assert.deepEqual(catalog.listProjects(), []);
+    assert.deepEqual(catalog.listRuntimeContextBindingEvents(), []);
+  } finally {
+    catalog.close();
+  }
+});
+
+test("Web command only starts from the project catalog", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "src/web/server.ts", "--db", "/tmp/legacy-goalboard.db"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /只按项目启动/);
+  assert.match(result.stderr, /--db 已不支持/);
+});
+
+test("Web migrates an explicitly confirmed legacy DB into one project without changing Runtime bindings", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-migration-"));
+  const legacyDirectory = join(homeDirectory, "legacy-source");
+  const legacyDatabasePath = join(legacyDirectory, "goalboard.db");
+  mkdirSync(legacyDirectory, { recursive: true });
+  seedDemoBoard(legacyDatabasePath);
+  const before = boardSnapshot(legacyDatabasePath, DEMO_BOARD_ID);
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const indexResponse = await fetch(`${origin}/`);
+    assert.match(indexResponse.headers.get("content-security-policy") ?? "", /script-src 'unsafe-inline'/);
+    assert.match(indexResponse.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
+    const index = await indexResponse.text();
+    assert.match(index, /迁移已有 GoalBoard 数据/);
+    assert.match(index, /data-project-migration-form/);
+    assert.match(index, /data-open-project-migration/);
+    assert.match(index, /不会绑定或切换任何 Runtime Session/);
+    assert.doesNotMatch(index, /兼容模式|单数据库工作区|显式 --db/);
+
+    const withoutConfirmation = await fetch(`${origin}/api/projects/migrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ legacy_database_path: legacyDatabasePath }),
+    });
+    assert.equal(withoutConfirmation.status, 400);
+    assert.match(await withoutConfirmation.text(), /明确确认/);
+    assert.equal(existsSync(legacyDatabasePath), true);
+
+    const unconfirmedCatalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+    try {
+      assert.deepEqual(unconfirmedCatalog.listProjects(), []);
+      assert.deepEqual(unconfirmedCatalog.listRuntimeContextBindingEvents(), []);
+    } finally {
+      unconfirmedCatalog.close();
+    }
+
+    const migratedResponse = await fetch(`${origin}/api/projects/migrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        legacy_database_path: legacyDatabasePath,
+        display_name: "迁移后的产品",
+        user_confirmed: true,
+      }),
+    });
+    assert.equal(migratedResponse.status, 201);
+    const migrated = (await migratedResponse.json()) as {
+      project: { project_id: string; display_name: string };
+      project_path: string;
+    };
+    assert.equal(migrated.project.display_name, "迁移后的产品");
+    assert.equal(migrated.project_path, `/projects/${encodeURIComponent(migrated.project.project_id)}/`);
+    assert.equal(existsSync(legacyDatabasePath), false);
+
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+    try {
+      const project = catalog.getProject(migrated.project.project_id);
+      assert.equal(project.display_name, "迁移后的产品");
+      assert.deepEqual(boardSnapshot(project.database_path, project.board_id), before);
+      assert.deepEqual(catalog.listRuntimeContextBindingEvents(), []);
+    } finally {
+      catalog.close();
+    }
+
+    const migratedPage = await (await fetch(`${origin}${migrated.project_path}`)).text();
+    assert.match(migratedPage, /项目：<\/strong><span>迁移后的产品/);
+    assert.match(migratedPage, /交付 GoalBoard V1/);
+    assert.doesNotMatch(migratedPage, new RegExp(legacyDatabasePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web leaves an invalid legacy DB and the project catalog unchanged when migration fails", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-migration-failure-"));
+  const invalidDatabasePath = join(homeDirectory, "invalid-goalboard.db");
+  writeFileSync(invalidDatabasePath, "not a GoalBoard SQLite database");
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/projects/migrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        legacy_database_path: invalidDatabasePath,
+        user_confirmed: true,
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /GoalBoard DB|数据库|迁移/);
+    assert.equal(existsSync(invalidDatabasePath), true);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  try {
+    assert.deepEqual(catalog.listProjects(), []);
+    assert.deepEqual(catalog.listRuntimeContextBindingEvents(), []);
+  } finally {
+    catalog.close();
+  }
+});
+
+test("Web lets a user set an accepted Goal as the current Goal without starting Runtime work", async () => {
+  const { databasePath } = webFixture();
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.createGoal(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "ACTIVE-GOAL-WEB",
+      title: "从 Web 设为当前 Goal",
+      outcome: "用户可以聚焦一条已接受 Goal",
+      why: "当前 Goal 应由用户在 Board 中维护",
+      business_logic: "用户选择当前聚焦 Goal，不会代替 Runtime 领取或启动执行。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "ACTIVE-GOAL-WEB-C1",
+          statement: "页面可设为当前 Goal",
+          decision_method: "automated_check",
+          pass_condition: "Board 保存选择且保持待执行状态",
+          required_evidence: ["test"],
+        },
+      ],
+    },
+    { actor_id: "test-user", idempotency_key: "create-active-goal-web" },
+  );
+  coordinator.createGoal(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "ACTIVE-GOAL-DRAFT",
+      title: "不能设为当前 Goal 的 Draft",
+      outcome: "",
+      why: "",
+      business_logic: "",
+      definition_state: "draft",
+      decomposition_state: "abstract",
+      acceptance_criteria: [],
+    },
+    { actor_id: "test-user", idempotency_key: "create-active-goal-draft" },
+  );
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const initialPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
+    const goalDocument = (page: string, goalId: string): string => {
+      const marker = `<article class="goal-document" data-goal-view="${goalId}"`;
+      const start = page.indexOf(marker);
+      assert.ok(start >= 0, `missing Goal document: ${goalId}`);
+      const metaStart = page.indexOf('<dl class="goal-meta"', start);
+      assert.ok(metaStart >= 0, `missing Goal header: ${goalId}`);
+      return page.slice(start, metaStart);
+    };
+    const initialDocument = goalDocument(initialPage, "ACTIVE-GOAL-WEB");
+    assert.match(initialDocument, /data-set-active-goal/);
+    assert.match(initialDocument, /设为当前 Goal/);
+
+    const activate = await fetch(`${origin}/api/goals/ACTIVE-GOAL-WEB/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "用户把这条已接受 Goal 设为当前聚焦" }),
+    });
+    assert.equal(activate.status, 200);
+    const activated = (await activate.json()) as {
+      active_goal_id: string;
+      replayed: boolean;
+      observed_event_cursor: number;
+    };
+    assert.equal(activated.active_goal_id, "ACTIVE-GOAL-WEB");
+    assert.equal(activated.replayed, false);
+    assert.ok(activated.observed_event_cursor > 0);
+
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      active_goal_id: string;
+      snapshot: { board: { active_goal_id: string } };
+      events: Array<{ type: string; object_id: string }>;
+      goals: Array<{ goal: { goal_id: string }; work_state: string }>;
+    };
+    assert.equal(board.active_goal_id, "ACTIVE-GOAL-WEB");
+    assert.equal(board.snapshot.board.active_goal_id, "ACTIVE-GOAL-WEB");
+    assert.equal(board.goals.find((item) => item.goal.goal_id === "ACTIVE-GOAL-WEB")?.work_state, "execution_pending");
+    assert.ok(
+      board.events.some(
+        (event) => event.type === "board.active_goal_changed" && event.object_id === "ACTIVE-GOAL-WEB",
+      ),
+    );
+    const currentPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-WEB`)).text();
+    const currentDocument = goalDocument(currentPage, "ACTIVE-GOAL-WEB");
+    assert.match(currentDocument, /当前 Goal/);
+    assert.match(currentDocument, /当前产品聚焦 Goal；不表示 Runtime 正在执行/);
+    assert.doesNotMatch(currentDocument, /data-set-active-goal/);
+
+    const draftPage = await (await fetch(`${origin}/goals/ACTIVE-GOAL-DRAFT`)).text();
+    assert.doesNotMatch(goalDocument(draftPage, "ACTIVE-GOAL-DRAFT"), /data-set-active-goal/);
+    const draftActivation = await fetch(`${origin}/api/goals/ACTIVE-GOAL-DRAFT/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "不能绕过 accepted 校验" }),
+    });
+    assert.equal(draftActivation.status, 400);
+    assert.match(await draftActivation.text(), /只有已接受的 Goal 可以成为当前产品目标/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web optionally uses the same Goal Tree decision path without enabling ambiguous whole confirmation", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-tree-decision-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "web-tree-board",
+    title: "Web Tree Decision",
+    actor_id: "web-user",
+    idempotency_key: "web-tree-init",
+  });
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "web-tree-board",
+    actor_id: "runtime-clarifier",
+    goal_id: "web-tree-root",
+    rough_idea: "用户可以在当前 Runtime 或 Web 选择确认 Goal Tree 项。",
+    idempotency_key: "web-tree-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-tree-board",
+    actor_id: "runtime-clarifier",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "web-tree-root",
+    summary: "新增一条仍需继续澄清的子 Goal。",
+    items: [
+      {
+        item_id: "web-tree-child",
+        kind: "goal",
+        operation: "create",
+        payload: { goal_id: "web-tree-child", title: "Web 可选确认的 Draft 子 Goal" },
+        source_refs: ["conversation://web-tree"],
+        reason: "用户希望保留这个分支，之后继续在 Runtime 里澄清。",
+        confidence: 1,
+        affected_objects: [{ object_type: "goal", object_id: "web-tree-child" }],
+      },
+    ],
+    idempotency_key: "web-tree-propose",
+  }).proposal;
+  store.close();
+  const server = createGoalBoardWebServer({ databasePath, boardId: "web-tree-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const ambiguous = await fetch(
+      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm_all_pending: true, reason: "确认" }),
+      },
+    );
+    assert.equal(ambiguous.status, 400);
+    assert.match(await ambiguous.text(), /不能验证上一轮/);
+    const decision = await fetch(
+      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          decisions: [
+            {
+              item_id: "web-tree-child",
+              decision: "confirm",
+              reason: "用户从可选 Web 页面确认保留这个 Draft 分支。",
+            },
+          ],
+          idempotency_key: "web-tree-decide",
+        }),
+      },
+    );
+    assert.equal(decision.status, 200, await decision.text());
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        goals: Array<{ goal_id: string; definition_state: string }>;
+        goal_tree_proposals: Array<{
+          proposal_id: string;
+          items: Array<{ item_id: string; decision: { authority_source: string; actor_id: string } | null }>;
+        }>;
+      };
+    };
+    assert.equal(board.snapshot.goals.find((goal) => goal.goal_id === "web-tree-child")?.definition_state, "draft");
+    const persisted = board.snapshot.goal_tree_proposals.find((item) => item.proposal_id === proposal.proposal_id);
+    assert.equal(persisted?.items[0]?.decision?.authority_source, "web");
+    assert.equal(persisted?.items[0]?.decision?.actor_id, "web-user");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });
 
 test("Web lets the user add and deactivate every supported Goal relation with explicit direction", async () => {
@@ -1493,6 +2080,20 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       result: "passed",
       idempotency_key: "evidence-policy-web",
     }).evidence;
+    runtimeCoordinator.reportRun({
+      board_id: DEMO_BOARD_ID,
+      run_id: run.run_id,
+      actor_id: "runtime-policy-web",
+      state: "completed",
+      idempotency_key: "run-policy-web-completed",
+    });
+    runtimeCoordinator.releaseClaim({
+      board_id: DEMO_BOARD_ID,
+      claim_id: claim.claim_id,
+      actor_id: "runtime-policy-web",
+      reason: "交给 Review 阶段",
+      idempotency_key: "claim-policy-web-release",
+    });
     const obligation = runtimeStore
       .snapshot(DEMO_BOARD_ID)
       .review_obligations.find(
@@ -1577,6 +2178,365 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       "https://example.com/human-observation",
     ]);
     verifiedStore.close();
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web records manual Evidence, safely opens project references, and exposes its full event ledger", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-evidence-"));
+  const databasePath = join(directory, "goalboard.db");
+  const projectRoot = join(directory, "project");
+  const notesDirectory = join(projectRoot, "notes");
+  mkdirSync(notesDirectory, { recursive: true });
+  writeFileSync(join(notesDirectory, "evidence.txt"), "用户手工检查：页面可以记录并打开人工 Evidence。\n");
+  writeFileSync(join(notesDirectory, "binary.bin"), Buffer.from([0, 1, 2]));
+  writeFileSync(join(notesDirectory, "large.txt"), "x".repeat(512 * 1024 + 1));
+  writeFileSync(join(directory, "outside.txt"), "这个文件不属于项目引用根目录。\n");
+  symlinkSync(join(directory, "outside.txt"), join(notesDirectory, "outside-link.txt"));
+  seedDemoBoard(databasePath);
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.createGoal(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "EVIDENCE-WEB",
+      title: "用户可以提交人工 Evidence",
+      outcome: "人工验收事实和 Runtime Evidence 使用同一完成门禁",
+      why: "用户需要记录自己验证过的事实，而不是通过伪造 Runtime Run 来绕过模型。",
+      business_logic: "Web 只提交 Evidence 事实；GoalBoard 仍依据相同 Criterion、Review 和完成规则判断状态。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "EVIDENCE-WEB-C1",
+          statement: "人工 Evidence 可以被记录并回看",
+          decision_method: "inspection",
+          pass_condition: "用户能在页面提交 Evidence，并从记录打开安全的项目内文本引用",
+          required_evidence: ["attestation"],
+        },
+      ],
+    },
+    { actor_id: "test-user", idempotency_key: "create-evidence-web" },
+  );
+  coordinator.addRelation(
+    DEMO_BOARD_ID,
+    {
+      from_goal_id: "EVIDENCE-WEB",
+      to_goal_id: "CORE",
+      type: "extends",
+      reason: "人工 Evidence 使用既有的同一完成门禁",
+    },
+    { actor_id: "test-user", idempotency_key: "evidence-web-relation" },
+  );
+  coordinator.addRisk(
+    DEMO_BOARD_ID,
+    {
+      risk_id: "RISK-EVIDENCE-WEB",
+      goal_ids: ["EVIDENCE-WEB"],
+      description: "项目外文件不能经 Evidence 引用暴露",
+      probability: "low",
+      impact: "high",
+      affected_surfaces: ["Evidence 引用"],
+      trigger: "定位引用包含跳出项目目录的路径",
+      treatment: "mitigate",
+      blocking_mode: "none",
+      revisit_condition: "新增引用协议时重新检查路径边界",
+      owner: "test-user",
+    },
+    { actor_id: "test-user", idempotency_key: "evidence-web-risk" },
+  );
+  coordinator.setPolicy(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "EVIDENCE-WEB",
+      policy: { goal_mode: "preferred", self_verification: true },
+      reason: "人工 Evidence 不替代现有验证规则",
+    },
+    { actor_id: "test-user", idempotency_key: "evidence-web-policy" },
+  );
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID, projectRoot });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const beforeSubmit = await (await fetch(`${origin}/goals/EVIDENCE-WEB`)).text();
+    assert.match(beforeSubmit, /data-evidence-form/);
+    assert.match(beforeSubmit, /提交人工 Evidence/);
+    assert.match(beforeSubmit, /完整事件账本/);
+
+    const missingCriterion = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "attestation", result: "passed", locator: "notes/evidence.txt" }),
+    });
+    assert.equal(missingCriterion.status, 400);
+    assert.match(await missingCriterion.text(), /至少选择一条验收条件/);
+
+    const submitted = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["EVIDENCE-WEB-C1"],
+        kind: "attestation",
+        result: "passed",
+        locator: "notes/evidence.txt",
+        digest: "用户在页面中完成检查，并留下可复核的项目内引用。",
+      }),
+    });
+    assert.equal(submitted.status, 201, await submitted.clone().text());
+    const submittedResult = (await submitted.json()) as {
+      evidence: { evidence_id: string; producer_actor_id: string; run_id: string | null };
+    };
+    assert.equal(submittedResult.evidence.producer_actor_id, "web-user");
+    assert.equal(submittedResult.evidence.run_id, null);
+
+    const externalEvidence = await fetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["EVIDENCE-WEB-C1"],
+        kind: "inspection",
+        result: "passed",
+        locator: "https://example.com/manual-evidence",
+      }),
+    });
+    assert.equal(externalEvidence.status, 201, await externalEvidence.text());
+
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      goals: Array<{
+        goal: { goal_id: string };
+        evidence: Array<{ evidence_id: string }>;
+        passed_criteria: string[];
+        events: Array<{ type: string }>;
+      }>;
+    };
+    const evidenceGoal = board.goals.find((item) => item.goal.goal_id === "EVIDENCE-WEB");
+    assert.ok(evidenceGoal);
+    assert.ok(evidenceGoal.evidence.some((item) => item.evidence_id === submittedResult.evidence.evidence_id));
+    assert.deepEqual(evidenceGoal.passed_criteria, ["EVIDENCE-WEB-C1"]);
+    for (const type of ["evidence.submitted", "risk.created", "relation.added", "policy.added"]) {
+      assert.ok(evidenceGoal.events.some((event) => event.type === type), `missing ${type}`);
+    }
+
+    const goalPage = await (await fetch(`${origin}/goals/EVIDENCE-WEB`)).text();
+    assert.match(goalPage, new RegExp(submittedResult.evidence.evidence_id));
+    assert.match(goalPage, /href="\/api\/project-references\/notes%2Fevidence\.txt"/);
+    assert.match(goalPage, /data-project-reference/);
+    assert.match(goalPage, /href="https:\/\/example\.com\/manual-evidence"/);
+    assert.match(goalPage, /evidence\.submitted/);
+    assert.match(goalPage, /risk\.created/);
+    assert.match(goalPage, /relation\.added/);
+    assert.match(goalPage, /policy\.added/);
+
+    const opened = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}`);
+    assert.equal(opened.status, 200, await opened.clone().text());
+    assert.match(opened.headers.get("content-type") ?? "", /text\/plain/);
+    assert.match(await opened.text(), /用户手工检查/);
+
+    const escaped = await fetch(`${origin}/api/project-references/${encodeURIComponent("project://../outside.txt")}`);
+    assert.equal(escaped.status, 400);
+    assert.match(await escaped.text(), /不能跳出项目目录/);
+    const absolute = await fetch(`${origin}/api/project-references/${encodeURIComponent("project:///etc/passwd")}`);
+    assert.equal(absolute.status, 400);
+    assert.match(await absolute.text(), /必须是相对路径/);
+    const directoryReference = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes")}`);
+    assert.equal(directoryReference.status, 400);
+    assert.match(await directoryReference.text(), /普通文件/);
+    const symlinkEscape = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/outside-link.txt")}`);
+    assert.equal(symlinkEscape.status, 400);
+    assert.match(await symlinkEscape.text(), /不能通过链接跳出项目目录/);
+    const binary = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/binary.bin")}`);
+    assert.equal(binary.status, 415);
+    assert.match(await binary.text(), /文本引用/);
+    const large = await fetch(`${origin}/api/project-references/${encodeURIComponent("notes/large.txt")}`);
+    assert.equal(large.status, 413);
+    assert.match(await large.text(), /文件过大/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web normal Tree excludes trashed Goals while the coordinator retains their facts", () => {
+  const { databasePath } = webFixture();
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.createGoal(
+    DEMO_BOARD_ID,
+    {
+      goal_id: "TRASHED-WEB",
+      title: "不会出现在普通 Tree 的 Goal",
+      outcome: "回收站 Goal 不干扰当前工作列表",
+      why: "普通导航只应该展示可继续处理的工作",
+      business_logic: "移入回收站会保留全部事实，但普通 Web Tree 和 Archive 都不显示它。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "trashed-web-criterion",
+          statement: "普通 Tree 不显示回收站 Goal",
+          decision_method: "automated_check",
+          pass_condition: "Web view goals 与 archived_goals 都没有该 Goal",
+        },
+      ],
+    },
+    { actor_id: "test-user", idempotency_key: "create-trashed-web" },
+  );
+  coordinator.setGoalTrashed(
+    DEMO_BOARD_ID,
+    { goal_id: "TRASHED-WEB", trashed: true, reason: "验证正常 Web 读取过滤" },
+    { actor_id: "test-user", idempotency_key: "trash-web-goal" },
+  );
+  const view = buildGoalBoardWebView(store, coordinator, {
+    databasePath,
+    boardId: DEMO_BOARD_ID,
+    demo: true,
+  });
+  assert.equal(view.goals.some((item) => item.goal.goal_id === "TRASHED-WEB"), false);
+  assert.equal(view.archived_goals.some((item) => item.goal.goal_id === "TRASHED-WEB"), false);
+  assert.equal(view.trashed_goals.some((item) => item.goal.goal_id === "TRASHED-WEB"), true);
+  assert.equal(store.snapshot(DEMO_BOARD_ID).goals.find((goal) => goal.goal_id === "TRASHED-WEB")?.trashed_at == null, false);
+  assert.deepEqual(coordinator.listTrashedGoals(DEMO_BOARD_ID).map((goal) => goal.goal_id), ["TRASHED-WEB"]);
+  store.close();
+});
+
+test("Web provides confirmed recoverable trash, blocked-work feedback, and restore", async () => {
+  const { databasePath } = webFixture();
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  const createGoal = (goalId: string, title: string) =>
+    coordinator.createGoal(
+      DEMO_BOARD_ID,
+      {
+        goal_id: goalId,
+        title,
+        outcome: "用户可以完成回收站 UI 流程",
+        why: "可恢复删除不能干扰日常 Goal Tree",
+        business_logic: "用户确认后移入回收站；系统保留历史和安全恢复所需的 Relation 事实。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [
+          {
+            criterion_id: `${goalId}-criterion`,
+            statement: "回收站流程可验证",
+            decision_method: "automated_check",
+            pass_condition: "确认、阻止、移入和恢复都走共享服务",
+          },
+        ],
+      },
+      { actor_id: "test-user", idempotency_key: `create-${goalId}` },
+    );
+  createGoal("TRASH-UI-READY", "可移入回收站的 UI Goal");
+  createGoal("TRASH-UI-ACTIVE", "有运行中工作的 UI Goal");
+  const relationId = coordinator.addRelation(
+    DEMO_BOARD_ID,
+    {
+      from_goal_id: "TRASH-UI-READY",
+      to_goal_id: "CORE",
+      type: "extends",
+      reason: "验证回收站会复用共享 Relation 迁移",
+    },
+    { actor_id: "test-user", idempotency_key: "trash-ui-relation" },
+  ).relation_id;
+  const activeDecision = coordinator.selectGoalAndStart({
+    board_id: DEMO_BOARD_ID,
+    goal_id: "TRASH-UI-ACTIVE",
+    actor_id: "runtime-trash-ui",
+    goal_mode_attestation: true,
+    idempotency_key: "trash-ui-active-work",
+  });
+  assert.equal(activeDecision.allowed, true);
+  assert.ok(activeDecision.claim);
+  assert.ok(activeDecision.run);
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const goalPage = await (await fetch(`${origin}/goals/TRASH-UI-READY`)).text();
+    assert.match(goalPage, /data-open-goal-trash/);
+    assert.match(goalPage, /移入回收站/);
+    assert.match(goalPage, /操作可恢复/);
+    assert.match(goalPage, /href="\/trash" aria-label="查看回收站"/);
+
+    const missingConfirmation = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trashed: true, reason: "没有确认不应修改" }),
+    });
+    assert.equal(missingConfirmation.status, 400);
+    assert.match(await missingConfirmation.text(), /请先在 GoalBoard 中确认此操作/);
+
+    const blocked = await fetch(`${origin}/api/goals/TRASH-UI-ACTIVE/trash`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trashed: true, user_confirmed: true, reason: "验证活跃工作提示" }),
+    });
+    assert.equal(blocked.status, 200);
+    const blockedResult = (await blocked.json()) as {
+      status: string;
+      blocking_claim_ids: string[];
+      blocking_run_ids: string[];
+    };
+    assert.equal(blockedResult.status, "blocked");
+    assert.deepEqual(blockedResult.blocking_claim_ids, [activeDecision.claim!.claim_id]);
+    assert.deepEqual(blockedResult.blocking_run_ids, [activeDecision.run!.run_id]);
+
+    const trashed = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trashed: true, user_confirmed: true, reason: "暂时从日常列表移出" }),
+    });
+    assert.equal(trashed.status, 200);
+    const trashedResult = (await trashed.json()) as {
+      status: string;
+      deactivated_relation_ids: string[];
+    };
+    assert.equal(trashedResult.status, "trashed");
+    assert.deepEqual(trashedResult.deactivated_relation_ids, [relationId]);
+
+    const board = (await (await fetch(`${origin}/api/board`)).json()) as {
+      goals: Array<{ goal: { goal_id: string } }>;
+      archived_goals: Array<{ goal: { goal_id: string } }>;
+      trashed_goals: Array<{ goal: { goal_id: string; trashed_at: string | null } }>;
+    };
+    assert.equal(board.goals.some((item) => item.goal.goal_id === "TRASH-UI-READY"), false);
+    assert.equal(board.archived_goals.some((item) => item.goal.goal_id === "TRASH-UI-READY"), false);
+    assert.equal(board.trashed_goals.find((item) => item.goal.goal_id === "TRASH-UI-READY")?.goal.trashed_at == null, false);
+
+    const currentTree = await (await fetch(`${origin}/`)).text();
+    assert.doesNotMatch(currentTree, /data-tree-item data-goal-id="TRASH-UI-READY"/);
+    const trashPage = await (await fetch(`${origin}/trash/goals/TRASH-UI-READY`)).text();
+    assert.match(trashPage, /<h2>回收站<\/h2>/);
+    assert.match(trashPage, /data-tree-item data-goal-id="TRASH-UI-READY"/);
+    assert.match(trashPage, /data-open-goal-restore/);
+    assert.match(trashPage, /Goal 的 Contract、Run、Evidence 与事件历史都已保留/);
+
+    const restored = await fetch(`${origin}/api/goals/TRASH-UI-READY/trash`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trashed: false, user_confirmed: true, reason: "重新纳入日常工作" }),
+    });
+    assert.equal(restored.status, 200);
+    const restoredResult = (await restored.json()) as {
+      status: string;
+      restored_relation_ids: string[];
+    };
+    assert.equal(restoredResult.status, "restored");
+    assert.deepEqual(restoredResult.restored_relation_ids, [relationId]);
+    const restoredGoal = await (await fetch(`${origin}/goals/TRASH-UI-READY`)).text();
+    assert.match(restoredGoal, /data-tree-item data-goal-id="TRASH-UI-READY"/);
+    assert.match(restoredGoal, /data-open-goal-trash/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

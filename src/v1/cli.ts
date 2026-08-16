@@ -28,14 +28,18 @@ export function printV1Help(): void {
   console.log(`goalboard v1 <operation> --db PATH --json '{...}'
 
 Operations:
-  init | create-goal | snapshot | contract | ready | explain | claim | release
+  init | create-goal | snapshot | contract | available | select-goal | ready | explain | claim | release | revoke
   run-start | run-report | revalidate | evidence-submit | review-submit | complete
+  draft-dialogue-start | draft-dialogue-turn | draft-dialogue-resume
+  goal-tree-propose | goal-tree-read | goal-tree-check | goal-tree-decide
   relation-add | impact-add | policy-set | risk-add | risk-state | active-goal
   contract-propose | contract-decide | candidate-submit | dependency-propose
   candidate-decide | rewire-confirm | import-v3
 
 Complex payloads may use --file payload.json instead of --json.
 The SQLite database defaults to ${DEFAULT_DATABASE}.`);
+  console.log("\nInstall GoalBoard itself: goalboard install [--home PATH]");
+  console.log("Explicit post-install project choices: goalboard project-setup [--home PATH] --json '{...}'");
 }
 
 export async function runV1Cli(args: string[]): Promise<number> {
@@ -73,6 +77,55 @@ export async function runV1Cli(args: string[]): Promise<number> {
             idempotency_key: String(input.idempotency_key),
             reason: input.reason == null ? undefined : String(input.reason),
           }),
+        );
+        break;
+      case "draft-dialogue-start":
+        print(
+          coordinator.startDraftDialogue(
+            input as unknown as Parameters<GoalBoardCoordinator["startDraftDialogue"]>[0],
+          ),
+        );
+        break;
+      case "draft-dialogue-turn":
+        print(
+          coordinator.recordDraftDialogueTurn(
+            input as unknown as Parameters<GoalBoardCoordinator["recordDraftDialogueTurn"]>[0],
+          ),
+        );
+        break;
+      case "draft-dialogue-resume":
+        print(
+          coordinator.resumeDraftDialogue(
+            input as unknown as Parameters<GoalBoardCoordinator["resumeDraftDialogue"]>[0],
+          ),
+        );
+        break;
+      case "goal-tree-propose":
+        print(
+          coordinator.submitGoalTreeProposal(
+            input as unknown as Parameters<GoalBoardCoordinator["submitGoalTreeProposal"]>[0],
+          ),
+        );
+        break;
+      case "goal-tree-read":
+        print(
+          coordinator.listGoalTreeProposals(
+            input as unknown as Parameters<GoalBoardCoordinator["listGoalTreeProposals"]>[0],
+          ),
+        );
+        break;
+      case "goal-tree-check":
+        print(
+          coordinator.checkGoalTreeProposal(
+            input as unknown as Parameters<GoalBoardCoordinator["checkGoalTreeProposal"]>[0],
+          ),
+        );
+        break;
+      case "goal-tree-decide":
+        print(
+          coordinator.decideGoalTreeProposal(
+            input as unknown as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0],
+          ),
         );
         break;
       case "relation-add":
@@ -162,6 +215,16 @@ export async function runV1Cli(args: string[]): Promise<number> {
           }),
         );
         break;
+      case "available":
+        print(
+          coordinator.queryAvailable({
+            board_id: String(input.board_id),
+            actor_id: String(input.actor_id),
+            capabilities: (input.capabilities as string[]) ?? [],
+            goal_mode_attestation: Boolean(input.goal_mode_attestation),
+          }),
+        );
+        break;
       case "explain":
         print(
           coordinator.explainGoal({
@@ -177,10 +240,20 @@ export async function runV1Cli(args: string[]): Promise<number> {
       case "claim":
         print(coordinator.claimGoal(input as unknown as ClaimRequest));
         break;
+      case "select-goal":
+        print(coordinator.selectGoalAndStart(input as unknown as ClaimRequest));
+        break;
       case "release":
         print(
           coordinator.releaseClaim(
             input as unknown as Parameters<GoalBoardCoordinator["releaseClaim"]>[0],
+          ),
+        );
+        break;
+      case "revoke":
+        print(
+          coordinator.revokeClaim(
+            input as unknown as Parameters<GoalBoardCoordinator["revokeClaim"]>[0],
           ),
         );
         break;
