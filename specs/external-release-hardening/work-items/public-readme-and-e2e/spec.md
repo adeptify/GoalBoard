@@ -19,6 +19,8 @@
 - 真实 tarball E2E 覆盖全新 home、build/pack/install、同版本 refresh、MCP 标准枚举、Runtime
   接入与重启续接、workspace 多项目、对话决定、LaunchAgent fixture 和安全 uninstall。
 - 浏览器验收桌面/移动、搜索、切换 Goal、设置、demo、回收站与自动同步。
+- 1440px 桌面下，普通 Goal Tree、回收站和归档页的顶栏入口必须全部留在视口内；中等宽度可把
+  设置/收起等次要入口收成图标，较窄桌面可把所有顶栏动作收成图标，但必须保留 `aria-label`。
 - 修复真实安装验收暴露的两个发布阻塞：macOS `restart` 必须等待旧 LaunchAgent
   完成卸载并在有限时间内确认新进程已运行；Runtime Contract 返回的 Web 地址必须包含其
   已选择的 `project_id`，不能落到多项目入口中不存在的 `/goals/:id`。
@@ -37,6 +39,8 @@
 - 所有截图来自验收构建，页面与 README 步骤一致。
 - 新用户路径不要求先手动构造 GoalBoard 数据。
 - 完整测试、pack dry-run、Skill 校验和关键浏览器流程通过。
+- 1440px 回收站页能完整看到“返回 Goal Tree”、设置与收起入口，不发生横向裁切；移动端可在
+  Goal Tree 与 Goal 正文间切换并看见人话目标说明。
 - 当前机器真实清场后不借用旧 DB/配置即可完成新安装；最终留下的是新流程生成的正常状态，
   项目源码和非 GoalBoard 配置没有被删除或改写。
 - Codex App 只有 `~/.codex`、没有 `codex` CLI 的真实环境会显示“未接入”而不是“未检测到”，

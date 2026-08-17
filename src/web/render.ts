@@ -2704,20 +2704,22 @@ const RESPONSIVE_STYLES = `
     .impact-form footer { align-items: stretch; flex-direction: column; }
     .impact-form footer button { align-self: flex-end; }
   }
-  @media (max-width: 1360px) {
+  @media (max-width: 1500px) {
     .brand { min-width: 160px; padding-inline: 20px; }
     .project-context { min-width: 0; padding-inline: 14px; }
     .project-context > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
     .global-search { min-width: 180px; max-width: 220px; }
     .top-action { padding-inline: 9px; }
+    .top-action[data-settings-link] span, .top-action[data-collapse-all] span { display: none; }
   }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
     .project-context { min-width: 0; padding-inline: 16px; }
-    .project-context > span:not(.sync-state) { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
-    .global-search { min-width: 190px; }
-    .top-action { padding-inline: 10px; }
+    .project-context > span:not(.sync-state) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .global-search { min-width: 140px; max-width: 180px; }
+    .top-action { padding-inline: 8px; }
+    .top-action span { display: none; }
     .runtime-grid { grid-template-columns: 1fr 1fr; }
     .runtime-grid > section:nth-child(2) { border-right: 0; }
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
@@ -5206,7 +5208,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
       <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? "返回 Goal Tree" : "查看已归档 Goal"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
       <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? "返回 Goal Tree" : "查看回收站"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
-      <a class="top-action" href="__SETTINGS__" aria-label="打开 GoalBoard 设置">${icon("settings")}<span>设置</span></a>
+      <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="打开 GoalBoard 设置">${icon("settings")}<span>设置</span></a>
       <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>

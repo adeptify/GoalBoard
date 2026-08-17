@@ -32,22 +32,17 @@ Work Item spec 为准。
 | 卸载不能误删用户项目 | 普通卸载只撤销 owned 程序/配置/服务并删除 regenerable demo；purge 另需精确 home+项目数 | `tests/uninstall.test.ts`；真实全新用户清场与复原已完成 | 通过 |
 | MCP 宿主枚举 resource templates 不能报错 | `resources/list` 与 `resources/templates/list` 都返回空列表 | `tests/mcp.test.ts`、`tests/e2e.test.ts` | 通过 |
 | 页面不能一次渲染全部 Goal，搜索时不能被自动同步抢占 | 初始只渲染当前 Goal；点击按需取 document；搜索输入期间延后/合并 cursor 同步 | `tests/web.test.ts`；安装后每页 1 个 Goal document、约 190–236KB | 通过 |
-| 顶栏不能和列表页重复搜索、新建、归档、回收站；设置页高度要一致 | 搜索、状态筛选、新建、待决定、归档和回收站统一在顶栏；桌面/移动顶栏高度统一 | `tests/web.test.ts` 导航唯一性与高度断言 | 自动化通过，待视觉复核 |
+| 顶栏不能和列表页重复搜索、新建、归档、回收站；设置页高度要一致 | 搜索、状态筛选、新建、待决定、归档和回收站统一在顶栏；桌面/移动顶栏高度统一；1440px 对次要动作收起文字，保证回收站“返回 Goal Tree”、设置和收起不被裁切 | `tests/web.test.ts` 导航/响应式断言；真实 Chrome 1440px Goal Tree、回收站与设置截图 | 通过 |
 | Goal 默认内容要先说业务问题、价值、结果和流程 | Skill/protocol 在 Draft 与 Proposal 前逐条检查 title/outcome/why/business_logic；技术细节留在约束/验收 | Skill 文本回归、quick validation、`plain-language-goal-presentation/spec.md` | 通过 |
 | 原有正文内容不能继续乱分块 | 当前 Goal 是五段连续文档，不新增第二套字段或总括“执行细节”折叠 | `tests/web.test.ts` 五段顺序与表单保留断言 | 自动化通过，待视觉复核 |
-| demo 与 README 要适合朋友第一次看 | demo 使用人话 Goal，覆盖完成/推进中/依赖阻塞/待澄清、Candidate、Risk 和回收站；README 有 3 分钟与更新路径 | `src/v1/demo.ts`；catalog/web/E2E 测试；本机 reset 后真实 API/HTML | 内容通过，截图待更新 |
+| demo 与 README 要适合朋友第一次看 | demo 使用人话 Goal，覆盖完成/推进中/依赖阻塞/待澄清、Candidate、Risk 和回收站；README 有当前 Goal Tree 截图、3 分钟与更新路径 | `src/v1/demo.ts`；catalog/web/E2E 测试；当前 Chrome 重拍的项目列表、Goal Tree、决定中心和 Runtime 设置截图 | 通过 |
 
 ## 仍未完成的交付门槛
 
-1. **真实桌面与移动端视觉/交互 QA。** 需求书要求操作搜索、切换 Goal、设置、demo、回收站、
-   自动同步并检查移动布局。当前 Codex Session 没有暴露 Browser/Computer Use 所需的 UI 控制入口，
-   因此只有 HTTP、渲染结构和自动化证据，不能标记视觉通过。
-2. **README 真实截图更新。** 与当前五段正文和新版 demo 内容不一致的旧决定中心截图已经停止引用；
-   必须在真实浏览器验收构建中重拍 Goal Tree、决定中心和设置页，不能用合成图代替。
-3. **增量进入 main。** onboarding 主改动与新版 demo/更新文档已经由 PR #5、#6 合入 `main`；
+1. **增量进入 main。** onboarding 主改动与新版 demo/更新文档已经由 PR #5、#6 合入 `main`；
    Runtime 自然语言启动路由与服务健康就绪修复位于 PR #7，GitHub 判定可合并，仍在等待 main
    规则要求的 reviewer 批准。
-4. **GoalBoard 验收记录回写。** 当前 Session 没有加载 `goalboard_v1_*` 工具。按 Runtime Skill
+2. **GoalBoard 验收记录回写。** 当前 Session 没有加载 `goalboard_v1_*` 工具。按 Runtime Skill
    不能用 CLI、SQLite 或 management MCP 代替；需要在工具已加载的新 Session 中连接用户选择的项目后写回。
 
 ## 最近一次验证
@@ -64,4 +59,10 @@ packed release fresh-install E2E                    PASS
 /health                                              200, project_count=2
 demo tree / decisions / trash                       200 / 200 / 200
 demo 导航                                            待决定 2 / 回收站 1
+真实 Chrome 1440px                                  Goal Tree / 决定中心 / 回收站 / Runtime 设置 PASS
+真实 Chrome 390px                                   Goal Tree → Goal 正文切换 PASS
+搜索“不同 AI”                                      显示 1 / 5；父级路径保留
+切换 Goal / 按需正文                                CORE；DOM 仅 1 份 Goal 正文
+等待自动同步                                         已同步 → 已同步
+README 截图                                          当前构建真实重拍 4 张
 ```

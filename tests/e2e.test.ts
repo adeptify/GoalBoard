@@ -210,6 +210,7 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
 
     const packedReadme = await readFile(join(packageDirectory, "README.md"), "utf8");
     assert.match(packedReadme, /goalboard install/);
+    assert.match(packedReadme, /docs\/screenshots\/goalboard-tree\.png/);
     assert.match(packedReadme, /goalboard-web/);
     assert.match(packedReadme, /goalboard_v1_context_resolve/);
     assert.match(packedReadme, /git pull --ff-only/);
