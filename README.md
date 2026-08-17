@@ -68,6 +68,21 @@ pnpm install:local
 
 GoalBoard 会在当前对话里继续问关键问题；只有你确认的提案才会进入正式 Goal Tree。
 
+## 更新已有安装
+
+已经从仓库安装过时，先拉取新内容，再走同一个安装入口。即使版本号没有变化，安装器也会比较实际内容并刷新程序和 Skill；用户项目、Runtime 配置和 demo 都不会被自动改写：
+
+```bash
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm install:local
+
+# 正在使用常驻 Web 时，明确重启到刚安装的 release
+"$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm
+```
+
+更新 MCP 或 Skill 后也要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
+
 ## 演示数据
 
 安装后的 CLI 和 Web“设置 → 项目”都能创建同一份演示数据。先预览，明确确认后才写入：

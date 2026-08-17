@@ -212,6 +212,10 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.match(packedReadme, /goalboard install/);
     assert.match(packedReadme, /goalboard-web/);
     assert.match(packedReadme, /goalboard_v1_context_resolve/);
+    assert.match(packedReadme, /git pull --ff-only/);
+    assert.match(packedReadme, /service restart/);
+    assert.match(packedReadme, /demo reset --confirm/);
+    assert.match(packedReadme, /用户项目、Runtime 配置和 demo 都不会被自动改写/);
     assert.match(packedReadme, /明确.*确认|显式/);
     assert.doesNotMatch(packedReadme, /postinstall-project|兼容模式|GOALBOARD_DATABASE=/);
 
