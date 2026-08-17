@@ -227,6 +227,22 @@ test("demo data is classified, idempotently opened, reset, and removable without
 
       const demoStore = new SqliteGoalBoardStore(created.project.database_path);
       try {
+        const demoSnapshot = demoStore.snapshot(DEMO_BOARD_ID);
+        assert.equal(demoSnapshot.board.title, "让第一次使用 GoalBoard 的人顺利完成一次目标协作");
+        assert.equal(
+          demoSnapshot.goals.find((goal) => goal.goal_id === "V1")?.title,
+          "让第一次使用的人顺利完成一轮目标协作",
+        );
+        assert.equal(
+          demoSnapshot.goals.find((goal) => goal.goal_id === "INTERFACES")?.title,
+          "让不同 AI 对话看到同一项目进度",
+        );
+        assert.equal(
+          demoSnapshot.candidates.find((candidate) => candidate.proposed_goal.title === "让旧数据升级前先看到安全说明")?.proposed_goal.title,
+          "让旧数据升级前先看到安全说明",
+        );
+        assert.equal(demoSnapshot.risks.find((risk) => risk.risk_id === "RISK-FIRST-RESTART")?.state, "open");
+        assert.ok(demoSnapshot.goals.find((goal) => goal.goal_id === "AUTO-CONNECT")?.trashed_at);
         new GoalBoardCoordinator(demoStore).createGoal(
           DEMO_BOARD_ID,
           {
@@ -248,7 +264,10 @@ test("demo data is classified, idempotently opened, reset, and removable without
       assert.equal(reset.status, "reset");
       const resetStore = new SqliteGoalBoardStore(reset.project.database_path);
       try {
-        assert.equal(resetStore.snapshot(DEMO_BOARD_ID).goals.some((goal) => goal.goal_id === "temporary-demo-change"), false);
+        const resetSnapshot = resetStore.snapshot(DEMO_BOARD_ID);
+        assert.equal(resetSnapshot.goals.some((goal) => goal.goal_id === "temporary-demo-change"), false);
+        assert.ok(resetSnapshot.goals.find((goal) => goal.goal_id === "AUTO-CONNECT")?.trashed_at);
+        assert.equal(resetSnapshot.risks.find((risk) => risk.risk_id === "RISK-FIRST-RESTART")?.state, "open");
       } finally {
         resetStore.close();
       }

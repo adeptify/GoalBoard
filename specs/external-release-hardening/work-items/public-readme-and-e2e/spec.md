@@ -10,11 +10,12 @@
 - 复用最新 main 已加入的真实截图和 `examples/seed-demo.mts`，先核对截图与当前 UI 一致；把脚本
   seed 收敛为安装后可发现的 demo 入口和明确的数据分类，而不是重新制作一套平行演示。
 - 用正式 demo 数据启动当前 release，截取真实桌面主界面、Draft 澄清/Goal Tree 和设置页；
-  图片进入 `docs/assets`，不得使用不存在功能的合成图。
+  图片进入 `docs/screenshots`，不得使用不存在功能的合成图，也不得继续引用与当前导航、正文结构或
+  demo 文案不一致的旧截图。
 - 重写 README 首屏：一句话价值、截图、3 分钟体验、安装/接入/服务三步、为什么要重启、
   数据位置与卸载安全边界、常见问题。
-- demo 内容同时展示复合 Goal、可执行叶子、澄清中、依赖、证据、回收站和 Runtime 接入提示，
-  但与用户数据明显区分。
+- demo 内容同时展示人话的复合 Goal、可执行叶子、澄清中、依赖、证据、Risk、回收站和 Runtime
+  接入提示，但与用户数据明显区分；技术实现可出现在验收与历史里，不能占据默认 Goal 标题和业务说明。
 - 真实 tarball E2E 覆盖全新 home、build/pack/install、同版本 refresh、MCP 标准枚举、Runtime
   接入与重启续接、workspace 多项目、对话决定、LaunchAgent fixture 和安全 uninstall。
 - 浏览器验收桌面/移动、搜索、切换 Goal、设置、demo、回收站与自动同步。
@@ -43,7 +44,7 @@
 
 ## 修改边界与验证
 
-- README/PRODUCT、`docs/assets`、demo seed、E2E 与浏览器 QA；只有真实功能完成后更新截图。
+- README/PRODUCT、`docs/screenshots`、demo seed、E2E 与浏览器 QA；只有真实功能完成后更新截图。
 
 ```bash
 pnpm test

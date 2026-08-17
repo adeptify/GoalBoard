@@ -430,7 +430,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /示例数据/);
   assert.match(html, /data-tree-root/);
   assert.match(html, /class="tree-children"/);
-  assert.match(html, /开始前必须等哪些 Goal 完成[\s\S]*跑通 SQLite 执行闭环/);
+  assert.match(html, /开始前必须等哪些 Goal 完成[\s\S]*让每项工作都有可信的完成依据/);
   assert.match(coreHtml, /验证 corrects 关系的完整呈现/);
   assert.match(coreHtml, /字段过多导致信息过载/);
   assert.match(coreHtml, /fixture-snapshot/);
@@ -470,7 +470,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /这会成为领取和完成的硬门禁/);
   assert.match(html, /关系预览：新 Goal 将作为独立 Goal/);
   assert.match(html, /关系预览：当前没有执行前置/);
-  assert.match(html, /<option value="V1" data-goal-name="交付 GoalBoard V1">交付 GoalBoard V1 · V1<\/option>/);
+  assert.match(html, /<option value="V1" data-goal-name="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作 · V1<\/option>/);
   assert.match(html, /role="tablist" aria-label="移动端视图"/);
   assert.match(html, /role="tab" aria-selected="true" aria-controls="goal-tree-pane"/);
   assert.match(html, /button\.setAttribute\("aria-selected", String\(active\)\)/);
@@ -499,15 +499,16 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /treeWidth: treePane\.getBoundingClientRect\(\)\.width/);
   assert.match(html, /treeResizer\.addEventListener\("pointermove"/);
   assert.match(html, /treeResizer\.addEventListener\("keydown"/);
-  assert.match(html, /tree-copy"><strong>交付 GoalBoard V1<\/strong><small>V1<\/small>/);
+  assert.match(html, /tree-copy"><strong>让第一次使用的人顺利完成一轮目标协作<\/strong><small>V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-section="execution"/);
   assert.match(coreHtml, /href="\/decisions#decision-goal-CORE">前往处理<\/a>/);
   assert.doesNotMatch(html, /<form class="decision-record rewire-decision"/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
-  assert.match(decisionHtml, /href="\/goals\/CORE"><strong>跑通 SQLite 执行闭环<\/strong>/);
+  assert.match(decisionHtml, /href="\/goals\/CORE"><strong>让每项工作都有可信的完成依据<\/strong>/);
   assert.match(decisionHtml, /decision-kind decision-kind--risk/);
-  assert.match(decisionHtml, /Risk <strong>1<\/strong>/);
+  assert.match(decisionHtml, /Risk <strong>2<\/strong>/);
+  assert.match(decisionHtml, /用户接入 Runtime 后没有新开会话，误以为安装失败/);
   assert.match(decisionHtml, /字段过多导致信息过载/);
   assert.match(decisionHtml, /risk-goal-links/);
   assert.match(decisionHtml, /打开 Risk/);
@@ -1262,7 +1263,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
 
     const migratedPage = await (await webFetch(`${origin}${migrated.project_path}`)).text();
     assert.match(migratedPage, /项目：<\/strong><span>迁移后的产品/);
-    assert.match(migratedPage, /交付 GoalBoard V1/);
+    assert.match(migratedPage, /让第一次使用的人顺利完成一轮目标协作/);
     assert.doesNotMatch(migratedPage, new RegExp(legacyDatabasePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
     await new Promise<void>((resolve, reject) =>
@@ -1599,7 +1600,7 @@ test("Web lets the user add and deactivate every supported Goal relation with ex
     );
     const activePage = await (await webFetch(`${origin}/goals/CORE`)).text();
     assert.match(activePage, new RegExp(`data-relation-id="${created.relation_id}"`));
-    assert.match(activePage, /让 CLI 与 MCP 共用同一真相 → 修正 → 当前 Goal/);
+    assert.match(activePage, /让不同 AI 对话看到同一项目进度 → 修正 → 当前 Goal/);
     assert.match(activePage, /接口 Goal 修正当前执行闭环中的协议偏差/);
     assert.match(activePage, /data-relation-deactivate-open/);
 
@@ -1658,7 +1659,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     const goalPageResponse = await webFetch(`${origin}/goals/CORE`);
     assert.equal(goalPageResponse.status, 200);
     const goalPage = await goalPageResponse.text();
-    assert.match(goalPage, /<title>跑通 SQLite 执行闭环 · GoalBoard<\/title>/);
+    assert.match(goalPage, /<title>让每项工作都有可信的完成依据 · GoalBoard<\/title>/);
     assert.match(goalPage, /data-goal-view="CORE"/);
     const missingGoalResponse = await webFetch(`${origin}/goals/DOES-NOT-EXIST`);
     assert.equal(missingGoalResponse.status, 404);
@@ -3066,7 +3067,7 @@ test("Web normal Tree excludes trashed Goals while the coordinator retains their
   assert.equal(view.archived_goals.some((item) => item.goal.goal_id === "TRASHED-WEB"), false);
   assert.equal(view.trashed_goals.some((item) => item.goal.goal_id === "TRASHED-WEB"), true);
   assert.equal(store.snapshot(DEMO_BOARD_ID).goals.find((goal) => goal.goal_id === "TRASHED-WEB")?.trashed_at == null, false);
-  assert.deepEqual(coordinator.listTrashedGoals(DEMO_BOARD_ID).map((goal) => goal.goal_id), ["TRASHED-WEB"]);
+  assert.deepEqual(coordinator.listTrashedGoals(DEMO_BOARD_ID).map((goal) => goal.goal_id), ["AUTO-CONNECT", "TRASHED-WEB"]);
   store.close();
 });
 
