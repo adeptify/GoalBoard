@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   type RuntimeWorkContext,
 } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
+import { DEMO_BOARD_ID } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 
 async function withTemporaryDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
@@ -110,6 +111,19 @@ function stableContext(runtimeId: string, workContextId: string): RuntimeWorkCon
   };
 }
 
+function workspaceContext(
+  runtimeId: string,
+  workContextId: string | null,
+  workspacePath: string,
+): RuntimeWorkContext {
+  return {
+    runtime_id: runtimeId,
+    stable_work_context_id: workContextId,
+    host_declares_stable: workContextId !== null,
+    workspace: { canonical_path: workspacePath, realpath_verified: false },
+  };
+}
+
 test("managed projects have immutable identities, duplicate names, and isolated SQLite facts", async () => {
   await withTemporaryDirectory(async (directory) => {
     const home = join(directory, "home", ".goalboard");
@@ -124,6 +138,7 @@ test("managed projects have immutable identities, duplicate names, and isolated 
       assert.notEqual(first.database_path, second.database_path);
       assert.equal(first.board_id, first.project_id);
       assert.equal(second.board_id, second.project_id);
+      assert.equal(first.data_class, "user");
       assert.equal(catalog.listProjects().length, 2);
 
       const firstStore = new SqliteGoalBoardStore(first.database_path);
@@ -180,10 +195,81 @@ test("legacy GoalBoard DB migrates to one managed source with complete facts", a
     try {
       const migrated = await catalog.migrateLegacyDatabase({ legacy_database_path: legacyDatabase, actor_id: "user" });
       assert.equal(migrated.source, "migrated");
+      assert.equal(migrated.data_class, "migrated_user");
       assert.equal(migrated.board_id, "legacy-board");
       await assert.rejects(stat(legacyDatabase));
       assert.deepEqual(snapshot(migrated.database_path), before);
       assert.equal(catalog.listProjects()[0]?.project_id, migrated.project_id);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+test("demo data is classified, idempotently opened, reset, and removable without affecting user projects", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const home = join(directory, "home", ".goalboard");
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    try {
+      const userProject = await catalog.createProject({ display_name: "用户项目", actor_id: "user" });
+      await assert.rejects(
+        () => catalog.ensureDemoProject({ actor_id: "user", user_confirmed: false }),
+        (error: unknown) => error instanceof GoalBoardProjectCatalogError
+          && error.code === "catalog.demo_confirmation_required",
+      );
+      const created = await catalog.ensureDemoProject({ actor_id: "user", user_confirmed: true });
+      assert.equal(created.status, "created");
+      assert.equal(created.project.data_class, "regenerable_demo");
+      assert.equal(created.project.board_id, DEMO_BOARD_ID);
+      const existing = await catalog.ensureDemoProject({ actor_id: "user", user_confirmed: true });
+      assert.equal(existing.status, "existing");
+      assert.equal(existing.project.project_id, created.project.project_id);
+
+      const demoStore = new SqliteGoalBoardStore(created.project.database_path);
+      try {
+        new GoalBoardCoordinator(demoStore).createGoal(
+          DEMO_BOARD_ID,
+          {
+            goal_id: "temporary-demo-change",
+            title: "临时演示改动",
+            outcome: "重置时被清除",
+            why: "验证 demo 可重建",
+            business_logic: "只改变演示数据。",
+            definition_state: "draft",
+            decomposition_state: "abstract",
+            acceptance_criteria: [],
+          },
+          { actor_id: "user", idempotency_key: "temporary-demo-change" },
+        );
+      } finally {
+        demoStore.close();
+      }
+      const reset = await catalog.resetDemoProject({ actor_id: "user", user_confirmed: true });
+      assert.equal(reset.status, "reset");
+      const resetStore = new SqliteGoalBoardStore(reset.project.database_path);
+      try {
+        assert.equal(resetStore.snapshot(DEMO_BOARD_ID).goals.some((goal) => goal.goal_id === "temporary-demo-change"), false);
+      } finally {
+        resetStore.close();
+      }
+
+      await assert.rejects(
+        () => catalog.removeDemoProject({
+          project_id: userProject.project_id,
+          actor_id: "user",
+          delete_confirmed: true,
+          idempotency_key: "never-delete-user-as-demo",
+        }),
+        (error: unknown) => error instanceof GoalBoardProjectCatalogError && error.code === "catalog.not_demo",
+      );
+      await catalog.removeDemoProject({
+        project_id: created.project.project_id,
+        actor_id: "user",
+        delete_confirmed: true,
+        idempotency_key: "remove-regenerable-demo",
+      });
+      assert.deepEqual(catalog.listProjects().map((project) => project.project_id), [userProject.project_id]);
+      assert.equal((await stat(userProject.database_path)).isFile(), true);
     } finally {
       catalog.close();
     }
@@ -356,6 +442,98 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
       assert.equal(reopened.listRuntimeContextBindings().length, 2);
     } finally {
       reopened.close();
+    }
+  });
+});
+
+test("canonical workspace routing supports symlinks, multiple projects, defaults, and isolated Session overrides", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const home = join(directory, "home", ".goalboard");
+    const workspace = join(directory, "ordinary-project-directory");
+    const workspaceAlias = join(directory, "project-alias");
+    await mkdir(workspace, { recursive: true });
+    await symlink(workspace, workspaceAlias);
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    try {
+      const first = await catalog.createProject({ display_name: "产品规划", actor_id: "user" });
+      const second = await catalog.createProject({ display_name: "发布准备", actor_id: "user" });
+      const noSession = workspaceContext("codex", null, workspace);
+      const firstSession = workspaceContext("codex", "thread-1", workspace);
+      const aliasSession = workspaceContext("codex", "thread-2", workspaceAlias);
+
+      const initial = catalog.bindRuntimeContext({
+        context: noSession,
+        project_id: first.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+      });
+      assert.equal(initial.project?.project_id, first.project_id);
+      assert.equal(catalog.listRuntimeContextBindings().length, 0);
+      const initialMembership = catalog.listWorkspaceMemberships();
+      assert.equal(initialMembership.length, 1);
+      assert.equal(initialMembership[0]?.is_default, false);
+      assert.equal(initialMembership[0]?.workspace_name, "ordinary-project-directory");
+
+      const aliasResolved = catalog.resolveRuntimeContext(aliasSession);
+      assert.equal(aliasResolved.status, "suggested");
+      assert.deepEqual(aliasResolved.suggested_projects.map((project) => project.project_id), [first.project_id]);
+      assert.equal(
+        aliasResolved.context.workspace?.workspace_id,
+        initial.context.workspace?.workspace_id,
+      );
+
+      catalog.bindRuntimeContext({
+        context: firstSession,
+        project_id: first.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+      });
+
+      const sessionOverride = catalog.bindRuntimeContext({
+        context: aliasSession,
+        project_id: second.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+      });
+      assert.equal(sessionOverride.project?.project_id, second.project_id);
+      assert.equal(catalog.listWorkspaceMemberships().length, 2);
+      assert.equal(catalog.listWorkspaceMemberships().some((membership) => membership.is_default), false);
+      assert.equal(catalog.resolveRuntimeContext(firstSession).project?.project_id, first.project_id);
+      assert.equal(catalog.resolveRuntimeContext(aliasSession).project?.project_id, second.project_id);
+      assert.equal(catalog.resolveRuntimeContext(workspaceContext("codex", "thread-3", workspace)).status, "suggested");
+      assert.equal(catalog.resolveRuntimeContext(workspaceContext("generic", null, workspace)).status, "suggested");
+
+      const workspaceId = initial.context.workspace!.workspace_id;
+      catalog.setWorkspaceDefault({
+        workspace_id: workspaceId,
+        project_id: second.project_id,
+        actor_id: "user",
+        user_confirmed: true,
+      });
+      assert.equal(
+        catalog.resolveRuntimeContext(workspaceContext("codex", "thread-4", workspace)).project?.project_id,
+        second.project_id,
+      );
+      catalog.removeWorkspaceMembership({
+        workspace_id: workspaceId,
+        project_id: second.project_id,
+        actor_id: "user",
+        user_confirmed: true,
+      });
+      const needsChoice = catalog.resolveRuntimeContext(workspaceContext("generic", null, workspace));
+      assert.equal(needsChoice.status, "suggested");
+      assert.deepEqual(needsChoice.suggested_projects.map((project) => project.project_id), [first.project_id]);
+
+      assert.equal(
+        catalog.resolveRuntimeContext({
+          runtime_id: "generic",
+          stable_work_context_id: null,
+          host_declares_stable: false,
+        }).reason,
+        "missing_stable_context",
+      );
+    } finally {
+      catalog.close();
     }
   });
 });

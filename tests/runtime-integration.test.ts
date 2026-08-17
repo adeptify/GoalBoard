@@ -116,6 +116,39 @@ test("detect and prepare are read-only and public plans never expose the user's 
   });
 });
 
+test("Codex App user data is sufficient detection when no codex CLI is on PATH", async () => {
+  await withFixture(async (fixture) => {
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    const integration = new RuntimeIntegrationService({
+      homeDirectory: fixture.home,
+      userHomeDirectory: fixture.userHome,
+      runtimeExecutables: { codex: null, "claude-code": null },
+      validateConnection: () => true,
+    });
+
+    const codex = await integration.detect("codex");
+    assert.equal(codex.executable_path, null);
+    assert.equal(codex.connection_state, "not_connected");
+    assert.equal((await integration.prepare("codex", "connect")).status, "ready");
+    assert.equal((await integration.detect("claude-code")).connection_state, "not_detected");
+  });
+});
+
+test("remove is already complete when program artifacts are gone and unrelated Runtime config remains", async () => {
+  await withFixture(async (fixture) => {
+    await mkdir(join(fixture.userHome, ".codex"), { recursive: true });
+    await writeFile(join(fixture.userHome, ".codex", "config.toml"), 'model = "keep-me"\n');
+    await writeFile(join(fixture.userHome, ".claude.json"), '{"mcpServers":{"other":{"command":"keep-me"}}}\n');
+    await rm(fixture.home, { recursive: true, force: true });
+
+    const integration = service(fixture);
+    assert.equal((await integration.prepare("codex", "remove")).status, "no_change");
+    assert.equal((await integration.prepare("claude-code", "remove")).status, "no_change");
+    assert.match(await readFile(join(fixture.userHome, ".codex", "config.toml"), "utf8"), /keep-me/);
+    assert.match(await readFile(join(fixture.userHome, ".claude.json"), "utf8"), /keep-me/);
+  });
+});
+
 test("Codex first and repeated connection preserve unrelated TOML and create a backup and receipt", async () => {
   await withFixture(async (fixture) => {
     const config = join(fixture.userHome, ".codex", "config.toml");
@@ -141,6 +174,7 @@ test("Codex first and repeated connection preserve unrelated TOML and create a b
     assert.match(after, /\[mcp_servers\.other\][\s\S]*command = "other-mcp"/);
     assert.match(after, /\[mcp_servers\.goalboard\]/);
     assert.match(after, new RegExp(fixture.launcher.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(after, /env_vars\s*=|CODEX_THREAD_ID|GOALBOARD_WORK_CONTEXT_ID/);
     assert.equal(await readlink(join(fixture.userHome, ".codex", "skills", "goal-advance")), fixture.skillSource);
     const receipt = await readFile(join(fixture.home, "runtime-integrations", "codex.json"), "utf8");
     assert.match(receipt, /goalboard-runtime-integration-v1/);
@@ -335,7 +369,7 @@ test("removal refuses to delete GoalBoard entries or Skill links changed after c
   });
 });
 
-test("Runtime host derives stable identity from host signals or falls back to a workspace anchor and keeps workspace as a suggestion clue", () => {
+test("Runtime host keeps Session identity independent from the canonical workspace", () => {
   const codex = runtimeContextHostFromEnvironment({
     GOALBOARD_RUNTIME_ID: "codex",
     CODEX_THREAD_ID: "codex-thread-123",
@@ -343,6 +377,10 @@ test("Runtime host derives stable identity from host signals or falls back to a 
   }, "/fallback");
   assert.equal(codex?.runtimeContext.stable_work_context_id, "codex-thread-123");
   assert.equal(codex?.runtimeContext.host_declares_stable, true);
+  assert.deepEqual(codex?.runtimeContext.workspace, {
+    canonical_path: "/workspace/alpha",
+    realpath_verified: false,
+  });
   assert.deepEqual(codex?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/alpha" }]);
 
   const claude = runtimeContextHostFromEnvironment({
@@ -364,19 +402,21 @@ test("Runtime host derives stable identity from host signals or falls back to a 
   }, "/workspace/gamma");
   assert.equal(explicit?.runtimeContext.stable_work_context_id, "explicit-id");
 
-  // Hosts that do not inject a session ID (e.g. Codex stdio MCP) fall back to
-  // a stable workspace identity so the same directory resolves the same way.
+  // Hosts that do not inject a Session ID still provide a separate workspace;
+  // GoalBoard must not turn that directory into a fake machine-wide Session.
   const unknown = runtimeContextHostFromEnvironment({ GOALBOARD_RUNTIME_ID: "some-runtime" }, "/workspace/delta");
-  assert.match(unknown?.runtimeContext.stable_work_context_id ?? "", /^workspace:[0-9a-f]{16}$/);
-  assert.equal(unknown?.runtimeContext.host_declares_stable, true);
+  assert.equal(unknown?.runtimeContext.stable_work_context_id, null);
+  assert.equal(unknown?.runtimeContext.host_declares_stable, false);
+  assert.equal(unknown?.runtimeContext.workspace?.canonical_path, "/workspace/delta");
   assert.deepEqual(unknown?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/delta" }]);
 
   const codexFallback = runtimeContextHostFromEnvironment({
     GOALBOARD_RUNTIME_ID: "codex",
     PWD: "/workspace/epsilon",
   }, "/fallback");
-  assert.match(codexFallback?.runtimeContext.stable_work_context_id ?? "", /^workspace:[0-9a-f]{16}$/);
-  assert.equal(codexFallback?.runtimeContext.host_declares_stable, true);
+  assert.equal(codexFallback?.runtimeContext.stable_work_context_id, null);
+  assert.equal(codexFallback?.runtimeContext.host_declares_stable, false);
+  assert.equal(codexFallback?.runtimeContext.workspace?.canonical_path, "/workspace/epsilon");
   assert.deepEqual(codexFallback?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/epsilon" }]);
 
   // No runtime ID and no usable workspace still means no identity at all.
@@ -384,4 +424,5 @@ test("Runtime host derives stable identity from host signals or falls back to a 
   const noWorkspace = runtimeContextHostFromEnvironment({ GOALBOARD_RUNTIME_ID: "codex" }, "");
   assert.equal(noWorkspace?.runtimeContext.stable_work_context_id, null);
   assert.equal(noWorkspace?.runtimeContext.host_declares_stable, false);
+  assert.equal(noWorkspace?.runtimeContext.workspace, null);
 });

@@ -20,11 +20,11 @@ context_resolve
 
 `context_resolve` never creates a binding. `suggested` means exactly that: host-owned clues changed candidate order, but GoalBoard returns no project connection and does not write a binding. Its reasons are generic and must not expose raw host paths, titles, or other clue values. `context_create_and_bind` creates one project database only in GoalBoard's own `~/.goalboard` data directory and then binds it in one recoverable operation. It changes neither a user project nor a Runtime configuration.
 
-For an existing project, pass the selected `project_id`, current `actor_id`, and `user_confirmed=true` to `goalboard_v1_context_bind`. If a different project was already bound to this work entry, ask the user separately and pass `rebind_confirmed=true` only after that answer. For a new project, require the user's explicit project name and call `goalboard_v1_context_create_and_bind` with the same confirmation rules.
+For an existing project, pass the selected `project_id`, current `actor_id`, and `user_confirmed=true` to `goalboard_v1_context_bind`. With a Session ID this stores a Session choice; without one it only records workspace history and lets the current MCP flow continue. It never creates a workspace default implicitly. Use `binding_scope=workspace_default` only after a separate user request and confirmation that future Sessions in this directory should enter that project automatically. If a different choice was already bound in the same scope, ask separately before `rebind_confirmed=true`. For a new project, require the user's explicit project name and call `goalboard_v1_context_create_and_bind` with the same rules.
 
-The host alone provides `runtime_id`, `stable_work_context_id`, whether that identity is stable, and any optional suggestion clues. The identity is opaque; clues are non-authoritative ranking hints. GoalBoard may additionally rank the most recently confirmed project from another Session of that same Runtime. Neither source is a model inference, and GoalBoard never scans Git, paths, directories, project titles, or conversation text to create one. If the host cannot provide a stable identity, do not fake a binding; tell the user the current Session cannot yet be reliably associated and wait for a supported host context.
+The host provides `runtime_id`, optional stable adapter identity, an optional canonical workspace, and suggestion clues. A host may also attach a Session ID to each MCP `tools/call` through `_meta.threadId`, `_meta.sessionId`, or `_meta["goalboard/sessionId"]`; ordinary tool arguments named `thread_id` or `session_id` are ignored. Tool-call metadata takes precedence for that call, so one long-lived MCP process can safely serve multiple identified Sessions. The workspace is independent: it can have several associated projects and is used to return historical candidates. Without a Session signal, GoalBoard must not turn the directory or MCP process into a fake Session. Project identity remains the user-selected `project_id`.
 
-Once a context resolves as `bound`, Runtime calls use its fixed `board_id`. The Runtime tool schemas intentionally do not accept a database-path or Web-address override. Reuse of the same opaque ID resumes the same host Session/work entry. A fresh Session must present a fresh ID; it returns `suggested` or `unbound`, and the current Runtime asks the user before any binding.
+Once a context resolves as `bound`, Runtime calls use its fixed `board_id`. The Runtime tool schemas intentionally do not accept a database-path or Web-address override. Reuse of the same opaque Session ID resumes that Session choice. A fresh or unidentified Session returns workspace members as `suggested` and asks again, even when only one exists. The sole exception is a workspace default that the user explicitly configured.
 
 ### Project lifecycle in the current conversation
 
@@ -40,8 +40,12 @@ context_reject_suggestion(project_id, actor_id, user_confirmed=true)
   → never binds, deletes, or suppresses the project in another Session
 
 context_unbind(actor_id, user_confirmed=true)
-  → removes only the host current-entry binding
+  → removes only the current Session binding by default
   → keeps the project, DB, Goal facts, and every other Runtime binding
+
+context_unbind(actor_id, user_confirmed=true, binding_scope="workspace", project_id)
+  → removes one workspace-to-project history association
+  → keeps the project and its DB
 
 project_delete(project_id, actor_id, delete_confirmed=true, idempotency_key)
   → checks for valid Claims and unfinished Runs
@@ -100,6 +104,10 @@ draft_dialogue_start(rough_idea, actor_id, idempotency_key)
 
 `goalboard_v1_draft_dialogue_start` creates only a minimum `draft / abstract` Goal; Runtime inferences are not canonical Contract facts. Use the user's own words as `rough_idea`, use a stable current-Runtime `actor_id`, and use a fresh key. It returns the persisted dialogue, Claim, Run, and `clarifying` work state.
 
+The first clarification checkpoint must produce readable values for the existing Goal fields, not a second summary model. `title` describes the user or project change; `outcome` describes the observable result; `why` describes the problem and value; `business_logic` describes in plain language how people use the result, who does what, and which rules shape the flow. Do not use an MCP method, database, Session Resolver, Claim, Run, adapter, class, or module name as a replacement for those values. Keep necessary technical facts in constraints, inputs, acceptance criteria, implementation notes, and evidence.
+
+Before `goal_tree_propose`, scan every proposed parent, child, and leaf Goal for readability. “实现 MCP Session Context Resolver” is not sufficient; “让新用户安装后能在当前对话完成 GoalBoard 配置，并明确知道何时需要重启 Runtime” states the result. Likewise, `business_logic` should describe the user-visible flow rather than say only which resolver reads which environment value. Persist this in the existing Goal and dialogue records; never create a parallel business-status field.
+
 ### 2. Existing Draft
 
 First call `goalboard_v1_contract(goal_id)`.
@@ -154,6 +162,8 @@ For a material user answer, keep this order:
 3. translate the returned state into plain language; and
 4. ask the saved question or present the saved proposal checkpoint.
 
+When presenting a saved checkpoint, lead with the Goal's business problem/value, expected result, current derived `work_state`, next owner/action, and blockers or dependencies. Technical Contract fields, IDs, tool names, and test or implementation details are supporting information. They do not replace the business summary and normally remain omitted until they help the current decision.
+
 Do not ask a new question and postpone persistence until a later turn. If the call fails, say that the progress was not saved and stop rather than continuing from private chat memory.
 
 On resume, read the persisted turns and present only the latest useful checkpoint: confirmed facts, unresolved assumptions, and the saved next question. Do not make the user repeat an answer that already appears as a confirmed `user_answer`, and do not print the entire event history.
@@ -167,12 +177,13 @@ Read and check the proposal before asking for a decision. Explain it in plain la
 ```text
 board_id, proposal_id, runtime_actor_id,
 decisions[{ item_id, decision: confirm | reject | revise, reason?, revised_item? }],
-reason?, idempotency_key
+user_confirmed=true, confirmation_summary,
+whole_confirmation_prompted?, reason?, idempotency_key
 ```
 
-The Runtime MCP host injects the trusted user identity, conversation reference, and message reference. Never send or synthesize those values. `confirm_all_pending=true` is allowed only if the immediately preceding Runtime message asked the user to confirm exactly one whole proposal and the host marks that context as such. Otherwise ask which items the user means.
+Only set `user_confirmed=true` after explicit user words in the current conversation. `confirmation_summary` records what the user actually approved, rejected, or revised; it must not turn a Runtime inference into a user fact. GoalBoard derives the conversation reference from host Session metadata (or the resolved work entry) and creates a deterministic attestation reference, so the Runtime never supplies user identity or message IDs. This is auditable local provenance, not a cryptographic trust boundary. `confirm_all_pending=true` is allowed only if the immediately preceding Runtime message asked the user to confirm exactly one whole proposal and `whole_confirmation_prompted=true`; otherwise send named item decisions or ask what the user means.
 
-The immediately preceding proposal message must be decision-complete without exposing raw payloads. It names the intended outcome and non-goals, shows the proposed Goal tree, summarizes changed relations/dependencies, leaf acceptance, Risks/Policy, unresolved assumptions, and the post-confirmation work state. The final question distinguishes whole-proposal confirmation from a revision to named items. A vague “可以”“继续” is whole confirmation only when that exact whole proposal was the single explicit choice in the prior message and the trusted host marks it accordingly.
+The immediately preceding proposal message must be decision-complete without exposing raw payloads. It names the intended outcome and non-goals, shows the proposed Goal tree, summarizes changed relations/dependencies, leaf acceptance, Risks/Policy, unresolved assumptions, and the post-confirmation work state. The final question distinguishes whole-proposal confirmation from a revision to named items. A vague “可以”“继续” is whole confirmation only when that exact whole proposal was the single explicit choice in the prior message; the Runtime then records that fact with `whole_confirmation_prompted=true`.
 
 A proposed item is not canonical before the user decision. A confirmed safe item materializes atomically; a rejected item remains historical; a revised item creates a new pending version; stale, dangling, or cyclic items remain conflicts without discarding unrelated confirmed items. Re-read the affected state after each decision.
 

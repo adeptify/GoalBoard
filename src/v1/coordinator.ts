@@ -407,32 +407,32 @@ function normalizeGoalTreeProposalDecisionAuthority(
     );
   }
   if (![
-    "runtime_trusted_host",
+    "runtime_dialogue",
     "web",
     "management",
   ].includes(authority.authority_source)) {
     throw new GoalBoardV1Error(
       "goal_tree_proposal.authority_source_invalid",
-      "Goal Tree 决定必须标明受信用户入口",
+      "Goal Tree 决定必须标明可审计的用户确认入口",
     );
   }
   return {
     actor_id: requiredDialogueText(
       authority.actor_id,
       "goal_tree_proposal.user_actor_required",
-      "Goal Tree 决定需要受信用户身份",
+      "Goal Tree 决定需要用户确认身份",
     ),
     actor_kind: "user",
     authority_source: authority.authority_source,
     conversation_ref: requiredDialogueText(
       authority.conversation_ref,
       "goal_tree_proposal.conversation_ref_required",
-      "Goal Tree 决定需要受信对话引用",
+      "Goal Tree 决定需要对话引用",
     ),
     message_ref: requiredDialogueText(
       authority.message_ref,
       "goal_tree_proposal.message_ref_required",
-      "Goal Tree 决定需要受信用户消息引用",
+      "Goal Tree 决定需要确认消息引用",
     ),
     whole_confirmation_prompted: authority.whole_confirmation_prompted === true,
   };
@@ -3196,7 +3196,7 @@ export class GoalBoardCoordinator {
         type: "goal_tree_proposal.decided",
         objectType: "goal_tree_proposal",
         objectId: proposal.proposal_id,
-        reason: "受信用户在当前入口决定了 Goal Tree 提案中的部分条目",
+        reason: "用户在当前入口明确决定了 Goal Tree 提案中的部分条目",
         payload: {
           runtime_actor_id: runtimeActorId,
           authority_source: authority.authority_source,

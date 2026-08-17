@@ -223,7 +223,7 @@ function contractFieldSources(runId: string) {
   }));
 }
 
-test("public CLI exposes only install and GoalBoard V1 plus explicit V3 import", async () => {
+test("public CLI exposes install, service, demo, uninstall, and GoalBoard V1 plus explicit V3 import", async () => {
   const logs: string[] = [];
   const errors: string[] = [];
   const originalLog = console.log;
@@ -233,10 +233,13 @@ test("public CLI exposes only install and GoalBoard V1 plus explicit V3 import",
   try {
     assert.equal(await runPublicCli(["--help"]), 0);
     assert.match(logs.join("\n"), /goalboard v1 <operation>/);
+    assert.match(logs.join("\n"), /goalboard service/);
+    assert.match(logs.join("\n"), /goalboard demo/);
+    assert.match(logs.join("\n"), /goalboard uninstall/);
     assert.match(logs.join("\n"), /import-v3/);
     assert.doesNotMatch(logs.join("\n"), /profiles|strategy|coverage|handoff|replay/);
     assert.equal(await runPublicCli(["profiles"]), 1);
-    assert.match(errors.join("\n"), /只提供 goalboard install 和 goalboard v1/);
+    assert.match(errors.join("\n"), /提供 install、service、demo、uninstall 和 v1/);
   } finally {
     console.log = originalLog;
     console.error = originalError;
@@ -335,6 +338,11 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   assert.ok(
     reopened.db
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 13")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 14")
       .get(),
   );
   assert.ok(
@@ -456,6 +464,73 @@ test("migration 13 clears a historical completed Active Goal exactly once", () =
     .get("goalboard:migration-13") as { count: number };
   assert.equal(repairEventCount.count, 1);
   reopened.close();
+});
+
+test("migration 14 converts the removed trusted-host authority to Runtime dialogue provenance", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-migration",
+    rough_idea: "模拟旧版 Runtime 确认记录。",
+    goal_id: "migration-authority-root",
+    idempotency_key: "migration-authority-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-migration",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "migration-authority-root",
+    summary: "创建一个用于迁移验证的子 Goal。",
+    items: [goalTreeProposalItem({
+      item_id: "migration-authority-child-item",
+      kind: "goal",
+      operation: "create",
+      payload: treeGoalPayload({
+        goal_id: "migration-authority-child",
+        title: "迁移确认来源",
+        definition_state: "draft",
+        decomposition_state: "abstract",
+      }),
+      object_type: "goal",
+      object_id: "migration-authority-child",
+    })],
+    idempotency_key: "migration-authority-proposal",
+  });
+  coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal.proposal_id,
+    runtime_actor_id: "runtime-migration",
+    authority: {
+      actor_id: "user-confirmed-via:test-runtime",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "runtime-dialogue:test-runtime:session-1",
+      message_ref: "runtime-attestation:test",
+    },
+    decisions: [{ item_id: "migration-authority-child-item", decision: "confirm", reason: "用户确认" }],
+    idempotency_key: "migration-authority-decision",
+  });
+  store.db.pragma("ignore_check_constraints = ON");
+  store.db
+    .prepare("UPDATE goal_tree_proposal_decisions SET authority_source = 'runtime_trusted_host'")
+    .run();
+  store.db.pragma("ignore_check_constraints = OFF");
+  store.db.prepare("DELETE FROM schema_migrations WHERE migration_id = 14").run();
+  const databasePath = store.path;
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  const decision = migrated.db
+    .prepare("SELECT authority_source FROM goal_tree_proposal_decisions")
+    .get() as { authority_source: string };
+  assert.equal(decision.authority_source, "runtime_dialogue");
+  const table = migrated.db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goal_tree_proposal_decisions'")
+    .get() as { sql: string };
+  assert.doesNotMatch(table.sql, /runtime_trusted_host/);
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 14").get());
+  assert.deepEqual(migrated.db.pragma("foreign_key_check"), []);
+  migrated.close();
 });
 
 test("only satisfied Goals can be archived and restoration preserves completion facts", () => {
@@ -2481,7 +2556,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
     authority: {
       actor_id: "user-1",
       actor_kind: "user" as const,
-      authority_source: "runtime_trusted_host" as const,
+      authority_source: "runtime_dialogue" as const,
       conversation_ref: "conversation://current-session",
       message_ref: "message://user-confirm-tree",
     },
@@ -2648,7 +2723,7 @@ test("a user can close an accepted parent without changing its Contract", () => 
     authority: {
       actor_id: "user-1",
       actor_kind: "user",
-      authority_source: "runtime_trusted_host",
+      authority_source: "runtime_dialogue",
       conversation_ref: "conversation://accepted-closure",
       message_ref: "message://accepted-closure-confirm",
     },
@@ -2752,7 +2827,7 @@ test("closing an accepted parent reconciles completed children and compound ance
     authority: {
       actor_id: "user-1",
       actor_kind: "user",
-      authority_source: "runtime_trusted_host",
+      authority_source: "runtime_dialogue",
       conversation_ref: "conversation://accepted-complete-closure",
       message_ref: "message://accepted-complete-closure-confirm",
     },
@@ -2894,7 +2969,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
   const authority = {
     actor_id: "user-1",
     actor_kind: "user" as const,
-    authority_source: "runtime_trusted_host" as const,
+    authority_source: "runtime_dialogue" as const,
     conversation_ref: "conversation://compound-reconciliation",
     message_ref: "message://compound-reconciliation-confirm",
   };
@@ -3009,7 +3084,7 @@ test("accepted compound closure rejects missing children, invalid transitions, a
   const authority = {
     actor_id: "user-1",
     actor_kind: "user" as const,
-    authority_source: "runtime_trusted_host" as const,
+    authority_source: "runtime_dialogue" as const,
     conversation_ref: "conversation://accepted-closure-rejection",
     message_ref: "message://accepted-closure-rejection-confirm",
   };
@@ -3176,7 +3251,7 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
   const authority = {
     actor_id: "user-1",
     actor_kind: "user" as const,
-    authority_source: "runtime_trusted_host" as const,
+    authority_source: "runtime_dialogue" as const,
     conversation_ref: "conversation://conflict",
     message_ref: "message://conflict-confirm",
   };

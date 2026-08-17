@@ -1,16 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  computeBuildSourceDigest,
+  digestPaths,
+  type GoalBoardBuildManifest,
+} from "./fingerprint.js";
 
 const INSTALLER_ID = "goalboard-home-install-v1";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
 
-export type GoalBoardHomeInstallStatus = "installed" | "upgraded" | "repaired" | "unchanged";
+export type GoalBoardHomeInstallStatus = "installed" | "upgraded" | "refreshed" | "repaired" | "unchanged";
 
 export type GoalBoardHomeInstallStep =
   | "before_stage_release"
@@ -46,6 +51,8 @@ export interface GoalBoardHomeInstallResult {
   next_steps: {
     message: string;
     web_command: string[];
+    service_install_command: string[];
+    service_restart_command: string[];
   };
   written_paths: string[];
   preserved_paths: string[];
@@ -57,6 +64,7 @@ interface ReleaseManifest {
   installer: string;
   version: string;
   dependencies?: "embedded";
+  content_digest?: string;
   /** Present only in the obsolete schema-1 linked layout. */
   source_directory?: string;
   created_at: string;
@@ -67,6 +75,7 @@ interface InstallManifest {
   installer: string;
   version: string;
   release_path: string;
+  content_digest?: string;
   updated_at: string;
 }
 
@@ -82,6 +91,13 @@ interface RuntimeDependencyPackage {
   directory: string;
 }
 
+interface InspectedSource {
+  directory: string;
+  version: string;
+  runtimeDependencies: RuntimeDependencyPackage[];
+  contentDigest: string;
+}
+
 interface TextMutation {
   filePath: string;
   previous: string | null;
@@ -93,6 +109,7 @@ export class GoalBoardHomeInstallError extends Error {
       | "home.not_directory"
       | "source.invalid"
       | "source.asset_missing"
+      | "source.build_stale"
       | "version.invalid"
       | "home.unknown_file"
       | "release.conflict",
@@ -136,7 +153,7 @@ export async function installGoalBoardHome(
       [releasesDirectory, configDirectory, binDirectory, projectDirectory, logsDirectory].map(ensureDirectory),
     );
 
-    const existingRelease = await inspectRelease(releaseDirectory, source.version);
+    const existingRelease = await inspectRelease(releaseDirectory, source.version, source.contentDigest);
     let releaseChanged = false;
     if (existingRelease === "valid") {
       preservedPaths.push(releaseDirectory);
@@ -146,7 +163,7 @@ export async function installGoalBoardHome(
       try {
         await createRelease(stagingDirectory, source, source.version);
         await runStep(options, "before_activate_release");
-        promoted = await promoteRelease(stagingDirectory, releaseDirectory, existingRelease === "repairable");
+        promoted = await promoteRelease(stagingDirectory, releaseDirectory, existingRelease !== "missing");
         releaseChanged = true;
         writtenPaths.push(releaseDirectory);
       } catch (error) {
@@ -175,7 +192,8 @@ export async function installGoalBoardHome(
     const installChanged =
       !previousInstall ||
       previousInstall.version !== source.version ||
-      previousInstall.release_path !== releasePath;
+      previousInstall.release_path !== releasePath ||
+      previousInstall.content_digest !== source.contentDigest;
     if (installChanged) {
       await runStep(options, "before_write_install_manifest");
       await replaceOwnedJson(
@@ -185,6 +203,7 @@ export async function installGoalBoardHome(
           installer: INSTALLER_ID,
           version: source.version,
           release_path: releasePath,
+          content_digest: source.contentDigest,
           updated_at: new Date().toISOString(),
         } satisfies InstallManifest,
         mutations,
@@ -212,8 +231,10 @@ export async function installGoalBoardHome(
     }
 
     const status: GoalBoardHomeInstallStatus = releaseChanged
-      ? promoted?.backupDirectory
-        ? "repaired"
+      ? existingRelease === "refreshable"
+        ? "refreshed"
+        : promoted?.backupDirectory
+          ? "repaired"
         : previousInstall
           ? "upgraded"
           : "installed"
@@ -234,8 +255,10 @@ export async function installGoalBoardHome(
       launchers,
       next_steps: {
         message:
-          "GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入和项目设置必须通过后续单独的显式流程完成。两个常见坑：goalboard-web 是前台进程，关掉运行它的终端窗口前端就会关闭；接入 Codex / Claude Code 后必须重开会话，MCP 和 Skill 才会生效。重开后在对话里明确说「继续用 GoalBoard」并告诉我关联哪个项目——Runtime 不会自动关联项目，必须等你的明确指令。",
+          `GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入、项目设置和 Web 常驻服务必须通过后续单独的显式流程完成。接入 Codex / Claude Code 后需要新开 Session，因为 Runtime 只在 Session 启动时读取 MCP 与 Skill 清单，当前对话不会动态出现新工具。重开后说「继续用 GoalBoard」；GoalBoard 会展示当前目录以前用过的项目并请你确认，不会把普通选择偷偷设成目录默认。${status === "refreshed" ? " 如果常驻 Web 服务正在运行，请显式执行 service restart，让它切换到刚刷新的 release；安装器不会静默终止未知进程。" : ""}`,
         web_command: [launchers.web, "--home", homeDirectory],
+        service_install_command: [launchers.cli, "service", "install", "--home", homeDirectory, "--confirm"],
+        service_restart_command: [launchers.cli, "service", "restart", "--home", homeDirectory, "--confirm"],
       },
       written_paths: writtenPaths,
       preserved_paths: preservedPaths,
@@ -251,7 +274,7 @@ export async function installGoalBoardHome(
 async function inspectSource(
   sourceDirectory: string,
   requestedVersion: string | undefined,
-): Promise<{ directory: string; version: string; runtimeDependencies: RuntimeDependencyPackage[] }> {
+): Promise<InspectedSource> {
   const sourceState = await pathState(sourceDirectory);
   if (!sourceState?.isDirectory()) {
     throw new GoalBoardHomeInstallError("source.invalid", `GoalBoard 安装源不存在或不是目录: ${sourceDirectory}`);
@@ -283,8 +306,41 @@ async function inspectSource(
       throw new GoalBoardHomeInstallError("source.asset_missing", `GoalBoard 安装源缺少 ${asset}: ${assetPath}`);
     }
   }
+  await assertFreshRepositoryBuild(sourceDirectory);
   const runtimeDependencies = await collectRuntimeDependencies(packageJson, packageMetadata);
-  return { directory: sourceDirectory, version, runtimeDependencies };
+  const contentDigest = await computeSourceContentDigest(sourceDirectory, runtimeDependencies);
+  return { directory: sourceDirectory, version, runtimeDependencies, contentDigest };
+}
+
+async function assertFreshRepositoryBuild(sourceDirectory: string): Promise<void> {
+  const srcState = await pathState(path.join(sourceDirectory, "src"));
+  if (!srcState?.isDirectory()) return;
+  const manifestPath = path.join(sourceDirectory, "dist", ".goalboard-build.json");
+  const manifest = await readJsonIfPresent<GoalBoardBuildManifest>(manifestPath);
+  const currentDigest = await computeBuildSourceDigest(sourceDirectory);
+  if (manifest?.schema_version === 1 && manifest.source_digest === currentDigest) return;
+  throw new GoalBoardHomeInstallError(
+    "source.build_stale",
+    `GoalBoard 源码与 dist 不一致，已停止安装旧构建。请在仓库运行 pnpm install:local（它会先 build）后重试: ${sourceDirectory}`,
+  );
+}
+
+async function computeSourceContentDigest(
+  sourceDirectory: string,
+  runtimeDependencies: readonly RuntimeDependencyPackage[],
+): Promise<string> {
+  const rootDigest = await digestPaths(sourceDirectory, ["dist", "skills", "package.json"]);
+  const dependencies = [];
+  for (const dependency of runtimeDependencies) {
+    dependencies.push({
+      name: dependency.name,
+      version: dependency.version,
+      digest: await digestPaths(dependency.directory, ["."]),
+    });
+  }
+  return createHash("sha256")
+    .update(JSON.stringify({ root_digest: rootDigest, dependencies }))
+    .digest("hex");
 }
 
 async function collectRuntimeDependencies(
@@ -403,7 +459,7 @@ function safeReleaseName(version: string): string {
 
 async function createRelease(
   stagingDirectory: string,
-  source: { directory: string; version: string; runtimeDependencies: RuntimeDependencyPackage[] },
+  source: InspectedSource,
   version: string,
 ): Promise<void> {
   await fs.mkdir(stagingDirectory, { recursive: false });
@@ -459,6 +515,7 @@ async function createRelease(
         installer: INSTALLER_ID,
         version,
         dependencies: "embedded",
+        content_digest: source.contentDigest,
         created_at: new Date().toISOString(),
       } satisfies ReleaseManifest,
       null,
@@ -494,7 +551,8 @@ async function assertContainedDependencyLinks(rootDirectory: string): Promise<vo
 async function inspectRelease(
   releaseDirectory: string,
   version: string,
-): Promise<"missing" | "valid" | "repairable"> {
+  expectedContentDigest: string,
+): Promise<"missing" | "valid" | "refreshable" | "repairable"> {
   const state = await pathState(releaseDirectory);
   if (!state) return "missing";
   if (!state.isDirectory()) {
@@ -504,7 +562,11 @@ async function inspectRelease(
   if (!manifest || manifest.installer !== INSTALLER_ID || manifest.version !== version) {
     throw new GoalBoardHomeInstallError("release.conflict", `已存在未知 GoalBoard release 目录: ${releaseDirectory}`);
   }
-  if (manifest.schema_version !== SCHEMA_VERSION || manifest.dependencies !== "embedded") {
+  if (
+    manifest.schema_version !== SCHEMA_VERSION
+    || manifest.dependencies !== "embedded"
+    || typeof manifest.content_digest !== "string"
+  ) {
     return "repairable";
   }
   const required = [
@@ -518,7 +580,8 @@ async function inspectRelease(
   const states = await Promise.all(required.map((item) => pathState(path.join(releaseDirectory, item))));
   if (!states.every(Boolean)) return "repairable";
   const nodeModulesState = states[4];
-  return nodeModulesState?.isDirectory() && !nodeModulesState.isSymbolicLink() ? "valid" : "repairable";
+  if (!nodeModulesState?.isDirectory() || nodeModulesState.isSymbolicLink()) return "repairable";
+  return manifest.content_digest === expectedContentDigest ? "valid" : "refreshable";
 }
 
 async function promoteRelease(

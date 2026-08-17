@@ -20,6 +20,10 @@ import {
   type SupportedRuntimeId,
 } from "../install/runtime-integration.js";
 import {
+  GoalBoardWebServiceManager,
+  type GoalBoardWebServiceAction,
+} from "../install/web-service.js";
+import {
   renderGoalDocumentFragment,
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
@@ -37,6 +41,7 @@ import {
   type WebSettingsConnection,
   type WebSettingsProject,
   type WebSettingsSection,
+  type WebSettingsWorkspaceMembership,
 } from "./render.js";
 
 export interface WebServerOptions {
@@ -56,6 +61,8 @@ export interface WebServerOptions {
   projectRoot?: string;
   /** Shared in-process Runtime integration service. Tests may inject a fixture. */
   runtimeIntegrationService?: RuntimeIntegrationService;
+  /** Shared service manager so Web previews and confirmations use one in-memory plan. */
+  webServiceManager?: GoalBoardWebServiceManager;
   /** Test-only deterministic local Web control token. Production generates one per server process. */
   controlToken?: string;
 }
@@ -613,6 +620,7 @@ function projectNavigation(project: GoalBoardProjectRecord): WebProjectNavigatio
   return {
     project_id: project.project_id,
     display_name: project.display_name,
+    data_class: project.data_class,
   };
 }
 
@@ -622,6 +630,7 @@ function settingsProject(project: GoalBoardProjectRecord): WebSettingsProject {
     display_name: project.display_name,
     database_path: project.database_path,
     source: project.source,
+    data_class: project.data_class,
     created_at: project.created_at,
   };
 }
@@ -659,6 +668,7 @@ function settingsConnection(
 async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promise<{
   projects: WebSettingsProject[];
   connections: WebSettingsConnection[];
+  workspace_memberships: WebSettingsWorkspaceMembership[];
 }> {
   const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
   try {
@@ -669,6 +679,21 @@ async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promi
       connections: catalog.listRuntimeContextBindings()
         .map((binding) => settingsConnection(binding, projectMap))
         .filter((connection): connection is WebSettingsConnection => connection !== null),
+      workspace_memberships: catalog.listWorkspaceMemberships()
+        .map((membership) => {
+          const project = projectMap.get(membership.project_id);
+          return project ? {
+            membership_id: membership.membership_id,
+            workspace_id: membership.workspace_id,
+            workspace_name: membership.workspace_name,
+            realpath_verified: membership.realpath_verified,
+            project_id: project.project_id,
+            project_name: project.display_name,
+            is_default: membership.is_default,
+            updated_at: membership.updated_at,
+          } : null;
+        })
+        .filter((membership): membership is WebSettingsWorkspaceMembership => membership !== null),
     };
   } finally {
     catalog.close();
@@ -822,6 +847,7 @@ async function resolveWebRequest(
         project: projectNavigation(project),
         projects,
         routePrefix: `/projects/${encodeURIComponent(project.project_id)}`,
+        demo: project.data_class === "regenerable_demo",
       },
     };
   } finally {
@@ -832,6 +858,9 @@ async function resolveWebRequest(
 export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): http.Server {
   const fixture = fixtureWebBoardOptions(serverOptions);
   const runtimeIntegrations = serverOptions.runtimeIntegrationService ?? new RuntimeIntegrationService({
+    homeDirectory: serverOptions.homeDirectory,
+  });
+  const webService = serverOptions.webServiceManager ?? new GoalBoardWebServiceManager({
     homeDirectory: serverOptions.homeDirectory,
   });
   const controlToken = serverOptions.controlToken?.trim() || randomBytes(32).toString("base64url");
@@ -867,12 +896,50 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             runtimes,
             projects,
             connections: catalogSettings.connections,
+            workspace_memberships: catalogSettings.workspace_memberships,
+            web_service: await webService.detect(),
             diagnostics: installationDiagnostics(serverOptions.homeDirectory, projects.length),
           }, controlToken));
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/settings/runtimes") {
           sendJson(response, 200, { runtimes: await runtimeIntegrations.detectAll() });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/web-service") {
+          sendJson(response, 200, await webService.detect());
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/web-service/plan") {
+          const body = await readBody(request);
+          const action = typeof body.action === "string"
+            && ["install", "start", "stop", "restart", "remove"].includes(body.action)
+            ? body.action as GoalBoardWebServiceAction
+            : null;
+          if (!action) {
+            sendJson(response, 400, { error: "常驻服务操作无效" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await webService.prepare(action));
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/web-service/confirm") {
+          const body = await readBody(request);
+          const planId = typeof body.plan_id === "string" ? body.plan_id : "";
+          const decision = body.decision === "confirmed" || body.decision === "declined" ? body.decision : null;
+          if (!planId || !decision) {
+            sendJson(response, 400, { error: "常驻服务确认缺少 plan 或明确决定" });
+            return;
+          }
+          try {
+            sendJson(response, 200, await webService.confirm({ plan_id: planId, decision }));
+          } catch (error) {
+            sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) });
+          }
           return;
         }
         const runtimePlanMatch = url.pathname.match(/^\/api\/settings\/runtimes\/([^/]+)\/plan$/);
@@ -915,6 +982,11 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           sendJson(response, 200, { connections: catalogSettings.connections });
           return;
         }
+        if (request.method === "GET" && url.pathname === "/api/settings/workspaces") {
+          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
+          sendJson(response, 200, { workspace_memberships: catalogSettings.workspace_memberships });
+          return;
+        }
         if (request.method === "POST" && url.pathname === "/api/settings/projects") {
           const body = await readBody(request);
           const displayName = typeof body.display_name === "string" ? body.display_name.trim() : "";
@@ -929,6 +1001,54 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
               project: settingsProject(project),
               project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
             });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/demo") {
+          const body = await readBody(request);
+          const action = body.action === "create" || body.action === "reset" || body.action === "remove"
+            ? body.action
+            : null;
+          if (!action || body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请明确确认要创建、重建或删除演示数据" });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            if (action === "create") {
+              const result = await catalog.ensureDemoProject({ actor_id: "web-user", user_confirmed: true });
+              sendJson(response, 200, {
+                ...result,
+                project: settingsProject(result.project),
+                message: result.status === "existing" ? "示例项目已经存在" : "示例项目已创建",
+              });
+              return;
+            }
+            if (action === "reset") {
+              const result = await catalog.resetDemoProject({ actor_id: "web-user", user_confirmed: true });
+              sendJson(response, 200, {
+                ...result,
+                project: settingsProject(result.project),
+                message: "示例项目已重建；用户项目未修改",
+              });
+              return;
+            }
+            const demo = catalog.listProjects().find((project) => project.data_class === "regenerable_demo");
+            if (!demo) {
+              sendJson(response, 404, { error: "示例项目已经不存在" });
+              return;
+            }
+            const result = await catalog.removeDemoProject({
+              project_id: demo.project_id,
+              actor_id: "web-user",
+              delete_confirmed: true,
+              idempotency_key: `web-demo-remove-${randomBytes(16).toString("hex")}`,
+            });
+            sendJson(response, 200, { ...result, message: "可重建 demo 已删除；用户项目未修改" });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
           } finally {
@@ -1011,6 +1131,54 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             sendJson(response, error instanceof GoalBoardProjectCatalogError && error.code === "catalog.project_not_found" ? 404 : 400, {
               error: error instanceof Error ? error.message : String(error),
             });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        const workspaceDefaultMatch = url.pathname.match(/^\/api\/settings\/workspaces\/([^/]+)\/default$/);
+        if (request.method === "POST" && workspaceDefaultMatch) {
+          const body = await readBody(request);
+          if (body.user_confirmed !== true || typeof body.project_id !== "string") {
+            sendJson(response, 400, { error: "请先明确确认目录默认项目" });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const memberships = catalog.setWorkspaceDefault({
+              workspace_id: decodeURIComponent(workspaceDefaultMatch[1]),
+              project_id: body.project_id,
+              actor_id: "web-user",
+              user_confirmed: true,
+            });
+            sendJson(response, 200, { changed: true, membership_count: memberships.length });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            catalog.close();
+          }
+          return;
+        }
+        const workspaceUnlinkMatch = url.pathname.match(
+          /^\/api\/settings\/workspaces\/([^/]+)\/projects\/([^/]+)\/unlink$/,
+        );
+        if (request.method === "POST" && workspaceUnlinkMatch) {
+          const body = await readBody(request);
+          if (body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请先明确确认解除目录关联" });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const memberships = catalog.removeWorkspaceMembership({
+              workspace_id: decodeURIComponent(workspaceUnlinkMatch[1]),
+              project_id: decodeURIComponent(workspaceUnlinkMatch[2]),
+              actor_id: "web-user",
+              user_confirmed: true,
+            });
+            sendJson(response, 200, { changed: true, membership_count: memberships.length });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
           } finally {
             catalog.close();
           }

@@ -22,6 +22,7 @@ import type {
 } from "../v1/types.js";
 import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
 import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
+import type { GoalBoardWebServiceDetection } from "../install/web-service.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
 
 export type WebGoalStatus = GoalWorkState;
@@ -126,6 +127,7 @@ export interface WebGoalView {
 export interface WebProjectNavigation {
   project_id: string;
   display_name: string;
+  data_class?: "user" | "migrated_user" | "regenerable_demo";
 }
 
 export type WebSettingsSection = "runtimes" | "projects" | "diagnostics";
@@ -133,6 +135,7 @@ export type WebSettingsSection = "runtimes" | "projects" | "diagnostics";
 export interface WebSettingsProject extends WebProjectNavigation {
   database_path: string;
   source: "created" | "migrated";
+  data_class: "user" | "migrated_user" | "regenerable_demo";
   created_at: string;
 }
 
@@ -144,6 +147,17 @@ export interface WebSettingsConnection {
   project_id: string;
   project_name: string;
   created_at: string;
+  updated_at: string;
+}
+
+export interface WebSettingsWorkspaceMembership {
+  membership_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  realpath_verified: boolean;
+  project_id: string;
+  project_name: string;
+  is_default: boolean;
   updated_at: string;
 }
 
@@ -165,6 +179,8 @@ export interface GoalBoardSettingsView {
   runtimes: RuntimeIntegrationDetection[];
   projects: WebSettingsProject[];
   connections: WebSettingsConnection[];
+  workspace_memberships: WebSettingsWorkspaceMembership[];
+  web_service: GoalBoardWebServiceDetection;
   diagnostics: WebInstallationDiagnostics;
 }
 
@@ -1581,8 +1597,8 @@ function renderDraftEditor(item: WebGoalView): string {
   const decompositionOptions = DECOMPOSITION_OPTIONS.map(
     ([value, label, description]) => `<label class="decomposition-choice"><input type="radio" name="decomposition_state" value="${value}"${goal.decomposition_state === value ? " checked" : ""}><span><strong>${label}</strong><small>${description}</small></span></label>`,
   ).join("");
-  return `<section class="document-section draft-editor-section" data-draft-editor data-goal-id="${escapeHtml(goal.goal_id)}">
-    ${sectionHeading("clipboard", "补全 Draft Contract", "只有 Draft 可以直接编辑；accepted Contract 需要通过新 Goal 与 Rewire 变更")}
+  return `<div class="draft-editor-section" data-draft-editor data-goal-id="${escapeHtml(goal.goal_id)}">
+    ${subsectionHeading("clipboard", "补全 Draft Contract", "只有 Draft 可以直接编辑；accepted Contract 需要通过新 Goal 与 Rewire 变更")}
     <form class="draft-contract-form" data-draft-form data-live-form="draft-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
       <div class="draft-form-row draft-form-row--title"><label><span>Goal 名称</span><input name="title" required maxlength="120" value="${escapeHtml(goal.title)}"></label><label><span>优先级</span><input name="priority" type="number" min="0" max="100" step="1" value="${goal.priority}"></label></div>
       <label class="draft-field"><span>要得到的结果</span><textarea name="outcome" rows="2" placeholder="完成后，用户或系统获得什么可观察结果">${escapeHtml(goal.outcome)}</textarea></label>
@@ -1610,11 +1626,17 @@ function renderDraftEditor(item: WebGoalView): string {
       <a class="draft-policy-link" href="#impact-workbench-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>继续登记和维护 Impact</strong><small>在“风险与影响”中维护区域、访问方式、状态与历史</small></span>${icon("arrow")}</a>
       <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>继续设置 Runtime / Review Policy</strong><small>项目默认与当前 Goal 规则在下方独立维护</small></span>${icon("arrow")}</a>
     </div>
-  </section>`;
+  </div>`;
 }
 
 function sectionHeading(iconName: GoalBoardIcon, title: string, description = ""): string {
   return `<header class="section-heading"><span>${icon(iconName)}</span><div><h2>${escapeHtml(title)}</h2>${
+    description ? `<p>${escapeHtml(description)}</p>` : ""
+  }</div></header>`;
+}
+
+function subsectionHeading(iconName: GoalBoardIcon, title: string, description = ""): string {
+  return `<header class="subsection-heading"><span>${icon(iconName)}</span><div><h3>${escapeHtml(title)}</h3>${
     description ? `<p>${escapeHtml(description)}</p>` : ""
   }</div></header>`;
 }
@@ -1641,43 +1663,52 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       <dl class="goal-meta"><div>${icon("clock")}<dt>创建于</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>更新于</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>负责人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>优先级</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>归档于</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
     </header>
     <section class="document-section">
-      ${sectionHeading("book", "业务逻辑")}
+      ${sectionHeading("book", "目标是什么", "先说明用户或项目会得到什么，而不是先讲实现名词")}
       ${renderDraftGaps(goal)}
       <div class="business-copy"><p class="outcome"><strong>要得到的结果：</strong>${escapeHtml(goal.outcome || "待澄清")}</p><p><strong>为什么做：</strong>${escapeHtml(goal.why || "待澄清")}</p><p><strong>事情如何运转：</strong>${escapeHtml(goal.business_logic || "待澄清")}</p></div>
     </section>
     ${renderGoalDecisionNotice(view, goal.goal_id)}
     <section class="document-section">
-      ${sectionHeading("blocked", "阻塞项", "决定这个 Goal 现在能否被认领或完成")}
-      ${renderReasons(item)}
+      ${sectionHeading("clipboard", "怎样才算完成", "把验收、范围和依赖放在一起，先明确工作的边界")}
+      <div class="document-subsection" id="acceptance-${escapeHtml(goal.goal_id)}">
+        ${subsectionHeading("clipboard", "验收标准", "每一条都应该可以明确判断通过或不通过")}
+        ${renderAcceptance(item)}
+      </div>
+      <div class="document-subsection">
+        ${subsectionHeading("folder", "范围、输入与输出", "这些内容共同构成 Goal Contract 的执行边界")}
+        ${renderScope(item)}
+      </div>
+      <div class="document-subsection">
+        ${subsectionHeading("tree", "和其他 Goal 的关系", "区分它属于哪个目标，以及开始前必须等待什么")}
+        ${renderRelations(item, view)}
+      </div>
+      ${renderDraftEditor(item)}
     </section>
-    <section class="document-section" id="acceptance-${escapeHtml(goal.goal_id)}">
-      ${sectionHeading("clipboard", "验收清单", "最小 Goal 必须有明确、可判断的完成条件")}
-      ${renderAcceptance(item)}
-    </section>
-    ${renderDraftEditor(item)}
     <section class="document-section runtime-section" data-section="execution">
-      ${sectionHeading("workflow", "Runtime 工作闭环", "GoalBoard 记录真相，Runtime 主动读取并认领")}
-      <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
-      <p class="runtime-note">这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Ready Goal 并认领。</p>
+      ${sectionHeading("workflow", "现在怎么推进", "集中查看阻塞、认领、执行、证据和复核")}
+      <div class="document-subsection">
+        ${subsectionHeading("blocked", "当前阻塞", "这些事实决定当前能否继续领取或完成")}
+        ${renderReasons(item)}
+      </div>
+      <div class="document-subsection">
+        ${subsectionHeading("workflow", "执行与证明", "GoalBoard 记录事实，Runtime 主动选择并推进")}
+        <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
+        <p class="runtime-note">这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Available Goal 并认领。</p>
+      </div>
     </section>
     <section class="document-section">
-      ${sectionHeading("tree", "Goal 关系", "直接查看当前 Goal 的上游、下游和其他语义关系")}
-      ${renderRelations(item, view)}
+      ${sectionHeading("shield", "风险与规则", "把可能出问题的地方和执行约束放在同一处")}
+      <div class="document-subsection">
+        ${subsectionHeading("risk", "风险与影响", "记录触发条件、影响范围、负责人和处理方式")}
+        ${renderSafety(item, view)}
+      </div>
+      <div class="document-subsection" data-section="policy" id="policy-${escapeHtml(goal.goal_id)}">
+        ${subsectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
+        ${renderPolicyEditor(item)}
+      </div>
     </section>
     <section class="document-section">
-      ${sectionHeading("folder", "Goal Contract", "范围、输入与输出都是 Runtime 执行时的边界")}
-      ${renderScope(item)}
-    </section>
-    <section class="document-section">
-      ${sectionHeading("shield", "风险与影响")}
-      ${renderSafety(item, view)}
-    </section>
-    <section class="document-section" data-section="policy" id="policy-${escapeHtml(goal.goal_id)}">
-      ${sectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
-      ${renderPolicyEditor(item)}
-    </section>
-    <section class="document-section">
-      ${sectionHeading("history", "事件历史与用户决策")}
+      ${sectionHeading("history", "历史", "回看发生过什么、用户决策和完整工程记录")}
       ${renderHistory(item)}
       ${renderFullRecords(item)}
     </section>
@@ -1912,6 +1943,12 @@ const STYLES = `
   .section-heading > span { width: 22px; height: 22px; margin-top: 1px; display: grid; place-items: center; color: #48515e; }
   .section-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
   .section-heading p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .document-subsection { margin: 16px 0 0 31px; padding-top: 16px; border-top: 1px solid var(--line); scroll-margin-top: 12px; }
+  .document-subsection:first-of-type { margin-top: 6px; padding-top: 0; border-top: 0; }
+  .subsection-heading { margin: 0 0 10px; display: flex; align-items: flex-start; gap: 8px; }
+  .subsection-heading > span { width: 20px; height: 20px; display: grid; place-items: center; color: #59626f; }
+  .subsection-heading h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
+  .subsection-heading p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
   .business-copy { padding-left: 31px; color: #303641; }
   .business-copy p { margin: 6px 0; }
   .business-copy .outcome { color: var(--ink); }
@@ -2372,7 +2409,7 @@ const MORE_STYLES = `
   .policy-form > .form-error { margin: 8px 0 0; }
   .policy-form footer { margin-top: 13px; padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
   .policy-form footer > span { color: var(--muted); font-size: 11px; }
-  .draft-editor-section { background: #fbfcfd; }
+  .draft-editor-section { margin: 18px 0 0 31px; padding-top: 17px; border-top: 1px solid var(--line); background: transparent; scroll-margin-top: 12px; }
   .draft-contract-form { border-top: 1px solid var(--line-strong); display: grid; }
   .draft-contract-form label { min-width: 0; display: grid; gap: 5px; }
   .draft-contract-form label > span, .decomposition-editor legend { font-weight: 650; }
@@ -2610,6 +2647,7 @@ const MORE_STYLES = `
 
 const RESPONSIVE_STYLES = `
   @container (max-width: 660px) {
+    .document-subsection, .draft-editor-section { margin-left: 0; }
     .human-review-list > header { display: grid; gap: 2px; }
     .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
     .human-review-form > label > span, .human-review-form legend { padding-top: 0; }
@@ -3015,6 +3053,12 @@ const SETTINGS_STYLES = `
   .connection-action-form .inline-confirm input { margin-top: 2px; }
   .connection-action-form > button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; justify-self: end; color: var(--blue-dark); background: #fff; font-weight: 650; cursor: pointer; }
   .connection-action-form--danger > button { color: var(--red); }
+  .workspace-project-list { list-style: none; margin: -4px 0 12px 46px; padding: 0; width: min(100%, 620px); border-top: 1px solid var(--line); }
+  .workspace-project-list li { min-height: 46px; padding: 7px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .workspace-project-list li > span { display: flex; align-items: center; gap: 9px; }
+  .workspace-project-list form { display: flex; align-items: center; gap: 8px; }
+  .workspace-project-list form button { min-height: 30px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--red); background: #fff; cursor: pointer; }
+  .workspace-project-list .settings-form-error { flex-basis: 100%; }
   .settings-import-row { border-top: 1px solid var(--line-strong); margin-top: 24px; }
   .settings-import-row > button { justify-self: end; }
   .diagnostics-summary { padding: 25px 0; border-bottom: 1px solid var(--line-strong); }
@@ -3027,6 +3071,8 @@ const SETTINGS_STYLES = `
   .launcher-section li { min-height: 60px; padding: 10px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; }
   .launcher-section li > span:first-child { min-width: 0; display: grid; grid-template-columns: 22px 50px minmax(0, 1fr); align-items: center; gap: 8px; }
   .launcher-section li small { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  .service-action-row { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .service-action-row button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; cursor: pointer; }
   .runtime-plan-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(760px, calc(100dvh - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); box-shadow: var(--shadow); }
   .runtime-plan-dialog::backdrop { background: rgba(27, 35, 45, .34); }
   .runtime-plan-shell { max-height: min(760px, calc(100dvh - 28px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
@@ -3065,6 +3111,8 @@ const SETTINGS_STYLES = `
     .inline-settings-form .inline-confirm, .inline-settings-form .settings-form-error { grid-column: 1; }
     .project-record-tools { margin-left: 0; flex-wrap: wrap; }
     .connection-record-tools { margin-left: 0; flex-wrap: wrap; }
+    .workspace-project-list { margin-left: 0; }
+    .workspace-project-list li { align-items: flex-start; flex-direction: column; }
     .connection-record-tools details { min-width: 100%; }
     .connection-action-form { width: 100%; }
     .connection-action-form select { font-size: 16px; }
@@ -3272,6 +3320,117 @@ const SETTINGS_CLIENT_SCRIPT = `
           error.textContent = caught.message || "Session 解绑失败";
           error.hidden = false;
           submit.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-workspace-default]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const error = form.querySelector(".settings-form-error");
+        const submit = form.querySelector("button[type=submit]");
+        if (values.get("user_confirmed") !== "on") {
+          error.textContent = "请先确认更改这个目录的默认项目。";
+          error.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceDefault) + "/default", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "目录默认项目更新失败");
+          showToast("目录默认项目已更新");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          error.textContent = caught.message || "目录默认项目更新失败";
+          error.hidden = false;
+          submit.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-workspace-unlink]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const error = form.querySelector(".settings-form-error");
+        const submit = form.querySelector("button[type=submit]");
+        if (values.get("user_confirmed") !== "on") {
+          error.textContent = "请先确认解除这个目录关联。";
+          error.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceUnlink) + "/projects/" + encodeURIComponent(form.dataset.workspaceProject) + "/unlink", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "目录关联解除失败");
+          showToast("目录关联已解除；GoalBoard 项目仍然保留");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          error.textContent = caught.message || "目录关联解除失败";
+          error.hidden = false;
+          submit.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-demo-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const action = button.dataset.demoAction;
+        const error = button.closest("section, details")?.querySelector("[data-demo-error]") || document.querySelector("[data-demo-error]");
+        const message = action === "create"
+          ? "创建一份明确标记为可重建数据的示例项目？"
+          : action === "reset"
+            ? "重建 demo 会清除其中的所有改动，但不会影响用户项目。确认继续？"
+            : "删除这个可重建 demo？用户项目不会被删除。";
+        if (!window.confirm(message)) return;
+        button.disabled = true;
+        if (error) error.hidden = true;
+        try {
+          const response = await fetch("/api/settings/demo", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ action, user_confirmed: true }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "demo 操作失败");
+          showToast(result.message || "demo 已更新");
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          if (error) { error.textContent = caught.message || "demo 操作失败"; error.hidden = false; }
+          button.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-web-service-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const error = document.querySelector("[data-web-service-error]");
+        button.disabled = true;
+        if (error) error.hidden = true;
+        try {
+          const previewResponse = await fetch("/api/settings/web-service/plan", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ action: button.dataset.webServiceAction }) });
+          const plan = await previewResponse.json();
+          if (!previewResponse.ok) throw new Error(plan.error || "无法生成常驻服务预览");
+          if (plan.status === "no_change") {
+            showToast(plan.message);
+            button.disabled = false;
+            return;
+          }
+          if (plan.status !== "ready") throw new Error(plan.message || "当前不能执行这项常驻服务操作");
+          const changes = (plan.changes || []).map((change) => "• " + change.operation + "：" + change.target).join("\\n");
+          if (!window.confirm(plan.message + "\\n\\n" + changes + "\\n\\n" + plan.confirmation)) {
+            await fetch("/api/settings/web-service/confirm", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ plan_id: plan.plan_id, decision: "declined" }) });
+            button.disabled = false;
+            return;
+          }
+          const confirmResponse = await fetch("/api/settings/web-service/confirm", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ plan_id: plan.plan_id, decision: "confirmed" }) });
+          const result = await confirmResponse.json();
+          if (!confirmResponse.ok) throw new Error(result.error || "常驻服务操作失败");
+          showToast(result.message);
+          setTimeout(() => location.reload(), 450);
+        } catch (caught) {
+          if (error) {
+            error.textContent = caught.message || "常驻服务操作失败";
+            error.hidden = false;
+          }
+          button.disabled = false;
         }
       });
     });
@@ -4760,7 +4919,7 @@ export function renderGoalBoardProjectIndex(
 ): string {
   const projectRows = projects
     .map(
-      (project) => `<li><a href="/projects/${encodeURIComponent(project.project_id)}"><span><strong>${escapeHtml(project.display_name)}</strong><span>打开这个项目的 Goal Tree</span></span>${icon("chevron-down")}</a></li>`,
+      (project) => `<li><a href="/projects/${encodeURIComponent(project.project_id)}"><span><strong>${escapeHtml(project.display_name)}${project.data_class === "regenerable_demo" ? ' <small>演示数据 · 可重建</small>' : ""}</strong><span>打开这个项目的 Goal Tree</span></span>${icon("chevron-down")}</a></li>`,
     )
     .join("");
   return `<!doctype html>
@@ -4847,40 +5006,76 @@ function renderConnectionSettings(view: GoalBoardSettingsView): string {
   return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">已关联的 Runtime Session</h2><p>这里只显示你已经在对应 Runtime 对话里确认过的 Session。新 Session 会先询问你要不要关联，不会自动出现在这里。</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>还没有已确认的 Session 关联</h3><p>在 Runtime 中使用 GoalBoard Skill 后，当前 Session 会先询问你要连接哪个项目。</p></div>`}</div></section>`;
 }
 
+function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
+  const groups = new Map<string, typeof view.workspace_memberships>();
+  for (const membership of view.workspace_memberships) {
+    const current = groups.get(membership.workspace_id) ?? [];
+    current.push(membership);
+    groups.set(membership.workspace_id, current);
+  }
+  const rows = [...groups.entries()].map(([workspaceId, memberships]) => {
+    const workspaceName = memberships[0]?.workspace_name ?? "未命名目录";
+    const defaultMembership = memberships.find((membership) => membership.is_default);
+    const defaultChoices = memberships.filter((membership) => !membership.is_default);
+    const defaultForm = defaultChoices.length
+      ? `<form class="connection-action-form" data-workspace-default="${escapeHtml(workspaceId)}"><label>新 Session 默认使用<select name="project_id" required>${defaultChoices.map((membership) => `<option value="${escapeHtml(membership.project_id)}">${escapeHtml(membership.project_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认更改“${escapeHtml(workspaceName)}”的默认项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">设为默认</button></form>`
+      : `<div class="connection-action-form"><p class="settings-footnote">当前没有其他已关联项目可设为默认。</p></div>`;
+    const projects = memberships.map((membership) => `<li><span><strong>${escapeHtml(membership.project_name)}</strong>${membership.is_default ? `<span class="settings-state settings-state--success">默认</span>` : ""}</span><form data-workspace-unlink="${escapeHtml(workspaceId)}" data-workspace-project="${escapeHtml(membership.project_id)}"><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认解除关联</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">解除</button></form></li>`).join("");
+    return `<article class="settings-record connection-record" data-workspace-row="${escapeHtml(workspaceId)}"><header><div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h3>${escapeHtml(workspaceName)}</h3><p>${defaultMembership ? `新 Session 默认进入 <strong>${escapeHtml(defaultMembership.project_name)}</strong>` : "已关联多个项目，进入新 Session 时需要选择"}</p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${memberships.length} 个项目</span></div></header><ul class="workspace-project-list">${projects}</ul><div class="connection-record-tools"><details><summary>${icon("refresh")}<span>更改默认项目</span>${icon("chevron-down")}</summary>${defaultForm}</details></div></article>`;
+  }).join("");
+  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">项目目录关联</h2><p>一个目录可以关联多个 GoalBoard 项目，并指定新 Session 自动进入的默认项目。这里不展示完整目录路径。</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>还没有目录关联</h3><p>在某个项目目录的 Runtime 对话中首次选择 GoalBoard 项目后，这里会出现关联。</p></div>`}</div></section>`;
+}
+
 function renderProjectSettings(view: GoalBoardSettingsView): string {
+  const demo = view.projects.find((project) => project.data_class === "regenerable_demo");
   const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
     <header>
-      <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.source === "migrated" ? "由已有 GoalBoard 数据迁入" : "在 GoalBoard 中创建"}</p></div></div>
-      <div class="settings-record-action"><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">打开 Goal Tree</a></div>
+      <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? "演示数据 · 可随时重建，不属于用户项目" : project.source === "migrated" ? "用户数据 · 由已有 GoalBoard 数据迁入" : "用户数据 · 在 GoalBoard 中创建"}</p></div></div>
+      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? '<span class="settings-state settings-state--warning">可重建 demo</span>' : '<span class="settings-state settings-state--success">用户数据</span>'}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">打开 Goal Tree</a></div>
     </header>
     <div class="project-record-tools">
       <details><summary>${icon("settings")}<span>改名</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>项目名称<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">保存名称</button></form></details>
       <details><summary>${icon("database")}<span>DB 信息</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>项目 ID</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>数据库</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
+      ${project.data_class === "regenerable_demo" ? `<details><summary>${icon("refresh")}<span>重建或删除 demo</span>${icon("chevron-down")}</summary><div class="connection-action-form connection-action-form--danger"><p class="settings-footnote">重建会清除你在 demo 中做的改动；删除只移除这个可重建项目，不影响用户项目。</p><p class="settings-form-error" data-demo-error role="alert" hidden></p><div class="service-action-row"><button type="button" data-demo-action="reset">重建 demo</button><button type="button" data-demo-action="remove">删除 demo</button></div></div></details>` : ""}
     </div>
   </article>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
     <header class="settings-heading"><h1 id="settings-title">项目</h1><p>每个项目有独立 DB；项目名称用于识别，DB 路径只是辅助信息。网页项目选择不会改变 Runtime Session 绑定。</p></header>
     <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">创建项目</h2><p>创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。</p></div><form class="inline-settings-form" data-project-create><label>项目名称<input name="display_name" required maxlength="160" placeholder="例如：新产品发布"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认创建这个项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">创建并打开</button></form></section>
+    <section class="settings-action-section" aria-labelledby="demo-project-title"><div><h2 id="demo-project-title">产品示例</h2><p>${demo ? "示例项目已单独标记为可重建数据，可以放心重置或删除。" : "创建一份明确标记为可重建的示例数据；普通卸载会清理它，但保留用户项目。"}</p></div>${demo ? `<a class="settings-button" href="/projects/${encodeURIComponent(demo.project_id)}/">打开示例</a>` : '<button type="button" data-demo-action="create">创建示例项目</button>'}<p class="settings-form-error" data-demo-error role="alert" hidden></p></section>
     <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>还没有项目</h2><p>在上方创建第一个项目，或从下方迁入一份已有 GoalBoard DB。</p></div>`}</div>
+    ${renderWorkspaceSettings(view)}
     ${renderConnectionSettings(view)}
     <section class="settings-import-row"><div><h2>导入已有 GoalBoard DB</h2><p>明确选择并确认后，来源 DB 会移入 GoalBoard 的项目目录。</p></div><button type="button" data-open-project-migration>选择 DB 并预览迁移</button></section>
-    <p class="settings-footnote">项目删除暂不在这里开放：当前服务还没有可恢复的项目删除，GoalBoard 不提供半套不可逆体验。</p>
+    <p class="settings-footnote">普通用户项目不会被 demo 操作或普通卸载删除；永久清除用户数据需要在 CLI 里单独确认精确目录和项目数量。</p>
   </section>`;
 }
 
 function renderDiagnosticsSettings(view: GoalBoardSettingsView): string {
   const diagnostics = view.diagnostics;
+  const service = view.web_service;
   const installation = diagnostics.installation_state === "ready"
     ? { label: "安装完整", tone: "success" }
     : diagnostics.installation_state === "missing"
       ? { label: "尚未安装本体", tone: "warning" }
       : { label: "安装清单无效", tone: "danger" };
   const launchers = diagnostics.launchers.map((launcher) => `<li><span>${icon(launcher.state === "ready" ? "check" : "blocked")}<strong>${launcher.name}</strong><small>${escapeHtml(launcher.path)}</small></span><span class="settings-state settings-state--${launcher.state === "ready" ? "success" : "danger"}">${launcher.state === "ready" ? "可用" : "缺失"}</span></li>`).join("");
+  const serviceTone = service.state === "running" ? "success" : service.state === "stopped" || service.state === "absent" ? "warning" : "danger";
+  const serviceLabel = service.state === "running" ? "运行中" : service.state === "stopped" ? "已安装，未运行" : service.state === "absent" ? "未启用" : service.state === "unsupported" ? "当前系统不支持" : service.state === "conflict" ? "配置冲突" : "需要修复";
+  const serviceActions = service.state === "running"
+    ? [["restart", "重启"], ["stop", "停止"], ["remove", "移除"]]
+    : service.state === "stopped"
+      ? [["start", "启动"], ["remove", "移除"]]
+      : service.state === "absent" || service.state === "needs_repair"
+        ? [["install", "启用常驻服务"]]
+        : [];
+  const serviceButtons = serviceActions.map(([action, label]) => `<button type="button" data-web-service-action="${action}">${label}</button>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
     <header class="settings-heading"><h1 id="settings-title">诊断</h1><p>这里只读取 GoalBoard 自己的安装状态，不扫描项目内容，也不会自动修复或修改 Runtime。</p></header>
     <section class="diagnostics-summary"><div><h2>GoalBoard 本体</h2><span class="settings-state settings-state--${installation.tone}">${installation.label}</span></div><dl><div><dt>版本</dt><dd>${escapeHtml(diagnostics.version ?? "未识别")}</dd></div><div><dt>Home</dt><dd>${escapeHtml(diagnostics.home_directory)}</dd></div><div><dt>Release</dt><dd>${escapeHtml(diagnostics.release_directory ?? "未找到")}</dd></div><div><dt>项目数</dt><dd>${diagnostics.project_count}</dd></div></dl></section>
     <section class="launcher-section" aria-labelledby="launcher-title"><h2 id="launcher-title">启动入口</h2><ul>${launchers}</ul></section>
-    <p class="settings-footnote">如果本体不完整，请在终端重新运行 <code>goalboard install</code>。这个页面不会在未确认时替你执行修复。</p>
+    <section class="diagnostics-summary" aria-labelledby="web-service-title"><div><div><h2 id="web-service-title">Web 常驻服务</h2><p>${escapeHtml(service.message)}</p></div><span class="settings-state settings-state--${serviceTone}">${serviceLabel}</span></div><dl><div><dt>方式</dt><dd>${service.provider === "macos-launchagent" ? "macOS 用户级 LaunchAgent" : "尚未提供"}</dd></div><div><dt>命令</dt><dd>${escapeHtml(service.command.join(" "))}</dd></div><div><dt>配置</dt><dd>${escapeHtml(service.plist_path)}</dd></div><div><dt>日志</dt><dd>${escapeHtml(service.stdout_log)}<br>${escapeHtml(service.stderr_log)}</dd></div></dl><div class="service-action-row">${serviceButtons}</div><p class="settings-form-error" data-web-service-error role="alert" hidden></p></section>
+    <p class="settings-footnote">如果本体不完整，请在终端重新运行 <code>goalboard install</code>。常驻服务操作会先展示预览并要求确认；不会在后台使用 nohup。</p>
   </section>`;
 }
 
@@ -4979,8 +5174,8 @@ export function renderGoalBoardWeb(
   const html = `<!--
 THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
 OWN-WORLD: 使用参考图的高密度桌面工作台语言：顶部全局栏、左侧 IDE Goal Tree、右侧连续文档。
-STORY: 从 Tree 选择 Goal，依次读业务逻辑、阻塞、验收、Runtime 闭环、上下游关系与风险历史。
-FIRST VIEWPORT: 首屏必须同时看见 Goal Tree、当前 Goal 标题、业务逻辑、阻塞与验收入口。
+STORY: 从 Tree 选择 Goal，按“目标 → 完成标准 → 当前推进 → 风险规则 → 历史”阅读同一份连续事实。
+FIRST VIEWPORT: 首屏必须同时看见 Goal Tree、当前 Goal 标题和用人话写出的目标说明。
 FORM: Reference-led desktop Goal workbench, pinned screenshot authority, Operate mode.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->

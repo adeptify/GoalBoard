@@ -127,6 +127,7 @@ interface SkillSnapshot {
 interface RuntimeSnapshot {
   adapter: RuntimeAdapter;
   executablePath: string | null;
+  runtimeDetected: boolean;
   artifacts: InstalledArtifacts | null;
   configText: string | null;
   configHash: string | null;
@@ -138,6 +139,7 @@ interface RuntimeAdapter {
   id: SupportedRuntimeId;
   displayName: string;
   executableNames: readonly string[];
+  detectionPaths(userHome: string): readonly string[];
   configPath(userHome: string): string;
   skillPath(userHome: string): string;
   desiredConnection(artifacts: InstalledArtifacts, goalboardHome: string): DesiredConnection;
@@ -188,6 +190,7 @@ const CODEX_ADAPTER: RuntimeAdapter = {
   id: "codex",
   displayName: "Codex",
   executableNames: ["codex"],
+  detectionPaths: (userHome) => [path.join(userHome, ".codex")],
   configPath: (userHome) => path.join(userHome, ".codex", "config.toml"),
   skillPath: (userHome) => path.join(userHome, ".codex", "skills", "goal-advance"),
   desiredConnection: (artifacts, goalboardHome) => ({
@@ -199,8 +202,8 @@ const CODEX_ADAPTER: RuntimeAdapter = {
   connectConfig: connectCodexConfig,
   removeConfig: removeCodexConfig,
   restartInstructions: [
-    "关闭并重新打开 Codex Session（MCP 和 Skill 配置只在启动时加载，不重开不会生效）。",
-    "重启后明确说「继续用 GoalBoard」并指定要关联的项目（例如「关联『把 GoalBoard V1 做成可用产品』」）——Runtime 不会自动关联项目，必须等你的明确指令。",
+    "请新开一个 Codex Session：Codex 只在 Session 启动时读取 MCP 与 Skill 清单，所以当前对话不会动态出现 GoalBoard 工具。",
+    "新 Session 可直接复制这句继续：「继续用 GoalBoard」。GoalBoard 会列出当前目录以前用过的项目并请你确认；若要以后自动进入某个项目，请另外明确说“设为这个目录的默认项目”。",
   ],
 };
 
@@ -208,6 +211,7 @@ const CLAUDE_CODE_ADAPTER: RuntimeAdapter = {
   id: "claude-code",
   displayName: "Claude Code",
   executableNames: ["claude"],
+  detectionPaths: (userHome) => [path.join(userHome, ".claude"), path.join(userHome, ".claude.json")],
   configPath: (userHome) => path.join(userHome, ".claude.json"),
   skillPath: (userHome) => path.join(userHome, ".claude", "skills", "goal-advance"),
   desiredConnection: (artifacts, goalboardHome) => ({
@@ -219,8 +223,8 @@ const CLAUDE_CODE_ADAPTER: RuntimeAdapter = {
   connectConfig: connectClaudeConfig,
   removeConfig: removeClaudeConfig,
   restartInstructions: [
-    "关闭并重新打开 Claude Code Session（MCP 和 Skill 配置只在启动时加载，不重开不会生效）。",
-    "重启后明确说「继续用 GoalBoard」并指定要关联的项目（例如「关联『把 GoalBoard V1 做成可用产品』」）——Runtime 不会自动关联项目，必须等你的明确指令。",
+    "请新开一个 Claude Code Session：Claude Code 只在 Session 启动时读取 MCP 与 Skill 清单，所以当前对话不会动态出现 GoalBoard 工具。",
+    "新 Session 可直接复制这句继续：「继续用 GoalBoard」。GoalBoard 会列出当前目录以前用过的项目并请你确认；若要以后自动进入某个项目，请另外明确说“设为这个目录的默认项目”。",
   ],
 };
 
@@ -412,7 +416,7 @@ export class RuntimeIntegrationService {
   private prepareConnect(snapshot: RuntimeSnapshot, receipt: IntegrationReceipt | null): PreparedPlan {
     const { adapter } = snapshot;
     const common = this.planCommon(snapshot, "connect");
-    if (!snapshot.executablePath) {
+    if (!snapshot.runtimeDetected) {
       return preparedWithStatus(common, snapshot, receipt, "unavailable", `没有检测到 ${adapter.displayName}，不会修改配置。`);
     }
     if (!snapshot.artifacts) {
@@ -595,15 +599,18 @@ export class RuntimeIntegrationService {
 
   private async snapshot(adapter: RuntimeAdapter): Promise<RuntimeSnapshot> {
     const executablePath = await this.findRuntimeExecutable(adapter);
+    const runtimeDetected = executablePath != null || await anyPathExists(adapter.detectionPaths(this.userHomeDirectory));
     const artifacts = await this.installedArtifacts();
     const configPath = adapter.configPath(this.userHomeDirectory);
     const configText = await readTextOrNull(configPath);
-    const desired = artifacts ? adapter.desiredConnection(artifacts, this.homeDirectory) : null;
+    const inspectionArtifacts = artifacts ?? {
+      launcherPath: path.join(this.homeDirectory, "bin", "goalboard-mcp"),
+      skillSourcePath: path.join(this.homeDirectory, "releases", "missing", "skills", "goal-advance"),
+    };
+    const desired = adapter.desiredConnection(inspectionArtifacts, this.homeDirectory);
     let configInspection: ConfigInspection;
     try {
-      configInspection = desired
-        ? adapter.inspectConfig(configText, desired)
-        : { state: configText == null ? "absent" : "legacy", summary: "GoalBoard 安装不可用，未判断配置", entryFingerprint: null };
+      configInspection = adapter.inspectConfig(configText, desired);
     } catch (error) {
       configInspection = {
         state: "conflict",
@@ -615,6 +622,7 @@ export class RuntimeIntegrationService {
     return {
       adapter,
       executablePath,
+      runtimeDetected,
       artifacts,
       configText,
       configHash: configText == null ? null : digest(configText),
@@ -747,7 +755,7 @@ function adapterFor(runtimeId: SupportedRuntimeId): RuntimeAdapter {
 }
 
 function connectionStateFor(snapshot: RuntimeSnapshot): RuntimeConnectionState {
-  if (!snapshot.executablePath) return "not_detected";
+  if (!snapshot.runtimeDetected) return "not_detected";
   if (!snapshot.artifacts) return "goalboard_unavailable";
   if (snapshot.configInspection.state === "conflict" || snapshot.skill.state === "conflict") return "conflict";
   if (snapshot.configInspection.state === "current" && snapshot.skill.state === "current") return "connected";
@@ -876,7 +884,6 @@ function desiredCodexFamily(desired: DesiredConnection): string {
   return [
     "[mcp_servers.goalboard]",
     `command = ${tomlString(desired.launcherPath)}`,
-    'env_vars = ["CODEX_THREAD_ID", "GOALBOARD_WORK_CONTEXT_ID", "GOALBOARD_WORK_CONTEXT_STABLE"]',
     "",
     "[mcp_servers.goalboard.env]",
     `GOALBOARD_HOME = ${tomlString(desired.goalboardHome)}`,
@@ -1208,6 +1215,11 @@ async function pathState(filePath: string): Promise<Awaited<ReturnType<typeof fs
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+async function anyPathExists(paths: readonly string[]): Promise<boolean> {
+  const states = await Promise.all(paths.map((filePath) => pathState(filePath)));
+  return states.some((state) => state != null);
 }
 
 async function canExecute(filePath: string): Promise<boolean> {

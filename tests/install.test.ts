@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GoalBoardHomeInstallError, installGoalBoardHome } from "../src/install/home.js";
+import { writeGoalBoardBuildManifest } from "../src/install/fingerprint.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -101,6 +102,75 @@ test("home install is scoped, idempotent, and produces an owned release layout",
   });
 });
 
+test("same-version content changes refresh atomically and identical content stays unchanged", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const home = join(directory, "home", ".goalboard");
+    const projectData = join(home, "projects", "user-project.db");
+    const first = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    await writeFile(projectData, "user-data");
+    const oldCli = await readFile(join(first.release_directory, "dist", "cli", "main.js"), "utf8");
+    const oldInstall = await readFile(join(home, "config", "installation.json"), "utf8");
+
+    await writeFile(join(source, "dist", "cli", "main.js"), "#!/usr/bin/env node\nconsole.log(\"refreshed\");\n");
+    await assert.rejects(
+      installGoalBoardHome({
+        homeDirectory: home,
+        sourceDirectory: source,
+        beforeStep(step) {
+          if (step === "before_write_install_manifest") throw new Error("refresh manifest failure");
+        },
+      }),
+      /refresh manifest failure/,
+    );
+    assert.equal(await readFile(join(first.release_directory, "dist", "cli", "main.js"), "utf8"), oldCli);
+    assert.equal(await readFile(join(home, "config", "installation.json"), "utf8"), oldInstall);
+    assert.equal(await readFile(projectData, "utf8"), "user-data");
+
+    const refreshed = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    assert.equal(refreshed.status, "refreshed");
+    assert.match(await readFile(join(refreshed.release_directory, "dist", "cli", "main.js"), "utf8"), /refreshed/);
+    const releaseManifest = JSON.parse(
+      await readFile(join(refreshed.release_directory, "release.json"), "utf8"),
+    ) as { content_digest?: string };
+    const installManifest = JSON.parse(await readFile(join(home, "config", "installation.json"), "utf8")) as {
+      content_digest?: string;
+    };
+    assert.match(releaseManifest.content_digest ?? "", /^[0-9a-f]{64}$/);
+    assert.equal(installManifest.content_digest, releaseManifest.content_digest);
+    assert.equal((await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source })).status, "unchanged");
+    assert.equal(await readFile(projectData, "utf8"), "user-data");
+  });
+});
+
+test("repository sources require a current build fingerprint and local install always builds first", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    await mkdir(join(source, "src"), { recursive: true });
+    await writeFile(join(source, "src", "entry.ts"), "export const value = 1;\n");
+    await writeFile(join(source, "tsconfig.json"), "{}\n");
+    await writeGoalBoardBuildManifest(source);
+    const home = join(directory, "home", ".goalboard");
+    const installed = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    assert.equal(installed.status, "installed");
+
+    await writeFile(join(source, "src", "entry.ts"), "export const value = 2;\n");
+    await assert.rejects(
+      () => installGoalBoardHome({ homeDirectory: home, sourceDirectory: source }),
+      (error: unknown) =>
+        error instanceof GoalBoardHomeInstallError
+        && error.code === "source.build_stale"
+        && /pnpm install:local/.test(error.message),
+    );
+    assert.ok((await stat(join(installed.release_directory, "dist", "cli", "main.js"))).isFile());
+
+    const packageMetadata = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    assert.match(packageMetadata.scripts?.["install:local"] ?? "", /^pnpm build && /);
+  });
+});
+
 test("upgrade failure rolls back the new release and leaves project data and current release intact", async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourceOne = await fixtureSource(directory, "1.0.0");
@@ -179,7 +249,7 @@ test("repair upgrades the obsolete linked release layout in place", async () => 
       dependencies: string;
       source_directory?: string;
     };
-    assert.equal(manifest.schema_version, 2);
+    assert.equal(manifest.schema_version, 3);
     assert.equal(manifest.dependencies, "embedded");
     assert.equal(manifest.source_directory, undefined);
   });

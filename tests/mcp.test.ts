@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { GoalBoardServer } from "../src/mcp/server.js";
+import { GoalBoardServer, runtimeContextHostFromEnvironment } from "../src/mcp/server.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,10 +18,14 @@ describe("mcp server", () => {
       method: "initialize",
       params: { protocolVersion: "2025-03-26", capabilities: {} },
     });
-    assert.equal(
-      (init as { result: { serverInfo: { name: string } } }).result.serverInfo.name,
-      "goalboard-mcp",
-    );
+    const initialized = init as {
+      result: {
+        serverInfo: { name: string };
+        capabilities: { resources: { subscribe: boolean; listChanged: boolean } };
+      };
+    };
+    assert.equal(initialized.result.serverInfo.name, "goalboard-mcp");
+    assert.deepEqual(initialized.result.capabilities.resources, { subscribe: false, listChanged: false });
     const tools = await server.handleMessage({
       jsonrpc: "2.0",
       id: 1,
@@ -127,8 +131,12 @@ describe("mcp server", () => {
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
     assert.ok(treeDecisionTool?.inputSchema.properties?.runtime_actor_id);
+    assert.ok(treeDecisionTool?.inputSchema.properties?.user_confirmed);
+    assert.ok(treeDecisionTool?.inputSchema.properties?.confirmation_summary);
     assert.ok(!("authority" in (treeDecisionTool?.inputSchema.properties ?? {})));
     assert.ok(treeDecisionTool?.inputSchema.required?.includes("runtime_actor_id"));
+    assert.ok(treeDecisionTool?.inputSchema.required?.includes("user_confirmed"));
+    assert.ok(treeDecisionTool?.inputSchema.required?.includes("confirmation_summary"));
 
     const management = new GoalBoardServer("management");
     const managementTools = await management.handleMessage({
@@ -148,6 +156,31 @@ describe("mcp server", () => {
     assert.ok(managementNames.includes("goalboard_v1_revoke_claim"));
     assert.ok(managementNames.includes("goalboard_v1_import_v3"));
     assert.ok(managementNames.every((name) => name.startsWith("goalboard_v1_")));
+  });
+
+  it("does not restore the removed static Runtime DB connection from environment", () => {
+    const keys = [
+      "GOALBOARD_DATABASE",
+      "GOALBOARD_BOARD_ID",
+      "GOALBOARD_WEB_URL",
+      "GOALBOARD_RUNTIME_ID",
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      process.env.GOALBOARD_DATABASE = "/tmp/legacy-goalboard.db";
+      process.env.GOALBOARD_BOARD_ID = "legacy-board";
+      process.env.GOALBOARD_WEB_URL = "http://127.0.0.1:4173";
+      delete process.env.GOALBOARD_RUNTIME_ID;
+      const runtime = new GoalBoardServer("runtime");
+      assert.equal(runtime.runtimeConnection, null);
+      assert.equal(runtime.runtimeContextHost, null);
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value == null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("Runtime Skill gives the current Runtime one project-aware MCP flow and preserves authority boundaries", () => {
@@ -184,7 +217,7 @@ describe("mcp server", () => {
     assert.match(skill, /goalboard_v1_goal_tree_propose/);
     assert.match(skill, /goalboard_v1_goal_tree_check/);
     assert.match(skill, /Web is optional/);
-    assert.match(skill, /must never forge a user identity/);
+    assert.match(skill, /never invent a user identity, Session ID/);
     assert.match(skill, /does not mean a different Runtime or a different Session must take over/);
     assert.match(skill, /child Goal may itself have finer child Goals/);
     assert.match(skill, /`waiting_children` \(UI: “已澄清，等待子 Goal”\)/);
@@ -212,7 +245,7 @@ describe("mcp server", () => {
     assert.match(protocol, /The tree can include a compound parent, a family of children, and children split more finely again/);
     assert.match(protocol, /GoalBoard has one derived work state, not a second “clarification complete” flag/);
     assert.match(protocol, /a confirmed parent with child Goals must show “已澄清，等待子 Goal”, not “待澄清”/);
-    assert.match(protocol, /Runtime MCP host injects the trusted user identity/);
+    assert.match(protocol, /auditable local provenance, not a cryptographic trust boundary/);
     assert.match(protocol, /Recoverable Goal deletion in the current conversation/);
     assert.match(protocol, /setGoalTrashed\(trashed=true\)/);
     assert.match(protocol, /user_confirmed=true/);
@@ -235,6 +268,15 @@ describe("mcp server", () => {
     assert.match(skill, /Ask only one question at a time/);
     assert.match(skill, /never walk the user through a Contract field checklist/);
     assert.match(skill, /two or three genuinely different options/);
+    assert.match(skill, /Write persistent Goal content for the people who will read it later/);
+    assert.match(skill, /check every parent, child, and leaf Goal/);
+    assert.match(skill, /`business_logic` explains in plain language how the user experience or business process works/);
+    assert.match(skill, /Do not use a database, MCP method, Session Resolver, Claim, Run, adapter, class, or internal module name as a substitute/);
+    assert.match(skill, /实现 MCP Session Context Resolver/);
+    assert.match(skill, /让新用户安装后能在当前对话完成 GoalBoard 配置/);
+    assert.match(skill, /A technically precise but user-incomprehensible title or `business_logic` is not proposal-ready/);
+    assert.match(skill, /If those business fields still read like implementation shorthand/);
+    assert.match(skill, /When reporting progress, lead with the business result, current stage, next owner\/action, and any blocker/);
     assert.match(skill, /Treat a correction as new authority/);
     assert.match(skill, /\*\*已确认\*\*/);
     assert.match(skill, /\*\*项目事实\*\*/);
@@ -249,6 +291,9 @@ describe("mcp server", () => {
     assert.match(skill, /what work state each affected Goal will have after confirmation/);
     assert.match(skill, /confirm the whole named proposal, reject it, or revise specific named items/);
     assert.match(protocol, /Persist first, then continue the conversation/);
+    assert.match(protocol, /The first clarification checkpoint must produce readable values for the existing Goal fields/);
+    assert.match(protocol, /Before `goal_tree_propose`, scan every proposed parent, child, and leaf Goal for readability/);
+    assert.match(protocol, /lead with the Goal's business problem\/value, expected result, current derived `work_state`, next owner\/action, and blockers or dependencies/);
     assert.match(protocol, /Do not ask a new question and postpone persistence/);
     assert.match(protocol, /If the call fails, say that the progress was not saved and stop/);
     assert.match(protocol, /The immediately preceding proposal message must be decision-complete/);
@@ -554,7 +599,7 @@ describe("mcp server", () => {
     }
   });
 
-  it("lets the current Runtime apply a Goal Tree decision only with host-trusted user context", async () => {
+  it("records an explicit Runtime-dialogue confirmation with host session metadata", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-tree-decision-"));
     const databasePath = path.join(directory, "goalboard.db");
     const connection = {
@@ -563,18 +608,24 @@ describe("mcp server", () => {
       webBaseUrl: "https://goalboard.example/app/",
     };
     const management = new GoalBoardServer("management");
-    const untrustedRuntime = new GoalBoardServer("runtime", connection);
-    const trustedRuntime = new GoalBoardServer("runtime", connection, null, () => ({
-      actor_id: "host-trusted-user",
-      conversation_ref: "conversation://mcp-tree-decision",
-      message_ref: "message://mcp-tree-decision-confirm",
-    }));
-    const call = async (server: GoalBoardServer, name: string, args: Record<string, unknown>) =>
+    const runtime = new GoalBoardServer("runtime", connection, {
+      runtimeContext: {
+        runtime_id: "codex",
+        stable_work_context_id: "workspace-fallback",
+        host_declares_stable: true,
+      },
+    });
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+      meta?: Record<string, unknown>,
+    ) =>
       server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: { name, arguments: args },
+        params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
       }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
     try {
       const initialized = await call(management, "goalboard_v1_initialize", {
@@ -585,7 +636,7 @@ describe("mcp server", () => {
         idempotency_key: "mcp-tree-decision-init",
       });
       assert.equal(initialized.result.isError, false, initialized.result.content[0]?.text);
-      const dialogueResponse = await call(trustedRuntime, "goalboard_v1_draft_dialogue_start", {
+      const dialogueResponse = await call(runtime, "goalboard_v1_draft_dialogue_start", {
         board_id: "tree-decision-board",
         actor_id: "runtime-current-session",
         goal_id: "mcp-tree-root",
@@ -596,7 +647,7 @@ describe("mcp server", () => {
       const dialogue = JSON.parse(dialogueResponse.result.content[0]?.text ?? "{}") as {
         run: { run_id: string } | null;
       };
-      const proposedResponse = await call(trustedRuntime, "goalboard_v1_goal_tree_propose", {
+      const proposedResponse = await call(runtime, "goalboard_v1_goal_tree_propose", {
         board_id: "tree-decision-board",
         actor_id: "runtime-current-session",
         discovered_in_run_id: dialogue.run?.run_id,
@@ -632,26 +683,42 @@ describe("mcp server", () => {
           conversation_ref: "forged://conversation",
           message_ref: "forged://message",
         },
+        thread_id: "forged-thread-in-arguments",
         decisions: [{ item_id: "mcp-tree-child", decision: "confirm", reason: "用户确认保留这条子 Goal。" }],
         idempotency_key: "mcp-tree-decision-apply",
       };
-      const noTrustedContext = await call(untrustedRuntime, "goalboard_v1_goal_tree_decide", request);
-      assert.equal(noTrustedContext.result.isError, true);
-      assert.match(noTrustedContext.result.content[0]?.text ?? "", /没有提供可信用户消息上下文/);
-      const appliedResponse = await call(trustedRuntime, "goalboard_v1_goal_tree_decide", request);
+      const noConfirmation = await call(runtime, "goalboard_v1_goal_tree_decide", request, {
+        threadId: "codex-thread-from-host",
+      });
+      assert.equal(noConfirmation.result.isError, true);
+      assert.match(noConfirmation.result.content[0]?.text ?? "", /用户刚刚在当前对话中明确确认/);
+      const appliedResponse = await call(runtime, "goalboard_v1_goal_tree_decide", {
+        ...request,
+        user_confirmed: true,
+        confirmation_summary: "用户明确确认保留 mcp-tree-child。",
+      }, {
+        threadId: "codex-thread-from-host",
+      });
       assert.equal(appliedResponse.result.isError, false, appliedResponse.result.content[0]?.text);
       const applied = JSON.parse(appliedResponse.result.content[0]?.text ?? "{}") as {
         proposal: {
           items: Array<{
             item_id: string;
-            decision: { actor_id: string; conversation_ref: string; message_ref: string } | null;
+            decision: {
+              actor_id: string;
+              authority_source: string;
+              conversation_ref: string;
+              message_ref: string;
+            } | null;
           }>;
         };
       };
       const child = applied.proposal.items.find((item) => item.item_id === "mcp-tree-child");
-      assert.equal(child?.decision?.actor_id, "host-trusted-user");
-      assert.equal(child?.decision?.conversation_ref, "conversation://mcp-tree-decision");
-      assert.equal(child?.decision?.message_ref, "message://mcp-tree-decision-confirm");
+      assert.equal(child?.decision?.actor_id, "user-confirmed-via:codex");
+      assert.equal(child?.decision?.authority_source, "runtime_dialogue");
+      assert.equal(child?.decision?.conversation_ref, "runtime-dialogue:codex:codex-thread-from-host");
+      assert.match(child?.decision?.message_ref ?? "", /^runtime-attestation:[0-9a-f]{20}$/);
+      assert.doesNotMatch(child?.decision?.conversation_ref ?? "", /forged-thread-in-arguments/);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -671,6 +738,29 @@ describe("mcp server", () => {
     try {
       const first = await catalog.createProject({ display_name: "相同项目名", actor_id: "user" });
       const second = await catalog.createProject({ display_name: "相同项目名", actor_id: "user" });
+      const management = new GoalBoardServer("management");
+      const created = await call(management, "goalboard_v1_create_goal", {
+        database_path: first.database_path,
+        board_id: first.board_id,
+        actor_id: "user",
+        idempotency_key: "context-project-goal",
+        goal: {
+          goal_id: "project scoped goal",
+          title: "打开当前项目里的 Goal",
+          outcome: "Runtime 返回可以直接打开的项目页面",
+          why: "多项目 Web 没有根级 Goal 页面",
+          business_logic: "Runtime 使用用户已经选择的项目身份构造链接。",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+          acceptance_criteria: [{
+            criterion_id: "scoped-url",
+            statement: "地址包含项目和 Goal",
+            decision_method: "automated_check",
+            pass_condition: "URL 使用项目级路由",
+          }],
+        },
+      });
+      assert.equal(created.result.isError, false, created.result.content[0]?.text);
       const host = {
         homeDirectory: home,
         runtimeContext: {
@@ -721,6 +811,18 @@ describe("mcp server", () => {
       assert.equal(bound.connection.board_id, first.board_id);
       assert.equal(bound.connection.database_path, first.database_path);
       assert.equal(bound.connection.web_base_url, "https://goalboard.example/app/");
+      assert.equal(runtime.runtimeConnection?.projectId, first.project_id);
+
+      const contractResponse = await call(runtime, "goalboard_v1_contract", {
+        board_id: first.board_id,
+        goal_id: "project scoped goal",
+      });
+      assert.equal(contractResponse.result.isError, false, contractResponse.result.content[0]?.text);
+      const contract = JSON.parse(contractResponse.result.content[0]?.text ?? "{}") as { goal_url: string };
+      assert.equal(
+        contract.goal_url,
+        `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}/goals/project%20scoped%20goal`,
+      );
 
       const firstSnapshot = await call(runtime, "goalboard_v1_snapshot", { board_id: first.board_id });
       assert.equal(firstSnapshot.result.isError, false, firstSnapshot.result.content[0]?.text);
@@ -788,6 +890,148 @@ describe("mcp server", () => {
       });
       const missingResult = await call(missingIdentity, "goalboard_v1_context_resolve", {});
       assert.match(missingResult.result.content[0]?.text ?? "", /missing_stable_context/);
+    } finally {
+      catalog.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("asks again for workspace history until default is explicit, then keeps Session overrides local", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-workspace-routing-"));
+    const home = path.join(directory, "home", ".goalboard");
+    const workspace = path.join(directory, "ordinary-workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    const host = runtimeContextHostFromEnvironment({
+      GOALBOARD_RUNTIME_ID: "codex",
+      GOALBOARD_HOME: home,
+      PWD: workspace,
+    }, workspace)!;
+    const runtime = new GoalBoardServer("runtime", null, host);
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+      meta?: Record<string, unknown>,
+    ) => server.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
+    }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    try {
+      const first = await catalog.createProject({ display_name: "目录默认项目", actor_id: "user" });
+      const second = await catalog.createProject({ display_name: "同目录临时项目", actor_id: "user" });
+
+      const unbound = await call(runtime, "goalboard_v1_context_resolve", {});
+      assert.equal(unbound.result.isError, false, unbound.result.content[0]?.text);
+      const defaultBound = await call(runtime, "goalboard_v1_context_bind", {
+        project_id: first.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+      });
+      assert.equal(defaultBound.result.isError, false, defaultBound.result.content[0]?.text);
+
+      const restarted = new GoalBoardServer("runtime", null, host);
+      const historyCandidate = await call(restarted, "goalboard_v1_context_resolve", {});
+      const candidatePayload = JSON.parse(historyCandidate.result.content[0]?.text ?? "{}") as {
+        status: string;
+        suggested_projects: Array<{ project_id: string }>;
+      };
+      assert.equal(candidatePayload.status, "suggested");
+      assert.deepEqual(candidatePayload.suggested_projects.map((project) => project.project_id), [first.project_id]);
+
+      const explicitDefault = await call(restarted, "goalboard_v1_context_bind", {
+        project_id: first.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+        binding_scope: "workspace_default",
+      });
+      assert.equal(explicitDefault.result.isError, false, explicitDefault.result.content[0]?.text);
+      const afterDefaultRestart = new GoalBoardServer("runtime", null, host);
+      const restored = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {});
+      assert.match(restored.result.content[0]?.text ?? "", new RegExp(first.project_id));
+
+      const sessionA = { threadId: "codex-thread-a" };
+      const sessionB = { threadId: "codex-thread-b" };
+      const override = await call(afterDefaultRestart, "goalboard_v1_context_bind", {
+        project_id: second.project_id,
+        actor_id: "runtime-codex",
+        user_confirmed: true,
+        binding_scope: "session",
+      }, sessionA);
+      assert.equal(override.result.isError, false, override.result.content[0]?.text);
+      assert.match(override.result.content[0]?.text ?? "", new RegExp(second.project_id));
+
+      const otherSession = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {}, sessionB);
+      assert.match(otherSession.result.content[0]?.text ?? "", new RegExp(first.project_id));
+      const restoredOverride = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {}, sessionA);
+      assert.match(restoredOverride.result.content[0]?.text ?? "", new RegExp(second.project_id));
+    } finally {
+      catalog.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates project connections for generic Runtime sessions in one MCP process", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-session-isolation-"));
+    const home = path.join(directory, "home", ".goalboard");
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    const host = {
+      homeDirectory: home,
+      runtimeContext: {
+        runtime_id: "generic-mcp-runtime",
+        stable_work_context_id: null,
+        host_declares_stable: false,
+      },
+    };
+    const runtime = new GoalBoardServer("runtime", null, host);
+    const call = async (
+      name: string,
+      args: Record<string, unknown>,
+      meta: Record<string, unknown>,
+    ) => runtime.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args, _meta: meta },
+    }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    const sessionA = { sessionId: "generic-session-a" };
+    const sessionB = { "goalboard/sessionId": "generic-session-b" };
+    try {
+      const first = await catalog.createProject({ display_name: "Generic A", actor_id: "user" });
+      const second = await catalog.createProject({ display_name: "Generic B", actor_id: "user" });
+
+      await call("goalboard_v1_context_resolve", {}, sessionA);
+      const boundA = await call("goalboard_v1_context_bind", {
+        project_id: first.project_id,
+        actor_id: "runtime-generic",
+        user_confirmed: true,
+      }, sessionA);
+      assert.equal(boundA.result.isError, false, boundA.result.content[0]?.text);
+      const snapshotA = await call("goalboard_v1_snapshot", { board_id: first.board_id }, sessionA);
+      assert.equal(snapshotA.result.isError, false, snapshotA.result.content[0]?.text);
+
+      const leakedIntoB = await call("goalboard_v1_snapshot", { board_id: first.board_id }, sessionB);
+      assert.equal(leakedIntoB.result.isError, true);
+      assert.match(leakedIntoB.result.content[0]?.text ?? "", /尚未连接项目/);
+
+      await call("goalboard_v1_context_resolve", {}, sessionB);
+      const boundB = await call("goalboard_v1_context_bind", {
+        project_id: second.project_id,
+        actor_id: "runtime-generic",
+        user_confirmed: true,
+      }, sessionB);
+      assert.equal(boundB.result.isError, false, boundB.result.content[0]?.text);
+      const snapshotB = await call("goalboard_v1_snapshot", { board_id: second.board_id }, sessionB);
+      assert.equal(snapshotB.result.isError, false, snapshotB.result.content[0]?.text);
+
+      const leakedBackIntoA = await call("goalboard_v1_snapshot", { board_id: second.board_id }, sessionA);
+      assert.equal(leakedBackIntoA.result.isError, true);
+      assert.match(leakedBackIntoA.result.content[0]?.text ?? "", /尚未连接项目/);
+      const restoredA = await call("goalboard_v1_context_resolve", {}, sessionA);
+      assert.equal(restoredA.result.isError, false, restoredA.result.content[0]?.text);
+      assert.match(restoredA.result.content[0]?.text ?? "", new RegExp(first.project_id));
     } finally {
       catalog.close();
       fs.rmSync(directory, { recursive: true, force: true });
