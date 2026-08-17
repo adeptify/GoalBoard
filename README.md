@@ -68,6 +68,14 @@ goalboard install
 
 打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Codex / Claude Code 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。
 
+> **注意**：`goalboard-web` 是前台进程，**请保持运行它的终端窗口开启**——关闭终端会同时关闭前端。临时体验也可以这样后台启动：
+>
+> ```bash
+> nohup "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard" >/tmp/goalboard-web.log 2>&1 &
+> ```
+>
+> 更稳定的常驻方案（LaunchAgent、`goalboard web --detach`）在规划中；需要随时重启网页服务的，也可以直接重新运行上面任一条命令。
+
 ### 安装边界
 
 `goalboard install` 只维护 `~/.goalboard`：版本化程序与共享 Skill、MCP/Web/CLI 启动入口、项目 DB 根目录、日志和安装清单。它不会创建或启动项目，不会写入用户项目，也不会修改任何 Runtime 的用户级配置。之后若要把 MCP 入口注册到某个 Runtime，必须走用户确认的 Runtime 集成流程。
@@ -79,6 +87,8 @@ goalboard install
 `goalboard install` 只完成 GoalBoard 本体安装，默认输出安装位置、CLI/MCP/Web 启动器和安全边界；自动化可以使用 `goalboard install --json`。安装不会顺带创建项目、关联 Session、启动服务或修改 Runtime 配置。
 
 安装后的 Runtime 接入由同一领域服务完成。当前 adapter 会只读探测 Codex 和 Claude Code，并先生成包含配置路径、GoalBoard MCP entry、Skill 链接、备份位置和重启说明的预览；只有用户对当前 Runtime 和当前 plan 明确确认后才会写入。MCP 与 Skill 作为一个事务验证，失败会恢复原配置字节和原 Skill 状态。移除时只撤销 GoalBoard ownership receipt 记录且仍未被用户改写的内容。未知同名配置或 Skill 会显示冲突，不会被覆盖。
+
+接入确认完成后，**必须重开 Codex / Claude Code 会话**才会生效（MCP 和 Skill 配置只在启动时加载）。重启后明确说「继续用 GoalBoard」**并指定要关联的项目**（例如「关联『把 GoalBoard V1 做成可用产品』」）——Runtime 不会自动关联项目，必须等你的明确指令。接入预览界面会逐条展示改动内容和重启提示，安装输出也会给出同样的说明。
 
 项目创建和当前 Session 关联是独立操作：用户在当前 Runtime 调用统一 Skill 后，Skill 使用 `context-list-projects`、`context-bind` 或 `context-create-and-bind`，并且只在用户明确选择后写入 GoalBoard 自己的项目目录。Web 可创建、导入、改名和打开项目，也可管理已经确认过的 Session 关联；网页中的项目选择本身不会改变 Runtime Session 绑定，新 Session 仍要先在对应 Runtime 对话里询问并确认。
 
