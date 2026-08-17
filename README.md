@@ -1,5 +1,7 @@
 # GoalBoard
 
+> 人和 Agent Runtime 共用的本地 Goal 真相源：目标、下一步、阻塞和完成证据，一眼可见。
+
 GoalBoard 是人和 Agent Runtime 共用的本地 Goal 真相源。它用一份 SQLite 保存 Goal Contract、树与依赖、风险、Claim、Run、Evidence、Review、Candidate 和 Rewire。
 
 GoalBoard 不启动 Runtime，也不分发任务。当前 Runtime 从统一 Available 集合自主选择一项，原子地创建 Claim 和 Run；Web 是可选查看与用户确认界面，不是推进 Goal 的必经步骤。
@@ -14,6 +16,39 @@ GoalBoard 不启动 Runtime，也不分发任务。当前 Runtime 从统一 Avai
 → Runtime 回传 Evidence 与 Review
 → Coordinator 判定 Goal 是否完成
 ```
+
+## 为什么需要 GoalBoard
+
+用 AI 推进真实项目时，最常见的三个问题：
+
+- **AI 会话会失忆**：新开一个对话，背景和上下文要重新讲一遍；
+- **目标会被悄悄带偏**：聊着聊着需求就变了，改没改、为什么改，没有人确认；
+- **“做完”没有标准**：AI 说完成了，但你不知道离真正想要的还差多远。
+
+GoalBoard 的答案是：把目标变成人和 Runtime 共同维护的真相源。目标是拆解过的、有验收条件的；每一步工作在做什么、由谁在做、卡在哪、完成还缺什么，都可以直接查，而不是靠聊天记录去猜。
+
+## 界面速览
+
+![项目列表：每个项目都有自己的目标真相源](docs/screenshots/projects.png)
+
+![Goal Tree 与 Goal 正文：目标状态、依赖和阻塞一目了然](docs/screenshots/goalboard-web.png)
+
+![证据与复核：完成以可验收的证据为准](docs/screenshots/goalboard-document.png)
+
+![决定中心：Runtime 发现的新工作，等你拍板](docs/screenshots/goalboard-decisions.png)
+
+![草稿澄清：没说清楚的目标，不会被悄悄执行](docs/screenshots/goalboard-draft.png)
+
+## 演示数据
+
+仓库自带一套演示数据生成脚本，用于截图、体验和开发：
+
+```bash
+pnpm exec tsx examples/seed-demo.mts            # 写入 ~/.goalboard
+pnpm exec tsx examples/seed-demo.mts --force   # 同名项目已存在时重建
+```
+
+它会创建三个本地项目：「把 GoalBoard V1 做成可用产品」「宠物寄养小程序 MVP」「读书笔记同步 CLI」，覆盖已完成、执行中、执行受阻、待复核、待澄清等状态。脚本只写 GoalBoard 自己的项目目录，可安全重复运行。
 
 ## 快速开始
 
@@ -48,6 +83,23 @@ goalboard install
 项目创建和当前 Session 关联是独立操作：用户在当前 Runtime 调用统一 Skill 后，Skill 使用 `context-list-projects`、`context-bind` 或 `context-create-and-bind`，并且只在用户明确选择后写入 GoalBoard 自己的项目目录。Web 可创建、导入、改名和打开项目，也可管理已经确认过的 Session 关联；网页中的项目选择本身不会改变 Runtime Session 绑定，新 Session 仍要先在对应 Runtime 对话里询问并确认。
 
 Web 只监听 loopback 地址。每次启动都会生成只存在于本机页面中的随机控制令牌；所有 Web API 写请求还必须通过同源 Origin、控制令牌和一次性操作键校验。非本机 Host、第三方页面盲发、缺少凭据或重复请求都会在进入项目 catalog、Runtime 配置服务或 Goal Coordinator 前被拒绝。这个浏览器门禁不替代各领域流程原有的用户确认和幂等规则。
+
+## 核心概念
+
+| 概念 | 一句话说明 |
+| --- | --- |
+| Goal | 最小可执行目标，和 Task 同一粒度，必须有可观察或可量化的验收条件 |
+| Goal Tree | 用户确认后的目标拆解结构，Plan 和看板都是它的派生视图 |
+| 依赖 | 已确认的前置关系，是领取和完成的硬门禁 |
+| Risk | 可能阻碍领取或完成的风险，需要人决定处理方式 |
+| Claim | Runtime 对某个 Goal 的带时限占用，不是任务分配 |
+| Run | 一次执行、复核或重新验证过程 |
+| Evidence | 对应验收条件的证据（测试、检查、人工确认等） |
+| Review | 自检、交叉或对抗性复核，通过后才算完成 |
+| Candidate | 执行中发现的新工作，只能由用户决定是否接受 |
+| Rewire | 用户确认后的目标关系重排 |
+
+普通 Runtime 只能读取、选择、认领、执行、提交提案和证据，不能自行裁决 canonical Goal；所有推断和建议在用户确认前都不是权威事实。
 
 ## Goal Contract
 
@@ -178,6 +230,8 @@ src/v1/                      SQLite Store、Coordinator、types、CLI 与一次�
 src/mcp/server.ts            V1-only MCP Server
 src/web/                     Goal Tree 与文档式 Goal 工作区
 src/cli/main.ts              V1-only CLI 入口
+examples/seed-demo.mts       演示数据生成脚本
+docs/screenshots/            README 产品截图
 skills/goal-advance/         Runtime 工作协议
 tests/v1.test.ts             Coordinator、CLI、迁移与协议回归
 tests/mcp.test.ts            MCP audience、权限与连接回归
