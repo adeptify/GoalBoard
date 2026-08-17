@@ -11,6 +11,7 @@ import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { RuntimeIntegrationService } from "../src/install/runtime-integration.js";
+import { GoalBoardWebServiceManager } from "../src/install/web-service.js";
 import { GoalBoardServer } from "../src/mcp/server.js";
 import { renderGoalBoardWeb } from "../src/web/render.js";
 import {
@@ -390,7 +391,18 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((coreHtml.match(/data-goal-view=/g) ?? []).length, 1);
   assert.match(coreHtml, /data-goal-view="CORE"/);
   assert.match(html, /已澄清，等待子 Goal/);
-  assert.match(html, /Runtime 工作闭环/);
+  assert.equal((html.match(/class="section-heading"/g) ?? []).length, 5);
+  assert.match(html, /目标是什么/);
+  assert.match(html, /怎样才算完成/);
+  assert.match(html, /现在怎么推进/);
+  assert.match(html, /风险与规则/);
+  assert.match(html, /回看发生过什么、用户决策/);
+  assert.ok(html.indexOf("目标是什么") < html.indexOf("怎样才算完成"));
+  assert.ok(html.indexOf("怎样才算完成") < html.indexOf("现在怎么推进"));
+  assert.ok(html.indexOf("现在怎么推进") < html.indexOf("风险与规则"));
+  assert.ok(html.indexOf("风险与规则") < html.indexOf("回看发生过什么、用户决策"));
+  assert.doesNotMatch(html, /查看执行细节|goal-execution-details/);
+  assert.match(html, /执行与证明/);
   assert.match(html, /为什么做/);
   assert.match(html, /Goal Contract/);
   assert.match(html, /class="contract-list"/);
@@ -400,7 +412,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /必须遵守/);
   assert.match(html, /需要的输入/);
   assert.match(html, /承诺的输出/);
-  assert.match(html, /Goal 关系/);
+  assert.match(html, /和其他 Goal 的关系/);
   assert.match(html, /上游/);
   assert.match(html, /下游/);
   assert.match(html, /Claim 历史/);
@@ -671,7 +683,7 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectPage, /DB 信息/);
     assert.match(projectPage, /data-project-rename/);
     assert.match(projectPage, /data-project-migration-form/);
-    assert.match(projectPage, /项目删除暂不在这里开放/);
+    assert.match(projectPage, /普通用户项目不会被 demo 操作或普通卸载删除/);
 
     const diagnosticsPage = await (await webFetch(`${origin}/settings/diagnostics`)).text();
     assert.match(diagnosticsPage, /安装完整/);
@@ -774,8 +786,152 @@ test("Web settings use shared Runtime and project services for confirmed setup f
   }
 });
 
+test("Web diagnostics previews and confirms the same managed Web service lifecycle", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const userHome = join(fixture.homeDirectory, "service-user");
+  mkdirSync(join(fixture.homeDirectory, "bin"), { recursive: true });
+  mkdirSync(userHome, { recursive: true });
+  writeFileSync(join(fixture.homeDirectory, "bin", "goalboard-web"), "#!/bin/sh\nexit 0\n");
+  let loaded = false;
+  const service = new GoalBoardWebServiceManager({
+    homeDirectory: fixture.homeDirectory,
+    userHomeDirectory: userHome,
+    platform: "darwin",
+    uid: 501,
+    async runCommand(_file, args) {
+      if (args[0] === "print") return { code: loaded ? 0 : 113, stdout: loaded ? "state = running\npid = 4242\n" : "", stderr: loaded ? "" : "not found" };
+      if (args[0] === "bootstrap") loaded = true;
+      if (args[0] === "bootout") loaded = false;
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory, webServiceManager: service });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const page = await (await webFetch(`${origin}/settings/diagnostics`)).text();
+    assertInlineScriptsCompile(page);
+    assert.match(page, /Web 常驻服务/);
+    assert.match(page, /macOS 用户级 LaunchAgent/);
+    assert.match(page, /data-web-service-action="install"/);
+
+    const planResponse = await webFetch(`${origin}/api/settings/web-service/plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "install" }),
+    });
+    assert.equal(planResponse.status, 200);
+    const plan = (await planResponse.json()) as { plan_id: string; status: string; changes: unknown[] };
+    assert.equal(plan.status, "ready");
+    assert.equal(plan.changes.length, 2);
+    assert.equal(existsSync(service.plistPath), false);
+
+    const confirmed = await webFetch(`${origin}/api/settings/web-service/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plan_id: plan.plan_id, decision: "confirmed" }),
+    });
+    assert.equal(confirmed.status, 200);
+    const result = (await confirmed.json()) as { status: string; detection: { state: string } };
+    assert.equal(result.status, "installed");
+    assert.equal(result.detection.state, "running");
+    assert.equal(existsSync(service.plistPath), true);
+
+    const status = (await (await webFetch(`${origin}/api/settings/web-service`)).json()) as { state: string };
+    assert.equal(status.state, "running");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("Web clearly separates regenerable demo data from user projects and shares one lifecycle", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const initialPage = await (await webFetch(`${origin}/settings/projects`)).text();
+    assertInlineScriptsCompile(initialPage);
+    assert.match(initialPage, /data-demo-action="create"/);
+    assert.match(initialPage, /用户数据/);
+
+    const unconfirmed = await webFetch(`${origin}/api/settings/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "create" }),
+    });
+    assert.equal(unconfirmed.status, 400);
+
+    const createdResponse = await webFetch(`${origin}/api/settings/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "create", user_confirmed: true }),
+    });
+    assert.equal(createdResponse.status, 200);
+    const created = (await createdResponse.json()) as { project: { project_id: string; data_class: string } };
+    assert.equal(created.project.data_class, "regenerable_demo");
+    assert.equal((await webFetch(`${origin}/projects/${created.project.project_id}/`)).status, 200);
+
+    const demoPage = await (await webFetch(`${origin}/settings/projects`)).text();
+    assert.match(demoPage, /演示数据 · 可随时重建/);
+    assert.match(demoPage, /data-demo-action="reset"/);
+    assert.match(demoPage, /data-demo-action="remove"/);
+    const reset = await webFetch(`${origin}/api/settings/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reset", user_confirmed: true }),
+    });
+    assert.equal(reset.status, 200);
+    const removed = await webFetch(`${origin}/api/settings/demo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "remove", user_confirmed: true }),
+    });
+    assert.equal(removed.status, 200);
+
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+    try {
+      assert.equal(catalog.listProjects().length, 2);
+      assert.ok(catalog.listProjects().every((project) => project.data_class === "user"));
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test("Web manages only confirmed Runtime Session bindings without exposing host identities", async () => {
   const fixture = await webProjectCatalogFixture();
+  const workspacePath = join(fixture.homeDirectory, "..", "ordinary-workspace");
+  mkdirSync(workspacePath, { recursive: true });
+  const workspaceCatalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+  try {
+    const context = {
+      runtime_id: "codex",
+      stable_work_context_id: null,
+      host_declares_stable: false,
+      workspace: { canonical_path: workspacePath, realpath_verified: false },
+    };
+    workspaceCatalog.bindRuntimeContext({
+      context,
+      project_id: fixture.alpha.project_id,
+      actor_id: "runtime-codex",
+      user_confirmed: true,
+    });
+    workspaceCatalog.bindRuntimeContext({
+      context,
+      project_id: fixture.beta.project_id,
+      actor_id: "runtime-codex",
+      user_confirmed: true,
+    });
+  } finally {
+    workspaceCatalog.close();
+  }
   const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -786,6 +942,9 @@ test("Web manages only confirmed Runtime Session bindings without exposing host 
     const page = await (await webFetch(`${origin}/settings/projects`)).text();
     assertInlineScriptsCompile(page);
     assert.match(page, /已关联的 Runtime Session/);
+    assert.match(page, /项目目录关联/);
+    assert.match(page, /ordinary-workspace/);
+    assert.match(page, /data-workspace-default/);
     assert.match(page, /data-connection-rebind/);
     assert.match(page, /data-connection-unbind/);
     assert.doesNotMatch(page, /web-project-alpha-session|web-project-beta-session/);
@@ -801,6 +960,24 @@ test("Web manages only confirmed Runtime Session bindings without exposing host 
     assert.equal(listed.connections.length, 2);
     assert.match(listed.connections[0]?.context_label ?? "", /Session · [A-F0-9]{6}$/);
     assert.doesNotMatch(JSON.stringify(listed), /stable_work_context_id|database_path|web-project-alpha-session/);
+    const workspaces = (await (await webFetch(`${origin}/api/settings/workspaces`)).json()) as {
+      workspace_memberships: Array<{ workspace_id: string; project_id: string; is_default: boolean }>;
+    };
+    assert.equal(workspaces.workspace_memberships.length, 2);
+    assert.equal(workspaces.workspace_memberships.some((membership) => membership.is_default), false);
+    assert.doesNotMatch(JSON.stringify(workspaces), /canonical_path|ordinary-workspace\//);
+    const workspaceId = workspaces.workspace_memberships[0]!.workspace_id;
+
+    const unconfirmedDefault = await webFetch(
+      `${origin}/api/settings/workspaces/${encodeURIComponent(workspaceId)}/default`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: fixture.beta.project_id }) },
+    );
+    assert.equal(unconfirmedDefault.status, 400);
+    const confirmedDefault = await webFetch(
+      `${origin}/api/settings/workspaces/${encodeURIComponent(workspaceId)}/default`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: fixture.beta.project_id, user_confirmed: true }) },
+    );
+    assert.equal(confirmedDefault.status, 200);
     const alphaConnection = listed.connections.find((connection) => connection.project_id === fixture.alpha.project_id);
     assert.ok(alphaConnection);
 
@@ -1997,7 +2174,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.match(draftPage, /href="#impact-workbench-EDIT-ME"/);
     assert.match(draftPage, /data-impact-create-form/);
     assert.match(draftPage, /data-policy-form/);
-    assert.ok(draftPage.indexOf("验收清单") < draftPage.indexOf("补全 Draft Contract"));
+    assert.ok(draftPage.indexOf("验收标准") < draftPage.indexOf("补全 Draft Contract"));
 
     const updateResponse = await webFetch(`${origin}/api/goals/EDIT-ME/draft`, {
       method: "POST",

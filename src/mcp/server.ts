@@ -18,7 +18,7 @@ import { importV3Board, type LegacyV3ImportInput } from "../v1/migration.js";
 const SERVER_INFO = { name: "goalboard-mcp", version: "1.0.0" };
 
 const V1_COMMON = {
-  database_path: { type: "string", description: "共享 SQLite 文件路径；默认读取 GOALBOARD_DATABASE" },
+  database_path: { type: "string", description: "管理入口使用的共享 SQLite 文件路径" },
   board_id: { type: "string" },
 };
 
@@ -90,9 +90,15 @@ const GOAL_TREE_ITEM_DECISION = {
 export type GoalBoardMcpAudience = "runtime" | "management";
 
 export interface GoalBoardRuntimeConnection {
+  projectId?: string;
   databasePath: string;
   boardId: string;
   webBaseUrl: string;
+}
+
+export interface GoalBoardMcpToolCallContext {
+  sessionId: string | null;
+  sessionIdSource: "threadId" | "sessionId" | "goalboard/sessionId" | null;
 }
 
 /**
@@ -111,19 +117,6 @@ export interface GoalBoardRuntimeContextHost {
    */
   projectSuggestionClues?: readonly RuntimeProjectSuggestionClue[];
 }
-
-/**
- * The MCP host supplies this from the actual user conversation/session. A
- * Runtime model never gets to choose it in a tool argument.
- */
-export interface GoalBoardTrustedUserDecisionContext {
-  actor_id: string;
-  conversation_ref: string;
-  message_ref: string;
-  whole_confirmation_prompted?: boolean;
-}
-
-export type GoalBoardTrustedUserDecisionProvider = () => GoalBoardTrustedUserDecisionContext | null;
 
 interface McpToolDefinition {
   name: string;
@@ -413,7 +406,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_decide",
     description:
-      "把当前对话中用户对 Goal Tree 提案的逐项确认、拒绝或修订原子物化；每个决定都记录可信用户与消息引用。Runtime 不能自行充当用户。",
+      "把用户对 Goal Tree 提案的逐项确认、拒绝或修订原子物化；管理入口必须提供可审计的用户与消息引用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -425,7 +418,7 @@ const V1_TOOLS: McpToolDefinition[] = [
           properties: {
             actor_id: V1_STRING,
             actor_kind: { type: "string", enum: ["user"] },
-            authority_source: { type: "string", enum: ["runtime_trusted_host", "web", "management"] },
+            authority_source: { type: "string", enum: ["runtime_dialogue", "web", "management"] },
             conversation_ref: V1_STRING,
             message_ref: V1_STRING,
             whole_confirmation_prompted: { type: "boolean" },
@@ -868,7 +861,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_bind",
     description:
-      "用户在当前 Runtime 对话明确选择项目后，绑定当前宿主工作入口；已有不同绑定时还必须明确确认切换。user_confirmed=true 只能用于用户在当前对话明确说出选择；切换项目必须先单独确认 rebind_confirmed=true，不能把「提到另一个项目」当成切换。",
+      "用户在当前 Runtime 对话明确选择项目后建立关联。普通选择会记录当前目录用过这个项目，但新 Session 仍需询问；有 Session ID 时同时只绑定当前 Session。只有用户另行明确要求设为目录默认时才能传 binding_scope=workspace_default；binding_scope=session 只影响当前 Session。",
     inputSchema: {
       type: "object",
       properties: {
@@ -876,6 +869,11 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
         actor_id: V1_STRING,
         user_confirmed: { type: "boolean", description: "当前对话中用户已明确选择此项目" },
         rebind_confirmed: { type: "boolean", description: "已有绑定改到其他项目时，用户已明确确认切换" },
+        binding_scope: {
+          type: "string",
+          enum: ["workspace_default", "session"],
+          description: "workspace_default 供同目录新 Session 自动恢复；session 只影响当前 Session",
+        },
       },
       required: ["project_id", "actor_id", "user_confirmed"],
     },
@@ -883,12 +881,14 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_unbind",
     description:
-      "用户在当前 Runtime 对话明确要求后，解除当前工作入口与项目的绑定；不会删除项目、数据库或其他 Runtime 的绑定。用户必须明确说出「解绑/停用」，不能把删除、切换项目或其他意图当作解绑。",
+      "用户明确要求后解除关联。默认只移除当前 Session 覆盖；binding_scope=workspace 时移除当前目录与指定项目的长期关联。不会删除项目或数据库。",
     inputSchema: {
       type: "object",
       properties: {
         actor_id: V1_STRING,
         user_confirmed: { type: "boolean", description: "当前对话中用户已明确要求解除当前工作入口的绑定" },
+        binding_scope: { type: "string", enum: ["session", "workspace"] },
+        project_id: { type: "string", description: "解除 workspace 关联时必填" },
       },
       required: ["actor_id", "user_confirmed"],
     },
@@ -904,6 +904,11 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
         actor_id: V1_STRING,
         user_confirmed: { type: "boolean", description: "当前对话中用户已明确要求创建这个项目" },
         rebind_confirmed: { type: "boolean", description: "已有绑定改到新项目时，用户已明确确认切换" },
+        binding_scope: {
+          type: "string",
+          enum: ["workspace_default", "session"],
+          description: "新项目成为目录默认，或只在当前 Session 使用",
+        },
         idempotency_key: V1_STRING,
       },
       required: ["display_name", "actor_id", "user_confirmed", "idempotency_key"],
@@ -977,12 +982,27 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
   delete inputProperties.web_base_url;
   if (tool.name === "goalboard_v1_goal_tree_decide") {
     delete inputProperties.authority;
+    inputProperties.user_confirmed = {
+      type: "boolean",
+      description: "只有用户刚刚在当前对话中明确确认了这次决定时才传 true。",
+    };
+    inputProperties.confirmation_summary = {
+      type: "string",
+      description: "简要记录用户确认了什么；这是可审计的 Runtime 对话证明，不是密码学身份凭证。",
+    };
+    inputProperties.whole_confirmation_prompted = {
+      type: "boolean",
+      description: "上一问是否明确要求用户确认当前唯一整份提案；仅用于 confirm_all_pending。",
+    };
     const required = clone.inputSchema.required as string[];
     clone.inputSchema.required = required
       .filter((field) => field !== "authority")
-      .concat(required.includes("runtime_actor_id") ? [] : ["runtime_actor_id"]);
+      .concat(
+        required.includes("runtime_actor_id") ? [] : ["runtime_actor_id"],
+        ["user_confirmed", "confirmation_summary"],
+      );
     clone.description =
-      "在当前 Runtime 对话中执行用户已经表达的逐项 Goal Tree 决定。可信用户身份、对话和消息引用由宿主注入；不要传递或伪造用户身份。";
+      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。必须传 user_confirmed=true 和确认摘要；GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
@@ -1015,20 +1035,18 @@ export function runtimeContextHostFromEnvironment(
   }
   const sessionTitle = environment.CLAUDE_CODE_SESSION_NAME?.trim();
   if (sessionTitle) projectSuggestionClues.push({ kind: "session_title", value: sessionTitle });
-  // Some hosts (notably Codex) do not inject a per-session ID into stdio MCP
-  // subprocesses. Fall back to a stable identity anchored on the working
-  // directory so the same project directory resolves to the same association;
-  // project selection and binding still require explicit user confirmation.
-  const workspaceIdentity =
-    workspace && path.isAbsolute(workspace) ? workspaceStableIdentity(workspace) : null;
+  const workspaceContext = workspace && path.isAbsolute(workspace)
+    ? canonicalWorkspaceContext(workspace)
+    : null;
   return {
     homeDirectory: environment.GOALBOARD_HOME,
     runtimeContext: {
       runtime_id: runtimeId,
-      stable_work_context_id: runtimeContextId ?? workspaceIdentity,
+      stable_work_context_id: runtimeContextId,
       host_declares_stable: explicitContextId
         ? environment.GOALBOARD_WORK_CONTEXT_STABLE === "true"
-        : runtimeContextId != null || workspaceIdentity != null,
+        : runtimeContextId != null,
+      workspace: workspaceContext,
     },
     webBaseUrl: environment.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
     // The working directory and title are ranking hints only. They can make a
@@ -1037,9 +1055,13 @@ export function runtimeContextHostFromEnvironment(
   };
 }
 
-function workspaceStableIdentity(workspace: string): string {
-  const digest = createHash("sha256").update(path.resolve(workspace)).digest("hex").slice(0, 16);
-  return `workspace:${digest}`;
+function canonicalWorkspaceContext(workspace: string): NonNullable<RuntimeWorkContext["workspace"]> {
+  const normalized = path.resolve(workspace);
+  try {
+    return { canonical_path: fs.realpathSync.native(normalized), realpath_verified: true };
+  } catch {
+    return { canonical_path: normalized, realpath_verified: false };
+  }
 }
 
 function stableRuntimeSessionId(runtimeId: string, environment: NodeJS.ProcessEnv): string | null {
@@ -1052,54 +1074,77 @@ function stableRuntimeSessionId(runtimeId: string, environment: NodeJS.ProcessEn
   return null;
 }
 
+const EMPTY_TOOL_CALL_CONTEXT: GoalBoardMcpToolCallContext = {
+  sessionId: null,
+  sessionIdSource: null,
+};
+
+function toolCallContextFromParams(params: Record<string, unknown>): GoalBoardMcpToolCallContext {
+  const meta = params._meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return EMPTY_TOOL_CALL_CONTEXT;
+  const metadata = meta as Record<string, unknown>;
+  for (const key of ["goalboard/sessionId", "threadId", "sessionId"] as const) {
+    const value = metadata[key];
+    if (typeof value !== "string") continue;
+    const sessionId = value.trim();
+    if (sessionId) return { sessionId, sessionIdSource: key };
+  }
+  return EMPTY_TOOL_CALL_CONTEXT;
+}
+
+function runtimeContextKey(host: GoalBoardRuntimeContextHost): string {
+  const context = host.runtimeContext;
+  const workspace = context.workspace?.canonical_path ?? "no-workspace";
+  return `${context.runtime_id}:${context.stable_work_context_id ?? "no-session"}:${workspace}`;
+}
+
 export class GoalBoardServer {
   audience: GoalBoardMcpAudience;
   runtimeConnection: GoalBoardRuntimeConnection | null;
   runtimeContextHost: GoalBoardRuntimeContextHost | null;
-  trustedUserDecisionProvider: GoalBoardTrustedUserDecisionProvider | null;
+  private runtimeConnectionContextKey: string | null;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
     runtimeConnection?: GoalBoardRuntimeConnection | null,
     runtimeContextHost?: GoalBoardRuntimeContextHost | null,
-    trustedUserDecisionProvider?: GoalBoardTrustedUserDecisionProvider | null,
   ) {
     this.audience =
       audience ?? (process.env.GOALBOARD_MCP_AUDIENCE === "management" ? "management" : "runtime");
-    // An explicitly supplied context host is the new connection mode. It must
-    // not accidentally inherit an unrelated legacy DB from the parent process
-    // before the Skill has asked to resolve the current entry.
-    const hasExplicitContextHost = runtimeContextHost != null;
-    this.runtimeConnection =
-      runtimeConnection ??
-      (!hasExplicitContextHost &&
-      process.env.GOALBOARD_DATABASE &&
-      process.env.GOALBOARD_BOARD_ID &&
-      process.env.GOALBOARD_WEB_URL
-        ? {
-            databasePath: process.env.GOALBOARD_DATABASE,
-            boardId: process.env.GOALBOARD_BOARD_ID,
-            webBaseUrl: process.env.GOALBOARD_WEB_URL,
-          }
-        : null);
+    // Explicit constructor injection is reserved for tests and embedding. A
+    // production Runtime never inherits a static project DB from environment.
+    this.runtimeConnection = runtimeConnection ?? null;
+    this.runtimeConnectionContextKey = runtimeConnection ? "explicit" : null;
     this.runtimeContextHost =
       runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
-    this.trustedUserDecisionProvider = trustedUserDecisionProvider ?? null;
   }
 
-  async callTool(name: string, arguments_: Record<string, unknown>): Promise<string> {
-    this.assertToolAllowed(name, arguments_);
-    if (name === "goalboard_v1_context_resolve") return this.resolveRuntimeContext();
-    if (name === "goalboard_v1_context_list_projects") return this.listRuntimeProjects();
-    if (name === "goalboard_v1_context_reject_suggestion") return this.rejectRuntimeContextSuggestion(arguments_);
-    if (name === "goalboard_v1_context_bind") return this.bindRuntimeContext(arguments_);
-    if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_);
-    if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_);
-    if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_);
-    return this.callV1Tool(name, arguments_);
+  async callTool(
+    name: string,
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext = EMPTY_TOOL_CALL_CONTEXT,
+  ): Promise<string> {
+    this.assertToolAllowed(name, arguments_, callContext);
+    if (name === "goalboard_v1_context_resolve") return this.resolveRuntimeContext(callContext);
+    if (name === "goalboard_v1_context_list_projects") return this.listRuntimeProjects(callContext);
+    if (name === "goalboard_v1_context_reject_suggestion") return this.rejectRuntimeContextSuggestion(arguments_, callContext);
+    if (name === "goalboard_v1_context_bind") return this.bindRuntimeContext(arguments_, callContext);
+    if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_, callContext);
+    if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_, callContext);
+    if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_, callContext);
+    return this.callV1Tool(
+      name,
+      arguments_,
+      this.audience === "runtime" ? this.runtimeConnection : null,
+      callContext,
+    );
   }
 
-  private assertToolAllowed(name: string, arguments_: Record<string, unknown>): void {
+  private assertToolAllowed(
+    name: string,
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): void {
     if (this.audience === "management") return;
     if (!RUNTIME_TOOL_NAMES.has(name)) {
       throw new GoalBoardV1Error(
@@ -1123,8 +1168,15 @@ export class GoalBoardServer {
       );
     }
     if (RUNTIME_CONTEXT_TOOL_NAMES.has(name)) {
-      this.requireRuntimeContextHost();
+      this.requireRuntimeContextHost(callContext);
       return;
+    }
+    if (this.runtimeConnectionContextKey !== "explicit") {
+      const host = this.requireRuntimeContextHost(callContext);
+      if (this.runtimeConnectionContextKey !== runtimeContextKey(host)) {
+        this.runtimeConnection = null;
+        this.runtimeConnectionContextKey = null;
+      }
     }
     if (!this.runtimeConnection) {
       throw new GoalBoardV1Error(
@@ -1140,20 +1192,31 @@ export class GoalBoardServer {
     }
   }
 
-  private requireRuntimeContextHost(): GoalBoardRuntimeContextHost {
+  private requireRuntimeContextHost(
+    callContext: GoalBoardMcpToolCallContext = EMPTY_TOOL_CALL_CONTEXT,
+  ): GoalBoardRuntimeContextHost {
     if (!this.runtimeContextHost) {
       throw new GoalBoardV1Error(
         "mcp.context_host_missing",
-        "MCP 宿主没有提供当前 Runtime 的稳定工作入口；无法解析或建立项目绑定",
+        "MCP 宿主没有提供 Runtime 标识；无法解析 Session 或项目目录关联",
       );
     }
-    return this.runtimeContextHost;
+    if (!callContext.sessionId) return this.runtimeContextHost;
+    return {
+      ...this.runtimeContextHost,
+      runtimeContext: {
+        ...this.runtimeContextHost.runtimeContext,
+        stable_work_context_id: callContext.sessionId,
+        host_declares_stable: true,
+      },
+    };
   }
 
-  private async resolveRuntimeContext(): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async resolveRuntimeContext(callContext: GoalBoardMcpToolCallContext): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     // A later resolve must never keep using an earlier in-process answer.
     this.runtimeConnection = null;
+    this.runtimeConnectionContextKey = null;
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       return this.contextResolutionResponse(
@@ -1165,12 +1228,15 @@ export class GoalBoardServer {
     }
   }
 
-  private async listRuntimeProjects(): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async listRuntimeProjects(callContext: GoalBoardMcpToolCallContext): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const current = catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues);
-      if (current.status !== "bound") this.runtimeConnection = null;
+      if (current.status !== "bound") {
+        this.runtimeConnection = null;
+        this.runtimeConnectionContextKey = null;
+      }
       return JSON.stringify(
         {
           context: current.context,
@@ -1194,8 +1260,11 @@ export class GoalBoardServer {
     }
   }
 
-  private async rejectRuntimeContextSuggestion(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async rejectRuntimeContextSuggestion(
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const result = catalog.rejectRuntimeContextSuggestion({
@@ -1208,14 +1277,18 @@ export class GoalBoardServer {
       // A rejection only applies while unbound. Do not let an earlier process
       // connection survive a new suggestion-first routing decision.
       this.runtimeConnection = null;
+      this.runtimeConnectionContextKey = null;
       return JSON.stringify(result, null, 2);
     } finally {
       catalog.close();
     }
   }
 
-  private async bindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async bindRuntimeContext(
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const resolution = catalog.bindRuntimeContext({
@@ -1224,6 +1297,9 @@ export class GoalBoardServer {
         actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
         user_confirmed: arguments_.user_confirmed === true,
         rebind_confirmed: arguments_.rebind_confirmed === true,
+        binding_scope: arguments_.binding_scope === "workspace_default" || arguments_.binding_scope === "session"
+          ? arguments_.binding_scope
+          : undefined,
       });
       return this.contextResolutionResponse(resolution, host);
     } finally {
@@ -1231,24 +1307,33 @@ export class GoalBoardServer {
     }
   }
 
-  private async unbindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async unbindRuntimeContext(
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const result = catalog.unbindRuntimeContext({
         context: host.runtimeContext,
         actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
         user_confirmed: arguments_.user_confirmed === true,
+        binding_scope: arguments_.binding_scope === "workspace" ? "workspace" : "session",
+        project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : undefined,
       });
       this.runtimeConnection = null;
+      this.runtimeConnectionContextKey = null;
       return JSON.stringify(result, null, 2);
     } finally {
       catalog.close();
     }
   }
 
-  private async createAndBindRuntimeContext(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async createAndBindRuntimeContext(
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const resolution = await catalog.createProjectAndBindRuntimeContext({
@@ -1257,6 +1342,9 @@ export class GoalBoardServer {
         actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
         user_confirmed: arguments_.user_confirmed === true,
         rebind_confirmed: arguments_.rebind_confirmed === true,
+        binding_scope: arguments_.binding_scope === "workspace_default" || arguments_.binding_scope === "session"
+          ? arguments_.binding_scope
+          : undefined,
         idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
       });
       return this.contextResolutionResponse(resolution, host);
@@ -1265,8 +1353,11 @@ export class GoalBoardServer {
     }
   }
 
-  private async deleteRuntimeProject(arguments_: Record<string, unknown>): Promise<string> {
-    const host = this.requireRuntimeContextHost();
+  private async deleteRuntimeProject(
+    arguments_: Record<string, unknown>,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<string> {
+    const host = this.requireRuntimeContextHost(callContext);
     const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
     try {
       const result = await catalog.deleteProject({
@@ -1277,6 +1368,7 @@ export class GoalBoardServer {
       });
       if (catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues).status !== "bound") {
         this.runtimeConnection = null;
+        this.runtimeConnectionContextKey = null;
       }
       return JSON.stringify(result, null, 2);
     } finally {
@@ -1294,21 +1386,29 @@ export class GoalBoardServer {
       : null;
     if (connection) {
       this.runtimeConnection = {
+        projectId: connection.project_id,
         databasePath: connection.database_path,
         boardId: connection.board_id,
         webBaseUrl,
       };
+      this.runtimeConnectionContextKey = runtimeContextKey(host);
     } else {
       this.runtimeConnection = null;
+      this.runtimeConnectionContextKey = null;
     }
     return JSON.stringify({ ...resolution, connection }, null, 2);
   }
 
-  private callV1Tool(name: string, arguments_: Record<string, unknown>): string {
+  private callV1Tool(
+    name: string,
+    arguments_: Record<string, unknown>,
+    runtimeConnection: GoalBoardRuntimeConnection | null,
+    callContext: GoalBoardMcpToolCallContext,
+  ): string {
     const databasePath = path.resolve(
       String(
         this.audience === "runtime"
-          ? this.runtimeConnection!.databasePath
+          ? runtimeConnection!.databasePath
           : arguments_.database_path ?? process.env.GOALBOARD_DATABASE ?? ".goalboard/goalboard.db",
       ),
     );
@@ -1351,14 +1451,17 @@ export class GoalBoardServer {
           );
           const baseUrl = String(
             this.audience === "runtime"
-              ? this.runtimeConnection!.webBaseUrl
+              ? runtimeConnection!.webBaseUrl
               : arguments_.web_base_url ??
                   process.env.GOALBOARD_WEB_URL ??
                   "http://127.0.0.1:4173",
           );
           let goalUrl: string;
           try {
-            goalUrl = new URL(contract.goal_path, baseUrl).toString();
+            const goalPath = this.audience === "runtime" && runtimeConnection?.projectId
+              ? `/projects/${encodeURIComponent(runtimeConnection.projectId)}${contract.goal_path}`
+              : contract.goal_path;
+            goalUrl = new URL(goalPath, baseUrl).toString();
           } catch {
             throw new GoalBoardV1Error("web.url_invalid", `无效的 GoalBoard Web 地址: ${baseUrl}`);
           }
@@ -1430,11 +1533,10 @@ export class GoalBoardServer {
           break;
         case "goalboard_v1_goal_tree_decide": {
           if (this.audience === "runtime") {
-            const trusted = this.trustedUserDecisionProvider?.();
-            if (!trusted) {
+            if (arguments_.user_confirmed !== true) {
               throw new GoalBoardV1Error(
-                "mcp.trusted_decision_context_missing",
-                "当前 Runtime 宿主没有提供可信用户消息上下文；不能代替用户确认 Goal Tree 提案",
+                "mcp.user_confirmation_required",
+                "只有用户刚刚在当前对话中明确确认后，Runtime 才能提交 Goal Tree 决定",
               );
             }
             const runtimeActorId = typeof arguments_.runtime_actor_id === "string"
@@ -1446,20 +1548,48 @@ export class GoalBoardServer {
                 "当前 Runtime 决定需要稳定的 runtime_actor_id，用于审计和恢复",
               );
             }
+            const confirmationSummary = typeof arguments_.confirmation_summary === "string"
+              ? arguments_.confirmation_summary.trim()
+              : "";
+            if (!confirmationSummary) {
+              throw new GoalBoardV1Error(
+                "mcp.confirmation_summary_required",
+                "请简要记录用户在当前对话中确认了什么",
+              );
+            }
+            const host = this.runtimeContextHost
+              ? this.requireRuntimeContextHost(callContext)
+              : null;
+            const runtimeId = host?.runtimeContext.runtime_id ?? "embedded-runtime";
+            const workContextId = callContext.sessionId
+              ?? host?.runtimeContext.stable_work_context_id
+              ?? "session-unavailable";
+            const conversationRef = `runtime-dialogue:${runtimeId}:${workContextId}`;
+            const attestationDigest = createHash("sha256")
+              .update(JSON.stringify({
+                runtime_id: runtimeId,
+                runtime_actor_id: runtimeActorId,
+                work_context_id: workContextId,
+                session_id_source: callContext.sessionIdSource,
+                confirmation_summary: confirmationSummary,
+                idempotency_key: String(arguments_.idempotency_key),
+              }))
+              .digest("hex")
+              .slice(0, 20);
             result = coordinator.decideGoalTreeProposal({
               board_id: String(arguments_.board_id),
               proposal_id: String(arguments_.proposal_id),
               runtime_actor_id: runtimeActorId,
               authority: {
-                actor_id: trusted.actor_id,
+                actor_id: `user-confirmed-via:${runtimeId}`,
                 actor_kind: "user",
-                authority_source: "runtime_trusted_host",
-                conversation_ref: trusted.conversation_ref,
-                message_ref: trusted.message_ref,
-                whole_confirmation_prompted: trusted.whole_confirmation_prompted === true,
+                authority_source: "runtime_dialogue",
+                conversation_ref: conversationRef,
+                message_ref: `runtime-attestation:${attestationDigest}`,
+                whole_confirmation_prompted: arguments_.whole_confirmation_prompted === true,
               },
               decisions: arguments_.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"],
-              reason: arguments_.reason == null ? undefined : String(arguments_.reason),
+              reason: arguments_.reason == null ? confirmationSummary : String(arguments_.reason),
               confirm_all_pending: arguments_.confirm_all_pending === true,
               idempotency_key: String(arguments_.idempotency_key),
             });
@@ -1730,7 +1860,10 @@ export class GoalBoardServer {
         id: msgId,
         result: {
           protocolVersion: params.protocolVersion ?? "2025-03-26",
-          capabilities: { tools: {} },
+          capabilities: {
+            tools: {},
+            resources: { subscribe: false, listChanged: false },
+          },
           serverInfo: SERVER_INFO,
         },
       };
@@ -1751,8 +1884,13 @@ export class GoalBoardServer {
         const params = message.params as {
           name: string;
           arguments?: Record<string, unknown>;
+          _meta?: Record<string, unknown>;
         };
-        const text = await this.callTool(params.name, params.arguments || {});
+        const text = await this.callTool(
+          params.name,
+          params.arguments || {},
+          toolCallContextFromParams(params as unknown as Record<string, unknown>),
+        );
         return {
           jsonrpc: "2.0",
           id: msgId,

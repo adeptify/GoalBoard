@@ -23,8 +23,11 @@ First viewport: a narrow global rail, a persistent IDE-style Goal Tree navigator
 and one large selected-Goal workspace. The tree is the primary navigation. Each
 node directly names its Goal, ID and state; nesting and thin branch connectors
 show `part_of`; an inline “依赖 → …” row shows `depends_on`. The workspace opens
-with the selected Goal title and current action, then business logic, blockers,
-acceptance, Claim/Run, Evidence, Review, risks and user decisions.
+with the selected Goal title and one continuous five-chapter document: what the
+Goal is, what completion means, how work is progressing, risks and rules, then
+history. Related facts use quieter subsections instead of becoming peer-level
+panels or one large execution-details disclosure. Required user decisions stay
+visible in the reading flow.
 
 Memorable moment: choosing a tree node changes the workbench like opening a file
 in an IDE, keeping the whole Goal hierarchy visible while proof updates in place.
@@ -47,6 +50,8 @@ Implementation inventory:
 | Dependency facts | inline text rows from active `depends_on` relations |
 | Direct node state | icon plus Chinese state word from derived Web status |
 | Selected Goal workspace | semantic HTML updated in place from canonical snapshot |
+| Five-chapter document | existing Goal facts regrouped without a new field or state |
+| Quiet subsections | acceptance, Contract, relations, work facts, safety, and Policy retain full controls |
 | Claim / Run / Evidence / Review | compact fact matrix, not dashboard metrics |
 | Candidate and Rewire | human-owned decision section in the selected workspace |
 | Mobile | horizontal utility bar, bounded tree navigator, single-column workspace |

@@ -1,0 +1,52 @@
+# 公开 README、真实截图与发行验收
+
+## 目标
+
+朋友从仓库首页能在一分钟内理解 GoalBoard、看到真实界面、完成安装并知道下一步；所有文案
+由真实可运行流程支撑，而不是营销描述覆盖工程缺口。
+
+## 范围
+
+- 复用最新 main 已加入的真实截图和 `examples/seed-demo.mts`，先核对截图与当前 UI 一致；把脚本
+  seed 收敛为安装后可发现的 demo 入口和明确的数据分类，而不是重新制作一套平行演示。
+- 用正式 demo 数据启动当前 release，截取真实桌面主界面、Draft 澄清/Goal Tree 和设置页；
+  图片进入 `docs/assets`，不得使用不存在功能的合成图。
+- 重写 README 首屏：一句话价值、截图、3 分钟体验、安装/接入/服务三步、为什么要重启、
+  数据位置与卸载安全边界、常见问题。
+- demo 内容同时展示复合 Goal、可执行叶子、澄清中、依赖、证据、回收站和 Runtime 接入提示，
+  但与用户数据明显区分。
+- 真实 tarball E2E 覆盖全新 home、build/pack/install、同版本 refresh、MCP 标准枚举、Runtime
+  接入与重启续接、workspace 多项目、对话决定、LaunchAgent fixture 和安全 uninstall。
+- 浏览器验收桌面/移动、搜索、切换 Goal、设置、demo、回收站与自动同步。
+- 修复真实安装验收暴露的两个发布阻塞：macOS `restart` 必须等待旧 LaunchAgent
+  完成卸载并在有限时间内确认新进程已运行；Runtime Contract 返回的 Web 地址必须包含其
+  已选择的 `project_id`，不能落到多项目入口中不存在的 `/goals/:id`。
+- 自动化全部通过后，在用户已授权的当前机器列出并删除 GoalBoard home、owned Runtime/Skill、
+  LaunchAgent 和项目内 GoalBoard 遗留配置；再严格按公开流程从零安装并复原可用状态。
+- Runtime 设置不能只靠 LaunchAgent 的 `PATH` 判断宿主是否存在；Codex App 没有可执行 CLI 时，
+  只要用户目录已经存在，也必须允许用户预览并确认接入。
+
+## 验收
+
+- README 没有旧静态 DB、兼容模式、nohup 或“当前 Session 会自动出现工具”的错误路径。
+- 所有截图来自验收构建，页面与 README 步骤一致。
+- 新用户路径不要求先手动构造 GoalBoard 数据。
+- 完整测试、pack dry-run、Skill 校验和关键浏览器流程通过。
+- 当前机器真实清场后不借用旧 DB/配置即可完成新安装；最终留下的是新流程生成的正常状态，
+  项目源码和非 GoalBoard 配置没有被删除或改写。
+- Codex App 只有 `~/.codex`、没有 `codex` CLI 的真实环境会显示“未接入”而不是“未检测到”，
+  并可从 Web 设置完成同一套接入事务；Claude Code 和无安装迹象的 Runtime 判断不回归。
+- 常驻服务从正常运行状态执行一次公开 `service restart --confirm` 可自行恢复为 `running`，
+  不需要用户补跑 `launchctl`；延迟卸载和延迟启动都有自动化回归覆盖。
+- 通过项目目录解析并连接 Runtime 后，`goalboard_v1_contract.goal_url` 可直接打开
+  `/projects/<project_id>/goals/<goal_id>`；management/单 DB 调用继续保留原有 URL 契约。
+
+## 修改边界与验证
+
+- README/PRODUCT、`docs/assets`、demo seed、E2E 与浏览器 QA；只有真实功能完成后更新截图。
+
+```bash
+pnpm test
+pnpm pack --dry-run --json
+git diff --check
+```

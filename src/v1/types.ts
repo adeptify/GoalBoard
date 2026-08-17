@@ -426,14 +426,15 @@ export interface ProposalObjectVersion extends ProposalAffectedObject {
 }
 
 /**
- * The trusted user decision is recorded separately from the Runtime that
- * carried it over MCP. Runtime identity is useful for recovery/debugging,
- * but never substitutes for user authority.
+ * The user decision audit is recorded separately from the Runtime that
+ * carried it over MCP. A local Runtime can attest that the user explicitly
+ * confirmed in the current dialogue; this is auditable provenance, not a
+ * cryptographic trust boundary.
  */
 export interface GoalTreeProposalDecisionAuthority {
   actor_id: string;
   actor_kind: "user";
-  authority_source: "runtime_trusted_host" | "web" | "management";
+  authority_source: "runtime_dialogue" | "web" | "management";
   conversation_ref: string;
   message_ref: string;
   whole_confirmation_prompted?: boolean;
@@ -549,7 +550,7 @@ export interface GoalTreeProposalDecideInput {
   decisions?: GoalTreeProposalItemDecisionInput[];
   /** Shared reason for a whole-proposal confirmation; item reasons take precedence. */
   reason?: string;
-  /** Only a trusted host may attest that the preceding prompt requested whole-proposal confirmation. */
+  /** True only when the preceding Runtime prompt named this one whole proposal for confirmation. */
   confirm_all_pending?: boolean;
   idempotency_key: string;
 }

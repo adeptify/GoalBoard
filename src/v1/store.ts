@@ -490,7 +490,7 @@ export class SqliteGoalBoardStore {
           item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
           decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
           actor_id TEXT NOT NULL,
-          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_trusted_host', 'web', 'management')),
+          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
           runtime_actor_id TEXT,
           conversation_ref TEXT NOT NULL,
           message_ref TEXT NOT NULL,
@@ -566,6 +566,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (13, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (14, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -618,6 +621,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 13")
       .get();
     if (!activeGoalLifecycleApplied) this.migrateActiveGoalLifecycle();
+    const runtimeDialogueAuthorityApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 14")
+      .get();
+    if (!runtimeDialogueAuthorityApplied) this.migrateRuntimeDialogueAuthority();
   }
 
   private migrateClarifierRoles(): void {
@@ -976,7 +983,7 @@ export class SqliteGoalBoardStore {
           item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
           decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
           actor_id TEXT NOT NULL,
-          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_trusted_host', 'web', 'management')),
+          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
           runtime_actor_id TEXT,
           conversation_ref TEXT NOT NULL,
           message_ref TEXT NOT NULL,
@@ -1203,6 +1210,54 @@ export class SqliteGoalBoardStore {
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (13, ?)")
         .run(migratedAt);
     });
+  }
+
+  private migrateRuntimeDialogueAuthority(): void {
+    this.db.pragma("foreign_keys = OFF");
+    try {
+      this.immediate(() => {
+        this.db.exec(`
+          CREATE TABLE goal_tree_proposal_decisions_v14 (
+            decision_id TEXT PRIMARY KEY,
+            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+            proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
+            item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
+            decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
+            actor_id TEXT NOT NULL,
+            authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
+            runtime_actor_id TEXT,
+            conversation_ref TEXT NOT NULL,
+            message_ref TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
+            materialized_objects_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL
+          );
+          INSERT INTO goal_tree_proposal_decisions_v14 (
+            decision_id, board_id, proposal_id, item_id, decision, actor_id,
+            authority_source, runtime_actor_id, conversation_ref, message_ref,
+            reason, revision_proposal_id, materialized_objects_json, created_at
+          )
+          SELECT
+            decision_id, board_id, proposal_id, item_id, decision, actor_id,
+            CASE authority_source
+              WHEN 'runtime_trusted_host' THEN 'runtime_dialogue'
+              ELSE authority_source
+            END, runtime_actor_id, conversation_ref, message_ref,
+            reason, revision_proposal_id, materialized_objects_json, created_at
+          FROM goal_tree_proposal_decisions;
+          DROP TABLE goal_tree_proposal_decisions;
+          ALTER TABLE goal_tree_proposal_decisions_v14 RENAME TO goal_tree_proposal_decisions;
+          CREATE INDEX goal_tree_proposal_decisions_item_idx
+            ON goal_tree_proposal_decisions(proposal_id, item_id, created_at, decision_id);
+        `);
+        this.db
+          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (14, ?)")
+          .run(new Date().toISOString());
+      });
+    } finally {
+      this.db.pragma("foreign_keys = ON");
+    }
   }
 
   eventCursor(boardId: string): number {

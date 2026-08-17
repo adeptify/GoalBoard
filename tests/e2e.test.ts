@@ -134,8 +134,16 @@ class McpClient {
     assert.ok(response.result);
   }
 
-  async call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const response = await this.request("tools/call", { name, arguments: args });
+  async call(
+    name: string,
+    args: Record<string, unknown>,
+    meta?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request("tools/call", {
+      name,
+      arguments: args,
+      ...(meta ? { _meta: meta } : {}),
+    });
     const result = (response.result ?? {}) as McpToolResult;
     assert.equal(result.isError, false, result.content?.[0]?.text);
     return JSON.parse(result.content[0]?.text ?? "{}") as Record<string, unknown>;
@@ -169,18 +177,23 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       await symlink(await realpath(join(repository, "node_modules", dependency)), join(runtimeRoot, "node_modules", dependency), "dir");
     }
     const fakeCodex = join(fakeBin, "codex");
+    const fakeClaude = join(fakeBin, "claude");
     await writeFile(fakeCodex, "#!/bin/sh\nexit 0\n");
+    await writeFile(fakeClaude, "#!/bin/sh\nexit 0\n");
     await chmod(fakeCodex, 0o755);
+    await chmod(fakeClaude, 0o755);
     const unrelatedCodexConfig = "[features]\nnetwork_access = false\n";
+    const unrelatedClaudeConfig = `${JSON.stringify({ privateNote: "keep", mcpServers: { other: { command: "other-mcp" } } }, null, 2)}\n`;
     await mkdir(join(userHome, ".codex"), { recursive: true });
     await writeFile(join(userHome, ".codex", "config.toml"), unrelatedCodexConfig);
+    await writeFile(join(userHome, ".claude.json"), unrelatedClaudeConfig);
     const environment = {
       ...process.env,
       HOME: userHome,
       PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
     };
 
-    assert.deepEqual(await readdir(dirname(goalboardHome)), [".codex"]);
+    assert.deepEqual(await readdir(dirname(goalboardHome)), [".claude.json", ".codex"]);
     const installOutput = await execFileAsync(
       process.execPath,
       [join(packageDirectory, "dist", "cli", "main.js"), "install", "--home", goalboardHome, "--source", packageDirectory, "--json"],
@@ -247,6 +260,24 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       assert.equal(runtimeConfirm.status, 200, await runtimeConfirm.text());
       assert.match(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), /GOALBOARD_RUNTIME_ID = "codex"/);
 
+      const claudePlanResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/plan", { action: "connect" });
+      assert.equal(claudePlanResponse.status, 200);
+      const claudePlan = await claudePlanResponse.json() as { plan_id: string; status: string };
+      assert.equal(claudePlan.status, "ready");
+      assert.equal(await readFile(join(userHome, ".claude.json"), "utf8"), unrelatedClaudeConfig);
+      const claudeConfirm = await securePost(origin, token, "/api/settings/runtimes/claude-code/confirm", {
+        plan_id: claudePlan.plan_id,
+        decision: "confirmed",
+      });
+      assert.equal(claudeConfirm.status, 200, await claudeConfirm.text());
+      const claudeConfig = JSON.parse(await readFile(join(userHome, ".claude.json"), "utf8") as string) as {
+        privateNote: string;
+        mcpServers: Record<string, { env?: Record<string, string> }>;
+      };
+      assert.equal(claudeConfig.privateNote, "keep");
+      assert.ok(claudeConfig.mcpServers.other);
+      assert.equal(claudeConfig.mcpServers.goalboard.env?.GOALBOARD_RUNTIME_ID, "claude-code");
+
       const projectResponse = await securePost(origin, token, "/api/settings/projects", {
         display_name: "全新安装项目",
         user_confirmed: true,
@@ -261,6 +292,7 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
         GOALBOARD_RUNTIME_ID: "codex",
         CODEX_THREAD_ID: "fresh-install-e2e-session",
         GOALBOARD_WEB_URL: origin,
+        PWD: directory,
       };
       const firstMcp = new McpClient(spawn(process.execPath, [installation.launchers.mcp], {
         cwd: directory,
@@ -268,6 +300,8 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
         stdio: ["pipe", "pipe", "pipe"],
       }));
       await firstMcp.initialize();
+      const templates = await firstMcp.request("resources/templates/list", {});
+      assert.deepEqual((templates.result as { resourceTemplates: unknown[] }).resourceTemplates, []);
       const unresolved = await firstMcp.call("goalboard_v1_context_resolve", {});
       assert.equal(unresolved.status, "unbound");
       assert.equal(unresolved.connection, null);
@@ -283,6 +317,14 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
         idempotency_key: "fresh-install-draft-start",
       }) as { goal: { goal_id: string }; run: { run_id: string }; work_state: { work_state: string } };
       assert.equal(started.work_state.work_state, "clarifying");
+      const contract = await firstMcp.call("goalboard_v1_contract", {
+        board_id: bound.connection.board_id,
+        goal_id: started.goal.goal_id,
+      }) as { goal_url: string };
+      assert.equal(
+        contract.goal_url,
+        `${origin}/projects/${encodeURIComponent(created.project.project_id)}/goals/${encodeURIComponent(started.goal.goal_id)}`,
+      );
       const turn = await firstMcp.call("goalboard_v1_draft_dialogue_turn", {
         board_id: bound.connection.board_id,
         goal_id: started.goal.goal_id,
@@ -318,6 +360,39 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       assert.match(resumed.dialogue.next_question, /叶子 Goal/);
       await restartedMcp.close();
 
+      const genericEnvironment = {
+        ...environment,
+        GOALBOARD_HOME: goalboardHome,
+        GOALBOARD_MCP_AUDIENCE: "runtime",
+        GOALBOARD_RUNTIME_ID: "generic-mcp-host",
+        GOALBOARD_WEB_URL: origin,
+        PWD: directory,
+      };
+      const genericMcp = new McpClient(spawn(process.execPath, [installation.launchers.mcp], {
+        cwd: directory,
+        env: genericEnvironment,
+        stdio: ["pipe", "pipe", "pipe"],
+      }));
+      await genericMcp.initialize();
+      const genericSessionA = { sessionId: "generic-session-a" };
+      const genericSuggested = await genericMcp.call("goalboard_v1_context_resolve", {}, genericSessionA);
+      assert.equal(genericSuggested.status, "suggested");
+      assert.equal(genericSuggested.connection, null);
+      const genericBound = await genericMcp.call("goalboard_v1_context_bind", {
+        project_id: created.project.project_id,
+        actor_id: "runtime-generic",
+        user_confirmed: true,
+      }, genericSessionA) as { status: string };
+      assert.equal(genericBound.status, "bound");
+      const freshGenericSession = await genericMcp.call(
+        "goalboard_v1_context_resolve",
+        {},
+        { sessionId: "generic-session-b" },
+      );
+      assert.equal(freshGenericSession.status, "suggested");
+      assert.equal(freshGenericSession.connection, null);
+      await genericMcp.close();
+
       const removePlanResponse = await securePost(origin, token, "/api/settings/runtimes/codex/plan", { action: "remove" });
       assert.equal(removePlanResponse.status, 200);
       const removePlan = await removePlanResponse.json() as { plan_id: string; status: string };
@@ -329,6 +404,21 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       assert.equal(removeResponse.status, 200, await removeResponse.text());
       assert.equal(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), unrelatedCodexConfig);
       await assert.rejects(readFile(join(userHome, ".codex", "skills", "goal-advance", "SKILL.md"), "utf8"));
+
+      const removeClaudePlanResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/plan", { action: "remove" });
+      assert.equal(removeClaudePlanResponse.status, 200);
+      const removeClaudePlan = await removeClaudePlanResponse.json() as { plan_id: string; status: string };
+      assert.equal(removeClaudePlan.status, "ready");
+      const removeClaudeResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/confirm", {
+        plan_id: removeClaudePlan.plan_id,
+        decision: "confirmed",
+      });
+      assert.equal(removeClaudeResponse.status, 200, await removeClaudeResponse.text());
+      assert.deepEqual(
+        JSON.parse(await readFile(join(userHome, ".claude.json"), "utf8")),
+        JSON.parse(unrelatedClaudeConfig),
+      );
+      await assert.rejects(readFile(join(userHome, ".claude", "skills", "goal-advance", "SKILL.md"), "utf8"));
     } finally {
       await stopChild(web);
     }
