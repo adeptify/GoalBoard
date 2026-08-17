@@ -441,6 +441,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-select-goal/);
   assert.match(html, /data-global-search/);
   assert.equal((html.match(/<input type="search" data-global-search/g) ?? []).length, 1);
+  assert.match(html, /data-settings-link/);
+  assert.match(html, /@media \(max-width: 1500px\)[\s\S]*\.top-action\[data-settings-link\] span, \.top-action\[data-collapse-all\] span \{ display: none; \}/);
+  assert.match(html, /@media \(max-width: 1180px\)[\s\S]*\.top-action span \{ display: none; \}/);
   assert.doesNotMatch(html, /data-tree-search|class="tree-heading"|class="tree-search"/);
   assert.equal((html.match(/data-open-create aria-label="新建目标"/g) ?? []).length, 1);
   assert.match(html, /class="top-filter-control">[\s\S]*data-tree-filter-trigger[\s\S]*id="tree-status-filter"/);

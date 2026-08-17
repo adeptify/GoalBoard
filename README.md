@@ -23,7 +23,7 @@ GoalBoard 的答案是：把目标变成人和 Runtime 共同维护的真相源�
 
 ## 界面速览
 
-![项目列表：每个项目都有自己的目标真相源](docs/screenshots/projects.png)
+![Goal Tree：用业务语言展示目标、状态、下一步和完成依据](docs/screenshots/goalboard-tree.png)
 
 内置示例用一轮完整的新用户体验说明 Goal Tree，而不是用模块名代替用户目标：
 
