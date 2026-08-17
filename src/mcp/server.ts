@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { createHash } from "node:crypto";
 import {
   GoalBoardProjectCatalog,
   type GoalBoardRuntimeContextResolution,
@@ -1014,20 +1015,31 @@ export function runtimeContextHostFromEnvironment(
   }
   const sessionTitle = environment.CLAUDE_CODE_SESSION_NAME?.trim();
   if (sessionTitle) projectSuggestionClues.push({ kind: "session_title", value: sessionTitle });
+  // Some hosts (notably Codex) do not inject a per-session ID into stdio MCP
+  // subprocesses. Fall back to a stable identity anchored on the working
+  // directory so the same project directory resolves to the same association;
+  // project selection and binding still require explicit user confirmation.
+  const workspaceIdentity =
+    workspace && path.isAbsolute(workspace) ? workspaceStableIdentity(workspace) : null;
   return {
     homeDirectory: environment.GOALBOARD_HOME,
     runtimeContext: {
       runtime_id: runtimeId,
-      stable_work_context_id: runtimeContextId,
+      stable_work_context_id: runtimeContextId ?? workspaceIdentity,
       host_declares_stable: explicitContextId
         ? environment.GOALBOARD_WORK_CONTEXT_STABLE === "true"
-        : runtimeContextId != null,
+        : runtimeContextId != null || workspaceIdentity != null,
     },
     webBaseUrl: environment.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
     // The working directory and title are ranking hints only. They can make a
     // fresh Session suggestion useful, but never become identity or a binding.
     projectSuggestionClues,
   };
+}
+
+function workspaceStableIdentity(workspace: string): string {
+  const digest = createHash("sha256").update(path.resolve(workspace)).digest("hex").slice(0, 16);
+  return `workspace:${digest}`;
 }
 
 function stableRuntimeSessionId(runtimeId: string, environment: NodeJS.ProcessEnv): string | null {

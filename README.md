@@ -121,7 +121,7 @@ accepted Contract 不原地改版本。后续新需求创建新的 Candidate Goa
 
 ## Runtime 工作流
 
-统一 GoalBoard Skill 被用户调用后，先解析当前 Runtime 宿主提供的稳定工作入口：已绑定则恢复该项目的固定 MCP 连接；新 Session 若有宿主线索或同一 Runtime 的已确认项目历史则返回候选项目和通用原因，但仍保持未绑定，当前 Runtime 必须问用户“要关联这个项目吗”；没有候选才在当前对话让用户选择已有项目或明确命名一个新项目。用户明确同意候选或已有项目时才调用 `context-bind`，明确拒绝一个候选时调用 `context-reject-suggestion`，它只停止当前 Session 重复提示该候选，不删除任何数据或影响其他 Session。新建项目才调用 `context-create-and-bind`；只有用户明确选择后才会写入绑定。已有入口切换到其他项目时还必须再次明确确认。用户明确要求“只在这里停用”时调用 `context-unbind`，只移除当前入口绑定；用户明确要求删除某一个命名项目及其数据时才调用 `project-delete`，它会先保护有效 Claim 和未结束 Run。宿主没有提供可靠入口时，Runtime 只能说明不能可靠关联并询问用户，不能从 Git、目录或聊天内容猜测。这个解析不会在 Runtime 启动或普通对话时后台发生。
+统一 GoalBoard Skill 被用户调用后，先解析当前 Runtime 宿主提供的稳定工作入口：已绑定则恢复该项目的固定 MCP 连接；新 Session 若有宿主线索或同一 Runtime 的已确认项目历史则返回候选项目和通用原因，但仍保持未绑定，当前 Runtime 必须问用户“要关联这个项目吗”；没有候选才在当前对话让用户选择已有项目或明确命名一个新项目。用户明确同意候选或已有项目时才调用 `context-bind`，明确拒绝一个候选时调用 `context-reject-suggestion`，它只停止当前 Session 重复提示该候选，不删除任何数据或影响其他 Session。新建项目才调用 `context-create-and-bind`；只有用户明确选择后才会写入绑定。已有入口切换到其他项目时还必须再次明确确认。用户明确要求“只在这里停用”时调用 `context-unbind`，只移除当前入口绑定；用户明确要求删除某一个命名项目及其数据时才调用 `project-delete`，它会先保护有效 Claim 和未结束 Run。宿主没有提供会话级标识时（例如 Codex 不把 `CODEX_THREAD_ID` 注入 MCP 子进程），GoalBoard 会退回用**工作目录**作为稳定身份锚点：同一目录的会话共享同一个项目关联；身份锚点不等于项目归属，首次绑定仍必须由用户明确确认。这个解析不会在 Runtime 启动或普通对话时后台发生。
 
 Skill 的正常回复先用用户当前语言说明“我理解了什么、为什么还要确认这一点、接下来只问或做什么”，不会把 MCP 工具名和内部 ID 当作回答。新想法、已有 Draft 恢复和方向变化会显示可修改的结构化 checkpoint，明确区分用户已确认事实、可查项目事实、Runtime 假设和建议；每个实质回答先写入 dialogue turn，再继续下一问。提案就绪时用可读 Goal Tree 汇总结果、非目标、关系依赖、叶子验收、风险和确认后的状态，用户可以整份决定或点名修改条目。
 
@@ -166,7 +166,7 @@ GoalBoard 通过统一 Skill 的“工作入口绑定”连接项目：Runtime �
 
 ### Runtime 工作入口绑定（推荐）
 
-Runtime 宿主只在自己能保证稳定性的情况下提供入口 ID；它不是 Git 地址、目录名、仓库结构或模型从对话中推断的字符串。复用同一个不透明 ID 只表示恢复同一个宿主 Session／工作入口；真正的新 Session 必须拿到新的 ID。Codex adapter 使用宿主提供给 MCP 子进程的 `CODEX_THREAD_ID`，Claude Code adapter 使用 Claude Code 的 Session ID 环境信号；两者都不会把 ID 固化进用户配置。宿主还可以单独提供工作空间、目录、会话标题、最近项目等非权威线索来排序新 Session 的候选；GoalBoard 也只会把同一 Runtime 最近确认的其他 Session 项目作为建议。不能把任何线索当作 ID 或自动绑定。
+Runtime 宿主只在自己能保证稳定性的情况下提供入口 ID；它不是 Git 地址、目录名、仓库结构或模型从对话中推断的字符串。复用同一个不透明 ID 只表示恢复同一个宿主 Session／工作入口；真正的新 Session 必须拿到新的 ID。Codex adapter 使用宿主提供给 MCP 子进程的 `CODEX_THREAD_ID`，Claude Code adapter 使用 Claude Code 的 Session ID 环境信号；两者都不会把 ID 固化进用户配置。当宿主没有提供会话级 ID 时，GoalBoard 退回用工作目录作为稳定身份锚点（`workspace:<hash>`），同一目录的会话共享同一个项目关联。宿主还可以单独提供工作空间、目录、会话标题、最近项目等非权威线索来排序新 Session 的候选；GoalBoard 也只会把同一 Runtime 最近确认的其他 Session 项目作为建议。不能把任何线索当作项目归属，也不能自动绑定。
 
 安装本身不会写入 Runtime 配置。Codex 和 Claude Code 应由用户在接入预览中确认后使用稳定 launcher；其他 Runtime host 可以显式提供同一组环境值：
 
@@ -181,6 +181,8 @@ GOALBOARD_MCP_AUDIENCE="runtime" \
 ```
 
 这个 MCP 进程启动时仍是“未连接项目”状态，不会打开某个 Board。统一 Skill 先调用 `goalboard_v1_context_resolve`：
+
+> **已知限制与回退**：Codex CLI/桌面不会把 `CODEX_THREAD_ID` 注入 stdio MCP 子进程，官方已将该需求标记为不计划修复（[openai/codex#19937](https://github.com/openai/codex/issues/19937)，NOT_PLANNED）。此时 GoalBoard 自动退回用**工作目录**作为稳定身份锚点：同一目录的会话共享同一个项目关联，首次绑定仍需用户明确确认。也可以改用会注入会话标识的宿主（Claude Code），或在宿主环境显式设置 `GOALBOARD_WORK_CONTEXT_ID` 与 `GOALBOARD_WORK_CONTEXT_STABLE=true` 手动指定身份。
 
 - `bound`：返回唯一 `project_id`、`board_id` 和固定数据库连接；之后普通 GoalBoard MCP 调用只能使用该 `board_id`。
 - `suggested`：新 Session 有宿主线索或同一 Runtime 的已确认项目历史。结果只含候选项目和不泄露原始线索的通用原因，没有项目连接；当前 Runtime 必须在同一对话问用户是否关联。

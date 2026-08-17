@@ -876,6 +876,7 @@ function desiredCodexFamily(desired: DesiredConnection): string {
   return [
     "[mcp_servers.goalboard]",
     `command = ${tomlString(desired.launcherPath)}`,
+    'env_vars = ["CODEX_THREAD_ID", "GOALBOARD_WORK_CONTEXT_ID", "GOALBOARD_WORK_CONTEXT_STABLE"]',
     "",
     "[mcp_servers.goalboard.env]",
     `GOALBOARD_HOME = ${tomlString(desired.goalboardHome)}`,
