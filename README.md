@@ -25,9 +25,17 @@ GoalBoard 的答案是：把目标变成人和 Runtime 共同维护的真相源�
 
 ![项目列表：每个项目都有自己的目标真相源](docs/screenshots/projects.png)
 
-![决定中心：Runtime 发现的新工作，等你拍板](docs/screenshots/goalboard-decisions.png)
+内置示例用一轮完整的新用户体验说明 Goal Tree，而不是用模块名代替用户目标：
 
-Goal 正文会按“目标是什么 → 怎样才算完成 → 现在怎么推进 → 风险与规则 → 历史”阅读。旧版正文截图已移除，避免与当前版本不一致。
+```text
+让第一次使用的人顺利完成一轮目标协作
+├─ 让每项工作都有可信的完成依据               已完成
+├─ 让不同 AI 对话看到同一项目进度              进行中
+├─ 让用户打开页面就看懂目标和下一步             等待前置工作
+└─ 让新用户安装后知道下一步怎么开始             待澄清
+```
+
+示例还包含待决定事项、首次接入后忘记新开会话的 Risk，以及一条可在回收站恢复的旧方案。Goal 正文按“目标是什么 → 怎样才算完成 → 现在怎么推进 → 风险与规则 → 历史”阅读。与当前结构或示例内容不一致的旧正文截图不再展示。
 
 ## 3 分钟体验
 
@@ -59,6 +67,21 @@ pnpm install:local
 > 用 GoalBoard 新建一个项目，帮我把“让朋友第一次安装就能顺利用起来”澄清成 Goal Tree。
 
 GoalBoard 会在当前对话里继续问关键问题；只有你确认的提案才会进入正式 Goal Tree。
+
+## 更新已有安装
+
+已经从仓库安装过时，先拉取新内容，再走同一个安装入口。即使版本号没有变化，安装器也会比较实际内容并刷新程序和 Skill；用户项目、Runtime 配置和 demo 都不会被自动改写：
+
+```bash
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm install:local
+
+# 正在使用常驻 Web 时，明确重启到刚安装的 release
+"$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm
+```
+
+更新 MCP 或 Skill 后也要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
 
 ## 演示数据
 

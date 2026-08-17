@@ -14,24 +14,24 @@ export function seedDemoBoard(databasePath: string): void {
     if (exists) return;
     coordinator.initializeBoard({
       board_id: DEMO_BOARD_ID,
-      title: "把 GoalBoard V1 做成可用产品",
+      title: "让第一次使用 GoalBoard 的人顺利完成一次目标协作",
       actor_id: "demo-user",
       idempotency_key: "demo-board",
     });
     const goals = [
       {
         goal_id: "V1",
-        title: "交付 GoalBoard V1",
-        outcome: "让人和 AI Runtime 围绕同一套目标真相协作",
-        why: "通用 AI 产品里，用户最难确认目标、先后关系和完成证据",
-        business_logic: "用户看清最终结果和下一步，Runtime 只领取已经准备好的最小 Goal；证据和必要复核都通过后，Goal 才算完成。",
+        title: "让第一次使用的人顺利完成一轮目标协作",
+        outcome: "用户能把一个模糊想法变成清楚的目标树，并知道下一步、阻塞和完成依据",
+        why: "AI 对话结束后容易丢失目标、决定和进度，新用户尤其难判断该从哪里继续",
+        business_logic: "用户先在当前对话说明想做什么，Runtime 通过提问整理目标并请用户确认；确认后，当前或后续 Runtime 从可做项中选择工作，提交结果和证据，GoalBoard 持续保存共同进度。",
         definition_state: "accepted" as const,
         decomposition_state: "closed_compound" as const,
         priority: 100,
         acceptance_criteria: [
           {
             criterion_id: "V1-C1",
-            statement: "人能从首屏看懂目标、下一步和阻塞",
+            statement: "第一次使用的人能从首屏看懂目标、下一步和阻塞",
             decision_method: "inspection" as const,
             pass_condition: "首次使用者无需阅读协议即可正确复述",
           },
@@ -39,46 +39,46 @@ export function seedDemoBoard(databasePath: string): void {
       },
       {
         goal_id: "CORE",
-        title: "跑通 SQLite 执行闭环",
-        outcome: "Goal 从 Ready 到证据和 Review 完成全程受同一真相源约束",
-        why: "没有可执行闭环，GoalBoard 只是文档",
-        business_logic: "Runtime 领取最小 Goal，完成工作后提交验收证据；所有必要复核都通过，Goal 才会变成已完成。",
+        title: "让每项工作都有可信的完成依据",
+        outcome: "用户能看到一项工作何时开始、做出了什么，以及为什么可以算完成",
+        why: "只有进度标签而没有结果、证据和复核，用户仍然无法相信工作真的完成了",
+        business_logic: "Runtime 选择一项已经准备好的工作并标记开始；完成后提交对应验收条件的证据，必要复核通过后，这项工作才会显示为已完成。",
         definition_state: "accepted" as const,
         decomposition_state: "closed_leaf" as const,
         priority: 90,
         acceptance_criteria: [
           {
             criterion_id: "CORE-C1",
-            statement: "完整生命周期自动化测试通过",
+            statement: "工作从开始到证据和复核形成完整记录",
             decision_method: "automated_check" as const,
-            pass_condition: "pnpm test 通过",
+            pass_condition: "生命周期自动化测试通过",
           },
         ],
       },
       {
         goal_id: "INTERFACES",
-        title: "让 CLI 与 MCP 共用同一真相",
-        outcome: "Runtime 从任一入口看到同一 Ready Set 和 Claim",
-        why: "入口不应各自维护状态",
-        business_logic: "不同 Runtime 可以选择适合自己的接口，但它们读取和写入的是同一个 GoalBoard。",
+        title: "让不同 AI 对话看到同一项目进度",
+        outcome: "用户换一个 Runtime 或新开对话后，仍能找到同一个项目的目标、进度和未完成工作",
+        why: "如果每个入口各自记录状态，用户换一次对话就要重新解释整个项目",
+        business_logic: "用户在当前对话明确选择项目后继续推进；其他 Runtime 也通过 GoalBoard 读取和更新同一份项目事实，不会各自维护一套进度。",
         definition_state: "accepted" as const,
         decomposition_state: "closed_leaf" as const,
         priority: 80,
         acceptance_criteria: [
           {
             criterion_id: "INTERFACES-C1",
-            statement: "CLI 与 MCP 共享 Ready 和 Claim 结果",
+            statement: "不同入口读取到一致的可做工作和占用状态",
             decision_method: "automated_check" as const,
-            pass_condition: "跨接口测试通过",
+            pass_condition: "跨入口自动化测试通过",
           },
         ],
       },
       {
         goal_id: "WEB",
-        title: "完成一眼能看懂的 Web UI",
-        outcome: "用户从首屏理解 Goal Spine、Ready、阻塞和待决定事项",
-        why: "协议正确不等于产品可用",
-        business_logic: "用户打开网页先看到正在追求的结果，再沿 Goal Spine 查看哪些工作能开始、哪些被挡住，以及完成还缺什么。",
+        title: "让用户打开页面就看懂目标和下一步",
+        outcome: "用户不用理解内部协议，也能看出项目要解决什么、当前进展、谁该做什么和为什么被阻塞",
+        why: "底层规则正确并不代表产品容易理解；信息组织混乱会让用户放弃继续使用",
+        business_logic: "用户打开项目后先看到目标树和当前目标，再按结果、完成标准、推进情况、风险和历史阅读；搜索、状态筛选和待决定事项都放在统一导航中。",
         definition_state: "accepted" as const,
         decomposition_state: "closed_leaf" as const,
         priority: 70,
@@ -93,19 +93,37 @@ export function seedDemoBoard(databasePath: string): void {
       },
       {
         goal_id: "RELEASE",
-        title: "完成迁移和发布检查",
-        outcome: "新工作区可初始化，旧数据有明确迁移或重建路径",
-        why: "产品需要可安装、可验证、可继续使用",
-        business_logic: "用户能创建新的本地真相源；已有数据若不能安全迁移，系统明确告诉用户如何重建，而不是静默丢失。",
+        title: "让新用户安装后知道下一步怎么开始",
+        outcome: "用户完成安装后知道如何启动页面、连接正在使用的 Runtime，以及为什么需要新开会话",
+        why: "安装成功但不知道服务是否常驻、工具何时生效或下一步说什么，仍然会被理解成产品不可用",
+        business_logic: "安装只放置 GoalBoard 自己的程序，不偷偷修改项目或 Runtime；用户随后显式启用常驻服务、预览并确认 Runtime 接入，再在新会话中选择或创建项目开始使用。",
         definition_state: "draft" as const,
         decomposition_state: "abstract" as const,
         priority: 60,
         acceptance_criteria: [
           {
             criterion_id: "RELEASE-C1",
-            statement: "安装、迁移和发布检查有可重复命令",
+            statement: "安装、接入和重启提示可以按公开步骤重复完成",
             decision_method: "automated_check" as const,
-            pass_condition: "发布验证命令全部通过",
+            pass_condition: "全新安装端到端验证通过",
+          },
+        ],
+      },
+      {
+        goal_id: "AUTO-CONNECT",
+        title: "自动替用户选择最近使用的项目",
+        outcome: "新对话少做一次项目确认",
+        why: "早期方案希望用历史目录记录缩短首次连接步骤",
+        business_logic: "新对话进入一个以前使用过的目录时，系统直接连接最近的项目，不再询问用户。这个方案可能选错项目，因此已经移入回收站，当前产品只展示候选并让用户决定。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_leaf" as const,
+        priority: 10,
+        acceptance_criteria: [
+          {
+            criterion_id: "AUTO-CONNECT-C1",
+            statement: "新对话无需确认就进入历史项目",
+            decision_method: "inspection" as const,
+            pass_condition: "进入历史目录后直接显示最近项目",
           },
         ],
       },
@@ -119,19 +137,47 @@ export function seedDemoBoard(databasePath: string): void {
     for (const child of ["CORE", "INTERFACES", "WEB", "RELEASE"]) {
       coordinator.addRelation(
         DEMO_BOARD_ID,
-        { from_goal_id: child, to_goal_id: "V1", type: "part_of", reason: "属于 V1 交付路径" },
+        { from_goal_id: child, to_goal_id: "V1", type: "part_of", reason: "共同组成第一次完整的 GoalBoard 使用体验" },
         { actor_id: "demo-user", idempotency_key: `demo-part-${child}` },
       );
     }
     coordinator.addRelation(
       DEMO_BOARD_ID,
-      { from_goal_id: "INTERFACES", to_goal_id: "CORE", type: "depends_on", reason: "接口复用应用核心" },
+      { from_goal_id: "INTERFACES", to_goal_id: "CORE", type: "depends_on", reason: "共享项目进度前，必须先保证每项工作的状态和完成依据可靠" },
       { actor_id: "demo-user", idempotency_key: "demo-dependency-interfaces" },
     );
     coordinator.addRelation(
       DEMO_BOARD_ID,
-      { from_goal_id: "WEB", to_goal_id: "INTERFACES", type: "depends_on", reason: "Web UI 读取同一应用语义" },
+      { from_goal_id: "WEB", to_goal_id: "INTERFACES", type: "depends_on", reason: "页面显示必须和不同 Runtime 看到的项目进度一致" },
       { actor_id: "demo-user", idempotency_key: "demo-dependency-web" },
+    );
+
+    coordinator.addRisk(
+      DEMO_BOARD_ID,
+      {
+        risk_id: "RISK-FIRST-RESTART",
+        goal_ids: ["RELEASE"],
+        description: "用户接入 Runtime 后没有新开会话，误以为安装失败",
+        probability: "medium",
+        impact: "用户看不到 GoalBoard 工具，无法开始第一次使用",
+        affected_surfaces: ["首次安装", "Runtime 接入"],
+        trigger: "用户继续使用接入前已经打开的会话",
+        treatment: "mitigate",
+        blocking_mode: "none",
+        revisit_condition: "安装结果和接入预览都清楚说明新开会话的原因和下一步",
+        owner: "产品体验",
+      },
+      { actor_id: "demo-user", idempotency_key: "demo-risk-first-restart" },
+    );
+
+    coordinator.setGoalTrashed(
+      DEMO_BOARD_ID,
+      {
+        goal_id: "AUTO-CONNECT",
+        trashed: true,
+        reason: "这会替用户猜项目；当前方案只展示历史候选，并再次询问用户",
+      },
+      { actor_id: "demo-user", idempotency_key: "demo-trash-auto-connect" },
     );
 
     const coreClaim = coordinator.claimGoal({
@@ -202,15 +248,15 @@ export function seedDemoBoard(databasePath: string): void {
       actor_id: "runtime-interface",
       discovered_in_run_id: interfaceRun.run_id,
       proposed_goal: {
-        title: "补充 V3 数据迁移说明",
-        outcome: "旧 GoalBoard 数据不会在升级时静默丢失",
-        why: "实现接口时发现旧 JSON 与 V1 语义不能完全一一映射",
-        business_logic: "用户升级时先看到哪些旧数据能安全迁移；不能迁移的部分明确提示重新生成。",
+        title: "让旧数据升级前先看到安全说明",
+        outcome: "用户在升级前知道哪些内容会保留、哪些需要重新整理",
+        why: "旧版数据和当前规则并不完全对应，直接迁移可能让用户误以为缺失内容仍然有效",
+        business_logic: "用户升级时先看到每类旧数据的处理结果；能安全保留的内容明确列出，不能可靠迁移的内容提示重新整理，不会静默丢失或伪造。",
         acceptance_criteria: [
           {
-            statement: "迁移报告逐项说明 migrated 或 regenerate",
+            statement: "升级报告逐项说明可迁移内容和需要重建的内容",
             decision_method: "automated_check",
-            pass_condition: "迁移夹具结果无未解释字段",
+            pass_condition: "迁移样例没有未解释字段",
           },
         ],
       },
