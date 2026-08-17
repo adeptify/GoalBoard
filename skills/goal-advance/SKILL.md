@@ -48,6 +48,8 @@ This checkpoint is editable, not a verdict. User-confirmed facts, project facts,
 
 ## 1. Explicitly resolve the current project
 
+当宿主没有提供会话级稳定标识时，GoalBoard 会退回用**工作目录**作为稳定身份锚点：同一目录下的会话共享同一个项目关联，不同目录互不干扰。首次进入一个目录仍然要先由用户确认绑定；确认后同一目录的后续会话自动恢复。向用户说明时可以说：“当前按工作目录识别会话，同一个目录里的对话会共用同一个项目关联。”
+
 用户刚完成安装、重开 Session 后第一次提到 GoalBoard 时，先用一两句话说明关联规则，再开始解析：
 
 - “GoalBoard 已经装好了。接下来需要你在对话里明确说‘用 GoalBoard / 关联某项目’，我才会建立项目关联——我不会自动关联，也不会从目录或历史记录猜测。”
@@ -66,7 +68,11 @@ At the beginning of a user-invoked GoalBoard flow, call `goalboard_v1_context_re
   - After the user explicitly chooses an existing project, call `goalboard_v1_context_bind` with `user_confirmed=true`.
   - After the user explicitly asks to create a named project, call `goalboard_v1_context_create_and_bind` with `display_name`, `user_confirmed=true`, and a fresh `idempotency_key`.
   - If the current work entry is already bound to another project, ask for a separate explicit switch confirmation before sending `rebind_confirmed=true`.
-- If the host reports `missing_stable_context`, say plainly that this Runtime has not provided a reliable work-entry identity yet. Ask the user how they want to continue once the host can provide one; do not manufacture an identity or silently bind a project.
+- If the host still reports `missing_stable_context`（没有运行时 ID，也拿不到工作目录），say plainly that this Runtime has not provided any reliable work-entry identity. Explain that it is a host/platform capability limitation, then offer actionable choices instead of waiting indefinitely:
+  - 换用会注入会话标识的宿主或环境（如 Claude Code、较新的 Codex 桌面/服务端环境）；
+  - 由用户显式配置稳定标识（`GOALBOARD_WORK_CONTEXT_ID` + `GOALBOARD_WORK_CONTEXT_STABLE=true`），并说明这样该标识下的所有会话共享同一个关联；
+  - 或者保持未绑定，直接用项目列表选择或新建项目。
+  Whatever the user chooses, do not manufacture an identity or silently bind; continue only after the user gives an explicit instruction.
 
 Resolving is read-only. Creating or changing a binding happens only after the user's explicit words in this conversation. Reuse of the same opaque host ID resumes the same host Session/work entry. A genuinely new Runtime Session must have a new host ID; it may receive suggestions, but it asks the user again before binding.
 

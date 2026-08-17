@@ -335,7 +335,7 @@ test("removal refuses to delete GoalBoard entries or Skill links changed after c
   });
 });
 
-test("Runtime host derives stable Session identity only from known host signals and keeps workspace as a suggestion clue", () => {
+test("Runtime host derives stable identity from host signals or falls back to a workspace anchor and keeps workspace as a suggestion clue", () => {
   const codex = runtimeContextHostFromEnvironment({
     GOALBOARD_RUNTIME_ID: "codex",
     CODEX_THREAD_ID: "codex-thread-123",
@@ -364,7 +364,24 @@ test("Runtime host derives stable Session identity only from known host signals 
   }, "/workspace/gamma");
   assert.equal(explicit?.runtimeContext.stable_work_context_id, "explicit-id");
 
+  // Hosts that do not inject a session ID (e.g. Codex stdio MCP) fall back to
+  // a stable workspace identity so the same directory resolves the same way.
   const unknown = runtimeContextHostFromEnvironment({ GOALBOARD_RUNTIME_ID: "some-runtime" }, "/workspace/delta");
-  assert.equal(unknown?.runtimeContext.stable_work_context_id, null);
-  assert.equal(unknown?.runtimeContext.host_declares_stable, false);
+  assert.match(unknown?.runtimeContext.stable_work_context_id ?? "", /^workspace:[0-9a-f]{16}$/);
+  assert.equal(unknown?.runtimeContext.host_declares_stable, true);
+  assert.deepEqual(unknown?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/delta" }]);
+
+  const codexFallback = runtimeContextHostFromEnvironment({
+    GOALBOARD_RUNTIME_ID: "codex",
+    PWD: "/workspace/epsilon",
+  }, "/fallback");
+  assert.match(codexFallback?.runtimeContext.stable_work_context_id ?? "", /^workspace:[0-9a-f]{16}$/);
+  assert.equal(codexFallback?.runtimeContext.host_declares_stable, true);
+  assert.deepEqual(codexFallback?.projectSuggestionClues, [{ kind: "workspace", value: "/workspace/epsilon" }]);
+
+  // No runtime ID and no usable workspace still means no identity at all.
+  assert.equal(runtimeContextHostFromEnvironment({}, "/workspace/epsilon"), null);
+  const noWorkspace = runtimeContextHostFromEnvironment({ GOALBOARD_RUNTIME_ID: "codex" }, "");
+  assert.equal(noWorkspace?.runtimeContext.stable_work_context_id, null);
+  assert.equal(noWorkspace?.runtimeContext.host_declares_stable, false);
 });
