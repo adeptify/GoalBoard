@@ -62,6 +62,7 @@ packed release fresh-install E2E                    PASS
 demo tree / decisions / trash                       200 / 200 / 200
 demo 导航                                            待决定 2 / 回收站 1
 真实 Chrome 1440px                                  Goal Tree / 决定中心 / 回收站 / Runtime 设置 PASS
+顶栏宽度扫描 1500/1440/1360/1180/1024/901/900/760/390  普通页与回收站均无裁切或横向溢出
 真实 Chrome 390px                                   Goal Tree → Goal 正文切换 PASS
 搜索“不同 AI”                                      显示 1 / 5；父级路径保留
 切换 Goal / 按需正文                                CORE；DOM 仅 1 份 Goal 正文
