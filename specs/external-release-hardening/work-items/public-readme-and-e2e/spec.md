@@ -32,6 +32,8 @@
 - README 没有旧静态 DB、兼容模式、nohup 或“当前 Session 会自动出现工具”的错误路径。
 - README 明确区分首次安装与已有安装更新；更新步骤包含先拉取源码、同内容安装入口、显式重启
   常驻 Web 和新开 Runtime Session，并说明不会自动重建 demo 或修改用户项目。
+- README 和已安装 Skill 都明确：对 Runtime 说“启动 GoalBoard”先检查并使用 managed service；
+  只有明确说“临时打开 GoalBoard”才使用会随终端退出的 `goalboard-web` 前台进程。
 - 所有截图来自验收构建，页面与 README 步骤一致。
 - 新用户路径不要求先手动构造 GoalBoard 数据。
 - 完整测试、pack dry-run、Skill 校验和关键浏览器流程通过。

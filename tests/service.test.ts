@@ -19,6 +19,8 @@ async function fixture() {
   let printOutput = "state = running\npid = 4242\n";
   let bootstrapInProgressCount = 0;
   let bootoutTransitionPrintCount = 0;
+  let healthCheckFailuresRemaining = 0;
+  let healthCheckCount = 0;
   const commands: string[][] = [];
   const manager = new GoalBoardWebServiceManager({
     homeDirectory: home,
@@ -26,6 +28,14 @@ async function fixture() {
     platform: "darwin",
     uid: 501,
     transitionDelayMilliseconds: 0,
+    async healthCheck() {
+      healthCheckCount += 1;
+      if (healthCheckFailuresRemaining > 0) {
+        healthCheckFailuresRemaining -= 1;
+        return false;
+      }
+      return true;
+    },
     async runCommand(file, args) {
       commands.push([file, ...args]);
       if (args[0] === "print") {
@@ -67,6 +77,8 @@ async function fixture() {
     setPrintOutput: (value: string) => { printOutput = value; },
     setBootstrapInProgressCount: (value: number) => { bootstrapInProgressCount = value; },
     setBootoutTransitionPrintCount: (value: number) => { bootoutTransitionPrintCount = value; },
+    setHealthCheckFailures: (value: number) => { healthCheckFailuresRemaining = value; },
+    healthCheckCount: () => healthCheckCount,
   };
 }
 
@@ -113,6 +125,58 @@ test("a loaded LaunchAgent whose process crashed is not reported as running", as
     const started = await item.manager.confirm({ plan_id: start.plan_id, decision: "confirmed" });
     assert.equal(started.detection.state, "running");
     assert.equal(item.commands.filter((command) => command[1] === "kickstart").length, 1);
+  } finally {
+    await rm(item.directory, { recursive: true, force: true });
+  }
+});
+
+test("start waits for the Web health endpoint and never reports a process-only success", async () => {
+  const delayed = await fixture();
+  try {
+    delayed.setHealthCheckFailures(3);
+    const install = await delayed.manager.prepare("install");
+    const installed = await delayed.manager.confirm({ plan_id: install.plan_id, decision: "confirmed" });
+    assert.equal(installed.status, "installed");
+    assert.equal(installed.detection.state, "running");
+    assert.equal(delayed.healthCheckCount(), 5);
+  } finally {
+    await rm(delayed.directory, { recursive: true, force: true });
+  }
+
+  const unavailable = await fixture();
+  try {
+    unavailable.setHealthCheckFailures(30);
+    const install = await unavailable.manager.prepare("install");
+    await assert.rejects(
+      () => unavailable.manager.confirm({ plan_id: install.plan_id, decision: "confirmed" }),
+      (error: unknown) => error instanceof GoalBoardWebServiceError
+        && error.code === "service.command_failed"
+        && /健康检查仍未通过/.test(error.message),
+    );
+    assert.equal(unavailable.healthCheckCount(), 25);
+    await assert.rejects(stat(unavailable.manager.plistPath));
+    await assert.rejects(stat(unavailable.manager.receiptPath));
+  } finally {
+    await rm(unavailable.directory, { recursive: true, force: true });
+  }
+});
+
+test("service status reports a running process with an unavailable page as unhealthy and start repairs it", async () => {
+  const item = await fixture();
+  try {
+    const install = await item.manager.prepare("install");
+    await item.manager.confirm({ plan_id: install.plan_id, decision: "confirmed" });
+
+    item.setHealthCheckFailures(1);
+    const start = await item.manager.prepare("start");
+    assert.equal(start.detection.state, "unhealthy");
+    assert.equal(start.status, "ready");
+    assert.match(start.detection.message, /页面暂时不可访问/);
+
+    const started = await item.manager.confirm({ plan_id: start.plan_id, decision: "confirmed" });
+    assert.equal(started.status, "started");
+    assert.equal(started.detection.state, "running");
+    assert.ok(item.commands.some((command) => command[1] === "kickstart"));
   } finally {
     await rm(item.directory, { recursive: true, force: true });
   }
