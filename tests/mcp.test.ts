@@ -266,6 +266,30 @@ describe("mcp server", () => {
     assert.equal((result as { error: { code: number } }).error.code, -32601);
   });
 
+  it("serves empty resource and resource-template lists for clients that enumerate them", async () => {
+    const server = new GoalBoardServer();
+    const resources = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/list",
+      params: {},
+    });
+    assert.deepEqual(
+      (resources as { result: { resources: unknown[] } }).result.resources,
+      [],
+    );
+    const templates = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "resources/templates/list",
+      params: {},
+    });
+    assert.deepEqual(
+      (templates as { result: { resourceTemplates: unknown[] } }).result.resourceTemplates,
+      [],
+    );
+  });
+
   it("serves one filtered V1 Goal Contract with a stable Web URL", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-v1-"));
     const databasePath = path.join(directory, "goalboard.db");
