@@ -1780,6 +1780,9 @@ export class GoalBoardServer {
     if (method === "resources/list") {
       return { jsonrpc: "2.0", id: msgId, result: { resources: [] } };
     }
+    if (method === "resources/templates/list") {
+      return { jsonrpc: "2.0", id: msgId, result: { resourceTemplates: [] } };
+    }
     return {
       jsonrpc: "2.0",
       id: msgId,
