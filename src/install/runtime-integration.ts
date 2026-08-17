@@ -198,7 +198,10 @@ const CODEX_ADAPTER: RuntimeAdapter = {
   inspectConfig: inspectCodexConfig,
   connectConfig: connectCodexConfig,
   removeConfig: removeCodexConfig,
-  restartInstructions: ["关闭并重新打开 Codex Session，使新的 MCP 和 Skill 配置生效。"],
+  restartInstructions: [
+    "关闭并重新打开 Codex Session（MCP 和 Skill 配置只在启动时加载，不重开不会生效）。",
+    "重启后明确说「继续用 GoalBoard」并指定要关联的项目（例如「关联『把 GoalBoard V1 做成可用产品』」）——Runtime 不会自动关联项目，必须等你的明确指令。",
+  ],
 };
 
 const CLAUDE_CODE_ADAPTER: RuntimeAdapter = {
@@ -215,7 +218,10 @@ const CLAUDE_CODE_ADAPTER: RuntimeAdapter = {
   inspectConfig: inspectClaudeConfig,
   connectConfig: connectClaudeConfig,
   removeConfig: removeClaudeConfig,
-  restartInstructions: ["关闭并重新打开 Claude Code Session，使新的 MCP 和 Skill 配置生效。"],
+  restartInstructions: [
+    "关闭并重新打开 Claude Code Session（MCP 和 Skill 配置只在启动时加载，不重开不会生效）。",
+    "重启后明确说「继续用 GoalBoard」并指定要关联的项目（例如「关联『把 GoalBoard V1 做成可用产品』」）——Runtime 不会自动关联项目，必须等你的明确指令。",
+  ],
 };
 
 const ADAPTERS: readonly RuntimeAdapter[] = [CODEX_ADAPTER, CLAUDE_CODE_ADAPTER];

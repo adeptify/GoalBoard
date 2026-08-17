@@ -234,7 +234,7 @@ export async function installGoalBoardHome(
       launchers,
       next_steps: {
         message:
-          "GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入和项目设置必须通过后续单独的显式流程完成。",
+          "GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入和项目设置必须通过后续单独的显式流程完成。两个常见坑：goalboard-web 是前台进程，关掉运行它的终端窗口前端就会关闭；接入 Codex / Claude Code 后必须重开会话，MCP 和 Skill 才会生效。重开后在对话里明确说「继续用 GoalBoard」并告诉我关联哪个项目——Runtime 不会自动关联项目，必须等你的明确指令。",
         web_command: [launchers.web, "--home", homeDirectory],
       },
       written_paths: writtenPaths,

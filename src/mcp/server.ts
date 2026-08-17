@@ -833,7 +833,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_resolve",
     description:
-      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；未绑定时返回当前对话应让用户选择或创建项目的结果。",
+      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；未绑定时返回当前对话应让用户选择或创建项目的结果。返回 suggested 时必须向用户展示候选项目名和通用原因并询问是否绑定；返回 unbound 时必须展示项目列表并询问选择或新建；任何情况下都不要自动绑定或猜测项目。",
     inputSchema: {
       type: "object",
       properties: {},
@@ -843,7 +843,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_list_projects",
     description:
-      "列出 GoalBoard 自己管理的项目、当前 Runtime 工作入口状态及宿主建议；不暴露数据库路径，也不创建或修改绑定。",
+      "列出 GoalBoard 自己管理的项目、当前 Runtime 工作入口状态及宿主建议；不暴露数据库路径，也不创建或修改绑定。给用户展示时只显示项目名，不要展示 project_id 或数据库路径。",
     inputSchema: {
       type: "object",
       properties: {},
@@ -853,7 +853,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_reject_suggestion",
     description:
-      "用户在当前 Runtime 对话明确拒绝一个宿主建议项目后，停止在当前 Session 重复建议它；不绑定、不删除项目，也不影响其他 Session。",
+      "用户在当前 Runtime 对话明确拒绝一个宿主建议项目后，停止在当前 Session 重复建议它；不绑定、不删除项目，也不影响其他 Session。user_confirmed=true 只能用于用户在当前对话明确说出拒绝（例如「不是这个」）；沉默、超时或含糊回答不能调用本工具。",
     inputSchema: {
       type: "object",
       properties: {
@@ -867,7 +867,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_bind",
     description:
-      "用户在当前 Runtime 对话明确选择项目后，绑定当前宿主工作入口；已有不同绑定时还必须明确确认切换。",
+      "用户在当前 Runtime 对话明确选择项目后，绑定当前宿主工作入口；已有不同绑定时还必须明确确认切换。user_confirmed=true 只能用于用户在当前对话明确说出选择；切换项目必须先单独确认 rebind_confirmed=true，不能把「提到另一个项目」当成切换。",
     inputSchema: {
       type: "object",
       properties: {
@@ -882,7 +882,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_unbind",
     description:
-      "用户在当前 Runtime 对话明确要求后，解除当前工作入口与项目的绑定；不会删除项目、数据库或其他 Runtime 的绑定。",
+      "用户在当前 Runtime 对话明确要求后，解除当前工作入口与项目的绑定；不会删除项目、数据库或其他 Runtime 的绑定。用户必须明确说出「解绑/停用」，不能把删除、切换项目或其他意图当作解绑。",
     inputSchema: {
       type: "object",
       properties: {
@@ -895,7 +895,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_create_and_bind",
     description:
-      "用户在当前 Runtime 对话明确要求新建项目时，在 GoalBoard 自己的数据目录创建项目并绑定当前工作入口；不修改项目文件或 Runtime 配置。",
+      "用户在当前 Runtime 对话明确要求新建项目时，在 GoalBoard 自己的数据目录创建项目并绑定当前工作入口；不修改项目文件或 Runtime 配置。调用前必须先向用户复述项目名并取得明确确认。",
     inputSchema: {
       type: "object",
       properties: {

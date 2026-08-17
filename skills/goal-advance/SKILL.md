@@ -48,6 +48,12 @@ This checkpoint is editable, not a verdict. User-confirmed facts, project facts,
 
 ## 1. Explicitly resolve the current project
 
+用户刚完成安装、重开 Session 后第一次提到 GoalBoard 时，先用一两句话说明关联规则，再开始解析：
+
+- “GoalBoard 已经装好了。接下来需要你在对话里明确说‘用 GoalBoard / 关联某项目’，我才会建立项目关联——我不会自动关联，也不会从目录或历史记录猜测。”
+- 如果用户只说“装好了”“试试看”或“接着搞”，先请他给出明确指令：使用 GoalBoard、关联指定项目，或新建项目。
+- 用户给出明确指令后，再按下面的解析流程走；在此之前不调用任何绑定或创建工具。
+
 At the beginning of a user-invoked GoalBoard flow, call `goalboard_v1_context_resolve`.
 
 - If the result is `bound`, use the returned connection and `board_id`. Do not substitute another Board or database.
@@ -72,6 +78,27 @@ When the user explicitly asks to manage projects, stay in this same conversation
 - To delete a managed project, first identify the exact named project and ask a separate, unmistakable confirmation that its GoalBoard data should be erased. Only then call `goalboard_v1_project_delete` with `delete_confirmed=true` and a fresh `idempotency_key`. It rejects a project with a valid Claim or unfinished Run, removes every binding only after the check, and never accepts a raw database path. Reuse the same key only to retry the same deletion; if its returned cleanup state is `pending`, report that cleanup has not yet finished and retry that exact request rather than reconnecting it.
 
 Do not treat “use another project”, “not this suggestion”, “stop using GoalBoard here”, and “delete this project” as the same consent. Switching uses the existing `context_bind` plus its separate `rebind_confirmed=true`; suggestion rejection, unbinding, and deletion have their own confirmations.
+
+### 1.1 项目关联提示模板
+
+每次需要用户决定项目关联时，用「一句现状 + 一个明确的问题」向用户说明，不展示数据库路径、`project_id` 或宿主原始线索。按场景套用下面的提示：
+
+| 场景 | 用户会看到的提示 |
+| --- | --- |
+| 有候选项目（`suggested`） | 「我找到一个可能相关的项目：{项目名}。它只是候选，还没有关联。要把当前会话关联到它吗？」只有用户明确说「用这个」后才调用 `context_bind` |
+| 多个候选 | 列出候选名后问「要关联哪一个？」一次只问一个决定 |
+| 没有候选（`unbound`，有项目列表） | 「当前会话还没有关联项目。现有项目：{列表}。要打开其中一个，还是新建一个？」 |
+| 用户选择已有项目 | 复述后确认：「好，把当前会话关联到「{项目名}」，可以吗？」用户明确同意后才调用 `context_bind` |
+| 用户要新建项目 | 先问「新建项目叫什么名字？」，拿到名字后复述并确认「创建项目「{名字}」并关联当前会话？」 |
+| 用户说「就新建当前这个/直接用当前目录」 | 用宿主工作目录名生成默认项目名（例如当前目录 `pet-app` 提议《pet-app》），复述「把当前目录新建为项目《pet-app》并关联当前会话，可以吗？」，用户明确同意后才调用 `context_create_and_bind` |
+| 已绑定 A，用户提到 B | 「当前会话关联的是「{A}」。要切换到「{B}」吗？」切换必须单独确认；「提到 B」不等于「要切换」 |
+| 用户拒绝候选 | 「好的，这个会话不再提示「{项目名}」，不会删除或隐藏它。」然后调用 `context_reject_suggestion` |
+| 用户要停用当前关联 | 「解除当前会话与「{项目名}」的关联，数据会保留。确认吗？」 |
+| 用户要删除项目 | 「删除项目「{项目名}」会清掉它的 GoalBoard 数据，且无法撤销；有未结束工作时系统会拒绝。确认删除吗？」 |
+
+不算确认：沉默、超时、「不是现在」「你看着办」和模糊表达都不是确认。只有用户在当前对话明确说出同意或拒绝，才能传 `user_confirmed=true`。
+
+不展示：数据库路径、`project_id`、宿主提供的原始线索（目录、仓库名、会话标题）。只展示用户可读的项目名和通用原因。
 
 ## 2. Route the user's request in the same conversation
 
