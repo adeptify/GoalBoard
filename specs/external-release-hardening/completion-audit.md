@@ -44,8 +44,9 @@ Work Item spec 为准。
    因此只有 HTTP、渲染结构和自动化证据，不能标记视觉通过。
 2. **README 真实截图更新。** 与当前五段正文和新版 demo 内容不一致的旧决定中心截图已经停止引用；
    必须在真实浏览器验收构建中重拍 Goal Tree、决定中心和设置页，不能用合成图代替。
-3. **增量进入 main。** onboarding 主改动已经由 PR #5 合入 `main`；新版 demo 和更新文档位于
-   PR #6，等待具有写权限的 reviewer 批准。
+3. **增量进入 main。** onboarding 主改动与新版 demo/更新文档已经由 PR #5、#6 合入 `main`；
+   Runtime 自然语言启动路由与服务健康就绪修复位于 PR #7，GitHub 判定可合并，仍在等待 main
+   规则要求的 reviewer 批准。
 4. **GoalBoard 验收记录回写。** 当前 Session 没有加载 `goalboard_v1_*` 工具。按 Runtime Skill
    不能用 CLI、SQLite 或 management MCP 代替；需要在工具已加载的新 Session 中连接用户选择的项目后写回。
 
