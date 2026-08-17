@@ -39,9 +39,9 @@ Work Item spec 为准。
 
 ## 仍未完成的交付门槛
 
-1. **增量进入 main。** onboarding 主改动与新版 demo/更新文档已经由 PR #5、#6 合入 `main`；
-   Runtime 自然语言启动路由与服务健康就绪修复位于 PR #7，GitHub 判定可合并，仍在等待 main
-   规则要求的 reviewer 批准。
+1. **增量进入 main。** onboarding、demo/更新文档、Runtime 自然语言启动路由与服务健康就绪修复
+   已由 PR #5、#6、#7 合入 `main`；真实视觉验收发现并修复的 1440px 顶栏裁切与当前截图位于
+   PR #8，等待 main 规则要求的 reviewer 批准。
 2. **GoalBoard 验收记录回写。** 当前 Session 没有加载 `goalboard_v1_*` 工具。按 Runtime Skill
    不能用 CLI、SQLite 或 management MCP 代替；需要在工具已加载的新 Session 中连接用户选择的项目后写回。
 
