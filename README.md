@@ -62,6 +62,11 @@ pnpm install:local
 2. 在“设置 → Runtime”中选择 Codex 或 Claude Code，先看改动预览，再确认接入。
 3. **新开一个 Runtime Session**，说“继续用 GoalBoard”。Runtime 只在 Session 启动时读取 MCP 和 Skill，所以当前对话不会凭空出现刚安装的工具。
 
+接入生效后也可以直接对 Runtime 说“启动 GoalBoard”。它会先检查受管理的服务状态：macOS
+首次启用时会说明这是登录后自启、关闭终端后仍运行的用户级后台服务，并在你明确确认后安装；
+已经运行时只返回页面地址。只有明确说“临时打开 GoalBoard”，才会使用随当前终端或 Session
+结束的前台进程。非 macOS 目前没有系统级常驻服务，Runtime 会如实说明并询问是否临时打开。
+
 想从自己的想法开始时，不需要先在网页里填表。新 Session 接入后直接说：
 
 > 用 GoalBoard 新建一个项目，帮我把“让朋友第一次安装就能顺利用起来”澄清成 Goal Tree。
@@ -95,6 +100,24 @@ pnpm install:local
 ```
 
 这份项目在 catalog 中明确标记为 `regenerable_demo`，与 `user`、`migrated_user` 用户数据分开。重复创建会打开已有 demo；重建会清除 demo 内的改动；删除和普通卸载都只清理可再生 demo，不会碰用户项目。仓库开发和截图也可以继续使用 `examples/seed-demo.mts`，它调用的是同一套分类和重建逻辑。
+
+## 启动 Web：常驻或临时
+
+已经接入 GoalBoard Skill 的 Runtime 中，推荐直接说：
+
+> 启动 GoalBoard
+
+Runtime 会先只读检查 `goalboard service status`，不会直接拉起一个容易随 Session 消失的前台
+进程。macOS 上，未安装常驻服务时会先说明它将修改用户级 LaunchAgent、登录后自启且关闭终端
+后仍运行，得到明确确认后才安装；已停止时启动，已运行时只返回地址，旧配置则先说明修复内容再
+确认。服务命令会等到页面健康可访问后才报告成功。
+
+如果只想当前终端临时使用，请明确说：
+
+> 临时打开 GoalBoard
+
+这会运行前台 `goalboard-web`；终端或 Runtime Session 关闭后页面也会停止。非 macOS 当前只支持
+这种前台方式，不会用 `nohup` 或普通后台 shell 冒充系统级常驻服务。
 
 ## 开发与手动启动
 

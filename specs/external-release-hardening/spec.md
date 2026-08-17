@@ -93,6 +93,8 @@ GoalBoard Draft：`draft-44163d37-ebe8-411b-9220-ced1c0b05040`。
 4. `managed-web-service`：macOS LaunchAgent 的 preview/confirm/status/remove 与 UI/CLI。
 5. `safe-uninstall-and-demo-data`：数据分类、安全卸载、显式 demo 创建/重置/移除。
 6. `public-readme-and-e2e`：真实截图、README、发行包全新安装/重启/升级/卸载端到端验收。
+7. `runtime-service-launch-routing`：把“启动 GoalBoard”路由到受管理的常驻服务，把明确的“临时打开”
+   路由到前台 Web，并保证 Runtime 不会把服务管理误当作 Goal lifecycle fallback。
 
 依赖顺序：1 → 2；3 与 1 可独立；4 依赖 3 的稳定 launcher；5 依赖项目数据分类；6 最后
 消费全部真实行为。共享 catalog、MCP、README 和跨 Work Item 状态由主 Session 串行修改。
@@ -124,6 +126,8 @@ GoalBoard Draft：`draft-44163d37-ebe8-411b-9220-ced1c0b05040`。
 - 旧静态 DB 配置可在用户确认的新接入计划中迁走，生产代码与 UI 不再保留旧运行模式。
 - 真实 pack E2E 覆盖安装、Runtime 接入、重启续接、项目解析、对话确认、服务恢复、同版本
   刷新和安全卸载。
+- Runtime 收到“启动 GoalBoard”会先检查 managed service；macOS 首次常驻安装/旧配置修复先说明
+  影响并确认，只有明确“临时打开”才启动会随终端退出的前台 Web，非 macOS 不假装后台化。
 
 ## 验证
 

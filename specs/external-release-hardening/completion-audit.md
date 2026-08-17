@@ -13,7 +13,8 @@ Work Item spec 为准。
 | 同版本内容变化不能继续跳过 | release 记录内容摘要；变化时原子刷新，失败回滚 | `tests/install.test.ts` 同版本刷新用例；本机多次返回“同版本内容已刷新” | 通过 |
 | 安装/接入后为什么要重启必须说清楚 | CLI、Web 接入预览、Skill 与 README 都说明 Runtime 只在 Session 启动时读取 MCP/Skill | `tests/runtime-integration.test.ts`、`tests/web.test.ts`、`README.md` | 通过 |
 | 前台 Web 随终端或 Codex 会话退出 | macOS 使用用户级 LaunchAgent，RunAtLoad/KeepAlive，日志可诊断；其他平台不假装常驻 | `tests/service.test.ts`；本机 `service status` 为 `running`，`/health` 为 200 | 通过 |
-| 更新后旧 Web 进程继续跑旧 release | 安装不静默杀进程，公开 `service restart --confirm` 等待卸载并验证新进程 | `tests/service.test.ts`、`tests/e2e.test.ts`；本机真实 restart 成功 | 通过 |
+| 用户对 Runtime 说“启动 GoalBoard”不能误开前台进程 | Skill 先查 managed service；首次常驻安装/旧配置修复先说明并确认，已停止则启动，已运行只返回地址；只有明确“临时打开”才走前台，非 macOS 不假装后台化 | `skills/goal-advance/references/service-start.md`；`tests/mcp.test.ts`、`tests/e2e.test.ts`；本机已安装 Codex Skill 与源码 SHA-256 一致 | 通过 |
+| 更新后旧 Web 进程继续跑旧 release，或进程已起但页面还打不开 | 安装不静默杀进程；公开 `service restart --confirm` 等待卸载、LaunchAgent running 和 `/health` 可访问后才返回 | `tests/service.test.ts` 延迟/失败健康检查、`tests/e2e.test.ts`；本机 restart 后立即 curl 成功 | 通过 |
 | Codex stdio MCP 没有稳定 Session ID | 不把目录或 MCP 进程伪装成 Session；目录只给候选，用户确认后当前调用流继续 | `openai/codex#19937` 为 `CLOSED / NOT_PLANNED`；`tests/mcp.test.ts`、`tests/project-catalog.test.ts` | 通过 |
 | 新 Session 与项目关联不能靠猜 | 有 Session ID 时恢复该 Session；没有时同目录历史仍返回 `suggested` 并再次询问 | Runtime Skill、`tests/mcp.test.ts` fresh-session 用例 | 通过 |
 | 符号链接与一目录多项目 | workspace 使用 canonical realpath，可关联多个项目；普通选择不设默认，显式默认是单独决定 | `tests/project-catalog.test.ts` canonical workspace routing 用例 | 通过 |
@@ -52,11 +53,13 @@ Work Item spec 为准。
 
 ```text
 pnpm typecheck                                      PASS
-pnpm test                                           PASS (140/140)
+pnpm test                                           PASS (142/142)
 Skill quick_validate.py                             PASS
 pnpm pack --dry-run --json                          PASS
 packed release fresh-install E2E                    PASS
 本机 install:local + demo reset + service restart   PASS
+/service restart 后立即访问 /health                 PASS
+已安装 Codex Skill 与源码内容摘要                   MATCH
 /health                                              200, project_count=2
 demo tree / decisions / trash                       200 / 200 / 200
 demo 导航                                            待决定 2 / 回收站 1

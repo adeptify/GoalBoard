@@ -189,8 +189,15 @@ describe("mcp server", () => {
       path.join(ROOT, "skills/goal-advance/references/protocol.md"),
       "utf8",
     );
+    const serviceStart = fs.readFileSync(
+      path.join(ROOT, "skills/goal-advance/references/service-start.md"),
+      "utf8",
+    );
     assert.match(skill, /one public GoalBoard entry for the Runtime currently talking with the user/);
-    assert.match(skill, /Use only the host-provided `goalboard_v1_\*` Runtime MCP tools/);
+    assert.match(skill, /For every Goal lifecycle operation, use only the host-provided `goalboard_v1_\*` Runtime MCP tools/);
+    assert.match(skill, /“启动 GoalBoard” or “打开 GoalBoard”/);
+    assert.match(skill, /Only use the foreground `goalboard-web` launcher when the user explicitly says “临时打开 GoalBoard”/);
+    assert.match(skill, /Starting Web does not select a project or authorize any Goal change/);
     assert.match(skill, /does not open another Runtime, dispatch a separate Session/);
     assert.match(skill, /edit the user's project files/);
     assert.match(skill, /Never infer a project from Git, a directory, a repository name/);
@@ -251,8 +258,17 @@ describe("mcp server", () => {
     assert.match(protocol, /user_confirmed=true/);
     assert.match(protocol, /pending_relation_ids/);
     assert.match(protocol, /do not create another Board, change configuration, swap databases, or use a CLI fallback/);
+    assert.match(serviceStart, /service status --home "\$HOME\/\.goalboard" --json/);
+    assert.match(serviceStart, /关闭终端后页面仍会运行，登录后会自动启动/);
+    assert.match(serviceStart, /`stopped`.*`service start --confirm`/s);
+    assert.match(serviceStart, /`unhealthy`.*`service restart --confirm`/s);
+    assert.match(serviceStart, /`needs_repair`.*explicit confirmation/s);
+    assert.match(serviceStart, /`unsupported`.*no GoalBoard system-level persistent-service integration/s);
+    assert.match(serviceStart, /Do not add `nohup`, `&`, `disown`/);
+    assert.match(serviceStart, /Goal lifecycle remains available only through host-provided `goalboard_v1_\*` MCP tools/);
     assert.doesNotMatch(skill, /GOALBOARD_DATABASE/);
     assert.doesNotMatch(protocol, /GOALBOARD_DATABASE/);
+    assert.doesNotMatch(serviceStart, /GOALBOARD_DATABASE/);
   });
 
   it("Runtime Skill defines natural, resumable, and structured forward conversations", () => {

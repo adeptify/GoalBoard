@@ -16,6 +16,7 @@ export type GoalBoardWebServiceState =
   | "absent"
   | "stopped"
   | "running"
+  | "unhealthy"
   | "needs_repair"
   | "conflict";
 
@@ -57,6 +58,8 @@ export interface GoalBoardWebServiceManagerOptions {
   platform?: NodeJS.Platform;
   uid?: number;
   runCommand?: (file: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  /** Returns true only after the managed Web endpoint can serve requests. */
+  healthCheck?: () => Promise<boolean>;
   /** Tests may remove the real launchd transition wait without changing retry behavior. */
   transitionDelayMilliseconds?: number;
 }
@@ -97,6 +100,7 @@ export class GoalBoardWebServiceManager {
   private readonly uid: number;
   private readonly nodeExecutablePath: string;
   private readonly runCommand: NonNullable<GoalBoardWebServiceManagerOptions["runCommand"]>;
+  private readonly healthCheck: NonNullable<GoalBoardWebServiceManagerOptions["healthCheck"]>;
   private readonly transitionDelayMilliseconds: number;
   private readonly plans = new Map<string, PreparedServicePlan>();
 
@@ -114,6 +118,7 @@ export class GoalBoardWebServiceManager {
     this.stdoutLog = path.join(this.homeDirectory, "logs", "web-service.log");
     this.stderrLog = path.join(this.homeDirectory, "logs", "web-service.error.log");
     this.runCommand = options.runCommand ?? runCommand;
+    this.healthCheck = options.healthCheck ?? goalBoardWebHealthCheck;
     this.transitionDelayMilliseconds = Math.max(0, options.transitionDelayMilliseconds ?? 250);
   }
 
@@ -154,11 +159,14 @@ export class GoalBoardWebServiceManager {
     if (plist !== this.plistSource()) {
       return this.detection("needs_repair", true, true, running, command, "GoalBoard Web 常驻服务使用旧配置，可预览并确认修复");
     }
-    return running
-      ? this.detection("running", true, true, true, command, "GoalBoard Web 常驻服务正在运行")
-      : this.detection("stopped", true, true, false, command, status.code === 0
+    if (!running) {
+      return this.detection("stopped", true, true, false, command, status.code === 0
         ? "GoalBoard Web 常驻服务已加载但进程未运行，请查看错误日志"
         : "GoalBoard Web 常驻服务已安装但当前未运行");
+    }
+    return await this.healthCheck()
+      ? this.detection("running", true, true, true, command, "GoalBoard Web 常驻服务正在运行，页面已可访问")
+      : this.detection("unhealthy", true, true, true, command, "GoalBoard Web 进程正在运行，但页面暂时不可访问；可受控重启并查看错误日志");
   }
 
   async prepare(action: GoalBoardWebServiceAction): Promise<GoalBoardWebServicePlan> {
@@ -289,6 +297,7 @@ ${args}
       if (kickstart.code !== 0) throw commandError("启动", kickstart);
     }
     await this.waitForRunning();
+    await this.waitForReady();
   }
 
   private async stop(): Promise<void> {
@@ -340,6 +349,20 @@ ${args}
     }
   }
 
+  private async waitForReady(): Promise<void> {
+    let ready = await this.healthCheck();
+    for (let attempt = 1; !ready && attempt < 25; attempt += 1) {
+      await delay(this.transitionDelayMilliseconds);
+      ready = await this.healthCheck();
+    }
+    if (!ready) {
+      throw new GoalBoardWebServiceError(
+        "service.command_failed",
+        `GoalBoard Web 进程已经启动，但页面健康检查仍未通过；请查看错误日志：${this.stderrLog}`,
+      );
+    }
+  }
+
   private async launchctl(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
     return this.runCommand("/bin/launchctl", args);
   }
@@ -387,7 +410,7 @@ function planStatus(action: GoalBoardWebServiceAction, detection: GoalBoardWebSe
   if (action === "install") return detection.state === "running" ? "no_change" : "ready";
   if (action === "start") {
     if (detection.state === "absent" || detection.state === "needs_repair") return "conflict";
-    return detection.running ? "no_change" : "ready";
+    return detection.state === "running" ? "no_change" : "ready";
   }
   if (action === "stop") return detection.running ? "ready" : "no_change";
   if (action === "restart") return detection.owned ? "ready" : "conflict";
@@ -403,7 +426,7 @@ function serviceChanges(
   if (status !== "ready") return [];
   if (action === "install") return [
     ...(detection.state === "absent" || detection.state === "needs_repair" ? [{ operation: "create" as const, target: plistPath }] : []),
-    { operation: "start", target: SERVICE_LABEL },
+    { operation: detection.state === "unhealthy" ? "restart" : "start", target: SERVICE_LABEL },
   ];
   return [{ operation: action, target: action === "remove" ? plistPath : SERVICE_LABEL }];
 }
@@ -433,6 +456,20 @@ async function runCommand(file: string, args: string[]): Promise<{ code: number;
   } catch (error) {
     const failure = error as Error & { code?: number | string; stdout?: string; stderr?: string };
     return { code: typeof failure.code === "number" ? failure.code : 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? failure.message };
+  }
+}
+
+async function goalBoardWebHealthCheck(): Promise<boolean> {
+  try {
+    const response = await fetch("http://127.0.0.1:4173/health", {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { status?: unknown };
+    return body.status === "ok";
+  } catch {
+    return false;
   }
 }
 

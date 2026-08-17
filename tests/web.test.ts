@@ -794,11 +794,13 @@ test("Web diagnostics previews and confirms the same managed Web service lifecyc
   mkdirSync(userHome, { recursive: true });
   writeFileSync(join(fixture.homeDirectory, "bin", "goalboard-web"), "#!/bin/sh\nexit 0\n");
   let loaded = false;
+  let healthy = true;
   const service = new GoalBoardWebServiceManager({
     homeDirectory: fixture.homeDirectory,
     userHomeDirectory: userHome,
     platform: "darwin",
     uid: 501,
+    async healthCheck() { return healthy; },
     async runCommand(_file, args) {
       if (args[0] === "print") return { code: loaded ? 0 : 113, stdout: loaded ? "state = running\npid = 4242\n" : "", stderr: loaded ? "" : "not found" };
       if (args[0] === "bootstrap") loaded = true;
@@ -842,6 +844,13 @@ test("Web diagnostics previews and confirms the same managed Web service lifecyc
 
     const status = (await (await webFetch(`${origin}/api/settings/web-service`)).json()) as { state: string };
     assert.equal(status.state, "running");
+
+    healthy = false;
+    const unhealthyStatus = (await (await webFetch(`${origin}/api/settings/web-service`)).json()) as { state: string };
+    assert.equal(unhealthyStatus.state, "unhealthy");
+    const unhealthyPage = await (await webFetch(`${origin}/settings/diagnostics`)).text();
+    assert.match(unhealthyPage, /进程运行中，页面不可用/);
+    assert.match(unhealthyPage, /data-web-service-action="restart"/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

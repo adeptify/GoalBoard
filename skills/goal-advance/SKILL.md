@@ -1,6 +1,6 @@
 ---
 name: goal-advance
-description: Use GoalBoard from the current Runtime conversation to connect a user-selected project, clarify a rough idea, choose available work, and keep evidence and decisions in the shared GoalBoard truth source.
+description: Use GoalBoard from the current Runtime conversation to start or temporarily open its local Web UI, connect a user-selected project, clarify a rough idea, choose available work, and keep evidence and decisions in the shared GoalBoard truth source. Use when the user explicitly asks to start, open, use, connect, create, continue, or advance GoalBoard.
 ---
 
 # GoalBoard Runtime
@@ -9,13 +9,21 @@ This is the one public GoalBoard entry for the Runtime currently talking with th
 
 The current Runtime stays in the current conversation. GoalBoard supplies shared state and atomic lifecycle operations through MCP; it does not open another Runtime, dispatch a separate Session, require a Web page, or edit the user's project files.
 
+## 0. Route an explicit request to start the Web UI
+
+Treat Web service management as a separate user-requested setup action, not as Goal work. When the user says “启动 GoalBoard” or “打开 GoalBoard”, first inspect the installed managed service. On macOS, prefer the user-level persistent service; it survives terminal or Runtime closure and starts again after login. Installing or repairing that persistent service changes the user's LaunchAgent configuration, so explain the effect and obtain explicit confirmation before the first install or a repair.
+
+Only use the foreground `goalboard-web` launcher when the user explicitly says “临时打开 GoalBoard”, or explicitly accepts that temporary option after being told persistent service is unavailable. Never use `nohup`, `&`, or another detached shell as a substitute for a supported service. Read [references/service-start.md](references/service-start.md) and follow its state table, commands, confirmations, and failure explanations.
+
+After a successful managed start, return `http://127.0.0.1:4173` only when the service command has confirmed the page health check. Starting Web does not select a project or authorize any Goal change; continue with project resolution only if the user also asked to use GoalBoard for project work.
+
 ## Non-negotiable boundaries
 
-- Use only the host-provided `goalboard_v1_*` Runtime MCP tools. Do not call the CLI, open SQLite directly, or use a management MCP tool as a fallback.
+- For every Goal lifecycle operation, use only the host-provided `goalboard_v1_*` Runtime MCP tools. Do not call the CLI, open SQLite directly, or use a management MCP tool as a fallback. The explicit Web service route above may use only the public `goalboard service` or foreground launcher commands described in its reference; that exception grants no Goal data access.
 - Every Goal lifecycle change goes through MCP. The only project setup write is an explicitly user-confirmed creation under GoalBoard's own `~/.goalboard` data directory; it does not write the user project or any Runtime configuration.
 - Goal 删除是可恢复的“移入回收站”，不是物理清除。只有用户在当前对话明确说要删除或恢复指定 Goal 时，才能传 `user_confirmed=true` 调用回收站写工具；“清理一下”“可能不需要”之类含糊说法先追问。
 - Never infer a project from Git, a directory, a repository name, a project name, or conversation text. Never invent a stable Runtime work-context ID or fabricate host clues. A host may return non-authoritative suggestions, but they are a question for the user, never a binding.
-- Web is optional. Do not proactively open it, ask the user to open it, or make it a prerequisite for project setup, clarification, execution, review, or recovery. Offer a returned Goal link only when the user asks to inspect the Board.
+- Web is optional. Do not proactively open it, ask the user to open it, or make it a prerequisite for project setup, clarification, execution, review, or recovery. An explicit user request to start or open Web follows section 0. Offer a returned Goal link only when the user asks to inspect the Board.
 - The Runtime may carry a user decision made in this conversation through `goalboard_v1_goal_tree_decide`. Set `user_confirmed=true` only after explicit user words and provide a faithful `confirmation_summary`; never invent a user identity, Session ID, message reference, or confirmation.
 
 `role` is only the kind of work that the current Runtime is doing for one MCP operation. It does not mean a different Runtime or a different Session must take over.

@@ -214,6 +214,9 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.match(packedReadme, /goalboard_v1_context_resolve/);
     assert.match(packedReadme, /git pull --ff-only/);
     assert.match(packedReadme, /service restart/);
+    assert.match(packedReadme, /直接对 Runtime 说“启动 GoalBoard”/);
+    assert.match(packedReadme, /只有明确说“临时打开 GoalBoard”/);
+    assert.match(packedReadme, /非 macOS 目前没有系统级常驻服务/);
     assert.match(packedReadme, /demo reset --confirm/);
     assert.match(packedReadme, /用户项目、Runtime 配置和 demo 都不会被自动改写/);
     assert.match(packedReadme, /明确.*确认|显式/);
@@ -263,6 +266,12 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       });
       assert.equal(runtimeConfirm.status, 200, await runtimeConfirm.text());
       assert.match(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), /GOALBOARD_RUNTIME_ID = "codex"/);
+      const installedServiceStart = await readFile(
+        join(userHome, ".codex", "skills", "goal-advance", "references", "service-start.md"),
+        "utf8",
+      );
+      assert.match(installedServiceStart, /service status/);
+      assert.match(installedServiceStart, /临时打开 GoalBoard/);
 
       const claudePlanResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/plan", { action: "connect" });
       assert.equal(claudePlanResponse.status, 200);

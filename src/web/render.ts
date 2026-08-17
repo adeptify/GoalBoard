@@ -5060,12 +5060,14 @@ function renderDiagnosticsSettings(view: GoalBoardSettingsView): string {
       ? { label: "尚未安装本体", tone: "warning" }
       : { label: "安装清单无效", tone: "danger" };
   const launchers = diagnostics.launchers.map((launcher) => `<li><span>${icon(launcher.state === "ready" ? "check" : "blocked")}<strong>${launcher.name}</strong><small>${escapeHtml(launcher.path)}</small></span><span class="settings-state settings-state--${launcher.state === "ready" ? "success" : "danger"}">${launcher.state === "ready" ? "可用" : "缺失"}</span></li>`).join("");
-  const serviceTone = service.state === "running" ? "success" : service.state === "stopped" || service.state === "absent" ? "warning" : "danger";
-  const serviceLabel = service.state === "running" ? "运行中" : service.state === "stopped" ? "已安装，未运行" : service.state === "absent" ? "未启用" : service.state === "unsupported" ? "当前系统不支持" : service.state === "conflict" ? "配置冲突" : "需要修复";
+  const serviceTone = service.state === "running" ? "success" : service.state === "stopped" || service.state === "absent" || service.state === "unhealthy" ? "warning" : "danger";
+  const serviceLabel = service.state === "running" ? "运行中" : service.state === "stopped" ? "已安装，未运行" : service.state === "unhealthy" ? "进程运行中，页面不可用" : service.state === "absent" ? "未启用" : service.state === "unsupported" ? "当前系统不支持" : service.state === "conflict" ? "配置冲突" : "需要修复";
   const serviceActions = service.state === "running"
     ? [["restart", "重启"], ["stop", "停止"], ["remove", "移除"]]
     : service.state === "stopped"
       ? [["start", "启动"], ["remove", "移除"]]
+      : service.state === "unhealthy"
+        ? [["restart", "重启并检查"], ["remove", "移除"]]
       : service.state === "absent" || service.state === "needs_repair"
         ? [["install", "启用常驻服务"]]
         : [];
