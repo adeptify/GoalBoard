@@ -25,7 +25,7 @@ async function fixture() {
   const runtimeIntegrationService = new RuntimeIntegrationService({
     homeDirectory: home,
     userHomeDirectory: userHome,
-    runtimeExecutables: { codex: null, "claude-code": null },
+    runtimeExecutables: { codex: null, "claude-code": null, opencode: null, "pi-agent": null, "grok-build": null },
   });
   const webServiceManager = new GoalBoardWebServiceManager({
     homeDirectory: home,
@@ -185,7 +185,7 @@ test("changed owned files block uninstall and a failed service step leaves a rec
     const runtimeIntegrationService = new RuntimeIntegrationService({
       homeDirectory: failed.home,
       userHomeDirectory: failed.userHome,
-      runtimeExecutables: { codex: null, "claude-code": null },
+      runtimeExecutables: { codex: null, "claude-code": null, opencode: null, "pi-agent": null, "grok-build": null },
     });
     const service = new GoalBoardUninstallService({
       homeDirectory: failed.home,

@@ -378,6 +378,65 @@ test("removal refuses to delete GoalBoard entries or Skill links changed after c
   });
 });
 
+test("OpenCode, Pi Agent, and Grok Build write official MCP and Skill locations", async () => {
+  await withFixture(async (fixture) => {
+    const integration = service(fixture);
+    const opencodeConfig = join(fixture.userHome, ".config", "opencode", "opencode.json");
+    const piConfig = join(fixture.userHome, ".pi", "agent", "mcp.json");
+    const grokConfig = join(fixture.userHome, ".grok", "config.toml");
+    await mkdir(join(fixture.userHome, ".config", "opencode"), { recursive: true });
+    await mkdir(join(fixture.userHome, ".pi", "agent"), { recursive: true });
+    await mkdir(join(fixture.userHome, ".grok"), { recursive: true });
+    await writeFile(opencodeConfig, `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      model: "keep-opencode",
+      mcp: { other: { type: "local", command: ["keep-me"] } },
+    }, null, 2)}\n`);
+    await writeFile(piConfig, `${JSON.stringify({
+      settings: { toolPrefix: "mcp" },
+      mcpServers: { other: { command: "keep-pi" } },
+    }, null, 2)}\n`);
+    await writeFile(grokConfig, 'model = "keep-grok"\n\n[mcp_servers.other]\ncommand = "keep-grok"\n');
+
+    for (const runtimeId of ["opencode", "pi-agent", "grok-build"] as const) {
+      const plan = await integration.prepare(runtimeId, "connect");
+      assert.equal(plan.status, "ready", runtimeId);
+      const result = await integration.confirm({ runtime_id: runtimeId, plan_id: plan.plan_id, decision: "confirmed" });
+      assert.equal(result.status, "connected", runtimeId);
+      assert.equal((await integration.detect(runtimeId)).connection_state, "connected", runtimeId);
+    }
+
+    const opencode = JSON.parse(await readFile(opencodeConfig, "utf8")) as {
+      model: string;
+      mcp: Record<string, { type?: string; command?: string[]; environment?: Record<string, string> }>;
+    };
+    assert.equal(opencode.model, "keep-opencode");
+    assert.deepEqual(opencode.mcp.other.command, ["keep-me"]);
+    assert.equal(opencode.mcp.goalboard.type, "local");
+    assert.deepEqual(opencode.mcp.goalboard.command, [fixture.launcher]);
+    assert.equal(opencode.mcp.goalboard.environment?.GOALBOARD_RUNTIME_ID, "opencode");
+    assert.equal(await readlink(join(fixture.userHome, ".config", "opencode", "skills", "goal-advance")), fixture.skillSource);
+
+    const pi = JSON.parse(await readFile(piConfig, "utf8")) as {
+      settings: { toolPrefix: string };
+      mcpServers: Record<string, { command?: string; env?: Record<string, string>; lifecycle?: string }>;
+    };
+    assert.equal(pi.settings.toolPrefix, "mcp");
+    assert.equal(pi.mcpServers.other.command, "keep-pi");
+    assert.equal(pi.mcpServers.goalboard.command, fixture.launcher);
+    assert.equal(pi.mcpServers.goalboard.env?.GOALBOARD_RUNTIME_ID, "pi-agent");
+    assert.equal(pi.mcpServers.goalboard.lifecycle, "eager");
+    assert.equal(await readlink(join(fixture.userHome, ".pi", "agent", "skills", "goal-advance")), fixture.skillSource);
+
+    const grok = await readFile(grokConfig, "utf8");
+    assert.match(grok, /model = "keep-grok"/);
+    assert.match(grok, /\[mcp_servers\.other\][\s\S]*command = "keep-grok"/);
+    assert.match(grok, /\[mcp_servers\.goalboard\]/);
+    assert.match(grok, /GOALBOARD_RUNTIME_ID = "grok-build"/);
+    assert.equal(await readlink(join(fixture.userHome, ".grok", "skills", "goal-advance")), fixture.skillSource);
+  });
+});
+
 test("Runtime host keeps Session identity independent from the canonical workspace", () => {
   const codex = runtimeContextHostFromEnvironment({
     GOALBOARD_RUNTIME_ID: "codex",
