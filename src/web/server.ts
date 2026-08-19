@@ -13,6 +13,7 @@ import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projec
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
+import { isPtyCommandAvailable } from "./pty-host.js";
 import { attachGoalBoardPtySocket } from "./pty-socket.js";
 import type {
   GoalBoardProjectRecord,
@@ -2420,6 +2421,13 @@ async function handleGoalBoardWebRequest(
             trashView,
             controlToken,
             desktopShell,
+            {
+              "claude-code": isPtyCommandAvailable("claude"),
+              codex: isPtyCommandAvailable("codex"),
+              opencode: isPtyCommandAvailable("opencode"),
+              "pi-agent": isPtyCommandAvailable("pi"),
+              "grok-build": isPtyCommandAvailable("grok"),
+            },
           );
           const headers: Record<string, string> = {
             "content-type": "text/html; charset=utf-8",

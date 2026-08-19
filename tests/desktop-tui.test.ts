@@ -10,7 +10,7 @@ import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
-import { buildPtyEnvironment, resolvePtyCommand } from "../src/web/pty-host.js";
+import { buildPtyEnvironment, isPtyCommandAvailable, resolvePtyCommand } from "../src/web/pty-host.js";
 import { renderGoalBoardWeb } from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
@@ -243,6 +243,12 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /\.tui-stage \{[^}]*padding: 10px 12px 12px/);
     assert.match(desktop, /\.tui-terminal \.tui-xterm \{[^}]*inset: 10px 12px 12px/);
     assert.match(desktop, /var\(--tui-width, 480px\)/);
+    assert.match(desktop, /data-tui-collapse/);
+    assert.match(desktop, /data-tui-expand/);
+    assert.match(desktop, /tui-expand-label/);
+    assert.match(desktop, /\.workspace\.is-tui-collapsed/);
+    assert.match(desktop, /\.tui-pane\.is-collapsed/);
+    assert.match(desktop, /\.document-pane::-webkit-scrollbar/);
     assert.match(desktop, /在这个 Goal 上打开终端/);
     assert.match(desktop, /querySelector\("\[data-tree-resizer\]"\)/);
     assert.match(desktop, /\.workspace\.is-desktop-tui \{ grid-template-columns: var\(--tree-width, 240px\)/);
@@ -359,6 +365,48 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
   }
 });
 
+test("TUI menu greys out runtimes whose CLI is missing", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-desktop-cli-"));
+  const databasePath = join(directory, "demo.db");
+  seedDemoBoard(databasePath);
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  try {
+    const view = buildGoalBoardWebView(store, coordinator, {
+      databasePath,
+      boardId: DEMO_BOARD_ID,
+      demo: true,
+    });
+    const withMissing = renderGoalBoardWeb(
+      view,
+      undefined,
+      false,
+      false,
+      false,
+      "",
+      true,
+      { codex: false, "claude-code": true },
+    );
+    assert.match(withMissing, /data-tui-kind="codex" disabled/);
+    assert.match(withMissing, /data-tui-kind="claude-code"/);
+    assert.doesNotMatch(withMissing, /data-tui-kind="claude-code" disabled/);
+    assert.match(withMissing, /未安装/);
+    assert.match(withMissing, /tui-menu-missing/);
+    assert.match(withMissing, /需要先安装 CLI/);
+
+    const allAvailable = renderGoalBoardWeb(view);
+    assert.doesNotMatch(allAvailable, /data-tui-kind="(claude-code|codex|opencode|pi-agent|grok-build)" disabled/);
+  } finally {
+    store.close();
+  }
+});
+
+test("PTY command availability only accepts executable commands", () => {
+  assert.equal(isPtyCommandAvailable("/bin/sh"), true);
+  assert.equal(isPtyCommandAvailable("goalboard-no-such-command-xyz"), false);
+  assert.equal(isPtyCommandAvailable(""), false);
+});
+
 test("local PTY socket auths with the page token and can spawn a process", async () => {
   const fixture = await catalogFixture();
   const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
@@ -434,6 +482,69 @@ test("local PTY socket auths with the page token and can spawn a process", async
   }
 });
 
+test("PTY spawn preflight reports missing commands and missing working directories", async () => {
+  const fixture = await catalogFixture();
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const sockets: WebSocket[] = [];
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const ptyUrl = `ws://127.0.0.1:${address.port}/pty`;
+    const socket = new WebSocket(ptyUrl);
+    sockets.push(socket);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", (error) => reject(error));
+    });
+    const ready = waitForPtyMessage(socket, (value) => value.type === "ready", "auth-ready");
+    socket.send(JSON.stringify({ type: "auth", token: WEB_TEST_CONTROL_TOKEN }));
+    await ready;
+
+    const missing = waitForPtyMessage(
+      socket,
+      (value) => (
+        value.type === "error" &&
+        value.panelId === "pty-missing" &&
+        /找不到命令/.test(String(value.message ?? ""))
+      ),
+      "missing-command",
+    );
+    socket.send(JSON.stringify({
+      type: "spawn",
+      panelId: "pty-missing",
+      command: "goalboard-no-such-command",
+      cols: 80,
+      rows: 24,
+    }));
+    await missing;
+
+    const badCwd = waitForPtyMessage(
+      socket,
+      (value) => (
+        value.type === "error" &&
+        value.panelId === "pty-bad-cwd" &&
+        /工作目录不存在/.test(String(value.message ?? ""))
+      ),
+      "bad-cwd",
+    );
+    socket.send(JSON.stringify({
+      type: "spawn",
+      panelId: "pty-bad-cwd",
+      command: "/bin/sh",
+      cwd: "/goalboard/definitely/not/here",
+      cols: 80,
+      rows: 24,
+    }));
+    await badCwd;
+  } finally {
+    for (const socket of sockets) socket.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("OpenCode, Pi Agent, and Grok Build panels keep their launch recipes", async () => {
   const fixture = await catalogFixture();
   addProjectGoal(fixture.project, "TUI-RUNTIMES", "多 Runtime Goal");
@@ -477,9 +588,13 @@ test("OpenCode, Pi Agent, and Grok Build panels keep their launch recipes", asyn
   }
 });
 
-test("isolated PTY PATH can start Grok Build help", async () => {
+test("isolated PTY PATH can start Grok Build help", async (t) => {
   const env = buildPtyEnvironment();
   const grok = resolvePtyCommand("grok", env.PATH ?? "");
+  if (grok === "grok") {
+    t.skip("grok CLI 未安装，跳过 Grok Build 启动验证");
+    return;
+  }
   assert.match(grok, /grok$/);
   assert.notEqual(grok, "grok");
 

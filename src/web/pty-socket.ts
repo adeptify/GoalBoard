@@ -64,8 +64,10 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
     onData: (panelId, data) => {
       for (const socket of sockets) send(socket, { type: "data", panelId, data });
     },
-    onExit: (panelId) => {
-      for (const socket of sockets) send(socket, { type: "exit", panelId });
+    onExit: (panelId, exit) => {
+      for (const socket of sockets) {
+        send(socket, { type: "exit", panelId, exitCode: exit.exitCode, signal: exit.signal });
+      }
     },
   });
   const wss = new WebSocketServer({ noServer: true });

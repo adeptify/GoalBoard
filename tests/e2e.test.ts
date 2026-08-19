@@ -173,7 +173,10 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.ok(tarballName, "npm pack 必须生成 tarball");
     await execFileAsync("tar", ["-xzf", join(artifacts, tarballName), "-C", dirname(packageDirectory)]);
     await rename(join(dirname(packageDirectory), "package"), packageDirectory);
-    for (const dependency of ["better-sqlite3", "lucide"]) {
+    const packageMetadata = JSON.parse(await readFile(join(repository, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    for (const dependency of Object.keys(packageMetadata.dependencies ?? {})) {
       await symlink(await realpath(join(repository, "node_modules", dependency)), join(runtimeRoot, "node_modules", dependency), "dir");
     }
     const fakeCodex = join(fakeBin, "codex");
@@ -209,18 +212,17 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.equal(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), unrelatedCodexConfig);
 
     const packedReadme = await readFile(join(packageDirectory, "README.md"), "utf8");
-    assert.match(packedReadme, /goalboard install/);
-    assert.match(packedReadme, /docs\/screenshots\/goalboard-tree\.png/);
-    assert.match(packedReadme, /goalboard-web/);
-    assert.match(packedReadme, /goalboard_v1_context_resolve/);
-    assert.match(packedReadme, /git pull --ff-only/);
-    assert.match(packedReadme, /service restart/);
-    assert.match(packedReadme, /直接对 Runtime 说“启动 GoalBoard”/);
-    assert.match(packedReadme, /只有明确说“临时打开 GoalBoard”/);
-    assert.match(packedReadme, /非 macOS 目前没有系统级常驻服务/);
-    assert.match(packedReadme, /demo reset --confirm/);
-    assert.match(packedReadme, /用户项目、Runtime 配置和 demo 都不会被自动改写/);
-    assert.match(packedReadme, /明确.*确认|显式/);
+    assert.match(packedReadme, /README\.en\.md/);
+    assert.match(packedReadme, /docs\/screenshots\/goalboard-tui-zh\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/projects-zh\.png/);
+    assert.match(packedReadme, /pnpm install:local/);
+    assert.match(packedReadme, /service install/);
+    assert.match(packedReadme, /http:\/\/127\.0\.0\.1:4173/);
+    assert.match(packedReadme, /docs\/installation\.md/);
+    assert.match(packedReadme, /docs\/runtime\.md/);
+    assert.match(packedReadme, /docs\/mcp\.md/);
+    assert.match(packedReadme, /skills\/goal-advance\/SKILL\.md/);
+    assert.match(packedReadme, /MIT，见 \[LICENSE\]/);
     assert.doesNotMatch(packedReadme, /postinstall-project|兼容模式|GOALBOARD_DATABASE=/);
 
     await rm(runtimeRoot, { recursive: true, force: true });

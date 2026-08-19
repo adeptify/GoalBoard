@@ -22,7 +22,7 @@ export interface PtySpawnResult {
 
 export interface PtyHostHandlers {
   onData: (panelId: string, data: string) => void;
-  onExit: (panelId: string) => void;
+  onExit: (panelId: string, exit: { exitCode: number; signal: number }) => void;
 }
 
 const REPLAY_LIMIT = 200_000;
@@ -225,6 +225,11 @@ export function resolvePtyCommand(command: string, pathEnv = buildPtyEnvironment
   return resolveCommand(command, pathEnv);
 }
 
+export function isPtyCommandAvailable(command: string, pathEnv = buildPtyEnvironment().PATH ?? ""): boolean {
+  if (!command?.trim()) return false;
+  return isExecutableFile(resolveCommand(command.trim(), pathEnv));
+}
+
 export function buildPtyEnvironment(overlay: Record<string, string> = {}): Record<string, string> {
   const login = loginShellEnvironment();
   const env: Record<string, string> = {};
@@ -282,13 +287,22 @@ export class GoalBoardPtyHost {
       existing.resize(cols, rows);
       return { attached: true, replay: this.replay.get(request.panelId) ?? "" };
     }
+    const commandName = request.command?.trim();
+    if (!commandName) throw new Error("缺少启动命令");
     const env = buildPtyEnvironment(request.env ?? {});
-    const command = resolveCommand(request.command, env.PATH);
+    const command = resolveCommand(commandName, env.PATH);
+    if (!isExecutableFile(command)) {
+      throw new Error(`找不到命令：${commandName}，请先安装，或确认它在 PATH 中。`);
+    }
+    const cwd = request.cwd?.trim() || os.homedir();
+    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new Error(`工作目录不存在：${cwd}，请检查项目绑定的目录。`);
+    }
     const proc = spawn(command, request.args ?? [], {
       name: "xterm-256color",
       cols,
       rows,
-      cwd: request.cwd?.trim() || os.homedir(),
+      cwd,
       env,
     });
     this.replay.set(request.panelId, "");
@@ -296,9 +310,9 @@ export class GoalBoardPtyHost {
       this.replay.set(request.panelId, clipReplay((this.replay.get(request.panelId) ?? "") + data));
       this.handlers.onData(request.panelId, data);
     });
-    proc.onExit(() => {
+    proc.onExit(({ exitCode, signal }) => {
       this.sessions.delete(request.panelId);
-      this.handlers.onExit(request.panelId);
+      this.handlers.onExit(request.panelId, { exitCode: exitCode ?? -1, signal: signal ?? 0 });
     });
     this.sessions.set(request.panelId, proc);
     return { attached: false, replay: "" };
