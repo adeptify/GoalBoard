@@ -16,7 +16,7 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 ## 范围
 
 - Web server 只接受 loopback `Host`（`127.0.0.1`、`localhost`、`::1`）。
-- 每个 Web server 实例生成高熵随机 control token；测试可注入固定 token。
+- 每个 GoalBoard home 在 `config/web-control-token` 持久化一份高熵 control token（文件权限 0600）；测试可注入固定 token。重启常驻 Web 后本机页面不必因令牌轮换而整页刷新。卸载时删除该文件。
 - 所有 `/api/` 非安全方法统一校验：同源 `Origin`、control token、一次性 idempotency key。
 - 本机终端 WebSocket `/pty` 在升级时校验 loopback `Host`；若请求带 Origin，必须与 Host 一致。浏览器无法给 WebSocket 加自定义 header，因此连接后的首包必须携带同一 control token，通过后才转发 PTY 指令。
 - token 只写入 GoalBoard 自己返回的 HTML meta，不写日志、不进 JSON API、不进 Runtime 配置或项目 DB。终端 WebSocket 只在首包使用该 token，不把它放进 URL。
@@ -27,7 +27,7 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 ## 非目标
 
 - 不增加登录、远程账户、HTTPS 或公网监听。
-- 不把 control token 持久化到 `~/.goalboard`；重启 Web 后自然轮换。
+- 不把 control token 写入项目 DB、Runtime 配置或日志；只存在于 GoalBoard home 的 `config/web-control-token`、本机页面 meta、写请求 header，以及终端 WebSocket 首包。
 - 不给第三方 Origin 开 CORS。
 - 不改变 MCP stdio 请求格式；MCP 不经过浏览器 Origin/CSRF 门禁。
 - 不在本 Work Item 新增项目删除 UI。
@@ -42,7 +42,7 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 
 ## 方案与关键决策
 
-- `createGoalBoardWebServer` 在实例创建时持有 token 和内存请求键表；不引入新的持久化安全状态。
+- `createGoalBoardWebServer` 从 GoalBoard home 读取或写入 control token，并在内存中持有请求键表。
 - Origin 必须是 loopback 且 `origin.host` 与 HTTP `Host` 完全一致，避免 `localhost` 与 `127.0.0.1` 被当成同源。
 - token 用 constant-time 比较；错误响应只说本地控制校验失败，不回显收到的 token、Origin 或宿主线索。
 - idempotency key 是客户端每次动作生成的 UUID。服务端在路由前保留，在响应完成后仅对成功状态保留；失败状态删除。
@@ -69,7 +69,7 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 - 跨站 Origin、缺少/错误 token、非 loopback Host 的敏感请求在领域写入前被拒绝。
 - 合法同源页面仍可完成 Runtime 配置、项目、Session 和 Goal 的现有流程。
 - 同一成功请求键不会造成第二次写入；失败请求可修正重试。
-- HTML/API/日志不暴露用户原始 Runtime 配置、宿主 Session ID 或 control token；token 只存在于本机页面 meta、写请求 header，以及终端 WebSocket 首包。
+- HTML/API/日志不暴露用户原始 Runtime 配置、宿主 Session ID 或 control token；token 只存在于 GoalBoard home 的 `config/web-control-token`、本机页面 meta、写请求 header，以及终端 WebSocket 首包。
 - 完整 Web 与项目/Runtime/MCP 回归通过。
 
 ## 验证命令

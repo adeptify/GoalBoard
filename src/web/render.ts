@@ -29,6 +29,7 @@ import {
   currentLocale,
   htmlLang,
   dateTimeLocale,
+  listJoin,
   renderLocaleSwitch,
   clientI18nScript,
   LOCALE_SWITCH_STYLES,
@@ -366,12 +367,139 @@ function renderStatus(status: WebGoalStatus): string {
   return `<span class="goal-status goal-status--${status}">${icon(STATUS_ICONS[status])}<span>${L(STATUS_LABELS[status])}</span></span>`;
 }
 
-function sortGoals(items: WebGoalView[]): WebGoalView[] {
+/** Goal Tree sibling order: work you can pick up, then in-flight, then blocked, then parked. */
+export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
+  "execution_pending",
+  "executing",
+  "review_pending",
+  "reviewing",
+  "revalidation_pending",
+  "revalidating",
+  "clarification_pending",
+  "clarifying",
+  "execution_blocked",
+  "review_blocked",
+  "revalidation_blocked",
+  "clarification_blocked",
+  "waiting_children",
+  "invalidated",
+  "satisfied",
+  "archived",
+  "trashed",
+];
+
+function goalTreeStatusRank(status: string): number {
+  const index = (GOAL_TREE_STATUS_ORDER as readonly string[]).indexOf(status);
+  return index < 0 ? GOAL_TREE_STATUS_ORDER.length : index;
+}
+
+export function sortGoalTreeItems<T extends { status: WebGoalStatus; goal: { priority: number; created_at: string } }>(
+  items: T[],
+): T[] {
   return [...items].sort(
     (left, right) =>
+      goalTreeStatusRank(left.status) - goalTreeStatusRank(right.status) ||
       right.goal.priority - left.goal.priority ||
       left.goal.created_at.localeCompare(right.goal.created_at),
   );
+}
+
+function sortGoals(items: WebGoalView[]): WebGoalView[] {
+  return sortGoalTreeItems(items);
+}
+
+export function activeOutgoingDependsOn(item: WebGoalView): GoalRelationRecord[] {
+  return item.relations.filter(
+    (relation) =>
+      relation.type === "depends_on" &&
+      relation.state === "active" &&
+      relation.from_goal_id === item.goal.goal_id,
+  );
+}
+
+export function goalWorkSatisfied(item: WebGoalView): boolean {
+  return (
+    item.status === "satisfied" ||
+    item.status === "archived" ||
+    item.goal.fulfillment_state === "satisfied"
+  );
+}
+
+export function isBlockedWorkStatus(status: WebGoalStatus): boolean {
+  return status.endsWith("_blocked") || status === "invalidated";
+}
+
+function partOfChildViews(parentId: string, view: GoalBoardWebView): WebGoalView[] {
+  return view.snapshot.relations
+    .filter(
+      (relation) =>
+        relation.type === "part_of" &&
+        relation.state === "active" &&
+        relation.to_goal_id === parentId,
+    )
+    .map((relation) => findGoalView(view, relation.from_goal_id))
+    .filter((item): item is WebGoalView => item != null);
+}
+
+export function firstBlockedDescendant(
+  item: WebGoalView,
+  view: GoalBoardWebView,
+  seen = new Set<string>(),
+): WebGoalView | null {
+  if (seen.has(item.goal.goal_id)) return null;
+  seen.add(item.goal.goal_id);
+  const children = partOfChildViews(item.goal.goal_id, view);
+  const blocked = children.find((child) => isBlockedWorkStatus(child.status));
+  if (blocked) return blocked;
+  for (const child of children) {
+    const nested = firstBlockedDescendant(child, view, seen);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+export function unsatisfiedOutgoingDependencies(item: WebGoalView, view: GoalBoardWebView): WebGoalView[] {
+  return activeOutgoingDependsOn(item)
+    .map((relation) => findGoalView(view, relation.to_goal_id))
+    .filter((target): target is WebGoalView => target != null && !goalWorkSatisfied(target));
+}
+
+function quotedGoalNames(names: string[]): string {
+  const quote = currentLocale() === "en" ? ["“", "”"] as const : ["「", "」"] as const;
+  return listJoin(names.map((name) => `${quote[0]}${name}${quote[1]}`));
+}
+
+function treeDependencySearchText(item: WebGoalView, view: GoalBoardWebView): string {
+  return activeOutgoingDependsOn(item)
+    .map((relation) => {
+      const target = findGoalView(view, relation.to_goal_id);
+      return `${relation.to_goal_id} ${target?.goal.title ?? ""} ${relation.reason}`;
+    })
+    .join(" ");
+}
+
+function renderTreeDependencies(item: WebGoalView, view: GoalBoardWebView): string {
+  const relations = activeOutgoingDependsOn(item);
+  if (!relations.length) return "";
+  return `<div class="tree-deps">${relations
+    .map((relation) => {
+      const target = findGoalView(view, relation.to_goal_id);
+      const title = target?.goal.title ?? relation.to_goal_id;
+      const satisfied = target ? goalWorkSatisfied(target) : false;
+      const blocked = Boolean(target && isBlockedWorkStatus(target.status));
+      const waiters = target && !satisfied ? unsatisfiedOutgoingDependencies(target, view) : [];
+      const state = satisfied ? "is-ready" : blocked ? "is-blocked" : "is-waiting";
+      const statusLine = satisfied
+        ? L("已完成，不再挡住")
+        : waiters.length
+          ? `${L("还在等它完成")} · ${L("它还要等 {names}", { names: quotedGoalNames(waiters.map((waiter) => waiter.goal.title)) })}`
+          : L("还在等它完成");
+      return `<button class="tree-dep ${state}" type="button" data-select-goal="${escapeHtml(relation.to_goal_id)}" aria-label="${L("打开依赖")} ${escapeHtml(title)}">
+        <span class="tree-dep-mark" aria-hidden="true">${icon("link")}</span>
+        <span class="tree-dep-copy"><strong>${escapeHtml(L("依赖"))} → ${escapeHtml(title)}</strong><small>${escapeHtml(relation.reason)}</small><em>${escapeHtml(statusLine)}</em></span>
+      </button>`;
+    })
+    .join("")}</div>`;
 }
 
 function renderGoalTree(
@@ -401,7 +529,7 @@ function renderGoalTree(
     visited.add(item.goal.goal_id);
     const nodeChildren = sortGoals(children.get(item.goal.goal_id) ?? []);
     const hasChildren = nodeChildren.length > 0;
-    const searchValue = (item.goal.goal_id + " " + item.goal.title).toLowerCase();
+    const searchValue = `${item.goal.goal_id} ${item.goal.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
     return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
       <div class="tree-row">
         ${
@@ -414,6 +542,7 @@ function renderGoalTree(
           ${renderStatus(item.status)}
         </button>
       </div>
+      ${renderTreeDependencies(item, view)}
       ${hasChildren ? `<ul class="tree-children">${nodeChildren.map((child) => renderNode(child, depth + 1)).join("")}</ul>` : ""}
     </li>`;
   };
@@ -425,7 +554,7 @@ function renderGoalTree(
   return `<ul class="goal-tree" data-tree-root>${rendered}${leftovers}</ul>`;
 }
 
-function renderTreeStatusFilter(items: WebGoalView[]): string {
+function renderTreeStatusFilter(items: readonly WebGoalView[]): string {
   const counts = new Map<WebGoalStatus, number>();
   for (const item of items) counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
   const options = WEB_GOAL_STATUSES.filter((status) => (counts.get(status) ?? 0) > 0);
@@ -437,6 +566,37 @@ function renderTreeStatusFilter(items: WebGoalView[]): string {
     </div>
     <p class="tree-filter-summary" data-tree-filter-summary aria-live="polite">${L("显示全部状态")}</p>
   </section>`;
+}
+
+function renderTreeChrome(
+  view: GoalBoardWebView,
+  visibleGoals: readonly WebGoalView[],
+  archiveView: boolean,
+  trashView: boolean,
+  searchPlaceholder: string,
+  searchLabel: string,
+): string {
+  const archiveHref = archiveView ? "/" : "/archive";
+  const trashHref = trashView ? "/" : "/trash";
+  const archiveLabel = archiveView ? L("返回 Goal Tree") : L("查看已归档 Goal");
+  const trashLabel = trashView ? L("返回 Goal Tree") : L("查看回收站");
+  const archiveCount = archiveView ? "" : `<small>${view.archived_goals.length}</small>`;
+  const trashCount = trashView ? "" : `<small>${view.trashed_goals.length}</small>`;
+  const archiveText = archiveView ? L("返回") : L("归档");
+  const trashText = trashView ? L("返回") : L("回收站");
+  return `<header class="tree-chrome" data-tree-chrome>
+    <label class="tree-search">${icon("search")}<input type="search" data-global-search placeholder="${searchPlaceholder}" aria-label="${searchLabel}"><kbd>⌘F</kbd></label>
+    <div class="tree-tools">
+      <div class="tree-filter-control">
+        <button class="tree-tool" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="${L("筛选目标")}" title="${L("筛选目标")}">${icon("filter")}<span>${L("状态")}</span></button>
+        ${renderTreeStatusFilter(visibleGoals)}
+      </div>
+        <button class="tree-tool" type="button" data-open-create aria-label="${L("新建目标")}" title="${L("新建目标")}">${icon("plus")}<span>${L("新建")}</span></button>
+      <a class="tree-tool${archiveView ? " is-current" : ""}" data-archive-link href="${archiveHref}" aria-label="${archiveLabel}" title="${archiveLabel}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveText}</span>${archiveCount}</a>
+      <a class="tree-tool${trashView ? " is-current" : ""}" data-trash-link href="${trashHref}" aria-label="${trashLabel}" title="${trashLabel}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "trash")}<span>${trashText}</span>${trashCount}</a>
+      <button class="tree-tool" type="button" data-collapse-all aria-label="${L("折叠全部")}" title="${L("折叠全部")}">${icon("tree")}<span>${L("折叠全部")}</span></button>
+    </div>
+  </header>`;
 }
 
 function relationRow(
@@ -681,23 +841,58 @@ function renderReasons(item: WebGoalView): string {
 }
 
 function renderScope(item: WebGoalView): string {
-  return `<div class="contract-list">
-    <section><h3>${L("包含什么")}</h3>${renderList(item.goal.in_scope, "尚未记录范围")}</section>
-    <section><h3>${L("明确不做")}</h3>${renderList(item.goal.out_of_scope, "尚未记录非目标")}</section>
-    <section><h3>${L("必须遵守")}</h3>${renderList(item.goal.constraints, "暂无额外约束")}</section>
-    <section><h3>${L("需要的输入")}</h3>${renderList(item.goal.required_inputs, "暂无前置输入")}</section>
-    <section><h3>${L("承诺的输出")}</h3>${renderList(item.goal.promised_outputs, "尚未记录输出")}</section>
-    <section><h3>${L("绑定资料")}</h3>${
-      item.input_bindings.length
+  const blocks = [
+    {
+      title: L("包含什么"),
+      body: renderList(item.goal.in_scope, "尚未记录范围"),
+      empty: item.goal.in_scope.length === 0,
+    },
+    {
+      title: L("明确不做"),
+      body: renderList(item.goal.out_of_scope, "尚未记录非目标"),
+      empty: item.goal.out_of_scope.length === 0,
+    },
+    {
+      title: L("必须遵守"),
+      body: renderList(item.goal.constraints, "暂无额外约束"),
+      empty: item.goal.constraints.length === 0,
+    },
+    {
+      title: L("需要的输入"),
+      body: renderList(item.goal.required_inputs, "暂无前置输入"),
+      empty: item.goal.required_inputs.length === 0,
+    },
+    {
+      title: L("承诺的输出"),
+      body: renderList(item.goal.promised_outputs, "尚未记录输出"),
+      empty: item.goal.promised_outputs.length === 0,
+    },
+    {
+      title: L("绑定资料"),
+      body: item.input_bindings.length
         ? `<div class="bound-list">${item.input_bindings.map((binding) => `<article>${renderReference(binding.source_ref, binding.input_name)}<small>${escapeHtml(binding.state)} · ${escapeHtml(binding.reason)}${binding.snapshot_digest ? ` · ${escapeHtml(binding.snapshot_digest)}` : ""}</small></article>`).join("")}</div>`
-        : `<p class="empty-row">${L("暂无资料绑定")}</p>`
-    }</section>
-    <section><h3>${L("需求覆盖")}</h3>${
-      item.coverage.length
+        : `<p class="empty-row">${L("暂无资料绑定")}</p>`,
+      empty: item.input_bindings.length === 0,
+    },
+    {
+      title: L("需求覆盖"),
+      body: item.coverage.length
         ? `<div class="bound-list">${item.coverage.map((coverage) => `<article><strong>${escapeHtml(coverage.requirement_id)} · ${escapeHtml(coverage.statement)}</strong><small>${escapeHtml(coverage.disposition)} · ${coverage.blocking ? L("阻塞") : L("非阻塞")}${coverage.reason ? ` · ${escapeHtml(coverage.reason)}` : ""}${coverage.revisit_condition ? ` · ${L("复查：")}${escapeHtml(coverage.revisit_condition)}` : ""}</small></article>`).join("")}</div>`
-        : `<p class="empty-row">${L("暂无需求覆盖记录")}</p>`
-    }</section>
-  </div>`;
+        : `<p class="empty-row">${L("暂无需求覆盖记录")}</p>`,
+      empty: item.coverage.length === 0,
+    },
+  ];
+  const filled = blocks.filter((block) => !block.empty);
+  const vacant = blocks.filter((block) => block.empty);
+  const sections = (items: typeof blocks) =>
+    items.map((block) => `<section><h3>${block.title}</h3>${block.body}</section>`).join("");
+  const gaps = vacant.length
+    ? `<details class="scope-gaps" data-persist-open="scope-gaps-${escapeHtml(item.goal.goal_id)}"><summary><span><strong>${
+        filled.length ? L("还有 {count} 项未写", { count: vacant.length }) : L("范围、输入与输出尚未填写")
+      }</strong><small>${escapeHtml(listJoin(vacant.map((block) => block.title)))}</small></span>${icon("chevron-down")}</summary><div class="contract-list">${sections(vacant)}</div></details>`
+    : "";
+  if (!filled.length) return gaps;
+  return `<div class="contract-list">${sections(filled)}</div>${gaps}`;
 }
 
 const RISK_STATE_LABELS: Record<RiskRecord["state"], string> = {
@@ -1517,7 +1712,7 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
     risks: view.snapshot.risks.filter(riskNeedsDecision).length,
   };
   return `<article class="decision-center" data-decision-center>
-    <header class="decision-center-header"><div><small>USER AUTHORITY</small><h1>${L("等待你的决定")}</h1><p>${L("Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
+    <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
     <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>Contract <strong>${typeCounts.proposals}</strong></span><span>Candidate <strong>${typeCounts.candidates}</strong></span><span>Rewire <strong>${typeCounts.rewires}</strong></span><span>Human Review <strong>${typeCounts.reviews}</strong></span><span>Risk <strong>${typeCounts.risks}</strong></span></div>
     ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
       const goalId = group.item?.goal.goal_id ?? "board";
@@ -1541,7 +1736,10 @@ function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
   return group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
 }
 
-function situationNextStep(item: WebGoalView): { label: string; href: string | null; tone?: "blocked" | "ready" } {
+function situationNextStep(
+  item: WebGoalView,
+  blockedDescendant: WebGoalView | null,
+): { label: string; href: string | null; tone?: "blocked" | "ready" } {
   const acceptance = `#acceptance-${item.goal.goal_id}`;
   const execution = `#execution-${item.goal.goal_id}`;
   const relations = `#relations-${item.goal.goal_id}`;
@@ -1555,7 +1753,13 @@ function situationNextStep(item: WebGoalView): { label: string; href: string | n
     case "revalidation_blocked":
       return { label: L("先处理阻塞"), href: execution, tone: "blocked" };
     case "waiting_children":
-      return { label: L("先完成子 Goal"), href: relations };
+      return blockedDescendant
+        ? {
+            label: L("先处理「{title}」", { title: blockedDescendant.goal.title }),
+            href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
+            tone: "blocked",
+          }
+        : { label: L("先完成子 Goal"), href: relations };
     case "execution_pending":
       return { label: L("可以领取执行"), href: execution };
     case "executing":
@@ -1597,25 +1801,71 @@ function renderSituationCell(options: {
 
 function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): string {
   const goalId = item.goal.goal_id;
-  const next = situationNextStep(item);
-  const blockers = item.reasons.filter((reason) => reason.severity === "blocker");
-  const blocked = blockers[0];
+  const ownBlocker = item.reasons.find((reason) => reason.severity === "blocker");
+  const blockedDescendant =
+    !ownBlocker && item.status === "waiting_children" ? firstBlockedDescendant(item, view) : null;
+  const next = situationNextStep(item, blockedDescendant);
+  const stuck = ownBlocker
+    ? {
+        value: ownBlocker.message,
+        href: `#execution-${goalId}`,
+        extra: undefined as string | undefined,
+        tone: "blocked" as const,
+      }
+    : blockedDescendant
+      ? {
+          value: L("子 Goal「{title}」{status}", {
+            title: blockedDescendant.goal.title,
+            status: L(STATUS_LABELS[blockedDescendant.status]),
+          }),
+          href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
+          extra: blockedDescendant.reasons.find((reason) => reason.severity === "blocker")?.message,
+          tone: "blocked" as const,
+        }
+      : {
+          value: L("当前没有阻塞"),
+          href: `#execution-${goalId}`,
+          extra: undefined,
+          tone: "ready" as const,
+        };
   const total = item.goal.acceptance_criteria.length;
   const passed = item.passed_criteria.length;
   const remaining = total - passed;
   const decisions = countGoalDecisions(view, goalId);
+  const boardPending = pendingDecisionCount(view);
   const completion = !total
     ? { value: L("还没有验收条件"), tone: "muted" as const }
     : remaining === 0
       ? { value: L("已满足 {passed}/{total}", { passed, total }), tone: "ready" as const }
       : { value: L("还缺 {remaining} 条 · {passed}/{total}", { remaining, passed, total }), tone: undefined };
+  const decisionCell = decisions
+    ? {
+        value: L("{count} 项等待你的决定", { count: decisions }),
+        href: `/decisions#decision-goal-${goalId}`,
+        extra: L("前往处理"),
+        tone: undefined as "muted" | undefined,
+      }
+    : boardPending
+      ? {
+          value: L("这条没有，项目里还有 {count} 项", { count: boardPending }),
+          href: "/decisions",
+          extra: L("前往处理"),
+          tone: undefined,
+        }
+      : {
+          value: L("没有待你决定的事项"),
+          href: null as string | null,
+          extra: undefined,
+          tone: "muted" as const,
+        };
   return `<nav class="goal-situation" aria-label="${L("这条 Goal 现在怎样")}">
     ${renderSituationCell({ label: L("下一步"), value: next.label, href: next.href, tone: next.tone })}
     ${renderSituationCell({
       label: L("卡住"),
-      value: blocked ? blocked.message : L("当前没有阻塞"),
-      href: `#execution-${goalId}`,
-      tone: blocked ? "blocked" : "ready",
+      value: stuck.value,
+      href: stuck.href,
+      extra: stuck.extra,
+      tone: stuck.tone,
     })}
     ${renderSituationCell({
       label: L("完成"),
@@ -1625,10 +1875,10 @@ function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): st
     })}
     ${renderSituationCell({
       label: L("待决定"),
-      value: decisions ? L("{count} 项等待你的决定", { count: decisions }) : L("没有待你决定的事项"),
-      href: decisions ? `/decisions#decision-goal-${goalId}` : null,
-      extra: decisions ? L("前往处理") : undefined,
-      tone: decisions ? undefined : "muted",
+      value: decisionCell.value,
+      href: decisionCell.href,
+      extra: decisionCell.extra,
+      tone: decisionCell.tone,
     })}
   </nav>`;
 }
@@ -1919,8 +2169,8 @@ function renderCreateDialog(view: GoalBoardWebView): string {
 const STYLES = `
   :root {
     color-scheme: light;
-    --page: #f6f7f9; --paper: #fff; --ink: #171a21; --muted: #68707d;
-    --faint: #9299a4; --line: #dfe3e8; --line-strong: #cdd3da;
+    --page: #eef3fa; --paper: #fff; --ink: #171a21; --muted: #68707d;
+    --faint: #9299a4; --line: #dfe3e8; --line-strong: #cdd3da; --rail: #e7eef8;
     --blue: #1677ff; --blue-dark: #0d63d8; --blue-soft: #eaf3ff;
     --green: #168a4b; --green-soft: #eaf7ef; --amber: #b66a00;
     --amber-soft: #fff4dc; --red: #c63838; --red-soft: #fff0f0;
@@ -1938,39 +2188,65 @@ const STYLES = `
   [hidden] { display: none !important; }
   .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
   .app { min-width: 0; height: 100%; overflow: hidden; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
-  .topbar { position: relative; min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: rgba(250, 251, 252, .97); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
+  .topbar { position: relative; min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--rail) 82%, #fff); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
   .brand strong { font-size: 19px; letter-spacing: -.02em; }
-  .project-context { height: 100%; padding: 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; }
+  .project-bar { min-width: 0; height: 100%; display: flex; align-items: center; gap: 10px; }
+  .project-context { min-width: 0; height: 100%; padding: 0 16px 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; }
   .project-context small { color: var(--muted); }
   .project-context a { color: var(--blue-dark); font-size: 12px; font-weight: 650; text-decoration: none; }
   .project-context a:hover { text-decoration: underline; }
-  .sync-state { margin-left: 4px; padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+  .project-decisions { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #3b434e; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; text-decoration: none; flex: 0 0 auto; }
+  a.project-decisions { color: #3b434e; text-decoration: none; }
+  .project-decisions:hover, a.project-decisions:hover { color: var(--blue-dark); background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue), var(--line) 55%); }
+  .project-decisions.is-current, a.project-decisions.is-current { color: var(--blue-dark); background: var(--blue-soft); border-color: #bcd4f2; }
+  .project-decisions svg { font-size: 14px; }
+  .project-decisions strong { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+  .project-decisions.has-pending { border-color: color-mix(in srgb, var(--amber), white 42%); background: var(--amber-soft); }
+  .project-decisions.has-pending, a.project-decisions.has-pending { color: #6d4e10; }
+  .project-decisions.has-pending:hover, a.project-decisions.has-pending:hover { color: #6d4e10; background: #ffe7b5; border-color: color-mix(in srgb, var(--amber), white 28%); }
+  .project-decisions.has-pending.is-current, a.project-decisions.has-pending.is-current { color: #6d4e10; background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber), white 28%); }
+  .project-decisions.has-pending strong { color: var(--amber); }
+  .project-demo { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .sync-state { margin-left: 2px; padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 11px; }
   .sync-state::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--green); }
   .sync-state.is-syncing::before { background: var(--blue); animation: pulse 1s infinite; }
   .sync-state.is-offline::before { background: var(--red); }
   .top-spacer { min-width: 0; flex: 1; }
-  .global-search { display: flex; align-items: center; min-width: 280px; margin-right: 12px; position: relative; }
-  .global-search svg { position: absolute; left: 12px; color: var(--muted); }
-  .global-search input { width: 100%; height: 34px; padding: 0 58px 0 36px; border: 1px solid transparent; border-radius: 5px; background: transparent; }
-  .global-search input:hover, .global-search input:focus { background: #fff; border-color: var(--line); }
-  .global-search kbd { position: absolute; right: 9px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font: 12px/20px var(--font); background: #fff; }
-  .top-action { height: 34px; margin-right: 8px; padding: 0 13px; border: 0; border-left: 1px solid var(--line); background: transparent; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; white-space: nowrap; }
-  a.top-action { text-decoration: none; }
-  .top-action:hover { color: var(--blue); }
-  .top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
+  .top-action { height: 34px; margin-right: 10px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent; color: #3b434e; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; white-space: nowrap; }
+  a.top-action { color: #3b434e; text-decoration: none; }
+  .top-action:hover, a.top-action:hover { color: var(--blue-dark); background: var(--blue-soft); }
+  .top-action.is-current, a.top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
-  .top-filter-control { position: relative; height: 100%; display: flex; align-items: center; }
-  .workspace { min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
-  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
-  .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
+  .workspace { position: relative; min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
+  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) 48px; background: color-mix(in srgb, var(--rail) 36%, #fff); border-right: 1px solid var(--line-strong); container-type: inline-size; }
+  .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: color-mix(in srgb, var(--rail) 36%, #fff); touch-action: none; }
   .tree-resizer::before, .tui-resizer::before { content: ""; position: absolute; inset: 0 -5px; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
   .tree-resizer:hover::after, .tree-resizer:focus-visible::after, .tree-resizer.is-dragging::after { width: 2px; background: var(--blue); }
   .icon-button { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; display: grid; place-items: center; cursor: pointer; }
-  .icon-button:hover, .icon-button.is-active { background: #eef1f4; color: var(--blue); }
-  .tree-filter { position: absolute; z-index: 12; top: calc(100% - 5px); right: 8px; width: min(320px, calc(100vw - 24px)); max-height: min(430px, calc(100dvh - 68px)); overflow: auto; padding: 13px 14px 12px; color: var(--ink); background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); }
+  .icon-button:hover, .icon-button.is-active { background: var(--blue-soft); color: var(--blue); }
+  .tree-chrome { position: relative; z-index: 4; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--rail) 55%, #fff); display: grid; gap: 6px; }
+  .tree-search { position: relative; display: flex; align-items: center; }
+  .tree-search svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+  .tree-search input { width: 100%; height: 32px; padding: 0 42px 0 32px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+  .tree-search input:hover, .tree-search input:focus { border-color: color-mix(in srgb, var(--blue), var(--line-strong) 42%); }
+  .tree-search kbd { position: absolute; right: 8px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font: 12px/20px var(--font); background: #fff; }
+  .tree-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 1px; min-width: 0; }
+  .tree-tool { height: 28px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: #4a5260; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; white-space: nowrap; text-decoration: none; }
+  a.tree-tool { color: #4a5260; text-decoration: none; }
+  .tree-tool:hover, a.tree-tool:hover { color: var(--blue-dark); background: var(--blue-soft); }
+  .tree-tool.is-current, .tree-tool.is-active, a.tree-tool.is-current { color: var(--blue-dark); background: var(--blue-soft); }
+  .tree-tool svg { font-size: 14px; }
+  .tree-tool small { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 650; }
+  .tree-tool.is-current small { color: var(--blue-dark); }
+  @container (max-width: 300px) {
+    .tree-tool span, .tree-tool small { display: none; }
+    .tree-tool { width: 28px; padding: 0; justify-content: center; }
+  }
+  .tree-filter-control { position: static; display: flex; align-items: center; }
+  .tree-filter { position: absolute; z-index: 12; top: calc(100% + 4px); left: 10px; right: 10px; width: auto; max-height: min(430px, calc(100dvh - 68px)); overflow: auto; padding: 13px 14px 12px; color: var(--ink); background: #fff; box-shadow: 0 9px 24px rgba(25, 34, 45, .14); }
   .tree-filter[hidden] { display: none; }
   .tree-filter > header { display: flex; align-items: baseline; gap: 10px; }
   .tree-filter > header strong { font-size: 13px; }
@@ -1985,14 +2261,14 @@ const STYLES = `
   .tree-filter-option .goal-status { min-width: 0; white-space: normal; font-size: 12px; }
   .tree-filter-option small { color: var(--muted); font-size: 11px; }
   .tree-filter-summary { margin-bottom: 0 !important; padding-top: 9px; border-top: 1px solid var(--line); }
-  .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 14px 14px 16px; scrollbar-width: none; -ms-overflow-style: none; }
+  .tree-scroll { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 8px 12px 16px; scrollbar-width: none; -ms-overflow-style: none; }
   .tree-scroll::-webkit-scrollbar { display: none; }
-  .tree-filter-empty { margin: 28px 5px; padding: 14px 12px; color: var(--muted); background: #f5f7f9; font-size: 13px; line-height: 1.5; text-align: center; }
+  .tree-filter-empty { margin: 28px 5px; padding: 14px 12px; color: var(--muted); background: #f4f6f8; font-size: 13px; line-height: 1.5; text-align: center; }
   .tree-filter-empty p { margin: 0 0 8px; }
   .tree-filter-empty button { border: 0; color: var(--blue-dark); background: transparent; font: inherit; cursor: pointer; }
   .goal-tree, .tree-children { list-style: none; padding: 0; margin: 0; }
   .tree-item { position: relative; }
-  .tree-children { margin-left: 18px; padding-left: 8px; border-left: 1px solid #d9dee5; }
+  .tree-children { margin-left: 18px; padding-left: 8px; border-left: 1px solid var(--line); }
   .tree-item.is-collapsed > .tree-children { display: none; }
   .tree-item.is-collapsed > .tree-row .tree-toggle svg { transform: rotate(-90deg); }
   .tree-row { min-width: 0; min-height: 38px; display: flex; align-items: center; }
@@ -2000,35 +2276,47 @@ const STYLES = `
   .tree-toggle { cursor: pointer; }
   .tree-toggle:hover { color: var(--blue); }
   .tree-node { min-width: 0; min-height: 34px; flex: 1; padding: 3px 8px; border: 0; border-radius: 4px; background: transparent; display: flex; align-items: center; cursor: pointer; text-align: left; }
-  .tree-node:hover { background: #edf2f7; }
+  .tree-node:hover { background: color-mix(in srgb, var(--blue-soft) 48%, #fff); }
   .tree-node.is-selected { color: #fff; background: linear-gradient(180deg, #328bff, #1677ed); box-shadow: inset 0 0 0 1px rgba(14, 94, 199, .22); }
   .tree-copy { min-width: 0; flex: 1; display: grid; overflow: hidden; line-height: 1.2; }
   .tree-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
-  .tree-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 9px; letter-spacing: .02em; }
+  .tree-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11px; letter-spacing: .02em; }
   .tree-node.is-selected .tree-copy small { color: rgba(255, 255, 255, .75); }
+  .tree-deps { display: grid; gap: 2px; margin: 0 0 8px 20px; }
+  .tree-dep { width: 100%; min-width: 0; padding: 2px 8px 5px; border: 0; border-radius: 4px; background: transparent; color: inherit; display: flex; align-items: flex-start; gap: 6px; cursor: pointer; text-align: left; }
+  .tree-dep:hover { background: color-mix(in srgb, var(--blue-soft) 42%, #fff); }
+  .tree-dep-mark { flex: 0 0 auto; margin-top: 2px; color: var(--faint); }
+  .tree-dep-mark svg { width: 12px; height: 12px; }
+  .tree-dep-copy { min-width: 0; display: grid; gap: 1px; }
+  .tree-dep-copy strong { color: #3b434e; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+  .tree-dep-copy small { color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.35; overflow-wrap: anywhere; }
+  .tree-dep-copy em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--muted); }
+  .tree-dep.is-waiting em { color: #8a6a24; }
+  .tree-dep.is-ready em { color: var(--green); }
+  .tree-dep.is-blocked em { color: var(--red); }
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
   .goal-status--clarification_pending, .goal-status--execution_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
   .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
-  .goal-status--waiting_children { color: #555d68; }
+  .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }
   .goal-status--trashed, .goal-status--archived { color: #626b76; }
   .tree-node.is-selected .goal-status { color: #fff; }
-  .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
+  .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; background: color-mix(in srgb, var(--rail) 55%, #fff); }
   .tree-footer small { margin-left: auto; color: var(--muted); }
   .document-pane { min-width: 0; overflow: auto; background: var(--paper); scrollbar-width: none; -ms-overflow-style: none; }
   .document-pane::-webkit-scrollbar { display: none; }
   .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) 5px var(--tui-width, 480px); }
-  .tui-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
+  .tui-resizer { position: relative; z-index: 3; cursor: col-resize; background: var(--rail); touch-action: none; }
   .tui-resizer::after { content: ""; position: absolute; inset: 0 2px 0 auto; width: 1px; background: var(--line-strong); }
   .tui-resizer:hover::after, .tui-resizer:focus-visible::after, .tui-resizer.is-dragging::after { width: 2px; background: var(--blue); }
-  .tui-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 40px minmax(0, 1fr); background: #f7f8fa; container-type: inline-size; }
-  .tui-tabs { min-width: 0; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); background: #f7f8fa; }
+  .tui-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 40px minmax(0, 1fr); background: color-mix(in srgb, var(--rail) 70%, #fff); container-type: inline-size; }
+  .tui-tabs { min-width: 0; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--rail) 70%, #fff); }
   .tui-tab-list { min-width: 0; flex: 1; height: 100%; display: flex; align-items: center; gap: 2px; overflow: auto; scrollbar-width: none; }
   .tui-tab-list::-webkit-scrollbar { display: none; }
   .tui-tab { max-width: 168px; height: 28px; padding: 0 6px 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 650; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; transition: background .16s ease, color .16s ease; }
-  .tui-tab:hover { color: var(--ink); background: #edf2f7; }
+  .tui-tab:hover { color: var(--blue-dark); background: var(--blue-soft); }
   .tui-tab.is-active { color: var(--ink); background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
   .tui-tab.is-exited { color: var(--faint); }
   .tui-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -2037,20 +2325,18 @@ const STYLES = `
   .tui-tab-close:hover { color: var(--red); background: var(--red-soft); }
   .tui-add { height: 28px; flex: 0 0 auto; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; transition: background .16s ease, color .16s ease; }
   .tui-add:hover, .tui-add[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
-  .tui-collapse, .tui-expand { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: background .16s ease, color .16s ease; }
-  .tui-collapse:hover, .tui-expand:hover { color: var(--blue); background: var(--blue-soft); }
-  .tui-collapse svg, .tui-expand svg { width: 14px; height: 14px; }
-  .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) var(--tui-width, 56px); }
-  .workspace.is-tui-collapsed .tui-resizer { display: none; }
-  .tui-pane.is-collapsed { grid-template-rows: 1fr; border-left: 1px solid var(--line-strong); }
-  .tui-pane.is-collapsed .tui-tabs { height: 100%; flex-direction: column; justify-content: center; align-items: center; padding: 0; border-bottom: 0; }
-  .tui-pane.is-collapsed .tui-tab-list, .tui-pane.is-collapsed .tui-add, .tui-pane.is-collapsed .tui-stage, .tui-pane.is-collapsed .tui-menu { display: none; }
-  .tui-pane.is-collapsed .tui-collapse { display: none; }
-  .tui-pane:not(.is-collapsed) .tui-expand { display: none; }
-  .tui-pane.is-collapsed .tui-expand { width: 42px; min-height: 52px; height: auto; display: grid; place-items: center; align-content: center; gap: 3px; border-radius: 8px; }
-  .tui-pane.is-collapsed .tui-expand svg { width: 18px; height: 18px; }
+  .tui-collapse { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: background .16s ease, color .16s ease; }
+  .tui-collapse:hover { color: var(--blue); background: var(--blue-soft); }
+  .tui-collapse svg { width: 14px; height: 14px; }
+  .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) 0 0; }
+  .workspace.is-tui-collapsed .tui-resizer, .workspace.is-tui-collapsed .tui-pane { visibility: hidden; pointer-events: none; }
+  .tui-expand { display: none; }
+  .workspace.is-tui-collapsed .tui-expand { position: absolute; top: 50%; right: 0; z-index: 8; width: 36px; min-height: 112px; padding: 14px 0; border: 1px solid var(--line-strong); border-right: 0; border-radius: 8px 0 0 8px; background: color-mix(in srgb, var(--rail) 40%, #fff); box-shadow: -4px 2px 16px rgba(26, 38, 52, .1); color: var(--ink); transform: translateY(-50%); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+  .workspace.is-tui-collapsed .tui-expand:hover { color: var(--blue-dark); background: var(--blue-soft); }
+  .workspace.is-tui-collapsed .tui-expand:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .workspace.is-tui-collapsed .tui-expand svg { width: 16px; height: 16px; }
   .tui-expand-label { display: none; }
-  .tui-pane.is-collapsed .tui-expand-label { display: block; font-size: 10px; font-weight: 650; line-height: 1; }
+  .workspace.is-tui-collapsed .tui-expand-label { display: block; writing-mode: vertical-rl; font-size: 12px; font-weight: 650; letter-spacing: .12em; line-height: 1; }
   .tui-stage { min-width: 0; min-height: 0; overflow: hidden; padding: 10px 12px 12px; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
   .tui-chrome { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .tui-chrome-actions { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -2091,8 +2377,8 @@ const STYLES = `
   .tui-menu-actions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; font-weight: 650; }
   .tui-menu-actions button[type="submit"] { border-color: var(--blue); color: #fff; background: var(--blue); }
   @container (max-width: 380px) {
-    .tui-add span { display: none; }
-    .tui-add { width: 28px; padding: 0; }
+    .tui-add span, .tui-chrome [data-tui-copy] span { display: none; }
+    .tui-add, .tui-chrome [data-tui-copy] { width: 28px; padding: 0; justify-content: center; }
   }
   .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
   .goal-header { padding: 0 0 20px; border-bottom: 1px solid var(--line-strong); }
@@ -2117,7 +2403,7 @@ const STYLES = `
   .goal-more[open] > summary { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); }
   .goal-more > div { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; min-width: 168px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; box-shadow: 0 8px 28px rgba(26, 38, 52, .12); display: grid; }
   .goal-more .document-action { width: 100%; justify-content: flex-start; border: 0; height: 32px; }
-  .goal-situation { margin: 16px 0 0; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .goal-situation { margin: 16px 0 0; border: 1px solid color-mix(in srgb, var(--blue), var(--line) 68%); border-radius: 5px; background: color-mix(in srgb, var(--blue-soft) 48%, #fff); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .goal-situation-cell { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); color: inherit; text-decoration: none; display: grid; gap: 2px; }
   .goal-situation-cell:last-child { border-right: 0; }
   .goal-situation-cell:hover { background: #f7faff; }
@@ -2142,13 +2428,13 @@ const STYLES = `
   .goal-meta mark { padding: 1px 5px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); }
   .document-section { padding: 18px 0 20px; border-bottom: 1px solid var(--line); scroll-margin-top: 12px; }
   .section-heading { margin: 0 0 10px; display: flex; align-items: flex-start; gap: 9px; }
-  .section-heading > span { width: 22px; height: 22px; margin-top: 1px; display: grid; place-items: center; color: #48515e; }
+  .section-heading > span { width: 22px; height: 22px; margin-top: 1px; display: grid; place-items: center; color: var(--blue); }
   .section-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
   .section-heading p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
   .document-subsection { margin: 16px 0 0 31px; padding-top: 16px; border-top: 1px solid var(--line); scroll-margin-top: 12px; }
   .document-subsection:first-of-type { margin-top: 6px; padding-top: 0; border-top: 0; }
   .subsection-heading { margin: 0 0 10px; display: flex; align-items: flex-start; gap: 8px; }
-  .subsection-heading > span { width: 20px; height: 20px; display: grid; place-items: center; color: #59626f; }
+  .subsection-heading > span { width: 20px; height: 20px; display: grid; place-items: center; color: var(--blue-dark); }
   .subsection-heading h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
   .subsection-heading p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
   .business-copy { padding-left: 31px; color: #303641; }
@@ -2371,6 +2657,16 @@ const MORE_STYLES = `
   .contract-list h3, .safety-workbench h3 { margin: 0; font-size: 13px; }
   .contract-list .doc-list, .contract-list .empty-row { margin-top: 0; }
   .contract-list .doc-list { min-width: 0; overflow-wrap: anywhere; }
+  .scope-gaps { margin-top: 10px; border: 1px solid var(--line); border-radius: 5px; background: color-mix(in srgb, var(--blue-soft) 42%, #fff); }
+  .scope-gaps > summary { min-height: 46px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; list-style: none; cursor: pointer; }
+  .scope-gaps > summary::-webkit-details-marker { display: none; }
+  .scope-gaps > summary:hover { background: color-mix(in srgb, var(--blue-soft) 70%, #fff); }
+  .scope-gaps > summary > span { min-width: 0; display: grid; gap: 2px; }
+  .scope-gaps > summary strong { font-size: 13px; }
+  .scope-gaps > summary small { color: var(--muted); font-size: 12px; font-weight: 500; }
+  .scope-gaps > summary > svg { flex: 0 0 auto; color: var(--blue); transition: transform .16s ease; }
+  .scope-gaps[open] > summary > svg { transform: rotate(180deg); }
+  .scope-gaps > .contract-list { padding: 0 12px 6px; border-top: 1px solid var(--line); background: #fff; }
   .safety-workbench { border-top: 1px solid var(--line-strong); }
   .risk-register, .impact-register { min-width: 0; padding: 14px 0; border-bottom: 1px solid var(--line); }
   .impact-register { border-bottom: 0; }
@@ -2676,7 +2972,7 @@ const MORE_STYLES = `
   .decision-center-header { padding-bottom: 22px; border-bottom: 1px solid var(--line-strong); display: flex; align-items: flex-end; justify-content: space-between; gap: 26px; }
   .decision-center-header > div { max-width: 710px; }
   .decision-center-header > div > small { color: var(--blue-dark); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
-  .decision-center-header h1 { margin: 4px 0 5px; font-size: clamp(25px, 2.3vw, 32px); line-height: 1.25; letter-spacing: -.03em; }
+  .decision-center-header h1 { margin: 0 0 5px; font-size: clamp(25px, 2.3vw, 32px); line-height: 1.25; letter-spacing: -.03em; }
   .decision-center-header p { margin: 0; color: var(--muted); }
   .decision-center-header > strong { min-width: 94px; font-size: 34px; line-height: 1; text-align: right; font-variant-numeric: tabular-nums; }
   .decision-center-header > strong small { margin-top: 5px; display: block; color: var(--muted); font-size: 11px; font-weight: 500; }
@@ -2687,7 +2983,7 @@ const MORE_STYLES = `
   .decision-goal-group { padding: 25px 0 30px; border-bottom: 1px solid var(--line-strong); scroll-margin-top: 12px; }
   .decision-owner { margin-bottom: 13px; display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
   .decision-owner > div { min-width: 0; display: grid; gap: 3px; }
-  .decision-owner > div > span { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .decision-owner > div > span { color: var(--muted); font-size: 11px; font-weight: 650; }
   .decision-owner > small { flex: 0 0 auto; color: var(--muted); }
   .decision-owner-link { min-width: 0; color: inherit; display: grid; text-decoration: none; }
   a.decision-owner-link:hover strong { color: var(--blue-dark); text-decoration: underline; }
@@ -2903,17 +3199,16 @@ const RESPONSIVE_STYLES = `
     .brand { min-width: 160px; padding-inline: 20px; }
     .project-context { min-width: 0; padding-inline: 14px; }
     .project-context > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
-    .global-search { min-width: 180px; max-width: 220px; }
     .top-action { padding-inline: 9px; }
-    .top-action[data-settings-link] span, .top-action[data-collapse-all] span { display: none; }
   }
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
     .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 5px var(--tui-width, 400px); }
-    .project-context { min-width: 0; padding-inline: 16px; }
+    .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 0 0; }
+    .project-context { min-width: 0; padding-inline: 12px; }
     .project-context > span:not(.sync-state) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    .global-search { min-width: 140px; max-width: 180px; }
+    .project-decisions span { display: none; }
     .top-action { padding-inline: 8px; }
     .top-action span { display: none; }
     .runtime-grid { grid-template-columns: 1fr 1fr; }
@@ -2921,18 +3216,10 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
   }
   @media (max-width: 900px) {
-    .global-search { min-width: 34px; max-width: 34px; flex: 0 0 34px; margin-right: 4px; z-index: 13; }
-    .global-search input { width: 34px; padding: 0; color: transparent; cursor: pointer; }
-    .global-search input::placeholder { color: transparent; }
-    .global-search svg { left: 9px; pointer-events: none; }
-    .global-search kbd { display: none; }
-    .global-search:focus-within { position: absolute; top: 12px; right: 12px; width: min(320px, calc(100vw - 24px)); min-width: min(320px, calc(100vw - 24px)); max-width: none; margin: 0; }
-    .global-search:focus-within input { width: 100%; padding: 0 12px 0 36px; color: var(--ink); background: #fff; box-shadow: var(--shadow); cursor: text; }
-    .global-search:focus-within input::placeholder { color: var(--faint); }
-    .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
     .top-spacer { display: none; }
+    .project-bar { min-width: 0; flex: 1 1 auto; }
     .project-context { min-width: 0; flex: 1 1 auto; padding-inline: 12px; }
-    .project-context > strong, .project-context small, .project-context .sync-state { display: none; }
+    .project-context > strong, .project-demo, .project-bar > .sync-state { display: none; }
     .project-context > span:not(.sync-state) { min-width: 0; flex: 1 1 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
     .project-context a { flex: 0 0 auto; }
   }
@@ -2942,16 +3229,16 @@ const RESPONSIVE_STYLES = `
     .topbar { grid-row: 1; }
     .brand { min-width: 0; padding: 0 15px; border-right: 0; }
     .brand strong { font-size: 17px; }
-    .global-search:focus-within { top: 9px; }
-    .top-action[data-view-action]:not([data-decisions-link]) { display: none; }
     .project-context { padding-inline: 8px; }
     .project-context > span:not(.sync-state) { max-width: 132px; }
     .top-spacer { flex: 1; }
-    .top-action { margin-right: 8px; border-left: 0; }
+    .top-action { margin-right: 8px; }
     .top-action span { display: none; }
-    .mobile-switch { grid-row: 2; display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); padding: 5px; border-bottom: 1px solid var(--line); background: #f7f8fa; }
+    .tree-search kbd { display: none; }
+    .tree-search input { padding-right: 10px; }
+    .mobile-switch { grid-row: 2; display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); padding: 5px; border-bottom: 1px solid var(--line); background: var(--rail); }
     .mobile-switch button { border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
-    .mobile-switch button.is-active { color: var(--ink); background: #fff; box-shadow: 0 1px 3px rgba(22, 31, 43, .1); }
+    .mobile-switch button.is-active { color: var(--blue-dark); background: #fff; box-shadow: 0 1px 3px rgba(22, 31, 43, .1); }
     .workspace { grid-row: 3; grid-template-columns: 1fr; }
     .tree-resizer, .tui-resizer { display: none; }
     .workspace.is-desktop-tui { grid-template-columns: 1fr; }
@@ -2963,6 +3250,7 @@ const RESPONSIVE_STYLES = `
     .workspace[data-mobile-view="tui"] .tree-pane,
     .workspace[data-mobile-view="tui"] .document-pane { display: none; }
     .workspace[data-mobile-view="tui"] .tui-pane { display: grid; }
+    .tui-collapse, .tui-expand { display: none !important; }
     .tree-pane { border-right: 0; }
     .goal-document { padding: 20px 18px 64px; }
     .goal-title-row { display: grid; gap: 10px; }
@@ -4010,7 +4298,9 @@ const CLIENT_SCRIPT = `
       treeTop: treeScroll.scrollTop,
       documentTop: documentPane.scrollTop,
       treeWidth: treePane.getBoundingClientRect().width,
-      tuiWidth: tuiPane?.getBoundingClientRect().width,
+      tuiWidth: workspace.classList.contains("is-tui-collapsed")
+        ? parseFloat(workspace.style.getPropertyValue("--tui-width")) || undefined
+        : tuiPane?.getBoundingClientRect().width,
       query: treeSearch.value,
       statuses: [...selectedStatuses],
       mobileView: workspace.dataset.mobileView || "tree",
@@ -4267,6 +4557,8 @@ const CLIENT_SCRIPT = `
         const nextCount = parsed.querySelector("[data-tree-count]");
         const nextDialog = parsed.querySelector("[data-create-dialog]");
         const nextDecisionsLink = parsed.querySelector("[data-decisions-link]");
+        const nextArchiveLink = parsed.querySelector("[data-archive-link]");
+        const nextTrashLink = parsed.querySelector("[data-trash-link]");
         if (!nextTree || !nextDocument || !nextFooter) throw new Error("页面数据不完整");
         if (!force && searchInteractionActive()) {
           setSyncState("搜索中");
@@ -4280,13 +4572,19 @@ const CLIENT_SCRIPT = `
         if (nextFilter && treeFilter) treeFilter.innerHTML = nextFilter.innerHTML;
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
-        if (nextDecisionsLink) {
-          const decisionsLink = document.querySelector("[data-decisions-link]");
-          if (decisionsLink) {
-            decisionsLink.innerHTML = nextDecisionsLink.innerHTML;
-            decisionsLink.setAttribute("aria-label", nextDecisionsLink.getAttribute("aria-label") || "待决定");
+        const replaceNavLink = (current, next) => {
+          if (!current || !next) return;
+          current.innerHTML = next.innerHTML;
+          current.className = next.className;
+          for (const name of ["href", "aria-label", "aria-current", "title"]) {
+            const value = next.getAttribute(name);
+            if (value == null) current.removeAttribute(name);
+            else current.setAttribute(name, value);
           }
-        }
+        };
+        replaceNavLink(document.querySelector("[data-decisions-link]"), nextDecisionsLink);
+        replaceNavLink(document.querySelector("[data-archive-link]"), nextArchiveLink);
+        replaceNavLink(document.querySelector("[data-trash-link]"), nextTrashLink);
         if (nextDialog) {
           form.elements.parent_goal_id.innerHTML = nextDialog.querySelector('[name="parent_goal_id"]').innerHTML;
           form.querySelector(".goal-choice-list").innerHTML = nextDialog.querySelector(".goal-choice-list").innerHTML;
@@ -4436,6 +4734,10 @@ const CLIENT_SCRIPT = `
       };
       tuiResizer.addEventListener("pointerup", finishTuiResize);
       tuiResizer.addEventListener("pointercancel", finishTuiResize);
+      tuiResizer.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        document.dispatchEvent(new CustomEvent("goalboard:tui-collapse"));
+      });
       tuiResizer.addEventListener("keydown", (event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         event.preventDefault();
@@ -4452,7 +4754,7 @@ const CLIENT_SCRIPT = `
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
-      if (!treeFilter?.hidden && !target.closest("[data-tree-filter]")) setTreeFilterOpen(false);
+    if (!treeFilter?.hidden && !target.closest("[data-tree-filter], [data-tree-filter-trigger]")) setTreeFilterOpen(false);
       if (target.closest("[data-clear-status-filter]")) {
         setSelectedStatuses([]);
         filterTree(treeSearch.value);
@@ -5368,18 +5670,18 @@ function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, b
     ? `<p class="tui-menu-missing">${L("以下 CLI 未安装：{list}。安装后刷新页面即可使用。", { list: missingKinds.join("、") })}</p>`
     : "";
   return `
-      <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
+      <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度，双击收起")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
       <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" aria-label="${L("终端面板")}">
         <div class="tui-tabs">
           <div class="tui-tab-list" data-tui-tabs></div>
           <button class="tui-add" type="button" data-tui-add aria-expanded="false" aria-controls="tui-open-menu" aria-haspopup="true" aria-label="${L("添加终端")}">${icon("plus")}<span>${L("添加终端")}</span></button>
-          <button class="tui-collapse" type="button" data-tui-collapse aria-label="${L("收起终端")}" title="${L("收起终端")}">${icon("chevron-right")}</button>
-          <button class="tui-expand" type="button" data-tui-expand hidden aria-label="${L("展开终端")}" title="${L("展开终端")}">${icon("terminal")}<span class="tui-expand-label">${L("终端")}</span></button>
+          <button class="tui-collapse" type="button" data-tui-collapse aria-label="${L("收起终端")}" title="${L("收起终端")}">${icon("panel")}</button>
         </div>
         <div class="tui-stage">
           <div class="tui-chrome">
             <div class="tui-chrome-actions">
               <button class="tui-advance" type="button" data-tui-advance disabled>${icon("play")}<span>${L("推进这个 Goal")}</span></button>
+              <button type="button" data-tui-copy>${icon("copy")}<span>${L("复制命令")}</span></button>
               <button type="button" data-tui-fill disabled>${L("填入不发送")}</button>
               <button type="button" data-tui-reopen hidden>${icon("refresh")}<span>${L("重新打开")}</span></button>
             </div>
@@ -5408,7 +5710,8 @@ function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, b
             <button type="submit" data-tui-generic-open hidden>${L("打开")}</button>
           </div>
         </form>
-      </aside>`;
+      </aside>
+      <button class="tui-expand" type="button" data-tui-expand hidden aria-label="${L("展开终端")}" title="${L("展开终端")}">${icon("terminal")}<span class="tui-expand-label">${L("终端")}</span></button>`;
 }
 
 export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = ""): string {
@@ -5518,7 +5821,8 @@ export function renderGoalBoardWeb(
         : view.route_prefix
           ? `${view.route_prefix}/`
           : "/";
-  const projectContext = `<div class="project-context"><strong>${L("项目：")}</strong><span>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}${view.demo ? `<small>${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></div>`;
+  const pendingCount = pendingDecisionCount(view);
+  const projectContext = `<div class="project-bar"><div class="project-context"><strong>${L("项目：")}</strong><span>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}</div><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></div>`;
   const showTui = !decisionView && !archiveView && !trashView;
   const html = `<!--
 THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
@@ -5544,22 +5848,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
       ${projectContext}
       <div class="top-spacer"></div>
-      <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="${searchPlaceholder}" aria-label="${searchLabel}"><kbd>⌘F</kbd></label>
-      <div class="top-filter-control">
-        <button class="top-action" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="${L("筛选目标")}">${icon("filter")}<span>${L("状态")}</span></button>
-        ${renderTreeStatusFilter(visibleGoals)}
-      </div>
-      <button class="top-action" type="button" data-open-create aria-label="${L("新建目标")}">${icon("plus")}<span>${L("新建目标")}</span></button>
-      <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")} ${pendingDecisionCount(view)}</span></a>
-      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? L("返回 Goal Tree") : L("查看已归档 Goal")}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? L("返回 Goal Tree") : `${L("已归档")} ${view.archived_goals.length}`}</span></a>
-      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? L("返回 Goal Tree") : L("查看回收站")}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? L("返回 Goal Tree") : `${L("回收站")} ${view.trashed_goals.length}`}</span></a>
       ${renderLocaleSwitch(localeNextPath)}
       <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="${L("打开 GoalBoard 设置")}">${icon("settings")}<span>${L("设置")}</span></a>
-      <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>${L("收起")}</span></button>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? L("决定中心") : L("Goal 正文")}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${L("终端")}</button>` : ""}</nav>
     <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
+        ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
         <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div>
         <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
       </aside>

@@ -97,7 +97,9 @@ export function desktopPanelEnv(input: {
   panelId: string;
   workContextId: string;
   goalId: string;
+  webUrl?: string;
 }): Record<string, string> {
+  const webUrl = input.webUrl?.trim() || "http://127.0.0.1:4173";
   return {
     GOALBOARD_HOME: input.homeDirectory,
     GOALBOARD_MCP_AUDIENCE: "runtime",
@@ -106,7 +108,7 @@ export function desktopPanelEnv(input: {
     GOALBOARD_WORK_CONTEXT_STABLE: "true",
     GOALBOARD_PANEL_ID: input.panelId,
     GOALBOARD_GOAL_ID: input.goalId,
-    GOALBOARD_WEB_URL: "http://127.0.0.1:4173",
+    GOALBOARD_WEB_URL: webUrl,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
   };

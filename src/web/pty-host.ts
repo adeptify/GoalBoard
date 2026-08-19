@@ -7,16 +7,18 @@ import { spawn, type IPty } from "node-pty";
 
 export interface PtySpawnRequest {
   panelId: string;
-  command: string;
+  command?: string;
   args?: string[];
   cwd?: string | null;
   env?: Record<string, string>;
   cols?: number;
   rows?: number;
+  attachOnly?: boolean;
 }
 
 export interface PtySpawnResult {
   attached: boolean;
+  started: boolean;
   replay: string;
 }
 
@@ -144,34 +146,114 @@ function loginShellEnvironment(): Record<string, string> {
 
 function nvmBinDirectory(): string | undefined {
   const nvmDir = process.env.NVM_DIR?.trim() || path.join(os.homedir(), ".nvm");
-  const fromEnv = process.env.NVM_BIN?.trim();
-  let fromAlias: string | undefined;
-  try {
-    const alias = fs.readFileSync(path.join(nvmDir, "alias", "default"), "utf8").trim();
-    if (alias) {
-      const version = alias.startsWith("v") ? alias : `v${alias}`;
-      fromAlias = path.join(nvmDir, "versions", "node", version, "bin");
-    }
-  } catch {
-    // nvm is optional.
-  }
-  for (const directory of [fromEnv, fromAlias]) {
+  const resolved = resolveNvmBinDirectory(nvmDir, process.env.NVM_BIN?.trim());
+  if (!resolved) return undefined;
+  if (!resolved.startsWith(os.homedir())) return undefined;
+  return resolved;
+}
+
+export function resolveNvmBinDirectory(nvmDir: string, nvmBin?: string): string | undefined {
+  const root = path.resolve(nvmDir);
+  const fromEnv = nvmBin?.trim();
+  const candidates = [
+    fromEnv ? path.resolve(fromEnv) : undefined,
+    ...nvmAliasBinDirectories(root),
+  ];
+  for (const directory of candidates) {
     if (!directory) continue;
-    const resolved = path.resolve(directory);
-    if (!resolved.startsWith(os.homedir())) continue;
-    if (isExecutableFile(path.join(resolved, "node"))) return resolved;
+    if (isExecutableFile(path.join(directory, "node"))) return directory;
   }
   return undefined;
+}
+
+function nvmAliasBinDirectories(nvmDir: string): string[] {
+  let alias = "";
+  try {
+    alias = fs.readFileSync(path.join(nvmDir, "alias", "default"), "utf8").trim();
+  } catch {
+    return [];
+  }
+  const version = resolveNvmAliasValue(nvmDir, alias);
+  if (!version) return [];
+  const release = version.startsWith("v") ? version : `v${version}`;
+  const versionsRoot = path.join(nvmDir, "versions", "node");
+  const exact = path.join(versionsRoot, release, "bin");
+  const matches: string[] = [];
+  try {
+    for (const name of fs.readdirSync(versionsRoot)) {
+      if (nvmVersionNameMatches(name, release)) matches.push(name);
+    }
+  } catch {
+    return [exact];
+  }
+  matches.sort(compareNodeVersionNames);
+  return [exact, ...matches.map((name) => path.join(versionsRoot, name, "bin"))];
+}
+
+function nvmVersionNameMatches(name: string, release: string): boolean {
+  if (name === release) return true;
+  const wanted = parseNodeVersion(release);
+  const got = parseNodeVersion(name);
+  if (!wanted || !got) return false;
+  if (wanted.minor == null) return got.major === wanted.major;
+  if (wanted.patch == null) return got.major === wanted.major && got.minor === wanted.minor;
+  return got.major === wanted.major && got.minor === wanted.minor && got.patch === wanted.patch;
+}
+
+function parseNodeVersion(value: string): { major: number; minor?: number; patch?: number } | undefined {
+  const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(value.trim());
+  if (!match) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: match[2] == null ? undefined : Number(match[2]),
+    patch: match[3] == null ? undefined : Number(match[3]),
+  };
+}
+
+function resolveNvmAliasValue(nvmDir: string, raw: string): string {
+  let current = raw.trim();
+  for (let i = 0; i < 8; i++) {
+    if (!current) return "";
+    const aliasFile = path.join(nvmDir, "alias", ...current.split("/"));
+    try {
+      const next = fs.readFileSync(aliasFile, "utf8").trim();
+      if (!next || next === current) break;
+      current = next;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+function compareNodeVersionNames(left: string, right: string): number {
+  const a = left.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (b[index] ?? 0) - (a[index] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+}
+
+function hostNodeBinDirectory(): string | undefined {
+  const directory = path.dirname(process.execPath);
+  const name = path.basename(process.execPath).toLowerCase();
+  if (name !== "node" && name !== "node.exe") return undefined;
+  if (!isExecutableFile(process.execPath)) return undefined;
+  return directory;
 }
 
 function userToolchainPath(): string {
   return mergePath(
     path.join(os.homedir(), ".local", "bin"),
     path.join(os.homedir(), ".grok", "bin"),
+    nvmBinDirectory(),
+    hostNodeBinDirectory(),
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
     path.join(os.homedir(), ".cargo", "bin"),
-    nvmBinDirectory(),
   );
 }
 
@@ -252,6 +334,8 @@ export function buildPtyEnvironment(overlay: Record<string, string> = {}): Recor
   delete env.TERM_PROGRAM_VERSION;
   delete env.NODE_PATH;
   delete env.NODE_OPTIONS;
+  delete env.PWD;
+  delete env.OLDPWD;
   for (const [key, value] of Object.entries(overlay)) {
     if (isBlockedPtyEnvKey(key)) continue;
     env[key] = value;
@@ -260,6 +344,27 @@ export function buildPtyEnvironment(overlay: Record<string, string> = {}): Recor
     if (isBlockedPtyEnvKey(key)) delete env[key];
   }
   return env;
+}
+
+function terminatePtyProcess(session: IPty): void {
+  const pid = session.pid;
+  if (typeof pid === "number" && pid > 1 && process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGHUP");
+    } catch {
+      // The child may not be a process-group leader.
+    }
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Process may already have exited.
+    }
+  }
+  try {
+    session.kill();
+  } catch {
+    // Process may already have exited.
+  }
 }
 
 function clipReplay(value: string): string {
@@ -285,16 +390,24 @@ export class GoalBoardPtyHost {
     const existing = this.sessions.get(request.panelId);
     if (existing) {
       existing.resize(cols, rows);
-      return { attached: true, replay: this.replay.get(request.panelId) ?? "" };
+      return { attached: true, started: false, replay: this.replay.get(request.panelId) ?? "" };
+    }
+    if (request.attachOnly) {
+      return { attached: false, started: false, replay: "" };
     }
     const commandName = request.command?.trim();
     if (!commandName) throw new Error("缺少启动命令");
+    const cwd = request.cwd?.trim() ?? "";
+    if (!cwd) {
+      throw new Error("打开终端需要先把这个项目关联到一个工作目录");
+    }
     const env = buildPtyEnvironment(request.env ?? {});
+    env.PWD = cwd;
+    delete env.OLDPWD;
     const command = resolveCommand(commandName, env.PATH);
     if (!isExecutableFile(command)) {
       throw new Error(`找不到命令：${commandName}，请先安装，或确认它在 PATH 中。`);
     }
-    const cwd = request.cwd?.trim() || os.homedir();
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       throw new Error(`工作目录不存在：${cwd}，请检查项目绑定的目录。`);
     }
@@ -311,11 +424,12 @@ export class GoalBoardPtyHost {
       this.handlers.onData(request.panelId, data);
     });
     proc.onExit(({ exitCode, signal }) => {
+      if (this.sessions.get(request.panelId) !== proc) return;
       this.sessions.delete(request.panelId);
       this.handlers.onExit(request.panelId, { exitCode: exitCode ?? -1, signal: signal ?? 0 });
     });
     this.sessions.set(request.panelId, proc);
-    return { attached: false, replay: "" };
+    return { attached: false, started: true, replay: "" };
   }
 
   write(panelId: string, data: string): void {
@@ -335,11 +449,7 @@ export class GoalBoardPtyHost {
     this.sessions.delete(panelId);
     this.replay.delete(panelId);
     if (!session) return;
-    try {
-      session.kill();
-    } catch {
-      // Process may already have exited.
-    }
+    terminatePtyProcess(session);
   }
 
   killAll(): void {

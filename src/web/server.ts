@@ -13,8 +13,9 @@ import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projec
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
-import { isPtyCommandAvailable } from "./pty-host.js";
+import { isPtyCommandAvailable, type GoalBoardPtyHost } from "./pty-host.js";
 import { attachGoalBoardPtySocket } from "./pty-socket.js";
+import { resolveWebControlToken } from "./control-token.js";
 import type {
   GoalBoardProjectRecord,
   GoalBoardRuntimeContextBinding,
@@ -58,6 +59,8 @@ import {
   safeNextPath,
 } from "./i18n.js";
 
+export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
+
 export interface WebServerOptions {
   /**
    * In-process fixture input. The public Web command always starts from the
@@ -77,7 +80,7 @@ export interface WebServerOptions {
   runtimeIntegrationService?: RuntimeIntegrationService;
   /** Shared service manager so Web previews and confirmations use one in-memory plan. */
   webServiceManager?: GoalBoardWebServiceManager;
-  /** Test-only deterministic local Web control token. Production generates one per server process. */
+  /** Test-only deterministic local Web control token. Production persists one per GoalBoard home. */
   controlToken?: string;
 }
 
@@ -552,6 +555,7 @@ function servePtyClient(response: ServerResponse): boolean {
 function desktopPanelSpawn(
   catalog: GoalBoardProjectCatalog,
   panel: { panel_id: string; runtime_kind: string; launch_command: string; launch_args: string[]; cwd: string | null; work_context_id: string; goal_id: string },
+  webUrl: string,
 ) {
   return {
     command: panel.launch_command,
@@ -563,11 +567,18 @@ function desktopPanelSpawn(
       panelId: panel.panel_id,
       workContextId: panel.work_context_id,
       goalId: panel.goal_id,
+      webUrl,
     }),
   };
 }
 
 const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'";
+
+function loopbackWebOrigin(server: http.Server): string {
+  const address = server.address();
+  if (address && typeof address === "object") return `http://127.0.0.1:${address.port}`;
+  return "http://127.0.0.1:4173";
+}
 
 async function handleDesktopPanelApi(
   request: IncomingMessage,
@@ -577,6 +588,8 @@ async function handleDesktopPanelApi(
   projectId: string,
   coordinator: GoalBoardCoordinator,
   boardId: string,
+  ptyHost: GoalBoardPtyHost,
+  webUrl: string,
 ): Promise<boolean> {
   const panelsMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/panels$/);
   const promptMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/advance-prompt$/);
@@ -602,7 +615,7 @@ async function handleDesktopPanelApi(
       sendJson(response, 200, {
         panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
           ...panel,
-          spawn: desktopPanelSpawn(catalog, panel),
+          spawn: desktopPanelSpawn(catalog, panel, webUrl),
         })),
       });
       return true;
@@ -626,6 +639,10 @@ async function handleDesktopPanelApi(
       const cwd = typeof body.cwd === "string" && body.cwd.trim()
         ? body.cwd.trim()
         : catalog.preferredWorkspacePath(projectId);
+      if (!cwd) {
+        sendJson(response, 400, { error: L("打开终端需要先把这个项目关联到一个工作目录") });
+        return true;
+      }
       const panel = catalog.openDesktopPanel({
         project_id: projectId,
         goal_id: goalId,
@@ -640,7 +657,7 @@ async function handleDesktopPanelApi(
       });
       sendJson(response, 200, {
         panel,
-        spawn: desktopPanelSpawn(catalog, panel),
+        spawn: desktopPanelSpawn(catalog, panel, webUrl),
       });
       return true;
     }
@@ -652,6 +669,7 @@ async function handleDesktopPanelApi(
         return true;
       }
       catalog.closeDesktopPanel(panelId, "desktop-user");
+      ptyHost.kill(panelId);
       sendJson(response, 200, { closed: true, panel_id: panelId });
       return true;
     }
@@ -673,7 +691,7 @@ async function handleDesktopPanelApi(
         return true;
       }
       const opened = catalog.markDesktopPanelOpen(panelId);
-      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, panel) });
+      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, opened, webUrl) });
       return true;
     }
     return false;
@@ -1046,12 +1064,10 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
   const webService = serverOptions.webServiceManager ?? new GoalBoardWebServiceManager({
     homeDirectory: serverOptions.homeDirectory,
   });
-  const controlToken = serverOptions.controlToken?.trim() || randomBytes(32).toString("base64url");
-  if (controlToken.length < 32 || controlToken.length > 512) {
-    throw new Error("Web control token 长度无效");
-  }
+  const controlToken = resolveWebControlToken(serverOptions);
   const mutationKeys = new Map<string, LocalMutationState>();
   if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
+  const pty = { host: null as GoalBoardPtyHost | null };
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
@@ -1071,6 +1087,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
       const locale = resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
       await runWithLocale(locale, async () => {
         if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
+        if (!pty.host) throw new Error("终端宿主尚未就绪");
         await handleGoalBoardWebRequest(
           request,
           response,
@@ -1081,13 +1098,15 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           webService,
           controlToken,
           mutationKeys,
+          pty.host,
+          loopbackWebOrigin(server),
         );
       });
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
-  attachGoalBoardPtySocket(server, controlToken);
+  pty.host = attachGoalBoardPtySocket(server, controlToken);
   return server;
 }
 
@@ -1101,6 +1120,8 @@ async function handleGoalBoardWebRequest(
   webService: GoalBoardWebServiceManager,
   controlToken: string,
   mutationKeys: Map<string, LocalMutationState>,
+  ptyHost: GoalBoardPtyHost,
+  webUrl: string,
 ): Promise<void> {
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
@@ -1513,6 +1534,8 @@ async function handleGoalBoardWebRequest(
             options.project.project_id,
             coordinator,
             options.boardId,
+            ptyHost,
+            webUrl,
           );
           if (handled) return;
         }
@@ -2463,6 +2486,12 @@ if (isMain) {
     const server = createGoalBoardWebServer({
       ...(homeArgument ? { homeDirectory: path.resolve(homeArgument) } : {}),
     });
+    const shutdown = () => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 2000).unref();
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
     server.listen(port, "127.0.0.1", () => {
       console.log(`GoalBoard Web: http://127.0.0.1:${port}`);
       console.log("项目列表（网页不会修改 Runtime Session 绑定）");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { WebSocket, type RawData } from "ws";
 import { desktopAdvancePrompt } from "../src/desktop/advance-prompt.js";
@@ -10,7 +10,14 @@ import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
-import { buildPtyEnvironment, isPtyCommandAvailable, resolvePtyCommand } from "../src/web/pty-host.js";
+import { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "../src/web/control-token.js";
+import {
+  GoalBoardPtyHost,
+  buildPtyEnvironment,
+  isPtyCommandAvailable,
+  resolveNvmBinDirectory,
+  resolvePtyCommand,
+} from "../src/web/pty-host.js";
 import { renderGoalBoardWeb } from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
@@ -72,6 +79,18 @@ function waitForPtyMessage(
   });
 }
 
+async function openAuthedPty(port: number): Promise<WebSocket> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/pty`);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", () => resolve());
+    socket.once("error", (error) => reject(error));
+  });
+  const ready = waitForPtyMessage(socket, (value) => value.type === "ready", "auth-ready");
+  socket.send(JSON.stringify({ type: "auth", token: WEB_TEST_CONTROL_TOKEN }));
+  await ready;
+  return socket;
+}
+
 function addProjectGoal(
   project: { database_path: string; board_id: string },
   goalId: string,
@@ -105,6 +124,18 @@ async function catalogFixture() {
     const created = await catalog.createProject({
       display_name: "桌面 TUI 项目",
       actor_id: "test-user",
+    });
+    catalog.bindRuntimeContext({
+      context: {
+        runtime_id: "generic",
+        stable_work_context_id: `desktop-tui-workspace-${created.project_id}`,
+        host_declares_stable: true,
+        workspace: { canonical_path: homeDirectory, realpath_verified: false },
+      },
+      project_id: created.project_id,
+      actor_id: "test-user",
+      user_confirmed: true,
+      binding_scope: "workspace_default",
     });
     const project = catalog.getProject(created.project_id);
     return { homeDirectory, project };
@@ -166,6 +197,18 @@ test("launch recipes resume Codex, Claude, OpenCode, Pi Agent, and Grok Build", 
   assert.equal(env.GOALBOARD_PANEL_ID, "panel-1");
   assert.equal(env.GOALBOARD_WORK_CONTEXT_ID, "panel-1");
   assert.equal(env.GOALBOARD_RUNTIME_ID, "opencode");
+  assert.equal(env.GOALBOARD_WEB_URL, "http://127.0.0.1:4173");
+  assert.equal(
+    desktopPanelEnv({
+      homeDirectory: "/tmp/goalboard-home",
+      runtimeId: "opencode",
+      panelId: "panel-1",
+      workContextId: "panel-1",
+      goalId: "LEAF-1",
+      webUrl: "http://127.0.0.1:4321",
+    }).GOALBOARD_WEB_URL,
+    "http://127.0.0.1:4321",
+  );
   assert.doesNotMatch(JSON.stringify(env), /claim|select_goal/i);
 });
 
@@ -193,6 +236,10 @@ test("PTY environment keeps GoalBoard identity and drops host Node/editor flags"
     assert.equal(env.TERM, "xterm-256color");
     assert.match(env.PATH ?? "", /\/bin/);
     assert.doesNotMatch(env.PATH ?? "", /(^|:)(\.\/node_modules\/\.bin|\/tmp\/cursor-host-bin)(:|$)/);
+    const hostNodeDir = dirname(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(env.PATH ?? "", new RegExp(`(^|:)${hostNodeDir}(:|$)`));
+    assert.notEqual(resolvePtyCommand("node", env.PATH), "node");
+    assert.equal(isPtyCommandAvailable("node", env.PATH), true);
   } finally {
     if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = previousNodeOptions;
@@ -201,6 +248,39 @@ test("PTY environment keeps GoalBoard identity and drops host Node/editor flags"
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
     delete process.env.CURSOR_TRACE_ID;
+  }
+});
+
+test("nvm major-version aliases resolve to an installed Node bin", () => {
+  const nvmDir = mkdtempSync(join(tmpdir(), "goalboard-nvm-alias-"));
+  mkdirSync(join(nvmDir, "alias", "lts"), { recursive: true });
+  mkdirSync(join(nvmDir, "versions", "node", "v24.9.0", "bin"), { recursive: true });
+  mkdirSync(join(nvmDir, "versions", "node", "v24.14.0", "bin"), { recursive: true });
+  writeFileSync(join(nvmDir, "alias", "default"), "24\n");
+  writeFileSync(join(nvmDir, "alias", "lts", "krypton"), "v24.9.0\n");
+  const latest = join(nvmDir, "versions", "node", "v24.14.0", "bin", "node");
+  const lts = join(nvmDir, "versions", "node", "v24.9.0", "bin", "node");
+  writeFileSync(latest, "#!/bin/sh\nexit 0\n");
+  writeFileSync(lts, "#!/bin/sh\nexit 0\n");
+  chmodSync(latest, 0o755);
+  chmodSync(lts, 0o755);
+
+  assert.equal(resolveNvmBinDirectory(nvmDir), join(nvmDir, "versions", "node", "v24.14.0", "bin"));
+
+  writeFileSync(join(nvmDir, "alias", "default"), "lts/krypton\n");
+  assert.equal(resolveNvmBinDirectory(nvmDir), join(nvmDir, "versions", "node", "v24.9.0", "bin"));
+});
+
+test("PTY PATH still finds node when NVM_BIN is absent", () => {
+  const previousNvmBin = process.env.NVM_BIN;
+  delete process.env.NVM_BIN;
+  try {
+    const env = buildPtyEnvironment();
+    assert.notEqual(resolvePtyCommand("node", env.PATH), "node");
+    assert.equal(isPtyCommandAvailable("node", env.PATH), true);
+  } finally {
+    if (previousNvmBin === undefined) delete process.env.NVM_BIN;
+    else process.env.NVM_BIN = previousNvmBin;
   }
 });
 
@@ -223,7 +303,7 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(browser, /推进这个 Goal/);
     assert.match(browser, /pty-client\.js/);
     assert.match(browser, /class="workspace is-desktop-tui"/);
-    assert.doesNotMatch(decisions, /class="tui-pane"|推进这个 Goal|pty-client\.js|data-mobile-target="tui"/);
+    assert.doesNotMatch(decisions, /class="tui-pane"|推进这个 Goal|复制命令|pty-client\.js|data-mobile-target="tui"/);
     assert.match(browser, /data-mobile-target="tui"/);
     assert.match(browser, /aria-controls="goal-tui-pane"/);
     assert.match(browser, /data-tui-kind="claude-code"/);
@@ -246,8 +326,14 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /data-tui-collapse/);
     assert.match(desktop, /data-tui-expand/);
     assert.match(desktop, /tui-expand-label/);
+    assert.match(desktop, /复制命令/);
+    assert.match(desktop, /data-tui-copy/);
     assert.match(desktop, /\.workspace\.is-tui-collapsed/);
-    assert.match(desktop, /\.tui-pane\.is-collapsed/);
+    assert.match(desktop, /\.workspace\.is-tui-collapsed \.tui-expand/);
+    assert.match(desktop, /minmax\(0, 1fr\) 0 0/);
+    assert.doesNotMatch(desktop, /--tui-width, 56px/);
+    assert.match(desktop, /goalboard:tui-collapse/);
+    assert.match(desktop, /dblclick/);
     assert.match(desktop, /\.document-pane::-webkit-scrollbar/);
     assert.match(desktop, /在这个 Goal 上打开终端/);
     assert.match(desktop, /querySelector\("\[data-tree-resizer\]"\)/);
@@ -324,6 +410,8 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.equal(payload.spawn.env.GOALBOARD_GOAL_ID, "TUI-GOAL");
     assert.equal(payload.spawn.env.GOALBOARD_PANEL_ID, payload.panel.panel_id);
     assert.equal(payload.spawn.env.GOALBOARD_WORK_CONTEXT_ID, payload.panel.work_context_id);
+    assert.equal(payload.spawn.env.GOALBOARD_WEB_URL, origin);
+    assert.equal(payload.spawn.cwd, realpathSync.native(fixture.homeDirectory));
 
     const prompt = await webFetch(`${origin}${prefix}/api/goals/TUI-GOAL/advance-prompt`);
     assert.equal(prompt.status, 200);
@@ -407,6 +495,59 @@ test("PTY command availability only accepts executable commands", () => {
   assert.equal(isPtyCommandAvailable(""), false);
 });
 
+test("PTY host attaches live sessions and refuses to spawn without a working directory", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "goalboard-pty-host-"));
+  let resolveHello: (() => void) | undefined;
+  const hello = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("PTY host did not emit hello")), 8_000);
+    resolveHello = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+  const host = new GoalBoardPtyHost({
+    onData: (_panelId, data) => {
+      if (data.includes("hello")) resolveHello?.();
+    },
+    onExit: () => undefined,
+  });
+  try {
+    assert.equal(host.alive("p1"), false);
+    assert.deepEqual(
+      host.spawn({ panelId: "p1", attachOnly: true }),
+      { attached: false, started: false, replay: "" },
+    );
+    assert.throws(
+      () => host.spawn({ panelId: "p1", command: "/bin/sh" }),
+      /工作目录/,
+    );
+    const started = host.spawn({
+      panelId: "p1",
+      command: "/bin/sh",
+      args: ["-c", "printf hello; exec cat"],
+      cwd,
+      cols: 80,
+      rows: 24,
+    });
+    assert.equal(started.started, true);
+    assert.equal(started.attached, false);
+    await hello;
+    const attached = host.spawn({ panelId: "p1", attachOnly: true, cols: 80, rows: 24 });
+    assert.equal(attached.attached, true);
+    assert.equal(attached.started, false);
+    assert.match(attached.replay, /hello/);
+    assert.equal(host.alive("p1"), true);
+    host.kill("p1");
+    assert.equal(host.alive("p1"), false);
+    assert.deepEqual(
+      host.spawn({ panelId: "p1", attachOnly: true }),
+      { attached: false, started: false, replay: "" },
+    );
+  } finally {
+    host.killAll();
+  }
+});
+
 test("local PTY socket auths with the page token and can spawn a process", async () => {
   const fixture = await catalogFixture();
   const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
@@ -415,7 +556,6 @@ test("local PTY socket auths with the page token and can spawn a process", async
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const origin = `http://127.0.0.1:${address.port}`;
     const ptyUrl = `ws://127.0.0.1:${address.port}/pty`;
 
     const foreign = new WebSocket(ptyUrl, { origin: "http://example.com" });
@@ -435,15 +575,8 @@ test("local PTY socket auths with the page token and can spawn a process", async
     unauthed.send(JSON.stringify({ type: "spawn", panelId: "denied", command: "/bin/cat" }));
     assert.match(String((await denied).message), /本地终端通道校验失败/);
 
-    const socket = new WebSocket(ptyUrl);
+    const socket = await openAuthedPty(address.port);
     sockets.push(socket);
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", () => resolve());
-      socket.once("error", (error) => reject(error));
-    });
-    const ready = waitForPtyMessage(socket, (value) => value.type === "ready", "auth-ready");
-    socket.send(JSON.stringify({ type: "auth", token: WEB_TEST_CONTROL_TOKEN }));
-    await ready;
     const spawned = waitForPtyMessage(socket, (value) => value.type === "spawned" && value.panelId === "pty-smoke" && value.attached !== true, "spawned");
     const echoed = waitForPtyMessage(socket, (value) => (
       value.type === "data" && value.panelId === "pty-smoke" && String(value.data).includes("hello")
@@ -453,6 +586,7 @@ test("local PTY socket auths with the page token and can spawn a process", async
       panelId: "pty-smoke",
       command: "/bin/sh",
       args: ["-c", "printf hello; exec cat"],
+      cwd: fixture.homeDirectory,
       cols: 80,
       rows: 24,
     }));
@@ -468,6 +602,7 @@ test("local PTY socket auths with the page token and can spawn a process", async
       panelId: "pty-smoke",
       command: "/bin/sh",
       args: ["-c", "printf hello"],
+      cwd: fixture.homeDirectory,
       cols: 80,
       rows: 24,
     }));
@@ -490,16 +625,16 @@ test("PTY spawn preflight reports missing commands and missing working directori
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const ptyUrl = `ws://127.0.0.1:${address.port}/pty`;
-    const socket = new WebSocket(ptyUrl);
+    const socket = await openAuthedPty(address.port);
     sockets.push(socket);
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", () => resolve());
-      socket.once("error", (error) => reject(error));
-    });
-    const ready = waitForPtyMessage(socket, (value) => value.type === "ready", "auth-ready");
-    socket.send(JSON.stringify({ type: "auth", token: WEB_TEST_CONTROL_TOKEN }));
-    await ready;
+
+    const missingPanel = waitForPtyMessage(
+      socket,
+      (value) => value.type === "error" && /缺少面板/.test(String(value.message ?? "")),
+      "missing-panel",
+    );
+    socket.send(JSON.stringify({ type: "spawn", attachOnly: true }));
+    await missingPanel;
 
     const missing = waitForPtyMessage(
       socket,
@@ -514,6 +649,7 @@ test("PTY spawn preflight reports missing commands and missing working directori
       type: "spawn",
       panelId: "pty-missing",
       command: "goalboard-no-such-command",
+      cwd: fixture.homeDirectory,
       cols: 80,
       rows: 24,
     }));
@@ -605,16 +741,8 @@ test("isolated PTY PATH can start Grok Build help", async (t) => {
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const ptyUrl = `ws://127.0.0.1:${address.port}/pty`;
-    const socket = new WebSocket(ptyUrl);
+    const socket = await openAuthedPty(address.port);
     sockets.push(socket);
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", () => resolve());
-      socket.once("error", (error) => reject(error));
-    });
-    const ready = waitForPtyMessage(socket, (value) => value.type === "ready", "auth-ready");
-    socket.send(JSON.stringify({ type: "auth", token: WEB_TEST_CONTROL_TOKEN }));
-    await ready;
     const spawned = waitForPtyMessage(
       socket,
       (value) => value.type === "spawned" && value.panelId === "grok-help",
@@ -631,6 +759,7 @@ test("isolated PTY PATH can start Grok Build help", async (t) => {
       panelId: "grok-help",
       command: "grok",
       args: ["--help"],
+      cwd: fixture.homeDirectory,
       cols: 80,
       rows: 24,
     }));
@@ -675,4 +804,151 @@ test("Codex resume launch records host session on the same Goal panel", async ()
   } finally {
     catalog.close();
   }
+});
+
+test("opening a terminal without a project workspace is rejected", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-desktop-nows-"));
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  let projectId = "";
+  try {
+    const created = await catalog.createProject({ display_name: "无目录项目", actor_id: "test-user" });
+    projectId = created.project_id;
+    addProjectGoal(created, "NO-WS", "没有工作目录");
+  } finally {
+    catalog.close();
+  }
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const opened = await webFetch(
+      `http://127.0.0.1:${address.port}/projects/${encodeURIComponent(projectId)}/api/goals/NO-WS/panels`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runtime_kind: "generic", command: "/bin/sh" }),
+      },
+    );
+    assert.equal(opened.status, 400);
+    assert.match(await opened.text(), /工作目录/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("PTY spawn sets PWD to the working directory and attach-only does not start a new process", async () => {
+  const fixture = await catalogFixture();
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const sockets: WebSocket[] = [];
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const socket = await openAuthedPty(address.port);
+    sockets.push(socket);
+
+    const attachedMiss = waitForPtyMessage(
+      socket,
+      (value) => value.type === "spawned" && value.panelId === "pty-attach" && value.attached === false && value.started === false,
+      "attach-miss",
+    );
+    socket.send(JSON.stringify({
+      type: "spawn",
+      panelId: "pty-attach",
+      attachOnly: true,
+      cols: 80,
+      rows: 24,
+    }));
+    await attachedMiss;
+
+    const cwdPrinted = waitForPtyMessage(
+      socket,
+      (value) => value.type === "data" && String(value.data).includes(fixture.homeDirectory),
+      "pwd",
+    );
+    socket.send(JSON.stringify({
+      type: "spawn",
+      panelId: "pty-pwd",
+      command: "/bin/sh",
+      args: ["-c", 'printf "%s" "$PWD"'],
+      cwd: fixture.homeDirectory,
+      cols: 80,
+      rows: 24,
+    }));
+    await cwdPrinted;
+  } finally {
+    for (const socket of sockets) socket.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("deleting a panel kills the PTY on the server", async () => {
+  const fixture = await catalogFixture();
+  addProjectGoal(fixture.project, "TUI-KILL", "关闭即停");
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const sockets: WebSocket[] = [];
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const opened = await webFetch(
+      `${origin}/projects/${encodeURIComponent(fixture.project.project_id)}/api/goals/TUI-KILL/panels`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runtime_kind: "generic", command: "/bin/cat" }),
+      },
+    );
+    assert.equal(opened.status, 200, await opened.clone().text());
+    const payload = await opened.json() as { panel: { panel_id: string } };
+    const socket = await openAuthedPty(address.port);
+    sockets.push(socket);
+    const spawned = waitForPtyMessage(
+      socket,
+      (value) => value.type === "spawned" && value.panelId === payload.panel.panel_id && value.started === true,
+      "spawned",
+    );
+    socket.send(JSON.stringify({
+      type: "spawn",
+      panelId: payload.panel.panel_id,
+      command: "/bin/cat",
+      cwd: fixture.homeDirectory,
+      cols: 80,
+      rows: 24,
+    }));
+    await spawned;
+    const closed = await webFetch(
+      `${origin}/projects/${encodeURIComponent(fixture.project.project_id)}/api/panels/${encodeURIComponent(payload.panel.panel_id)}`,
+      { method: "DELETE" },
+    );
+    assert.equal(closed.status, 200, await closed.clone().text());
+    const writeError = waitForPtyMessage(
+      socket,
+      (value) => value.type === "error" && /终端进程不存在/.test(String(value.message ?? "")),
+      "write-after-delete",
+    );
+    socket.send(JSON.stringify({ type: "write", panelId: payload.panel.panel_id, data: "x" }));
+    await writeError;
+  } finally {
+    for (const socket of sockets) socket.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("control token persists in the GoalBoard home across server restarts", () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-token-"));
+  const first = resolveWebControlToken({ homeDirectory });
+  const second = resolveWebControlToken({ homeDirectory });
+  assert.equal(first, second);
+  assert.match(first, /^[A-Za-z0-9_-]{32,}$/);
+  const stored = readFileSync(join(homeDirectory, WEB_CONTROL_TOKEN_RELATIVE_PATH), "utf8").trim();
+  assert.equal(stored, first);
 });
