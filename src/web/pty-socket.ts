@@ -122,13 +122,15 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
           return;
         }
         if (message.type === "spawn") {
-          if (!message.panelId || !message.command) throw new Error("缺少启动命令");
+          if (!message.panelId) throw new Error("缺少面板标识");
+          if (!message.attachOnly && !message.command?.trim()) throw new Error("缺少启动命令");
           try {
             const result = host.spawn(message);
             send(ws, {
               type: "spawned",
               panelId: message.panelId,
               attached: result.attached,
+              started: result.started,
               replay: result.replay,
             });
           } catch (error) {

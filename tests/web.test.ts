@@ -13,7 +13,15 @@ import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { RuntimeIntegrationService } from "../src/install/runtime-integration.js";
 import { GoalBoardWebServiceManager } from "../src/install/web-service.js";
 import { GoalBoardServer } from "../src/mcp/server.js";
-import { renderGoalBoardWeb } from "../src/web/render.js";
+import {
+  GOAL_TREE_STATUS_ORDER,
+  activeOutgoingDependsOn,
+  firstBlockedDescendant,
+  renderGoalBoardWeb,
+  sortGoalTreeItems,
+  unsatisfiedOutgoingDependencies,
+  WEB_GOAL_STATUSES,
+} from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
   createGoalBoardWebServer as createBaseGoalBoardWebServer,
@@ -21,6 +29,28 @@ import {
 
 const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
 let webRequestSequence = 0;
+
+test("Goal Tree sorts ready work before blocked, waiting, and finished Goals", () => {
+  assert.deepEqual([...GOAL_TREE_STATUS_ORDER].sort(), [...WEB_GOAL_STATUSES].sort());
+  const ordered = sortGoalTreeItems([
+    { status: "satisfied", goal: { priority: 9, created_at: "2026-01-01T00:00:00.000Z" } },
+    { status: "waiting_children", goal: { priority: 8, created_at: "2026-01-02T00:00:00.000Z" } },
+    { status: "execution_blocked", goal: { priority: 7, created_at: "2026-01-03T00:00:00.000Z" } },
+    { status: "clarification_pending", goal: { priority: 6, created_at: "2026-01-04T00:00:00.000Z" } },
+    { status: "executing", goal: { priority: 1, created_at: "2026-01-06T00:00:00.000Z" } },
+    { status: "execution_pending", goal: { priority: 1, created_at: "2026-01-05T00:00:00.000Z" } },
+    { status: "execution_pending", goal: { priority: 3, created_at: "2026-01-07T00:00:00.000Z" } },
+  ]);
+  assert.deepEqual(ordered.map((item) => [item.status, item.goal.priority, item.goal.created_at]), [
+    ["execution_pending", 3, "2026-01-07T00:00:00.000Z"],
+    ["execution_pending", 1, "2026-01-05T00:00:00.000Z"],
+    ["executing", 1, "2026-01-06T00:00:00.000Z"],
+    ["clarification_pending", 6, "2026-01-04T00:00:00.000Z"],
+    ["execution_blocked", 7, "2026-01-03T00:00:00.000Z"],
+    ["waiting_children", 8, "2026-01-02T00:00:00.000Z"],
+    ["satisfied", 9, "2026-01-01T00:00:00.000Z"],
+  ]);
+});
 
 function createGoalBoardWebServer(
   options: Parameters<typeof createBaseGoalBoardWebServer>[0] = {},
@@ -441,14 +471,17 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(coreHtml, /href="https:\/\/example.com\/goalboard-contract"/);
   assert.match(coreHtml, /data-copy-value/);
   assert.match(html, /data-select-goal/);
+  assert.match(html, /class="tree-chrome"/);
+  assert.match(html, /class="tree-search"/);
   assert.match(html, /data-global-search/);
   assert.equal((html.match(/<input type="search" data-global-search/g) ?? []).length, 1);
   assert.match(html, /data-settings-link/);
-  assert.match(html, /@media \(max-width: 1500px\)[\s\S]*\.top-action\[data-settings-link\] span, \.top-action\[data-collapse-all\] span \{ display: none; \}/);
+  assert.match(html, /class="project-bar"/);
+  assert.match(html, /class="project-decisions/);
   assert.match(html, /@media \(max-width: 1180px\)[\s\S]*\.top-action span \{ display: none; \}/);
-  assert.doesNotMatch(html, /data-tree-search|class="tree-heading"|class="tree-search"/);
+  assert.doesNotMatch(html, /class="tree-heading"|class="global-search"|class="top-filter-control"/);
   assert.equal((html.match(/data-open-create aria-label="新建目标"/g) ?? []).length, 1);
-  assert.match(html, /class="top-filter-control">[\s\S]*data-tree-filter-trigger[\s\S]*id="tree-status-filter"/);
+  assert.match(html, /class="tree-filter-control">[\s\S]*data-tree-filter-trigger[\s\S]*id="tree-status-filter"/);
   assert.match(html, /data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter"/);
   assert.match(html, /id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选"/);
   assert.match(html, /可同时选择多个状态；会与关键词搜索一起生效。/);
@@ -510,10 +543,36 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-section="execution"/);
   assert.match(html, /class="goal-situation"/);
   assert.match(html, /这条 Goal 现在怎样/);
-  assert.match(html, /先完成子 Goal/);
-  assert.match(html, /当前没有阻塞/);
-  assert.match(html, /href="#execution-V1"/);
+  assert.match(html, /先处理「让用户打开页面就看懂目标和下一步」/);
+  assert.match(html, /子 Goal「让用户打开页面就看懂目标和下一步」/);
+  assert.match(html, /href="\/goals\/WEB"/);
+  assert.match(html, /id="execution-V1"/);
   assert.match(html, /href="#acceptance-V1"/);
+  assert.match(html, /这条没有，项目里还有/);
+  assert.match(html, /data-collapse-all aria-label="折叠全部"/);
+  assert.match(html, /class="tree-dep is-waiting"/);
+  assert.match(html, /class="tree-dep is-ready"/);
+  assert.match(html, /页面显示必须和不同 Runtime 看到的项目进度一致/);
+  assert.match(html, /共享项目进度前，必须先保证每项工作的状态和完成依据可靠/);
+  assert.match(html, /还在等它完成/);
+  assert.match(html, /已完成，不再挡住/);
+  assert.match(html, /依赖 → 让不同 AI 对话看到同一项目进度/);
+  assert.match(html, /class="scope-gaps"/);
+  assert.match(html, /还有 \d+ 项未写|范围、输入与输出尚未填写/);
+  const webGoal = view.goals.find((item) => item.goal.goal_id === "WEB");
+  const v1Goal = view.goals.find((item) => item.goal.goal_id === "V1");
+  const interfacesGoal = view.goals.find((item) => item.goal.goal_id === "INTERFACES");
+  assert.ok(webGoal && v1Goal && interfacesGoal);
+  assert.equal(activeOutgoingDependsOn(webGoal)[0]?.to_goal_id, "INTERFACES");
+  assert.deepEqual(
+    unsatisfiedOutgoingDependencies(webGoal, view).map((item) => item.goal.goal_id),
+    ["INTERFACES"],
+  );
+  assert.deepEqual(
+    unsatisfiedOutgoingDependencies(interfacesGoal, view).map((item) => item.goal.goal_id),
+    [],
+  );
+  assert.equal(firstBlockedDescendant(v1Goal, view)?.goal.goal_id, "WEB");
   assert.match(html, /class="goal-more"/);
   assert.match(html, /aria-label="更多操作"/);
   assert.ok(html.indexOf("class=\"goal-title-actions\"") < html.indexOf("class=\"goal-more\""));
@@ -528,6 +587,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(coreHtml, /前往处理/);
   assert.match(coreHtml, /项等待你的决定/);
   assert.doesNotMatch(html, /<form class="decision-record rewire-decision"/);
+  assert.doesNotMatch(decisionHtml, /USER AUTHORITY/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
   assert.match(decisionHtml, /href="\/goals\/CORE"><strong>让每项工作都有可信的完成依据<\/strong>/);
   assert.match(decisionHtml, /decision-kind decision-kind--risk/);
@@ -553,9 +613,10 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /track-map|class="signal"|signal-box|railway/i);
   assert.match(html, /class="tui-pane"/);
   assert.match(html, /推进这个 Goal/);
+  assert.match(html, /复制命令/);
   assert.match(html, /pty-client\.js/);
   assert.match(html, /class="workspace is-desktop-tui"/);
-  assert.doesNotMatch(decisionHtml, /class="tui-pane"|推进这个 Goal|pty-client\.js|class="workspace is-desktop-tui"/);
+  assert.doesNotMatch(decisionHtml, /class="tui-pane"|推进这个 Goal|复制命令|pty-client\.js|class="workspace is-desktop-tui"/);
   store.close();
 });
 
@@ -2893,7 +2954,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.doesNotMatch(page, /<form class="human-review-form"/);
     assert.match(page, new RegExp(evidence.evidence_id));
     assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);
-    assert.match(page, /\.top-action\[data-view-action\]:not\(\[data-decisions-link\]\) \{ display: none; \}/);
+    assert.match(page, /class="project-decisions/);
+    assert.match(page, /class="tree-chrome"/);
 
     const reviewDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(reviewDecisionPage, /等待你的决定/);

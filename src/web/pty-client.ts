@@ -20,6 +20,8 @@ type PanelRecord = {
   };
 };
 
+type SpawnMode = "start" | "attach" | "reopen" | "reconnect";
+
 declare global {
   interface Window {
     L?: (zh: string, vars?: Record<string, string | number>) => string;
@@ -29,7 +31,7 @@ declare global {
 
 type PtyServerMessage =
   | { type: "ready" }
-  | { type: "spawned"; panelId?: string; attached?: boolean; replay?: string }
+  | { type: "spawned"; panelId?: string; attached?: boolean; started?: boolean; replay?: string }
   | { type: "data"; panelId?: string; data?: string }
   | { type: "exit"; panelId?: string; exitCode?: number; signal?: number }
   | { type: "error"; panelId?: string; message?: string };
@@ -46,11 +48,12 @@ if (pane) {
   const statusEl = pane.querySelector("[data-tui-status]") as HTMLElement | null;
   const menu = pane.querySelector("[data-tui-menu]") as HTMLFormElement;
   const advanceBtn = pane.querySelector("[data-tui-advance]") as HTMLButtonElement;
+  const copyBtn = pane.querySelector("[data-tui-copy]") as HTMLButtonElement | null;
   const fillBtn = pane.querySelector("[data-tui-fill]") as HTMLButtonElement;
   const reopenBtn = pane.querySelector("[data-tui-reopen]") as HTMLButtonElement;
   const addBtn = pane.querySelector("[data-tui-add]") as HTMLButtonElement;
   const collapseBtn = pane.querySelector("[data-tui-collapse]") as HTMLButtonElement | null;
-  const expandBtn = pane.querySelector("[data-tui-expand]") as HTMLButtonElement | null;
+  const expandBtn = document.querySelector("[data-tui-expand]") as HTMLButtonElement | null;
   const genericFields = menu.querySelector("[data-tui-generic-fields]") as HTMLElement | null;
   const genericOpen = menu.querySelector("[data-tui-generic-open]") as HTMLButtonElement | null;
   const L = window.L ?? ((zh: string) => zh);
@@ -60,12 +63,16 @@ if (pane) {
   const sessions = new Map<string, { term: Terminal; fit: FitAddon; wrapper: HTMLElement; hasOutput: boolean }>();
   const alive = new Set<string>();
   const pendingSpawns = new Map<string, { resolve: (value: PtyServerMessage) => void; reject: (error: Error) => void }>();
+  const spawnTail = new Map<string, Promise<unknown>>();
   let panels: PanelRecord[] = [];
   let activeId: string | null = null;
   let selectedKind = (menu.querySelector("[data-tui-kind]:not(:disabled)") as HTMLButtonElement | null)?.dataset.tuiKind || "generic";
   let promptCache = "";
   let socket: WebSocket | null = null;
   let socketReady: Promise<WebSocket> | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectAttempt = 0;
+  let reconnectStopped = false;
   const workspaceEl = document.querySelector("[data-workspace]") as HTMLElement | null;
   const TUI_COLLAPSE_KEY = "goalboard:tui:collapsed";
   const TUI_WIDTH_KEY = "goalboard:tui:expanded-width";
@@ -75,9 +82,7 @@ if (pane) {
   const setTuiCollapsed = (collapsed: boolean, persist = true) => {
     if (!workspaceEl) return;
     const effective = collapsed && !isNarrowScreen();
-    const wasCollapsed = pane.classList.contains("is-collapsed");
-    workspaceEl.classList.toggle("is-tui-collapsed", effective);
-    pane.classList.toggle("is-collapsed", effective);
+    const wasCollapsed = workspaceEl.classList.contains("is-tui-collapsed");
     if (effective && !wasCollapsed) {
       const width = parseFloat(workspaceEl.style.getPropertyValue("--tui-width") || "") || pane.getBoundingClientRect().width || 480;
       try {
@@ -85,16 +90,19 @@ if (pane) {
       } catch {
         // Storage may be unavailable; collapsing still works.
       }
-      workspaceEl.style.setProperty("--tui-width", "56px");
     } else if (!effective && wasCollapsed) {
-      let width = 480;
-      try {
-        width = Number(localStorage.getItem(TUI_WIDTH_KEY)) || 480;
-      } catch {
-        // Fall back to the default width.
+      const current = parseFloat(workspaceEl.style.getPropertyValue("--tui-width") || "");
+      if (!current || current < 280) {
+        let width = 480;
+        try {
+          width = Number(localStorage.getItem(TUI_WIDTH_KEY)) || 480;
+        } catch {
+          // Fall back to the default width.
+        }
+        workspaceEl.style.setProperty("--tui-width", `${Math.min(720, Math.max(280, width))}px`);
       }
-      workspaceEl.style.setProperty("--tui-width", `${Math.min(720, Math.max(280, width))}px`);
     }
+    workspaceEl.classList.toggle("is-tui-collapsed", effective);
     if (collapseBtn) collapseBtn.hidden = effective || isNarrowScreen();
     if (expandBtn) expandBtn.hidden = !effective;
     if (persist) {
@@ -104,16 +112,19 @@ if (pane) {
         // Storage may be unavailable; the preference just won't be remembered.
       }
     }
+    if (!effective && wasCollapsed && activeId && sessions.has(activeId)) {
+      requestAnimationFrame(() => sessions.get(activeId!)?.fit.fit());
+    }
   };
 
   const initTuiCollapse = () => {
-    let collapsed = true;
+    let collapsed = false;
     try {
-      collapsed = localStorage.getItem(TUI_COLLAPSE_KEY) !== "0";
+      collapsed = localStorage.getItem(TUI_COLLAPSE_KEY) === "1";
     } catch {
-      // Default to collapsed when storage is unavailable.
+      collapsed = false;
     }
-    setTuiCollapsed(collapsed && !isNarrowScreen(), false);
+    setTuiCollapsed(collapsed, false);
   };
 
   const headers = () => ({
@@ -143,6 +154,20 @@ if (pane) {
     if (!statusEl) return;
     statusEl.textContent = text;
     statusEl.dataset.tone = text ? tone : "";
+  };
+
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const showPageToast = (message: string, error = false) => {
+    const toast = document.querySelector("[data-toast]") as HTMLElement | null;
+    if (!toast) {
+      setStatus(message, error ? "error" : "idle");
+      return;
+    }
+    toast.textContent = message;
+    toast.classList.toggle("is-error", error);
+    toast.classList.add("is-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2200);
   };
 
   const setMenuOpen = (open: boolean) => {
@@ -270,7 +295,11 @@ if (pane) {
           fail(new Error(L("终端通道已断开")));
           return;
         }
+        for (const panelId of [...pendingSpawns.keys()]) {
+          rejectSpawn(panelId, new Error(L("终端通道已断开")));
+        }
         if (alive.size) setStatus(L("终端通道已断开"), "error");
+        scheduleReconnect();
       });
     });
     return socketReady;
@@ -279,6 +308,55 @@ if (pane) {
   const sendPty = async (message: Record<string, unknown>) => {
     const ws = await connectPty();
     ws.send(JSON.stringify(message));
+  };
+
+  const scheduleReconnect = () => {
+    if (reconnectStopped) return;
+    clearTimeout(reconnectTimer);
+    const delay = Math.min(8_000, 400 * (2 ** Math.min(reconnectAttempt, 4)));
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(() => {
+      void reconnectLivePanels();
+    }, delay);
+  };
+
+  const enqueueSpawn = (panelId: string, task: () => Promise<void>) => {
+    const previous = spawnTail.get(panelId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    spawnTail.set(panelId, run);
+    return run;
+  };
+
+  const stubPanel = (panelId: string): PanelRecord => ({
+    panel_id: panelId,
+    goal_id: "",
+    runtime_kind: "generic",
+    launch_command: "",
+    launch_args: [],
+    cwd: null,
+    work_context_id: panelId,
+    title: "",
+    status: "open",
+  });
+
+  const markPanelNotRunning = async (panel: PanelRecord) => {
+    alive.delete(panel.panel_id);
+    panel.status = "exited";
+    await fetch(route(`/api/panels/${encodeURIComponent(panel.panel_id)}/exited`), {
+      method: "POST",
+      headers: headers(),
+      body: "{}",
+    }).catch(() => undefined);
+    if (activeId === panel.panel_id) showTerminal(activeId);
+  };
+
+  const forgetLocalSession = (panelId: string) => {
+    spawnTail.delete(panelId);
+    sessions.get(panelId)?.term.dispose();
+    sessions.get(panelId)?.wrapper.remove();
+    sessions.delete(panelId);
+    alive.delete(panelId);
+    rejectSpawn(panelId, new Error("closed"));
   };
 
   const current = () => panels.find((item) => item.panel_id === activeId) ?? null;
@@ -303,7 +381,7 @@ if (pane) {
     reopenBtn.hidden = !(panel && !live);
     if (!panel) setStatus("");
     else if (live) setStatus(L("终端已连接"), "live");
-    else if (panel.status === "exited") setStatus(L("终端已退出"));
+    else setStatus(L("终端进程已不在，可重新打开"));
     if (panelId && sessions.has(panelId)) {
       const session = sessions.get(panelId)!;
       requestAnimationFrame(() => {
@@ -320,7 +398,7 @@ if (pane) {
     wrapper.className = "tui-xterm";
     terminalHost.appendChild(wrapper);
     const term = new Terminal({
-      convertEol: true,
+      convertEol: false,
       fontSize: 13,
       lineHeight: 1.3,
       scrollback: 8000,
@@ -347,65 +425,121 @@ if (pane) {
     return session;
   };
 
-  const spawnPanel = async (panel: PanelRecord) => {
-    const session = ensureSession(panel.panel_id);
-    try {
-      session.fit.fit();
-      const size = session.fit.proposeDimensions();
-      const spawn = panel.spawn;
-      setStatus(L("正在启动终端…"), "busy");
-      await connectPty();
-      const spawned = new Promise<PtyServerMessage>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pendingSpawns.delete(panel.panel_id);
-          reject(new Error(L("终端通道连接失败")));
-        }, 20_000);
-        pendingSpawns.set(panel.panel_id, {
-          resolve: (value) => {
-            clearTimeout(timer);
-            resolve(value);
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            reject(error);
-          },
-        });
-      });
+  const spawnBusyText = (mode: SpawnMode) => {
+    if (mode === "reconnect") return L("正在重新连接终端…");
+    if (mode === "attach") return L("正在连接终端…");
+    return L("正在启动终端…");
+  };
+
+  const spawnPanel = async (panel: PanelRecord, mode: SpawnMode = "start") => {
+    await enqueueSpawn(panel.panel_id, async () => {
+      if (mode === "attach" && alive.has(panel.panel_id) && sessions.has(panel.panel_id)) return;
+      const session = ensureSession(panel.panel_id);
       try {
-        await sendPty({
-          type: "spawn",
-          panelId: panel.panel_id,
-          command: spawn?.command ?? panel.launch_command,
-          args: spawn?.args ?? panel.launch_args,
-          cwd: spawn?.cwd ?? panel.cwd,
-          env: spawn?.env ?? {
-            GOALBOARD_PANEL_ID: panel.panel_id,
-            GOALBOARD_GOAL_ID: panel.goal_id,
-            GOALBOARD_WORK_CONTEXT_ID: panel.work_context_id,
-            GOALBOARD_WORK_CONTEXT_STABLE: "true",
-            GOALBOARD_RUNTIME_ID: panel.runtime_kind,
-          },
-          cols: Math.max(20, size?.cols ?? 80),
-          rows: Math.max(8, size?.rows ?? 24),
-        });
-      } catch (error) {
-        pendingSpawns.get(panel.panel_id)?.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-      const result = await spawned;
-      if (result.type === "spawned" && result.replay && !session.hasOutput) {
-        session.term.write(result.replay);
-        session.hasOutput = true;
-      }
-      alive.add(panel.panel_id);
-      panel.status = "open";
-      requestAnimationFrame(() => {
+        if (mode === "reopen") {
+          session.term.reset();
+          session.hasOutput = false;
+        }
         session.fit.fit();
-        session.term.focus();
-      });
-      setStatus(result.type === "spawned" && result.attached ? L("已回到正在运行的终端") : L("终端已连接"), "live");
-    } catch (error) {
-      session.term.write(`\r\n${errorText(error)}\r\n`);
-      throw error;
+        const size = session.fit.proposeDimensions();
+        const spawn = panel.spawn;
+        if (activeId === panel.panel_id) setStatus(spawnBusyText(mode), "busy");
+        await connectPty();
+        const spawned = new Promise<PtyServerMessage>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pendingSpawns.delete(panel.panel_id);
+            reject(new Error(L("终端通道连接失败")));
+          }, 20_000);
+          pendingSpawns.set(panel.panel_id, {
+            resolve: (value) => {
+              clearTimeout(timer);
+              resolve(value);
+            },
+            reject: (error) => {
+              clearTimeout(timer);
+              reject(error);
+            },
+          });
+        });
+        try {
+          await sendPty({
+            type: "spawn",
+            panelId: panel.panel_id,
+            command: spawn?.command ?? panel.launch_command,
+            args: spawn?.args ?? panel.launch_args,
+            cwd: spawn?.cwd ?? panel.cwd,
+            env: spawn?.env ?? {
+              GOALBOARD_PANEL_ID: panel.panel_id,
+              GOALBOARD_GOAL_ID: panel.goal_id,
+              GOALBOARD_WORK_CONTEXT_ID: panel.work_context_id,
+              GOALBOARD_WORK_CONTEXT_STABLE: "true",
+              GOALBOARD_RUNTIME_ID: panel.runtime_kind,
+            },
+            cols: Math.max(20, size?.cols ?? 80),
+            rows: Math.max(8, size?.rows ?? 24),
+            attachOnly: mode === "attach" || mode === "reconnect",
+          });
+        } catch (error) {
+          pendingSpawns.get(panel.panel_id)?.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+        const result = await spawned;
+        if (!sessions.has(panel.panel_id)) return;
+        if (result.type === "spawned" && !result.attached && result.started === false) {
+          await markPanelNotRunning(panel);
+          return;
+        }
+        if (mode === "reconnect") {
+          session.term.reset();
+          session.hasOutput = false;
+        }
+        if (result.type === "spawned" && result.replay && (mode === "reconnect" || !session.hasOutput)) {
+          session.term.write(result.replay);
+          session.hasOutput = true;
+        }
+        alive.add(panel.panel_id);
+        panel.status = "open";
+        requestAnimationFrame(() => {
+          session.fit.fit();
+          if (activeId === panel.panel_id) session.term.focus();
+        });
+        if (activeId === panel.panel_id) {
+          setStatus(result.type === "spawned" && result.attached ? L("已回到正在运行的终端") : L("终端已连接"), "live");
+        }
+      } catch (error) {
+        if (!sessions.has(panel.panel_id)) return;
+        if (mode === "start" || mode === "reopen") {
+          session.term.write(`\r\n${errorText(error)}\r\n`);
+        }
+        throw error;
+      }
+    });
+  };
+
+  const reconnectLivePanels = async () => {
+    if (reconnectStopped) return;
+    try {
+      await connectPty();
+      reconnectAttempt = 0;
+      const known = new Map(panels.map((panel) => [panel.panel_id, panel]));
+      const queue: Array<{ panel: PanelRecord; mode: SpawnMode }> = [];
+      for (const panelId of [...alive]) {
+        queue.push({ panel: known.get(panelId) ?? stubPanel(panelId), mode: "reconnect" });
+      }
+      for (const panel of panels) {
+        if (panel.status === "open" && !alive.has(panel.panel_id)) {
+          queue.push({ panel, mode: "attach" });
+        }
+      }
+      for (const item of queue) {
+        try {
+          await spawnPanel(item.panel, item.mode);
+        } catch (error) {
+          if (activeId === item.panel.panel_id) setStatus(errorText(error), "error");
+        }
+      }
+      showTerminal(activeId);
+    } catch {
+      scheduleReconnect();
     }
   };
 
@@ -432,9 +566,9 @@ if (pane) {
     for (const panel of panels) {
       if (panel.status !== "open") continue;
       try {
-        await spawnPanel(panel);
+        await spawnPanel(panel, "attach");
       } catch (error) {
-        setStatus(errorText(error), "error");
+        if (activeId === panel.panel_id) setStatus(errorText(error), "error");
       }
     }
     showTerminal(activeId);
@@ -478,10 +612,7 @@ if (pane) {
       method: "DELETE",
       headers: headers(),
     });
-    sessions.get(panelId)?.term.dispose();
-    sessions.get(panelId)?.wrapper.remove();
-    sessions.delete(panelId);
-    alive.delete(panelId);
+    forgetLocalSession(panelId);
     panels = panels.filter((item) => item.panel_id !== panelId);
     if (activeId === panelId) activeId = panels[0]?.panel_id ?? null;
     renderTabs();
@@ -491,14 +622,33 @@ if (pane) {
   const writePrompt = async (send: boolean) => {
     const panel = current();
     if (!panel) return;
-    const response = await fetch(route(`/api/goals/${encodeURIComponent(panel.goal_id)}/advance-prompt`), {
+    const text = await loadAdvancePrompt(panel.goal_id);
+    await sendPty({ type: "write", panelId: panel.panel_id, data: send ? `${text}\r` : text });
+  };
+
+  const loadAdvancePrompt = async (requestedGoalId?: string) => {
+    const id = requestedGoalId || goalId();
+    if (!id) throw new Error(L("打开失败"));
+    const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt`), {
       cache: "no-store",
       headers: desktopHeaders(),
     });
-    const payload = await response.json() as { prompt?: string };
+    const payload = await response.json() as { prompt?: string; error?: string };
+    if (!response.ok) throw new Error(payload.error || L("打开失败"));
     const text = payload.prompt || promptCache;
+    if (!text) throw new Error(L("打开失败"));
     promptCache = text;
-    await sendPty({ type: "write", panelId: panel.panel_id, data: send ? `${text}\r` : text });
+    return text;
+  };
+
+  const copyAdvancePrompt = async () => {
+    const text = await loadAdvancePrompt();
+    try {
+      await navigator.clipboard.writeText(text);
+      showPageToast(L("命令已复制到剪贴板"));
+    } catch {
+      showPageToast(L("无法访问剪贴板，请手动复制"), true);
+    }
   };
 
   addBtn.addEventListener("click", () => {
@@ -510,6 +660,13 @@ if (pane) {
   });
   expandBtn?.addEventListener("click", () => {
     setTuiCollapsed(false);
+  });
+  document.addEventListener("goalboard:tui-collapse", () => {
+    setMenuOpen(false);
+    setTuiCollapsed(true);
+  });
+  matchMedia("(max-width: 760px)").addEventListener("change", () => {
+    initTuiCollapse();
   });
   menu.querySelector("[data-tui-menu-cancel]")?.addEventListener("click", () => {
     setMenuOpen(false);
@@ -566,6 +723,7 @@ if (pane) {
     }
   });
   advanceBtn.addEventListener("click", () => { void writePrompt(true).catch((error) => setStatus(errorText(error), "error")); });
+  copyBtn?.addEventListener("click", () => { void copyAdvancePrompt().catch((error) => setStatus(errorText(error), "error")); });
   fillBtn.addEventListener("click", () => { void writePrompt(false).catch((error) => setStatus(errorText(error), "error")); });
   reopenBtn.addEventListener("click", () => {
     const panel = current();
@@ -584,7 +742,7 @@ if (pane) {
       if (payload.panel) {
         Object.assign(panel, payload.panel, { spawn: payload.spawn ?? panel.spawn });
       }
-      await spawnPanel(panel);
+      await spawnPanel(panel, "reopen");
       showTerminal(activeId);
     })().catch((error) => setStatus(errorText(error), "error"));
   });
@@ -604,6 +762,11 @@ if (pane) {
 
   terminalHost.addEventListener("pointerdown", () => {
     if (activeId && sessions.has(activeId)) sessions.get(activeId)!.term.focus();
+  });
+
+  window.addEventListener("beforeunload", () => {
+    reconnectStopped = true;
+    clearTimeout(reconnectTimer);
   });
 
   void (async () => {

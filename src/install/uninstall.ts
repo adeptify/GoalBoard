@@ -16,6 +16,7 @@ import {
   GoalBoardWebServiceManager,
   type GoalBoardWebServicePlan,
 } from "./web-service.js";
+import { WEB_CONTROL_TOKEN_RELATIVE_PATH } from "../web/control-token.js";
 
 const HOME_OWNER = "goalboard-home-install-v1";
 const LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
@@ -389,12 +390,20 @@ async function inspectOwnedHomeAssets(homeDirectory: string): Promise<{
   const snapshotPaths: string[] = [];
   const conflicts: string[] = [];
   const manifestPath = path.join(homeDirectory, "config", "installation.json");
+  const controlTokenPath = path.join(homeDirectory, WEB_CONTROL_TOKEN_RELATIVE_PATH);
   const manifestText = await readText(manifestPath);
   snapshotPaths.push(manifestPath);
+  snapshotPaths.push(controlTokenPath);
   if (manifestText != null) {
     const manifest = parseOwnedJson(manifestText);
     if (manifest?.installer === HOME_OWNER) ownedPaths.push(manifestPath);
     else conflicts.push(`安装清单不属于 GoalBoard：${manifestPath}`);
+  }
+  const controlToken = await readText(controlTokenPath);
+  if (controlToken != null) {
+    const token = controlToken.trim();
+    if (token.length >= 32 && token.length <= 512 && !/[\r\n]/.test(token)) ownedPaths.push(controlTokenPath);
+    else conflicts.push(`Web 控制令牌文件已被修改，不会删除：${controlTokenPath}`);
   }
   for (const launcher of ["goalboard", "goalboard-mcp", "goalboard-web"].map((name) => path.join(homeDirectory, "bin", name))) {
     const text = await readText(launcher);

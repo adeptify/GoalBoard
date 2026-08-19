@@ -44,7 +44,7 @@ Goal 工作台在详情右侧提供 TUI 标签：标签开在哪个 Goal 上就�
 - 关联规则只有一条：标签开在哪个 Goal 上，就属于哪个 Goal。树只导航。
 - 第三栏不再依赖桌面标记；`x-goalboard-desktop` / cookie / `?desktop=1` 仍用于 App 链接与 cookie，不作为能否打开终端的门禁。
 - 面板存在 catalog（schema 8），不进 Goal 文档。
-- PTY 在 Node Web 内；页面只走 WebSocket。已运行的面板再次 spawn 时接到原进程并回放缓冲，不重启。PTY 环境从隔离的 login shell 重建，并补上用户工具链 PATH（如 nvm），不继承 Web/`tsx`/编辑器进程的 `NODE_PATH`、相对 PATH 或 Cursor 宿主变量，避免 Runtime 拉起 MCP 时握手失败。
+- PTY 在 Node Web 内；页面只走 WebSocket。已运行的面板再次 spawn 时接到原进程并回放缓冲，不重启。页面加载和断线重连只用 attach，catalog 为 open 但进程已不在时标成 exited，由用户点「重新打开」。PTY 环境从隔离的 login shell 重建，并补上用户工具链 PATH。nvm 要把 `alias/default` 写成 `24` 这类主版本号解析到已安装的 `v24.x`，并带上正在跑 Web 的 `node` 所在目录；login shell 往往不加载 `.zshrc`，否则 Codex 拉起的 `goalboard-mcp` / 其他 `#!/usr/bin/env node` MCP 会在 initialize 时 Broken pipe。仍不继承 Web/`tsx`/编辑器进程的 `NODE_OPTIONS`、`NODE_PATH`、相对 PATH 或 Cursor 宿主变量。spawn 时 `PWD` 与 posix cwd 对齐；没有项目工作目录则拒绝打开。关面板时服务端杀掉 PTY 及进程组；Web 主进程在 SIGINT/SIGTERM 时 `killAll`。
 - 往 TUI「注入」= 用户点工具条后往 PTY 写字节。进程环境里的 Goal ID 给已接入的 Skill/MCP 用。
 
 ## 输入、输出与依赖
