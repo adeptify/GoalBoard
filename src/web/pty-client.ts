@@ -31,7 +31,7 @@ type PtyServerMessage =
   | { type: "ready" }
   | { type: "spawned"; panelId?: string; attached?: boolean; replay?: string }
   | { type: "data"; panelId?: string; data?: string }
-  | { type: "exit"; panelId?: string }
+  | { type: "exit"; panelId?: string; exitCode?: number; signal?: number }
   | { type: "error"; panelId?: string; message?: string };
 
 const style = document.createElement("style");
@@ -49,6 +49,8 @@ if (pane) {
   const fillBtn = pane.querySelector("[data-tui-fill]") as HTMLButtonElement;
   const reopenBtn = pane.querySelector("[data-tui-reopen]") as HTMLButtonElement;
   const addBtn = pane.querySelector("[data-tui-add]") as HTMLButtonElement;
+  const collapseBtn = pane.querySelector("[data-tui-collapse]") as HTMLButtonElement | null;
+  const expandBtn = pane.querySelector("[data-tui-expand]") as HTMLButtonElement | null;
   const genericFields = menu.querySelector("[data-tui-generic-fields]") as HTMLElement | null;
   const genericOpen = menu.querySelector("[data-tui-generic-open]") as HTMLButtonElement | null;
   const L = window.L ?? ((zh: string) => zh);
@@ -60,10 +62,59 @@ if (pane) {
   const pendingSpawns = new Map<string, { resolve: (value: PtyServerMessage) => void; reject: (error: Error) => void }>();
   let panels: PanelRecord[] = [];
   let activeId: string | null = null;
-  let selectedKind = "claude-code";
+  let selectedKind = (menu.querySelector("[data-tui-kind]:not(:disabled)") as HTMLButtonElement | null)?.dataset.tuiKind || "generic";
   let promptCache = "";
   let socket: WebSocket | null = null;
   let socketReady: Promise<WebSocket> | null = null;
+  const workspaceEl = document.querySelector("[data-workspace]") as HTMLElement | null;
+  const TUI_COLLAPSE_KEY = "goalboard:tui:collapsed";
+  const TUI_WIDTH_KEY = "goalboard:tui:expanded-width";
+
+  const isNarrowScreen = () => matchMedia("(max-width: 760px)").matches;
+
+  const setTuiCollapsed = (collapsed: boolean, persist = true) => {
+    if (!workspaceEl) return;
+    const effective = collapsed && !isNarrowScreen();
+    const wasCollapsed = pane.classList.contains("is-collapsed");
+    workspaceEl.classList.toggle("is-tui-collapsed", effective);
+    pane.classList.toggle("is-collapsed", effective);
+    if (effective && !wasCollapsed) {
+      const width = parseFloat(workspaceEl.style.getPropertyValue("--tui-width") || "") || pane.getBoundingClientRect().width || 480;
+      try {
+        localStorage.setItem(TUI_WIDTH_KEY, String(Math.round(Math.min(720, Math.max(280, width)))));
+      } catch {
+        // Storage may be unavailable; collapsing still works.
+      }
+      workspaceEl.style.setProperty("--tui-width", "56px");
+    } else if (!effective && wasCollapsed) {
+      let width = 480;
+      try {
+        width = Number(localStorage.getItem(TUI_WIDTH_KEY)) || 480;
+      } catch {
+        // Fall back to the default width.
+      }
+      workspaceEl.style.setProperty("--tui-width", `${Math.min(720, Math.max(280, width))}px`);
+    }
+    if (collapseBtn) collapseBtn.hidden = effective || isNarrowScreen();
+    if (expandBtn) expandBtn.hidden = !effective;
+    if (persist) {
+      try {
+        localStorage.setItem(TUI_COLLAPSE_KEY, effective ? "1" : "0");
+      } catch {
+        // Storage may be unavailable; the preference just won't be remembered.
+      }
+    }
+  };
+
+  const initTuiCollapse = () => {
+    let collapsed = true;
+    try {
+      collapsed = localStorage.getItem(TUI_COLLAPSE_KEY) !== "0";
+    } catch {
+      // Default to collapsed when storage is unavailable.
+    }
+    setTuiCollapsed(collapsed && !isNarrowScreen(), false);
+  };
 
   const headers = () => ({
     "content-type": "application/json",
@@ -139,14 +190,24 @@ if (pane) {
       alive.delete(value.panelId);
       const panel = panels.find((item) => item.panel_id === value.panelId);
       if (panel) panel.status = "exited";
+      const session = sessions.get(value.panelId);
+      if (session) {
+        const exitCode = value.exitCode ?? 0;
+        session.term.write(`\r\n${L("终端进程已退出")}${value.exitCode != null ? `（${L("退出码")} ${exitCode}）` : ""}\r\n`);
+        if (!session.hasOutput && exitCode !== 0) {
+          session.term.write(`\r\n${L("进程在启动后立即退出，常见原因：命令未安装、不在 PATH 中或工作目录不存在。")}\r\n`);
+        }
+      }
       void fetch(route(`/api/panels/${encodeURIComponent(value.panelId)}/exited`), {
         method: "POST",
         headers: headers(),
         body: "{}",
       }).catch(() => undefined);
       if (activeId === value.panelId) {
-        setStatus(L("终端已退出"));
         showTerminal(activeId);
+        setStatus(
+          value.exitCode != null ? L("终端已退出（退出码 {code}）", { code: value.exitCode }) : L("终端已退出"),
+        );
       }
       return;
     }
@@ -288,59 +349,64 @@ if (pane) {
 
   const spawnPanel = async (panel: PanelRecord) => {
     const session = ensureSession(panel.panel_id);
-    session.fit.fit();
-    const size = session.fit.proposeDimensions();
-    const spawn = panel.spawn;
-    setStatus(L("正在启动终端…"), "busy");
-    await connectPty();
-    const spawned = new Promise<PtyServerMessage>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingSpawns.delete(panel.panel_id);
-        reject(new Error(L("终端通道连接失败")));
-      }, 20_000);
-      pendingSpawns.set(panel.panel_id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-    });
     try {
-      await sendPty({
-        type: "spawn",
-        panelId: panel.panel_id,
-        command: spawn?.command ?? panel.launch_command,
-        args: spawn?.args ?? panel.launch_args,
-        cwd: spawn?.cwd ?? panel.cwd,
-        env: spawn?.env ?? {
-          GOALBOARD_PANEL_ID: panel.panel_id,
-          GOALBOARD_GOAL_ID: panel.goal_id,
-          GOALBOARD_WORK_CONTEXT_ID: panel.work_context_id,
-          GOALBOARD_WORK_CONTEXT_STABLE: "true",
-          GOALBOARD_RUNTIME_ID: panel.runtime_kind,
-        },
-        cols: Math.max(20, size?.cols ?? 80),
-        rows: Math.max(8, size?.rows ?? 24),
-      });
-    } catch (error) {
-      pendingSpawns.get(panel.panel_id)?.reject(error instanceof Error ? error : new Error(String(error)));
-    }
-    const result = await spawned;
-    if (result.type === "spawned" && result.replay && !session.hasOutput) {
-      session.term.write(result.replay);
-      session.hasOutput = true;
-    }
-    alive.add(panel.panel_id);
-    panel.status = "open";
-    requestAnimationFrame(() => {
       session.fit.fit();
-      session.term.focus();
-    });
-    setStatus(result.type === "spawned" && result.attached ? L("已回到正在运行的终端") : L("终端已连接"), "live");
+      const size = session.fit.proposeDimensions();
+      const spawn = panel.spawn;
+      setStatus(L("正在启动终端…"), "busy");
+      await connectPty();
+      const spawned = new Promise<PtyServerMessage>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingSpawns.delete(panel.panel_id);
+          reject(new Error(L("终端通道连接失败")));
+        }, 20_000);
+        pendingSpawns.set(panel.panel_id, {
+          resolve: (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        });
+      });
+      try {
+        await sendPty({
+          type: "spawn",
+          panelId: panel.panel_id,
+          command: spawn?.command ?? panel.launch_command,
+          args: spawn?.args ?? panel.launch_args,
+          cwd: spawn?.cwd ?? panel.cwd,
+          env: spawn?.env ?? {
+            GOALBOARD_PANEL_ID: panel.panel_id,
+            GOALBOARD_GOAL_ID: panel.goal_id,
+            GOALBOARD_WORK_CONTEXT_ID: panel.work_context_id,
+            GOALBOARD_WORK_CONTEXT_STABLE: "true",
+            GOALBOARD_RUNTIME_ID: panel.runtime_kind,
+          },
+          cols: Math.max(20, size?.cols ?? 80),
+          rows: Math.max(8, size?.rows ?? 24),
+        });
+      } catch (error) {
+        pendingSpawns.get(panel.panel_id)?.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      const result = await spawned;
+      if (result.type === "spawned" && result.replay && !session.hasOutput) {
+        session.term.write(result.replay);
+        session.hasOutput = true;
+      }
+      alive.add(panel.panel_id);
+      panel.status = "open";
+      requestAnimationFrame(() => {
+        session.fit.fit();
+        session.term.focus();
+      });
+      setStatus(result.type === "spawned" && result.attached ? L("已回到正在运行的终端") : L("终端已连接"), "live");
+    } catch (error) {
+      session.term.write(`\r\n${errorText(error)}\r\n`);
+      throw error;
+    }
   };
 
   const loadPanels = async () => {
@@ -380,6 +446,7 @@ if (pane) {
       setStatus(L("打开项目后，Goal 右侧可以添加终端"));
       return;
     }
+    setTuiCollapsed(false);
     const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/panels`), {
       method: "POST",
       headers: headers(),
@@ -401,7 +468,6 @@ if (pane) {
       showTerminal(activeId);
     } catch (error) {
       setStatus(errorText(error), "error");
-      ensureSession(record.panel_id).term.write(`\r\n${errorText(error)}\r\n`);
       showTerminal(activeId);
     }
   };
@@ -437,6 +503,13 @@ if (pane) {
 
   addBtn.addEventListener("click", () => {
     setMenuOpen(!menu.classList.contains("is-open"));
+  });
+  collapseBtn?.addEventListener("click", () => {
+    setMenuOpen(false);
+    setTuiCollapsed(true);
+  });
+  expandBtn?.addEventListener("click", () => {
+    setTuiCollapsed(false);
   });
   menu.querySelector("[data-tui-menu-cancel]")?.addEventListener("click", () => {
     setMenuOpen(false);
@@ -535,6 +608,7 @@ if (pane) {
 
   void (async () => {
     try {
+      initTuiCollapse();
       await connectPty();
     } catch (error) {
       setStatus(errorText(error), "error");

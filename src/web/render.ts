@@ -2017,7 +2017,8 @@ const STYLES = `
   .tree-node.is-selected .goal-status { color: #fff; }
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
   .tree-footer small { margin-left: auto; color: var(--muted); }
-  .document-pane { min-width: 0; overflow: auto; background: var(--paper); }
+  .document-pane { min-width: 0; overflow: auto; background: var(--paper); scrollbar-width: none; -ms-overflow-style: none; }
+  .document-pane::-webkit-scrollbar { display: none; }
   .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) 5px var(--tui-width, 480px); }
   .tui-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
   .tui-resizer::after { content: ""; position: absolute; inset: 0 2px 0 auto; width: 1px; background: var(--line-strong); }
@@ -2036,6 +2037,19 @@ const STYLES = `
   .tui-tab-close:hover { color: var(--red); background: var(--red-soft); }
   .tui-add { height: 28px; flex: 0 0 auto; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; transition: background .16s ease, color .16s ease; }
   .tui-add:hover, .tui-add[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
+  .tui-collapse, .tui-expand { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: background .16s ease, color .16s ease; }
+  .tui-collapse:hover, .tui-expand:hover { color: var(--blue); background: var(--blue-soft); }
+  .tui-collapse svg, .tui-expand svg { width: 14px; height: 14px; }
+  .workspace.is-tui-collapsed .tui-resizer { display: none; }
+  .tui-pane.is-collapsed { grid-template-rows: 1fr; border-left: 1px solid var(--line-strong); }
+  .tui-pane.is-collapsed .tui-tabs { height: 100%; flex-direction: column; justify-content: center; align-items: center; padding: 0; border-bottom: 0; }
+  .tui-pane.is-collapsed .tui-tab-list, .tui-pane.is-collapsed .tui-add, .tui-pane.is-collapsed .tui-stage, .tui-pane.is-collapsed .tui-menu { display: none; }
+  .tui-pane.is-collapsed .tui-collapse { display: none; }
+  .tui-pane:not(.is-collapsed) .tui-expand { display: none; }
+  .tui-pane.is-collapsed .tui-expand { width: 42px; min-height: 52px; height: auto; display: grid; place-items: center; align-content: center; gap: 3px; border-radius: 8px; }
+  .tui-pane.is-collapsed .tui-expand svg { width: 18px; height: 18px; }
+  .tui-expand-label { display: none; }
+  .tui-pane.is-collapsed .tui-expand-label { display: block; font-size: 10px; font-weight: 650; line-height: 1; }
   .tui-stage { min-width: 0; min-height: 0; overflow: hidden; padding: 10px 12px 12px; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
   .tui-chrome { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .tui-chrome-actions { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -2069,6 +2083,9 @@ const STYLES = `
   .tui-runtime-choices button { min-height: 34px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; text-align: left; padding: 0 10px; font-weight: 650; transition: background .16s ease, border-color .16s ease, color .16s ease; }
   .tui-runtime-choices button[data-tui-kind="generic"] { grid-column: 1 / -1; }
   .tui-runtime-choices button:hover, .tui-runtime-choices button.is-selected { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
+  .tui-runtime-choices button:disabled { border-color: var(--line); background: #f4f6f8; color: var(--faint); cursor: not-allowed; display: grid; }
+  .tui-runtime-choices button:disabled small { color: var(--faint); font-size: 10px; font-weight: 500; opacity: .85; }
+  .tui-menu-missing { padding: 7px 9px; border-radius: 5px; background: var(--amber-soft); color: #7a5b12; }
   .tui-menu-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .tui-menu-actions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; font-weight: 650; }
   .tui-menu-actions button[type="submit"] { border-color: var(--blue); color: #fff; background: var(--blue); }
@@ -5331,13 +5348,32 @@ function renderRuntimePlanDialog(): string {
   </dialog>`;
 }
 
-function renderTuiPane(selectedGoalId: string): string {
+function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, boolean> = {}): string {
+  const runtimeKinds: Array<[string, string]> = [
+    ["claude-code", "Claude Code"],
+    ["codex", "Codex"],
+    ["opencode", "OpenCode"],
+    ["pi-agent", "Pi Agent"],
+    ["grok-build", "Grok Build"],
+  ];
+  const runtimeChoices = runtimeKinds.map(([kind, label]) => {
+    const available = cliAvailability[kind] !== false;
+    return `<button type="button" data-tui-kind="${kind}"${available ? "" : ` disabled title="${escapeHtml(L("需要先安装 CLI"))}"`}>${label}${available ? "" : `<small>${L("未安装")}</small>`}</button>`;
+  }).join("");
+  const missingKinds = runtimeKinds
+    .filter(([kind]) => cliAvailability[kind] === false)
+    .map(([, label]) => label);
+  const missingHint = missingKinds.length
+    ? `<p class="tui-menu-missing">${L("以下 CLI 未安装：{list}。安装后刷新页面即可使用。", { list: missingKinds.join("、") })}</p>`
+    : "";
   return `
       <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
       <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" aria-label="${L("终端面板")}">
         <div class="tui-tabs">
           <div class="tui-tab-list" data-tui-tabs></div>
           <button class="tui-add" type="button" data-tui-add aria-expanded="false" aria-controls="tui-open-menu" aria-haspopup="true" aria-label="${L("添加终端")}">${icon("plus")}<span>${L("添加终端")}</span></button>
+          <button class="tui-collapse" type="button" data-tui-collapse aria-label="${L("收起终端")}" title="${L("收起终端")}">${icon("chevron-right")}</button>
+          <button class="tui-expand" type="button" data-tui-expand hidden aria-label="${L("展开终端")}" title="${L("展开终端")}">${icon("terminal")}<span class="tui-expand-label">${L("终端")}</span></button>
         </div>
         <div class="tui-stage">
           <div class="tui-chrome">
@@ -5360,13 +5396,10 @@ function renderTuiPane(selectedGoalId: string): string {
           <strong>${L("在这个 Goal 上打开终端")}</strong>
           <p>${L("标签只属于当前 Goal。打开不会自动发送或领取。")}</p>
           <div class="tui-runtime-choices">
-            <button type="button" data-tui-kind="claude-code">Claude Code</button>
-            <button type="button" data-tui-kind="codex">Codex</button>
-            <button type="button" data-tui-kind="opencode">OpenCode</button>
-            <button type="button" data-tui-kind="pi-agent">Pi Agent</button>
-            <button type="button" data-tui-kind="grok-build">Grok Build</button>
+            ${runtimeChoices}
             <button type="button" data-tui-kind="generic">${L("自定义命令")}</button>
           </div>
+          ${missingHint}
           <label data-tui-generic-fields hidden>${L("命令")}<input name="command" type="text" autocomplete="off" placeholder="opencode"></label>
           <label>${L("继续会话 ID（可选）")}<input name="resume_session_id" type="text" autocomplete="off"></label>
           <div class="tui-menu-actions">
@@ -5419,6 +5452,7 @@ export function renderGoalBoardWeb(
   trashView = false,
   controlToken = "",
   desktopShell = false,
+  cliAvailability: Record<string, boolean> = {},
 ): string {
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
@@ -5532,7 +5566,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <section class="document-pane" id="goal-document-pane" data-document-pane>
         ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
       </section>
-      ${showTui ? renderTuiPane(selectedId) : ""}
+      ${showTui ? renderTuiPane(selectedId, cliAvailability) : ""}
     </main>
   </div>
   ${renderCreateDialog(view)}
