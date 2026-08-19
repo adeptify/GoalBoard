@@ -2040,6 +2040,7 @@ const STYLES = `
   .tui-collapse, .tui-expand { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: background .16s ease, color .16s ease; }
   .tui-collapse:hover, .tui-expand:hover { color: var(--blue); background: var(--blue-soft); }
   .tui-collapse svg, .tui-expand svg { width: 14px; height: 14px; }
+  .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) var(--tui-width, 56px); }
   .workspace.is-tui-collapsed .tui-resizer { display: none; }
   .tui-pane.is-collapsed { grid-template-rows: 1fr; border-left: 1px solid var(--line-strong); }
   .tui-pane.is-collapsed .tui-tabs { height: 100%; flex-direction: column; justify-content: center; align-items: center; padding: 0; border-bottom: 0; }
