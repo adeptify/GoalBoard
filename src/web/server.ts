@@ -21,6 +21,7 @@ import type {
 } from "../projects/catalog.js";
 import {
   RuntimeIntegrationService,
+  isSupportedRuntimeId,
   type SupportedRuntimeId,
 } from "../install/runtime-integration.js";
 import {
@@ -941,7 +942,7 @@ function installationDiagnostics(
 }
 
 function supportedRuntimeId(value: string): SupportedRuntimeId | null {
-  return value === "codex" || value === "claude-code" ? value : null;
+  return isSupportedRuntimeId(value) ? value : null;
 }
 
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
