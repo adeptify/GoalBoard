@@ -1,0 +1,107 @@
+# Install & Maintenance (GoalBoard)
+
+> Detailed install, update, startup, uninstall, and demo-data notes. For the quick start, see "3-minute experience" in the [README](../README.en.md).
+
+## Install boundaries
+
+`goalboard install` only maintains `~/.goalboard`: the versioned program, shared Skill, MCP/Web/CLI launchers, project DB root, logs, and install manifest. It never creates or starts projects, never writes into user projects, and never modifies any Runtime user-level configuration. Registering the MCP entry into a Runtime later requires the user-confirmed Runtime integration flow.
+
+For local installs from the repository use `pnpm install:local`; this single entry point rebuilds first, then installs the current content. If you point `goalboard install --source ...` directly at a repository containing `src/`, the installer checks the build fingerprint and stops if source and `dist` disagree instead of silently copying a stale build. The release also records a content digest: when the version is the same but program or Skill content changed, it refreshes atomically; only when the content is identical does it report "already up to date". A failed refresh restores the previous release; project data is never part of the replacement.
+
+Projects use an immutable `project_id`; display names can be renamed or duplicated, and every project has its own `goalboard.db`. `projects/catalog.db` stores project identity, DB location, optional Session bindings, historical workspace-to-project associations, a user-set unique default project, and deletion receipts; it never copies Goal facts and never depends on Git. A normal project selection does not automatically become the directory default; a new Session sees historical candidates and asks. Only after the user explicitly sets a default does it restore automatically. Unbinding an association does not delete the project; deleting a project and its DB requires separate confirmation and is refused while valid Claims or unfinished Runs exist.
+
+## Updating an existing install
+
+If you already installed from the repository, pull the new content first, then use the same install entry point. Even when the version number doesn't change, the installer compares the actual content and refreshes the program and Skill; user projects, Runtime configuration, and demos are never rewritten automatically:
+
+```bash
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm install:local
+
+# When the persistent Web service is in use, explicitly restart it onto the new release
+"$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm
+```
+
+After updating MCP or the Skill, also open a new Runtime Session, because an already-running Session does not reload tools. To make the built-in demo use the new example content, run `goalboard demo reset --confirm` separately; it clears changes inside the demo but never touches user projects.
+
+## Demo data
+
+Both the CLI and Web "Settings → Projects" can create the same demo data. Preview first, then write only after explicit confirmation:
+
+```bash
+"$HOME/.goalboard/bin/goalboard" demo create
+"$HOME/.goalboard/bin/goalboard" demo create --confirm
+"$HOME/.goalboard/bin/goalboard" demo reset --confirm
+"$HOME/.goalboard/bin/goalboard" demo remove --confirm
+```
+
+This project is clearly marked `regenerable_demo` in the catalog, separate from `user` and `migrated_user` data. Re-creating opens the existing demo; resetting clears changes inside the demo; removal and normal uninstall only clean up the regenerable demo and never touch user projects. Repository development and screenshots can still use `examples/seed-demo.mts`, which calls the same classification and rebuild logic.
+
+## Starting Web: persistent or temporary
+
+In a Runtime already connected to the GoalBoard Skill, the recommended instruction is:
+
+> Start GoalBoard
+
+The Runtime first does a read-only `goalboard service status` check instead of launching a foreground process that easily disappears with the Session. On macOS, if the persistent service is not installed, it first explains that this modifies a user-level LaunchAgent, starts at login, and keeps running after the terminal closes; it installs only after explicit confirmation. If stopped, it starts the service; if already running, it only returns the address; if the existing config is outdated, it explains the repair before confirming. Service commands report success only after the page is healthy and reachable.
+
+If you only want a temporary process for the current terminal, say explicitly:
+
+> Open GoalBoard temporarily
+
+This runs the foreground `goalboard-web`; the page stops when the terminal or Runtime Session closes. Non-macOS platforms currently support only this foreground mode and never fake a system-level persistent service with `nohup` or a background shell.
+
+### Manual startup
+
+```bash
+# Web lists browsable projects only from GoalBoard's own project directory
+"$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
+```
+
+After opening `http://127.0.0.1:4173`, you can create, import, rename, and open projects in Settings, and configure Runtime integration first. Selecting a project only changes what the page browses; it does not bind or switch the current Runtime Session. Existing legacy DBs are migrated into a project only after you explicitly select and confirm. On macOS you can also run `pnpm desktop` from the repository; the App is just a window shell over the same pages.
+
+Running `goalboard-web` directly is still foreground mode, good for temporary debugging; closing the terminal closes the page too. On macOS you can instead use the user-level LaunchAgent persistent service — preview first, then confirm:
+
+```bash
+# Preview only; writes nothing to the system
+"$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard"
+
+# Install and start after explicit confirmation; auto-starts at login and recovers after abnormal exit
+"$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard" --confirm
+
+"$HOME/.goalboard/bin/goalboard" service status --home "$HOME/.goalboard"
+```
+
+`stop` only stops the current service and keeps login startup; `remove` stops and removes the LaunchAgent that GoalBoard created and that hasn't been rewritten. Logs live in `~/.goalboard/logs/web-service.log` and `web-service.error.log`. Non-macOS platforms clearly report "not supported" and never pretend to install with a background shell. You can also run the same preview and confirmation from Web "Settings → Diagnostics".
+
+## Safe uninstall
+
+A normal uninstall first generates a plan and changes nothing without `--confirm`. After confirmation, it removes only what GoalBoard's ownership receipt still proves it owns — Runtime integrations, LaunchAgent, launchers, and releases — and cleans up demo data explicitly marked as rebuildable. User projects, the catalog, backups, and logs are kept and remain usable after reinstall:
+
+```bash
+"$HOME/.goalboard/bin/goalboard" uninstall
+"$HOME/.goalboard/bin/goalboard" uninstall --confirm
+```
+
+Permanently erasing user data is a separate operation and cannot reuse the single confirmation from a normal uninstall. The preview shows the exact home and user project count; execution requires providing both again unchanged:
+
+```bash
+"$HOME/.goalboard/bin/goalboard" uninstall --purge-user-data
+"$HOME/.goalboard/bin/goalboard" uninstall --purge-user-data --confirm \
+  --confirm-home "$HOME/.goalboard" --confirm-project-count N
+```
+
+If a Runtime config, Skill link, LaunchAgent, or launcher was rewritten by the user, uninstall reports the conflict and stops instead of widening the deletion scope. A failure mid-run leaves the completed steps, kept projects, and the error in `~/.goalboard/config/uninstall.json`, so you can fix the conflict, preview again, and continue.
+
+## Next steps after install
+
+`goalboard install` only installs the GoalBoard program and prints the install location, CLI/MCP/Web launchers, and safety boundaries; automation can use `goalboard install --json`. The install never creates projects, associates Sessions, starts services, or modifies Runtime configuration.
+
+Runtime integration is handled by the same domain service. The current adapter read-only probes Codex and Claude Code, then generates a preview containing config paths, the GoalBoard MCP entry, the Skill link, backup location, and restart instructions; it writes only after the user explicitly confirms the current Runtime and plan. MCP and Skill are validated as one transaction; on failure, the original config bytes and Skill state are restored. Removal only undoes what the GoalBoard ownership receipt still records as untouched by the user. Unknown same-name configs or Skills show a conflict and are never overwritten.
+
+After the integration is confirmed, **you must open a new Codex / Claude Code Session** for it to take effect: Runtimes read MCP and Skill manifests only at Session startup, and the current conversation doesn't dynamically gain just-written tools. In the new Session you can copy "continue with GoalBoard" to resume; GoalBoard shows projects previously used in the current directory and asks you to confirm. If you want a project to be entered automatically in the future, you must additionally set it as the directory default. The integration preview lists every change and this resume note item by item.
+
+Creating a project and associating the current Session are separate operations: after the user invokes the unified Skill in the current Runtime, the Skill uses `context-list-projects`, `context-bind`, or `context-create-and-bind`, and writes into GoalBoard's own data directory only after the user explicitly chooses. Web can create, import, rename, and open projects, and manage already-confirmed Session and workspace associations; selecting a project in the page never changes the Runtime connection, and a new Session still asks by default unless the user explicitly set a directory default project.
+
+Web only listens on loopback. Every startup generates a random control token that exists only in the local page; all Web API write requests must also pass same-origin Origin, control token, and one-time operation key checks. Non-local Hosts, blind third-party page submissions, missing credentials, or repeated requests are rejected before reaching the project catalog, Runtime config service, or Goal Coordinator. This browser gate does not replace the confirmation and idempotency rules in each domain flow.
