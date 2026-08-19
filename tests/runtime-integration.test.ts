@@ -30,6 +30,9 @@ async function withFixture<T>(run: (fixture: Fixture) => Promise<T>): Promise<T>
     const launcher = join(home, "bin", "goalboard-mcp");
     const codex = join(directory, "bin", "codex");
     const claude = join(directory, "bin", "claude");
+    const opencode = join(directory, "bin", "opencode");
+    const pi = join(directory, "bin", "pi");
+    const grok = join(directory, "bin", "grok");
     await Promise.all([
       mkdir(join(home, "config"), { recursive: true }),
       mkdir(skillSource, { recursive: true }),
@@ -48,6 +51,9 @@ async function withFixture<T>(run: (fixture: Fixture) => Promise<T>): Promise<T>
       writeFile(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
       writeFile(codex, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
       writeFile(claude, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      writeFile(opencode, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      writeFile(pi, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      writeFile(grok, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
     ]);
     return await run({
       directory,
@@ -56,7 +62,7 @@ async function withFixture<T>(run: (fixture: Fixture) => Promise<T>): Promise<T>
       release,
       skillSource,
       launcher,
-      executables: { codex, "claude-code": claude },
+      executables: { codex, "claude-code": claude, opencode, "pi-agent": pi, "grok-build": grok },
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -100,6 +106,9 @@ test("detect and prepare are read-only and public plans never expose the user's 
     assert.deepEqual(detections.map((item) => [item.runtime_id, item.connection_state]), [
       ["codex", "not_connected"],
       ["claude-code", "not_connected"],
+      ["opencode", "not_connected"],
+      ["pi-agent", "not_connected"],
+      ["grok-build", "not_connected"],
     ]);
     const codexPlan = await integration.prepare("codex", "connect");
     const claudePlan = await integration.prepare("claude-code", "connect");
@@ -122,7 +131,7 @@ test("Codex App user data is sufficient detection when no codex CLI is on PATH",
     const integration = new RuntimeIntegrationService({
       homeDirectory: fixture.home,
       userHomeDirectory: fixture.userHome,
-      runtimeExecutables: { codex: null, "claude-code": null },
+      runtimeExecutables: { codex: null, "claude-code": null, opencode: null, "pi-agent": null, "grok-build": null },
       validateConnection: () => true,
     });
 

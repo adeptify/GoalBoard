@@ -4,13 +4,13 @@
 
 ## Platform
 
-web
+web + desktop
 
 ## Users
 
 主要用户是同时使用 Codex、Claude Code、Cursor 等 AI Runtime 推进真实项目的个人开发者、产品负责人和小团队。他们需要在多个 Session 或 Runtime 之间持续工作，但不希望靠聊天记录猜测当前目标、下一步、风险和完成标准。
 
-V1 首先服务单设备、单 Workspace 的本地使用场景。用户在正在对话的 Runtime 中调用统一 Skill；Runtime 通过 MCP 主动选择和领取工作，并在同一对话中澄清与承接用户决定。CLI 是管理和调试入口，Web 是可选查看与确认界面，不是 Runtime 的必经步骤。
+V1 首先服务单设备、单 Workspace 的本地使用场景。用户在正在对话的 Runtime 中调用统一 Skill；Runtime 通过 MCP 主动选择和领取工作，并在同一对话中澄清与承接用户决定。CLI 是管理和调试入口，Web 是可选查看与确认界面，不是 Runtime 的必经步骤。macOS App 与浏览器打开同一套 loopback Web 工作台；Goal 详情右侧都可以托管用户显式打开的本地 TUI 视口。打开终端标签属于该 Goal，打开页面不会自动绑定 Session，Board 仍不派单。
 
 ## Product Purpose
 
@@ -40,7 +40,7 @@ GoalBoard 不是另一个 Kanban，也不是 Agent 调度器。它的差异机�
 
 V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 和 Web UI 使用同一套应用语义。
 
-安装默认只把自包含程序、共享 Skill 和稳定启动器写入 `~/.goalboard`，不会修改项目或 Runtime 配置，也不会创建项目、关联 Session 或启动服务。Runtime 接入、项目管理和 Session 关联是安装后的独立显式流程，不能再用一个“安装后启用/启动项目”的总动作混在一起。Runtime 接入统一使用 adapter 的 `detect → plan → confirm → apply → validate → remove` 链路；当前配置 adapter 支持 Codex 和 Claude Code，MCP 会话协议本身支持其他 Runtime。预览不返回用户配置全文，写入同时管理 MCP 与 Skill，失败自动回滚，移除只撤销 GoalBoard ownership receipt 证明仍属于自己的字段和链接。macOS 常驻 Web 同样先预览再确认，使用 LaunchAgent 的 RunAtLoad/KeepAlive 和可诊断日志，并显式提供安装时 Node 的 PATH；“已加载”和“进程正在运行”必须分别判断。用户在当前对话调用 Skill 后，GoalBoard 优先读取单次 MCP 调用元数据中的 Session ID，其次使用 Claude Code 等 adapter 的稳定 Session 信号；工作目录作为独立 workspace 用于查找用户以前明确关联过的项目，不伪装成 Session ID，也不是项目身份。普通选择只记录 workspace 历史；新 Session 仍须询问，即使只有一个候选。只有用户另行明确设置 workspace default 时才自动恢复。用户明确拒绝一个建议时，只在能识别该 Session 时记录本 Session 的拒绝；选择、默认、切换、解绑和删除仍各自需要明确确认。每个 GoalBoard 项目有自己的 SQLite DB，并按 `user`、`migrated_user`、`regenerable_demo` 分类；Web、CLI 和开发脚本共用同一 demo 生命周期。普通卸载先预览，只撤销 ownership receipt 仍能证明属于 GoalBoard 的接入和程序，清理可再生 demo，保留用户项目、catalog、备份与日志；永久清除用户数据必须再确认精确 home 和用户项目数量。Web 可选；Runtime 不因为 Web 未打开而停止澄清或执行。服务或项目连接不可用时，Runtime 报告事实，不自行创建另一个真相源、猜测项目或改写配置。
+安装默认只把自包含程序、共享 Skill 和稳定启动器写入 `~/.goalboard`，不会修改项目或 Runtime 配置，也不会创建项目、关联 Session 或启动服务。Runtime 接入、项目管理和 Session 关联是安装后的独立显式流程，不能再用一个“安装后启用/启动项目”的总动作混在一起。Runtime 接入统一使用 adapter 的 `detect → plan → confirm → apply → validate → remove` 链路；当前配置 adapter 支持 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build；MCP 会话协议本身仍支持其他 Runtime。Pi 的 MCP 写入 `~/.pi/agent/mcp.json`，供官方推荐的 pi-mcp-adapter 读取。预览不返回用户配置全文，写入同时管理 MCP 与 Skill，失败自动回滚，移除只撤销 GoalBoard ownership receipt 证明仍属于自己的字段和链接。macOS 常驻 Web 同样先预览再确认，使用 LaunchAgent 的 RunAtLoad/KeepAlive 和可诊断日志，并显式提供安装时 Node 的 PATH；“已加载”和“进程正在运行”必须分别判断。用户在当前对话调用 Skill 后，GoalBoard 优先读取单次 MCP 调用元数据中的 Session ID，其次使用 Claude Code 等 adapter 的稳定 Session 信号；工作目录作为独立 workspace 用于查找用户以前明确关联过的项目，不伪装成 Session ID，也不是项目身份。普通选择只记录 workspace 历史；新 Session 仍须询问，即使只有一个候选。只有用户另行明确设置 workspace default 时才自动恢复。用户明确拒绝一个建议时，只在能识别该 Session 时记录本 Session 的拒绝；选择、默认、切换、解绑和删除仍各自需要明确确认。每个 GoalBoard 项目有自己的 SQLite DB，并按 `user`、`migrated_user`、`regenerable_demo` 分类；Web、CLI 和开发脚本共用同一 demo 生命周期。普通卸载先预览，只撤销 ownership receipt 仍能证明属于 GoalBoard 的接入和程序，清理可再生 demo，保留用户项目、catalog、备份与日志；永久清除用户数据必须再确认精确 home 和用户项目数量。Web 可选；Runtime 不因为 Web 未打开而停止澄清或执行。服务或项目连接不可用时，Runtime 报告事实，不自行创建另一个真相源、猜测项目或改写配置。
 
 典型流程：用户在当前 Runtime 提出粗略想法或要求继续工作 → Skill 解析经用户确认的项目 → Runtime 对新想法开启 Draft 对话，或从 Available 自主选择一项并原子领取 → Runtime 回传 Run 和 Evidence，并在当前对话引导用户确认提案 → Board 派生一个工作状态并计算 Goal 是否满足 → 新发现通过 Candidate/Proposal 流程进入 Spine。
 
@@ -65,7 +65,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - SQLite 是权威真相源；JSON/Markdown 只用于导入、导出和可读快照。
 - Goal 必须包含面向人的 `business_logic`，不用技术术语解释业务闭环。
 - Goal 逐步拆解，不要求一开始列出所有远端 Goal。
-- Runtime-neutral；不启动、托管、调度或选择 Runtime。
+- Runtime-neutral。网页和 App 都可以托管用户显式打开的本地 TUI 视口，仍不派单、不选择谁来做。打开页面不等于启动 Runtime，也不自动绑定 Session。
 - GoalBoard 是 pull-based 真相源：Runtime 自己读取、认领和回传，不由 Board 分发任务。
 - 支持 self、cross、adversarial、human Review Policy，以及 Runtime Goal Mode 要求。
 - Web UI 必须能查看 Goal Spine、Ready/Blocked、风险、Claim/Run、Evidence/Review 和 Candidate 决策。
@@ -74,7 +74,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 
 ## Brand Commitments
 
-产品名使用 GoalBoard。界面默认中文，必要的协议字段保留简短英文。
+产品名使用 GoalBoard。界面默认中文，可切换英文；必要的协议字段保留简短英文。Goal 标题和用户正文保持原文，不随界面语言改写。
 
 语言必须直接、具体、口语化：优先说“下一步”“为什么被挡住”“完成还缺什么”，避免“赋能、范式、编排中枢、智能协同”等空泛表达。视觉可以有鲜明个性，但不能牺牲任务、状态和操作的可读性。
 
@@ -88,6 +88,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - `src/v1/`：SQLite Store、Coordinator、V1 types、管理 CLI 与一次性旧数据导入。
 - `src/cli/main.ts` 与 `src/mcp/server.ts`：V1-only CLI/MCP 入口及 Runtime/management audience 边界。
 - `src/web/`：读取同一 SQLite 的 Goal Tree 与文档式工作区。
+- `desktop/`：可选 macOS App 壳，复用同一套带 TUI 的 Web 工作台。
 - `tests/v1.test.ts`、`tests/mcp.test.ts`、`tests/web.test.ts`：状态门禁、权限、迁移和 UI 数据流证据。
 
 ## Product Principles

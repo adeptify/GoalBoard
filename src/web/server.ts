@@ -5,11 +5,15 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GoalBoardCoordinator } from "../v1/coordinator.js";
+import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
 import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
+import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
+import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
+import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
+import { attachGoalBoardPtySocket } from "./pty-socket.js";
 import type {
   GoalBoardProjectRecord,
   GoalBoardRuntimeContextBinding,
@@ -17,6 +21,7 @@ import type {
 } from "../projects/catalog.js";
 import {
   RuntimeIntegrationService,
+  isSupportedRuntimeId,
   type SupportedRuntimeId,
 } from "../install/runtime-integration.js";
 import {
@@ -43,6 +48,14 @@ import {
   type WebSettingsSection,
   type WebSettingsWorkspaceMembership,
 } from "./render.js";
+import {
+  L,
+  isWebLocale,
+  localeSetCookie,
+  resolveWebLocale,
+  runWithLocale,
+  safeNextPath,
+} from "./i18n.js";
 
 export interface WebServerOptions {
   /**
@@ -512,6 +525,176 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.end(JSON.stringify(value));
 }
 
+function ptyClientFilePath(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(here, "pty-client.js"),
+    path.resolve(here, "../../dist/web/pty-client.js"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function servePtyClient(response: ServerResponse): boolean {
+  const filePath = ptyClientFilePath();
+  if (!fs.existsSync(filePath)) {
+    sendJson(response, 404, { error: "desktop pty client missing" });
+    return true;
+  }
+  response.writeHead(200, {
+    "content-type": "text/javascript; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(fs.readFileSync(filePath));
+  return true;
+}
+
+function desktopPanelSpawn(
+  catalog: GoalBoardProjectCatalog,
+  panel: { panel_id: string; runtime_kind: string; launch_command: string; launch_args: string[]; cwd: string | null; work_context_id: string; goal_id: string },
+) {
+  return {
+    command: panel.launch_command,
+    args: panel.launch_args,
+    cwd: panel.cwd,
+    env: desktopPanelEnv({
+      homeDirectory: catalog.homeDirectory,
+      runtimeId: panel.runtime_kind,
+      panelId: panel.panel_id,
+      workContextId: panel.work_context_id,
+      goalId: panel.goal_id,
+    }),
+  };
+}
+
+const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'";
+
+async function handleDesktopPanelApi(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  serverOptions: WebServerOptions,
+  projectId: string,
+  coordinator: GoalBoardCoordinator,
+  boardId: string,
+): Promise<boolean> {
+  const panelsMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/panels$/);
+  const promptMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/advance-prompt$/);
+  const panelMatch = url.pathname.match(/^\/api\/panels\/([^/]+)$/);
+  const exitedMatch = url.pathname.match(/^\/api\/panels\/([^/]+)\/exited$/);
+  const reopenMatch = url.pathname.match(/^\/api\/panels\/([^/]+)\/reopen$/);
+  if (!panelsMatch && !promptMatch && !panelMatch && !exitedMatch && !reopenMatch) return false;
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+  try {
+    if (request.method === "GET" && promptMatch) {
+      const goalId = decodeURIComponent(promptMatch[1]);
+      const contract = coordinator.readGoalContract(boardId, goalId);
+      sendJson(response, 200, {
+        goal_id: goalId,
+        title: contract.goal.title,
+        prompt: desktopAdvancePrompt({ goal_id: goalId, title: contract.goal.title }),
+      });
+      return true;
+    }
+    if (request.method === "GET" && panelsMatch) {
+      const goalId = decodeURIComponent(panelsMatch[1]);
+      sendJson(response, 200, {
+        panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
+          ...panel,
+          spawn: desktopPanelSpawn(catalog, panel),
+        })),
+      });
+      return true;
+    }
+    if (request.method === "POST" && panelsMatch) {
+      const goalId = decodeURIComponent(panelsMatch[1]);
+      coordinator.readGoalContract(boardId, goalId);
+      const body = await readBody(request);
+      const runtimeKind = typeof body.runtime_kind === "string" ? body.runtime_kind : "generic";
+      if (!isDesktopRuntimeKind(runtimeKind)) {
+        sendJson(response, 400, { error: "不支持的终端类型" });
+        return true;
+      }
+      const resume = typeof body.resume_session_id === "string" ? body.resume_session_id : null;
+      const launch = desktopLaunchSpec({
+        runtime_kind: runtimeKind,
+        command: typeof body.command === "string" ? body.command : undefined,
+        args: Array.isArray(body.args) ? body.args.map((item) => String(item)) : undefined,
+        resume_session_id: resume,
+      });
+      const cwd = typeof body.cwd === "string" && body.cwd.trim()
+        ? body.cwd.trim()
+        : catalog.preferredWorkspacePath(projectId);
+      const panel = catalog.openDesktopPanel({
+        project_id: projectId,
+        goal_id: goalId,
+        runtime_kind: launch.runtime_kind,
+        launch_command: launch.command,
+        launch_args: launch.args,
+        cwd,
+        title: launch.title,
+        host_session_id: resume,
+        actor_id: "desktop-user",
+        user_confirmed: true,
+      });
+      sendJson(response, 200, {
+        panel,
+        spawn: desktopPanelSpawn(catalog, panel),
+      });
+      return true;
+    }
+    if (request.method === "DELETE" && panelMatch) {
+      const panelId = decodeURIComponent(panelMatch[1]);
+      const panel = catalog.getDesktopPanel(panelId);
+      if (panel.project_id !== projectId) {
+        sendJson(response, 404, { error: "找不到这个终端面板" });
+        return true;
+      }
+      catalog.closeDesktopPanel(panelId, "desktop-user");
+      sendJson(response, 200, { closed: true, panel_id: panelId });
+      return true;
+    }
+    if (request.method === "POST" && exitedMatch) {
+      const panelId = decodeURIComponent(exitedMatch[1]);
+      const panel = catalog.getDesktopPanel(panelId);
+      if (panel.project_id !== projectId) {
+        sendJson(response, 404, { error: "找不到这个终端面板" });
+        return true;
+      }
+      sendJson(response, 200, { panel: catalog.markDesktopPanelExited(panelId) });
+      return true;
+    }
+    if (request.method === "POST" && reopenMatch) {
+      const panelId = decodeURIComponent(reopenMatch[1]);
+      const panel = catalog.getDesktopPanel(panelId);
+      if (panel.project_id !== projectId) {
+        sendJson(response, 404, { error: "找不到这个终端面板" });
+        return true;
+      }
+      const opened = catalog.markDesktopPanelOpen(panelId);
+      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, panel) });
+      return true;
+    }
+    return false;
+  } catch (error) {
+    if (error instanceof GoalBoardV1Error) {
+      sendJson(response, 404, { error: error.message });
+      return true;
+    }
+    if (error instanceof GoalBoardProjectCatalogError) {
+      sendJson(response, error.code === "catalog.panel_not_found" ? 404 : 400, { error: error.message });
+      return true;
+    }
+    if (error instanceof Error) {
+      sendJson(response, 400, { error: error.message });
+      return true;
+    }
+    throw error;
+  } finally {
+    catalog.close();
+  }
+}
+
 type LocalMutationState = "in_flight" | "complete";
 
 function localHostname(value: string): boolean {
@@ -546,7 +729,7 @@ function authorizeLocalWebRequest(
 ): boolean {
   const host = requestHost(request);
   if (!host) {
-    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
   if (!request.method || ["GET", "HEAD"].includes(request.method)) return true;
@@ -557,15 +740,15 @@ function authorizeLocalWebRequest(
     if (typeof originValue !== "string") throw new Error("missing origin");
     origin = new URL(originValue);
   } catch {
-    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
   if (origin.protocol !== "http:" || !localHostname(origin.hostname) || origin.host !== host) {
-    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
   if (!controlTokenMatches(controlToken, request.headers["x-goalboard-control-token"])) {
-    sendJson(response, 403, { error: "本地控制请求校验失败" });
+    sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
   const idempotencyKey = request.headers["x-goalboard-idempotency-key"];
@@ -574,7 +757,7 @@ function authorizeLocalWebRequest(
     || idempotencyKey.length < 8
     || idempotencyKey.length > 200
   ) {
-    sendJson(response, 400, { error: "请求缺少有效的一次性操作键" });
+    sendJson(response, 400, { error: L("请求缺少有效的一次性操作键") });
     return false;
   }
   if (mutationKeys.has(idempotencyKey)) {
@@ -636,9 +819,7 @@ function settingsProject(project: GoalBoardProjectRecord): WebSettingsProject {
 }
 
 function runtimeDisplayName(runtimeId: string): string {
-  if (runtimeId === "codex") return "Codex";
-  if (runtimeId === "claude-code") return "Claude Code";
-  return runtimeId;
+  return desktopRuntimeTitle(runtimeId);
 }
 
 function settingsConnection(
@@ -761,7 +942,7 @@ function installationDiagnostics(
 }
 
 function supportedRuntimeId(value: string): SupportedRuntimeId | null {
-  return value === "codex" || value === "claude-code" ? value : null;
+  return isSupportedRuntimeId(value) ? value : null;
 }
 
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
@@ -819,6 +1000,7 @@ async function resolveWebRequest(
       || pathname.startsWith("/api/")
       || pathname === "/settings"
       || pathname.startsWith("/settings/")
+      || pathname.startsWith("/desktop/")
     ) {
       return { kind: "catalog_index", projects };
     }
@@ -869,11 +1051,57 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
   }
   const mutationKeys = new Map<string, LocalMutationState>();
   if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
-      if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
-      const resolved = await resolveWebRequest(serverOptions, url.pathname);
+      if (request.method === "GET" && url.pathname === "/locale") {
+        const requested = url.searchParams.get("lang");
+        const nextLocale = isWebLocale(requested)
+          ? requested
+          : resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
+        response.writeHead(302, {
+          location: safeNextPath(url.searchParams.get("next")),
+          "set-cookie": localeSetCookie(nextLocale),
+          "cache-control": "no-store",
+        });
+        response.end();
+        return;
+      }
+      const locale = resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
+      await runWithLocale(locale, async () => {
+        if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
+        await handleGoalBoardWebRequest(
+          request,
+          response,
+          url,
+          serverOptions,
+          fixture,
+          runtimeIntegrations,
+          webService,
+          controlToken,
+          mutationKeys,
+        );
+      });
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  attachGoalBoardPtySocket(server, controlToken);
+  return server;
+}
+
+async function handleGoalBoardWebRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  serverOptions: WebServerOptions,
+  fixture: ReturnType<typeof fixtureWebBoardOptions>,
+  runtimeIntegrations: RuntimeIntegrationService,
+  webService: GoalBoardWebServiceManager,
+  controlToken: string,
+  mutationKeys: Map<string, LocalMutationState>,
+): Promise<void> {
+  const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
         if (request.method === "GET" && url.pathname === "/settings") {
           response.writeHead(302, { location: "/settings/runtimes", "cache-control": "no-store" });
@@ -890,6 +1118,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
             "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
           });
           response.end(renderGoalBoardSettings({
             section,
@@ -1214,28 +1443,34 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           }
           return;
         }
+        if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
+          servePtyClient(response);
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/health") {
-          sendJson(response, 200, { status: "ok", project_count: resolved.projects.length });
+          sendJson(response, 200, { status: "ok", project_count: resolved.projects.length, desktop_tui: true });
           return;
         }
         if (request.method === "GET" && url.pathname === "/") {
+          const desktopShell = isDesktopShellRequest(request, url);
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
             "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
           });
-          response.end(renderGoalBoardProjectIndex(resolved.projects, controlToken));
+          response.end(renderGoalBoardProjectIndex(resolved.projects, controlToken, desktopShell));
           return;
         }
         if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-          sendJson(response, 400, { error: "请先选择一个 GoalBoard 项目" });
+          sendJson(response, 400, { error: L("请先选择一个 GoalBoard 项目") });
           return;
         }
-        sendJson(response, 404, { error: "页面不存在" });
+        sendJson(response, 404, { error: L("页面不存在") });
         return;
       }
       if (resolved.kind === "project_not_found") {
-        sendJson(response, 404, { error: "找不到这个 GoalBoard 项目" });
+        sendJson(response, 404, { error: L("找不到这个 GoalBoard 项目") });
         return;
       }
       const options = resolved.options;
@@ -1253,7 +1488,11 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
       const coordinator = new GoalBoardCoordinator(store);
       try {
         if (request.method === "GET" && url.pathname === "/health") {
-          sendJson(response, 200, { status: "ok", board_id: options.boardId });
+          sendJson(response, 200, { status: "ok", board_id: options.boardId, desktop_tui: true });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
+          servePtyClient(response);
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/board/cursor") {
@@ -1263,6 +1502,18 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
         if (request.method === "GET" && url.pathname === "/api/board") {
           sendJson(response, 200, buildGoalBoardWebView(store, coordinator, options));
           return;
+        }
+        if (options.project?.project_id) {
+          const handled = await handleDesktopPanelApi(
+            request,
+            response,
+            url,
+            serverOptions,
+            options.project.project_id,
+            coordinator,
+            options.boardId,
+          );
+          if (handled) return;
         }
         const goalDocumentMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/document$/);
         if (request.method === "GET" && goalDocumentMatch) {
@@ -2160,6 +2411,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             sendJson(response, 404, { error: `找不到这个 Goal: ${requestedGoalId}` });
             return;
           }
+          const desktopShell = isDesktopShellRequest(request, url);
           const html = renderGoalBoardWeb(
             view,
             requestedGoalId,
@@ -2167,23 +2419,22 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
             decisionIndex,
             trashView,
             controlToken,
+            desktopShell,
           );
-          response.writeHead(200, {
+          const headers: Record<string, string> = {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-          });
+            "content-security-policy": PAGE_CSP,
+            ...desktopCookieHeaders(request, url),
+          };
+          response.writeHead(200, headers);
           response.end(html);
           return;
         }
-        sendJson(response, 404, { error: "页面或接口不存在" });
+        sendJson(response, 404, { error: L("页面或接口不存在") });
       } finally {
         store.close();
       }
-    } catch (error) {
-      sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
-    }
-  });
 }
 
 function flag(args: string[], name: string): string | undefined {

@@ -9,7 +9,7 @@ import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { BoardSnapshot } from "../v1/types.js";
 
-const CATALOG_SCHEMA_VERSION = 7;
+const CATALOG_SCHEMA_VERSION = 8;
 const CATALOG_OWNER = "goalboard-project-catalog-v1";
 
 export interface GoalBoardProjectRecord {
@@ -119,6 +119,43 @@ export interface GoalBoardRuntimeContextBinding {
   bound_by: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface GoalBoardDesktopPanelRecord {
+  panel_id: string;
+  project_id: string;
+  goal_id: string;
+  runtime_kind: string;
+  launch_command: string;
+  launch_args: string[];
+  cwd: string | null;
+  work_context_id: string;
+  host_session_id: string | null;
+  tab_index: number;
+  title: string;
+  status: "open" | "exited";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OpenGoalBoardDesktopPanelInput {
+  project_id: string;
+  goal_id: string;
+  runtime_kind: string;
+  launch_command: string;
+  launch_args?: string[];
+  cwd?: string | null;
+  title?: string;
+  actor_id: string;
+  host_session_id?: string | null;
+  user_confirmed: boolean;
+}
+
+export interface AliasGoalBoardDesktopPanelSessionInput {
+  panel_id: string;
+  runtime_id: string;
+  host_session_id: string;
+  actor_id: string;
 }
 
 export interface GoalBoardRuntimeContextBindingEvent {
@@ -289,7 +326,9 @@ export class GoalBoardProjectCatalogError extends Error {
       | "context.rebind_confirmation_required"
       | "context.suggestion_not_available"
       | "context.idempotency_key_required"
-      | "context.idempotency_conflict",
+      | "context.idempotency_conflict"
+      | "catalog.panel_not_found"
+      | "catalog.panel_confirmation_required",
     message: string,
   ) {
     super(message);
@@ -831,6 +870,275 @@ export class GoalBoardProjectCatalog {
     return (rows as Array<Record<string, unknown>>).map(mapRuntimeContextBinding);
   }
 
+  openDesktopPanel(input: OpenGoalBoardDesktopPanelInput): GoalBoardDesktopPanelRecord {
+    const projectId = requiredProjectId(input.project_id);
+    const goalId = input.goal_id.trim();
+    const runtimeKind = requiredRuntimeId(input.runtime_kind);
+    const command = input.launch_command.trim();
+    const actorId = requiredActorId(input.actor_id);
+    if (!goalId) {
+      throw new GoalBoardProjectCatalogError("catalog.panel_not_found", "打开终端时必须指定 Goal");
+    }
+    if (!command) {
+      throw new GoalBoardProjectCatalogError("catalog.invalid_name", "打开终端时必须提供启动命令");
+    }
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardProjectCatalogError(
+        "catalog.panel_confirmation_required",
+        "只有在 Goal 详情里点开终端后才能建立这个面板",
+      );
+    }
+    const cwd = normalizeOptionalAbsolutePath(input.cwd);
+    const hostSessionId = input.host_session_id?.trim() || null;
+    const args = Array.isArray(input.launch_args)
+      ? input.launch_args.map((item) => String(item))
+      : [];
+
+    return this.db.transaction(() => {
+      const project = this.getProject(projectId);
+      const now = new Date().toISOString();
+      const panelId = `panel-${randomUUID()}`;
+      const workContextId = panelId;
+      const tabIndexRow = this.db
+        .prepare(`
+          SELECT COALESCE(MAX(tab_index), -1) AS tab_index
+          FROM goal_desktop_panels
+          WHERE project_id = ? AND goal_id = ?
+        `)
+        .get(projectId, goalId) as { tab_index?: unknown };
+      const tabIndex = Number(tabIndexRow.tab_index) + 1;
+      const record: GoalBoardDesktopPanelRecord = {
+        panel_id: panelId,
+        project_id: projectId,
+        goal_id: goalId,
+        runtime_kind: runtimeKind,
+        launch_command: command,
+        launch_args: args,
+        cwd,
+        work_context_id: workContextId,
+        host_session_id: hostSessionId,
+        tab_index: tabIndex,
+        title: input.title?.trim() || command,
+        status: "open",
+        created_at: now,
+        updated_at: now,
+      };
+      const workspace = cwd
+        ? normalizeRuntimeWorkspaceContext({ canonical_path: cwd, realpath_verified: false })
+        : undefined;
+      this.insertDesktopPanel(record);
+      this.insertDesktopPanelAlias(panelId, runtimeKind, workContextId, now);
+      this.bindRuntimeContextInTransaction({
+        normalized: {
+          runtime_id: runtimeKind,
+          stable_work_context_id: workContextId,
+          ...(workspace ? { workspace } : {}),
+        },
+        projectId,
+        actorId,
+        rebindConfirmed: true,
+        bindingScope: "session",
+      });
+      if (hostSessionId && hostSessionId !== workContextId) {
+        this.insertDesktopPanelAlias(panelId, runtimeKind, hostSessionId, now);
+        this.bindRuntimeContextInTransaction({
+          normalized: {
+            runtime_id: runtimeKind,
+            stable_work_context_id: hostSessionId,
+          },
+          projectId,
+          actorId,
+          rebindConfirmed: true,
+          bindingScope: "session",
+        });
+      }
+      this.appendEvent(project.project_id, "project.desktop_panel_opened", actorId, {
+        panel_id: panelId,
+        goal_id: goalId,
+        runtime_kind: runtimeKind,
+      });
+      return record;
+    })();
+  }
+
+  listDesktopPanels(projectId: string, goalId?: string): GoalBoardDesktopPanelRecord[] {
+    const id = requiredProjectId(projectId);
+    const rows = goalId
+      ? this.db
+          .prepare(`
+            SELECT * FROM goal_desktop_panels
+            WHERE project_id = ? AND goal_id = ?
+            ORDER BY tab_index, created_at, panel_id
+          `)
+          .all(id, goalId.trim())
+      : this.db
+          .prepare(`
+            SELECT * FROM goal_desktop_panels
+            WHERE project_id = ?
+            ORDER BY goal_id, tab_index, created_at, panel_id
+          `)
+          .all(id);
+    return (rows as Array<Record<string, unknown>>).map(mapDesktopPanel);
+  }
+
+  getDesktopPanel(panelId: string): GoalBoardDesktopPanelRecord {
+    const row = this.db
+      .prepare("SELECT * FROM goal_desktop_panels WHERE panel_id = ?")
+      .get(panelId.trim()) as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new GoalBoardProjectCatalogError("catalog.panel_not_found", "找不到这个终端面板");
+    }
+    return mapDesktopPanel(row);
+  }
+
+  markDesktopPanelExited(panelId: string): GoalBoardDesktopPanelRecord {
+    return this.db.transaction(() => {
+      const current = this.getDesktopPanel(panelId);
+      if (current.status === "exited") return current;
+      const now = new Date().toISOString();
+      this.db
+        .prepare("UPDATE goal_desktop_panels SET status = 'exited', updated_at = ? WHERE panel_id = ?")
+        .run(now, current.panel_id);
+      return { ...current, status: "exited" as const, updated_at: now };
+    })();
+  }
+
+  markDesktopPanelOpen(panelId: string): GoalBoardDesktopPanelRecord {
+    return this.db.transaction(() => {
+      const current = this.getDesktopPanel(panelId);
+      if (current.status === "open") return current;
+      const now = new Date().toISOString();
+      this.db
+        .prepare("UPDATE goal_desktop_panels SET status = 'open', updated_at = ? WHERE panel_id = ?")
+        .run(now, current.panel_id);
+      return { ...current, status: "open" as const, updated_at: now };
+    })();
+  }
+
+  closeDesktopPanel(panelId: string, actorId: string): void {
+    const actor = requiredActorId(actorId);
+    this.db.transaction(() => {
+      const current = this.getDesktopPanel(panelId);
+      this.db.prepare("DELETE FROM goal_desktop_panel_aliases WHERE panel_id = ?").run(current.panel_id);
+      this.db.prepare("DELETE FROM goal_desktop_panels WHERE panel_id = ?").run(current.panel_id);
+      this.appendEvent(current.project_id, "project.desktop_panel_closed", actor, {
+        panel_id: current.panel_id,
+        goal_id: current.goal_id,
+        runtime_kind: current.runtime_kind,
+      });
+    })();
+  }
+
+  aliasDesktopPanelSession(input: AliasGoalBoardDesktopPanelSessionInput): GoalBoardDesktopPanelRecord {
+    const panelId = input.panel_id.trim();
+    const runtimeId = requiredRuntimeId(input.runtime_id);
+    const hostSessionId = input.host_session_id.trim();
+    const actorId = requiredActorId(input.actor_id);
+    if (!hostSessionId) {
+      throw new GoalBoardProjectCatalogError("context.stable_identity_required", "宿主 Session 标识不能为空");
+    }
+    return this.db.transaction(() => {
+      const current = this.getDesktopPanel(panelId);
+      const now = new Date().toISOString();
+      this.insertDesktopPanelAlias(current.panel_id, runtimeId, hostSessionId, now);
+      if (current.host_session_id !== hostSessionId) {
+        this.db
+          .prepare(`
+            UPDATE goal_desktop_panels
+            SET host_session_id = ?, updated_at = ?
+            WHERE panel_id = ?
+          `)
+          .run(hostSessionId, now, current.panel_id);
+      }
+      this.bindRuntimeContextInTransaction({
+        normalized: {
+          runtime_id: runtimeId,
+          stable_work_context_id: hostSessionId,
+        },
+        projectId: current.project_id,
+        actorId,
+        rebindConfirmed: true,
+        bindingScope: "session",
+      });
+      return {
+        ...current,
+        host_session_id: hostSessionId,
+        updated_at: current.host_session_id === hostSessionId ? current.updated_at : now,
+      };
+    })();
+  }
+
+  findDesktopPanelByWorkContext(
+    runtimeId: string,
+    workContextId: string,
+  ): GoalBoardDesktopPanelRecord | null {
+    const row = this.db
+      .prepare(`
+        SELECT panels.* FROM goal_desktop_panel_aliases AS aliases
+        INNER JOIN goal_desktop_panels AS panels ON panels.panel_id = aliases.panel_id
+        WHERE aliases.runtime_id = ? AND aliases.stable_work_context_id = ?
+      `)
+      .get(requiredRuntimeId(runtimeId), workContextId.trim()) as Record<string, unknown> | undefined;
+    return row ? mapDesktopPanel(row) : null;
+  }
+
+  preferredWorkspacePath(projectId: string): string | null {
+    const row = this.db
+      .prepare(`
+        SELECT workspace.canonical_path AS canonical_path
+        FROM workspace_project_memberships AS membership
+        INNER JOIN workspaces AS workspace ON workspace.workspace_id = membership.workspace_id
+        WHERE membership.project_id = ?
+        ORDER BY membership.is_default DESC, membership.updated_at DESC, membership.membership_id
+        LIMIT 1
+      `)
+      .get(requiredProjectId(projectId)) as { canonical_path?: unknown } | undefined;
+    return typeof row?.canonical_path === "string" ? row.canonical_path : null;
+  }
+
+  private insertDesktopPanel(record: GoalBoardDesktopPanelRecord): void {
+    this.db
+      .prepare(`
+        INSERT INTO goal_desktop_panels (
+          panel_id, project_id, goal_id, runtime_kind, launch_command, launch_args,
+          cwd, work_context_id, host_session_id, tab_index, title, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        record.panel_id,
+        record.project_id,
+        record.goal_id,
+        record.runtime_kind,
+        record.launch_command,
+        JSON.stringify(record.launch_args),
+        record.cwd,
+        record.work_context_id,
+        record.host_session_id,
+        record.tab_index,
+        record.title,
+        record.status,
+        record.created_at,
+        record.updated_at,
+      );
+  }
+
+  private insertDesktopPanelAlias(
+    panelId: string,
+    runtimeId: string,
+    workContextId: string,
+    createdAt: string,
+  ): void {
+    this.db
+      .prepare(`
+        INSERT INTO goal_desktop_panel_aliases (
+          panel_id, runtime_id, stable_work_context_id, created_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(runtime_id, stable_work_context_id) DO UPDATE SET panel_id = excluded.panel_id
+      `)
+      .run(panelId, runtimeId, workContextId, createdAt);
+  }
+
   /** Safe Web/settings view: deliberately omits the canonical filesystem path. */
   listWorkspaceMemberships(): GoalBoardWorkspaceMembership[] {
     const rows = this.db
@@ -1320,6 +1628,11 @@ export class GoalBoardProjectCatalog {
           .prepare("DELETE FROM workspace_project_memberships WHERE project_id = ?")
           .run(project.project_id).changes;
         this.db.prepare("DELETE FROM runtime_context_setup_requests WHERE project_id = ?").run(project.project_id);
+        this.db.prepare(`
+          DELETE FROM goal_desktop_panel_aliases
+          WHERE panel_id IN (SELECT panel_id FROM goal_desktop_panels WHERE project_id = ?)
+        `).run(project.project_id);
+        this.db.prepare("DELETE FROM goal_desktop_panels WHERE project_id = ?").run(project.project_id);
         this.db.prepare("DELETE FROM projects WHERE project_id = ?").run(project.project_id);
         const now = new Date().toISOString();
         const record: StoredProjectDeletion = {
@@ -1649,6 +1962,7 @@ function initializeCatalog(db: Database.Database): void {
   createRuntimeContextSuggestionRejectionTable(db);
   createWorkspaceProjectMembershipTables(db);
   createProjectDeletionTable(db);
+  createDesktopPanelTables(db);
   db.prepare("INSERT INTO catalog_meta (key, value) VALUES (?, ?)").run("owner", CATALOG_OWNER);
   db.prepare("INSERT INTO catalog_meta (key, value) VALUES (?, ?)").run("schema_version", String(CATALOG_SCHEMA_VERSION));
 }
@@ -1723,6 +2037,11 @@ function migrateCatalog(db: Database.Database, databasePath: string): void {
       `);
       db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("7");
       current = 7;
+    }
+    if (current === 7) {
+      createDesktopPanelTables(db);
+      db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("8");
+      current = 8;
     }
     if (current !== CATALOG_SCHEMA_VERSION) {
       throw new GoalBoardProjectCatalogError(
@@ -1877,6 +2196,36 @@ function createProjectDeletionTable(db: Database.Database): void {
   `);
 }
 
+function createDesktopPanelTables(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS goal_desktop_panels (
+      panel_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(project_id),
+      goal_id TEXT NOT NULL,
+      runtime_kind TEXT NOT NULL,
+      launch_command TEXT NOT NULL,
+      launch_args TEXT NOT NULL,
+      cwd TEXT,
+      work_context_id TEXT NOT NULL,
+      host_session_id TEXT,
+      tab_index INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('open', 'exited')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS goal_desktop_panels_goal_idx
+      ON goal_desktop_panels(project_id, goal_id, tab_index);
+    CREATE TABLE IF NOT EXISTS goal_desktop_panel_aliases (
+      panel_id TEXT NOT NULL REFERENCES goal_desktop_panels(panel_id) ON DELETE CASCADE,
+      runtime_id TEXT NOT NULL,
+      stable_work_context_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (runtime_id, stable_work_context_id)
+    );
+  `);
+}
+
 async function initializeProjectDatabase(
   databasePath: string,
   boardId: string,
@@ -2007,6 +2356,41 @@ function mapRuntimeContextBindingEvent(
     actor_id: String(row.actor_id),
     created_at: String(row.created_at),
   };
+}
+
+function mapDesktopPanel(row: Record<string, unknown>): GoalBoardDesktopPanelRecord {
+  let launchArgs: string[] = [];
+  try {
+    const parsed = JSON.parse(String(row.launch_args ?? "[]")) as unknown;
+    if (Array.isArray(parsed)) launchArgs = parsed.map((item) => String(item));
+  } catch {
+    launchArgs = [];
+  }
+  return {
+    panel_id: String(row.panel_id),
+    project_id: String(row.project_id),
+    goal_id: String(row.goal_id),
+    runtime_kind: String(row.runtime_kind),
+    launch_command: String(row.launch_command),
+    launch_args: launchArgs,
+    cwd: row.cwd == null ? null : String(row.cwd),
+    work_context_id: String(row.work_context_id),
+    host_session_id: row.host_session_id == null ? null : String(row.host_session_id),
+    tab_index: Number(row.tab_index),
+    title: String(row.title),
+    status: String(row.status) === "exited" ? "exited" : "open",
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+  };
+}
+
+function normalizeOptionalAbsolutePath(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (!path.isAbsolute(raw)) {
+    throw new GoalBoardProjectCatalogError("catalog.invalid_name", "终端工作目录必须是绝对路径");
+  }
+  return path.resolve(raw);
 }
 
 function mapStoredProjectDeletion(row: Record<string, unknown>): StoredProjectDeletion {

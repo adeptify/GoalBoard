@@ -9,8 +9,8 @@ import {
 } from "../projects/catalog.js";
 import {
   RuntimeIntegrationService,
+  SUPPORTED_RUNTIME_IDS,
   type RuntimeIntegrationPlan,
-  type SupportedRuntimeId,
 } from "./runtime-integration.js";
 import {
   GoalBoardWebServiceManager,
@@ -121,7 +121,7 @@ export class GoalBoardUninstallService {
     const purgeUserData = options.purge_user_data === true;
     const catalog = await inspectCatalog(this.homeDirectory);
     const runtimePlans = await Promise.all(
-      (["codex", "claude-code"] as SupportedRuntimeId[])
+      SUPPORTED_RUNTIME_IDS
         .map((runtimeId) => this.runtimeIntegrations.prepare(runtimeId, "remove")),
     );
     const webPlan = await this.webService.prepare("remove");

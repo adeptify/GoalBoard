@@ -24,6 +24,16 @@ import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
 import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
 import type { GoalBoardWebServiceDetection } from "../install/web-service.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
+import {
+  L,
+  currentLocale,
+  htmlLang,
+  dateTimeLocale,
+  renderLocaleSwitch,
+  clientI18nScript,
+  LOCALE_SWITCH_STYLES,
+} from "./i18n.js";
+import { appendDesktopQueryToLocalHrefs, withDesktopQuery } from "./desktop-shell.js";
 
 export type WebGoalStatus = GoalWorkState;
 
@@ -312,10 +322,10 @@ function dataJson(view: GoalBoardWebView): string {
 }
 
 function formatDate(value: string | null | undefined): string {
-  if (!value) return "未记录";
+  if (!value) return L("未记录");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(dateTimeLocale(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -344,16 +354,16 @@ function renderReference(value: string, label = value): string {
   if (isProjectReference(value)) {
     return `<a class="inline-ref" href="/api/project-references/${encodeURIComponent(value)}" target="_blank" rel="noreferrer" data-project-reference>${icon("external")}<span>${escapeHtml(label)}</span></a>`;
   }
-  return `<button class="inline-ref" type="button" data-copy-value="${escapeHtml(value)}" title="复制引用">${icon("copy")}<span>${escapeHtml(label)}</span></button>`;
+  return `<button class="inline-ref" type="button" data-copy-value="${escapeHtml(value)}" title="${L("复制引用")}">${icon("copy")}<span>${escapeHtml(label)}</span></button>`;
 }
 
 function renderList(values: string[], empty: string): string {
-  if (values.length === 0) return `<p class="empty-row">${escapeHtml(empty)}</p>`;
+  if (values.length === 0) return `<p class="empty-row">${escapeHtml(L(empty))}</p>`;
   return `<ul class="doc-list">${values.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
 }
 
 function renderStatus(status: WebGoalStatus): string {
-  return `<span class="goal-status goal-status--${status}">${icon(STATUS_ICONS[status])}<span>${STATUS_LABELS[status]}</span></span>`;
+  return `<span class="goal-status goal-status--${status}">${icon(STATUS_ICONS[status])}<span>${L(STATUS_LABELS[status])}</span></span>`;
 }
 
 function sortGoals(items: WebGoalView[]): WebGoalView[] {
@@ -396,7 +406,7 @@ function renderGoalTree(
       <div class="tree-row">
         ${
           hasChildren
-            ? `<button class="tree-toggle" type="button" data-tree-toggle aria-expanded="true" aria-label="折叠 ${escapeHtml(item.goal.title)}">${icon("chevron-down")}</button>`
+            ? `<button class="tree-toggle" type="button" data-tree-toggle aria-expanded="true" aria-label="${L("折叠")} ${escapeHtml(item.goal.title)}">${icon("chevron-down")}</button>`
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
         <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
@@ -419,13 +429,13 @@ function renderTreeStatusFilter(items: WebGoalView[]): string {
   const counts = new Map<WebGoalStatus, number>();
   for (const item of items) counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
   const options = WEB_GOAL_STATUSES.filter((status) => (counts.get(status) ?? 0) > 0);
-  return `<section class="tree-filter" id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选">
-    <header><strong>按状态筛选</strong><button type="button" data-clear-status-filter disabled>清除</button></header>
-    <p>可同时选择多个状态；会与关键词搜索一起生效。</p>
-    <div class="tree-filter-options" role="group" aria-label="Goal 状态">
-      ${options.length ? options.map((status) => `<label class="tree-filter-option"><input type="checkbox" value="${status}" data-status-filter><span>${renderStatus(status)}</span><small>${counts.get(status)}</small></label>`).join("") : `<p class="empty-row">当前没有可筛选的 Goal。</p>`}
+  return `<section class="tree-filter" id="tree-status-filter" data-tree-filter hidden aria-label="${L("按状态筛选")}">
+    <header><strong>${L("按状态筛选")}</strong><button type="button" data-clear-status-filter disabled>${L("清除")}</button></header>
+    <p>${L("可同时选择多个状态；会与关键词搜索一起生效。")}</p>
+    <div class="tree-filter-options" role="group" aria-label="${L("Goal 状态")}">
+      ${options.length ? options.map((status) => `<label class="tree-filter-option"><input type="checkbox" value="${status}" data-status-filter><span>${renderStatus(status)}</span><small>${counts.get(status)}</small></label>`).join("") : `<p class="empty-row">${L("当前没有可筛选的 Goal。")}</p>`}
     </div>
-    <p class="tree-filter-summary" data-tree-filter-summary aria-live="polite">显示全部状态</p>
+    <p class="tree-filter-summary" data-tree-filter-summary aria-live="polite">${L("显示全部状态")}</p>
   </section>`;
 }
 
@@ -440,27 +450,28 @@ function relationRow(
     (candidate) => candidate.goal.goal_id === relatedId,
   );
   const relatedName = related?.goal.title ?? relatedId;
-  const labels = RELATION_LABELS[relation.type] ?? { out: relation.type, in: relation.type };
+  const rawLabels = RELATION_LABELS[relation.type] ?? { out: relation.type, in: relation.type };
+  const labels = { out: L(rawLabels.out), in: L(rawLabels.in) };
   const path = outgoing
-    ? `当前 Goal → ${labels.out} → ${relatedName}`
-    : `${relatedName} → ${labels.out} → 当前 Goal`;
+    ? L("当前 Goal → {type} → {name}", { type: labels.out, name: relatedName })
+    : L("{name} → {type} → 当前 Goal", { name: relatedName, type: labels.out });
   const deactivated = item.events.find(
     (event) => event.type === "relation.deactivated" && event.object_id === relation.relation_id,
   );
-  const stateLabel = relation.state === "active" ? "生效" : relation.state === "proposed" ? "待确认" : "已解除";
+  const stateLabel = relation.state === "active" ? L("生效") : relation.state === "proposed" ? L("待确认") : L("已解除");
   const deactivateId = `relation-deactivate-${relation.relation_id}`;
   return `<div class="relation-record relation-record--${escapeHtml(relation.state)}" data-relation-id="${escapeHtml(relation.relation_id)}">
-    <button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}" aria-label="打开 ${escapeHtml(relatedName)}">
+    <button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}" aria-label="${L("打开")} ${escapeHtml(relatedName)}">
       <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
-      <span class="relation-copy"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">建立原因：${escapeHtml(relation.reason)}${deactivated ? ` · 解除原因：${escapeHtml(deactivated.reason)}` : ""}</small></span>
+      <span class="relation-copy"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">${L("建立原因：")}${escapeHtml(relation.reason)}${deactivated ? ` · ${L("解除原因：")}${escapeHtml(deactivated.reason)}` : ""}</small></span>
       <span class="relation-state relation-state--${escapeHtml(relation.state)}">${escapeHtml(stateLabel)}</span>
       ${icon("chevron-right")}
     </button>
-    ${relation.state === "active" && !item.goal.archived_at ? `<button class="relation-deactivate-open" type="button" data-relation-deactivate-open aria-expanded="false" aria-controls="${escapeHtml(deactivateId)}">解除</button>` : ""}
+    ${relation.state === "active" && !item.goal.archived_at ? `<button class="relation-deactivate-open" type="button" data-relation-deactivate-open aria-expanded="false" aria-controls="${escapeHtml(deactivateId)}">${L("解除")}</button>` : ""}
     ${relation.state === "active" && !item.goal.archived_at ? `<form class="relation-deactivate-form" id="${escapeHtml(deactivateId)}" data-relation-deactivate-form data-live-form="relation-deactivate-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}" hidden>
-      <label><span>解除原因</span><textarea name="reason" rows="2" required placeholder="说明为什么这条关系不再成立；历史记录会保留"></textarea></label>
+      <label><span>${L("解除原因")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么这条关系不再成立；历史记录会保留")}"></textarea></label>
       <p class="form-error" data-relation-deactivate-error role="alert" hidden></p>
-      <footer><button type="button" data-relation-deactivate-cancel>取消</button><button class="button-danger" type="submit">确认解除</button></footer>
+      <footer><button type="button" data-relation-deactivate-cancel>${L("取消")}</button><button class="button-danger" type="submit">${L("确认解除")}</button></footer>
     </form>` : ""}
   </div>`;
 }
@@ -472,10 +483,10 @@ function relationGroup(
   item: WebGoalView,
   view: GoalBoardWebView,
 ): string {
-  return `<section class="relation-group"><header><h3>${escapeHtml(title)} <span>${relations.length}</span></h3><p>${escapeHtml(hint)}</p></header><div>${
+  return `<section class="relation-group"><header><h3>${escapeHtml(L(title))} <span>${relations.length}</span></h3><p>${escapeHtml(L(hint))}</p></header><div>${
     relations.length
       ? relations.map((relation) => relationRow(relation, item, view)).join("")
-      : '<p class="empty-row">暂无关系</p>'
+      : `<p class="empty-row">${L("暂无关系")}</p>`
   }</div></section>`;
 }
 
@@ -498,7 +509,7 @@ function renderRelations(item: WebGoalView, view: GoalBoardWebView): string {
     ${relationGroup("其他关联", "扩展、替代、修正或风险关系", other, item, view)}
   </div>
   ${renderRelationEditor(item, view)}
-  ${inactive.length ? `<details class="relation-inactive-history" data-persist-open="inactive-relations-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>已解除关系</strong><small>${inactive.length} 条，保留方向与变更原因</small></span>${icon("chevron-down")}</summary><div>${inactive.map((relation) => relationRow(relation, item, view)).join("")}</div></details>` : ""}
+  ${inactive.length ? `<details class="relation-inactive-history" data-persist-open="inactive-relations-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已解除关系")}</strong><small>${inactive.length} ${L("条，保留方向与变更原因")}</small></span>${icon("chevron-down")}</summary><div>${inactive.map((relation) => relationRow(relation, item, view)).join("")}</div></details>` : ""}
   ${renderResolvedDependencyHistory(item, view)}`;
 }
 
@@ -509,7 +520,7 @@ function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string
   );
   const editorKey = `relation-editor-${item.goal.goal_id}`;
   if (!targets.length) {
-    return `<div class="relation-editor-empty">${icon("link")}<span><strong>还没有可关联的其他 Goal</strong><small>先新建另一个 Goal，再回来建立层级、依赖或语义关系。</small></span></div>`;
+    return `<div class="relation-editor-empty">${icon("link")}<span><strong>${L("还没有可关联的其他 Goal")}</strong><small>${L("先新建另一个 Goal，再回来建立层级、依赖或语义关系。")}</small></span></div>`;
   }
   const targetOptions = targets
     .map(
@@ -519,37 +530,37 @@ function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string
     .join("");
   const typeOptions = RELATION_TYPES.map(({ type, label, description }) => {
     const labels = RELATION_LABELS[type];
-    return `<option value="${escapeHtml(type)}" data-out-label="${escapeHtml(labels.out)}" data-in-label="${escapeHtml(labels.in)}" data-description="${escapeHtml(description)}">${escapeHtml(label)}</option>`;
+    return `<option value="${escapeHtml(type)}" data-out-label="${escapeHtml(L(labels.out))}" data-in-label="${escapeHtml(L(labels.in))}" data-description="${escapeHtml(L(description))}">${escapeHtml(L(label))}</option>`;
   }).join("");
   const firstTarget = targets[0]!.goal;
   return `<details class="relation-editor" data-relation-editor data-persist-open="${escapeHtml(editorKey)}" data-live-form="${escapeHtml(editorKey)}">
-    <summary><span class="relation-editor-icon">${icon("link")}</span><span><strong>维护关系</strong><small>新增关系，或在上方解除已有关系</small></span><span class="relation-editor-action">打开编辑器</span>${icon("chevron-down")}</summary>
+    <summary><span class="relation-editor-icon">${icon("link")}</span><span><strong>${L("维护关系")}</strong><small>${L("新增关系，或在上方解除已有关系")}</small></span><span class="relation-editor-action">${L("打开编辑器")}</span>${icon("chevron-down")}</summary>
     <form class="relation-form" data-relation-form data-live-form="relation-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-current-goal-name="${escapeHtml(item.goal.title)}">
-      <div class="relation-authority"><span>${icon("shield")}</span><p><strong>这是用户确认入口</strong><small>你在这里提交的关系会直接生效；Runtime 发现的变化仍只能提交 Rewire，并在<a href="/decisions">决定中心</a>等待你确认。</small></p></div>
-      <fieldset class="relation-direction-control"><legend>关系从哪里发出</legend><div><label><input type="radio" name="direction" value="outgoing" checked><span><strong>当前 Goal → 其他 Goal</strong><small>当前 Goal 是关系左侧</small></span></label><label><input type="radio" name="direction" value="incoming"><span><strong>其他 Goal → 当前 Goal</strong><small>当前 Goal 是关系右侧</small></span></label></div></fieldset>
+      <div class="relation-authority"><span>${icon("shield")}</span><p><strong>${L("这是用户确认入口")}</strong><small>${L("你在这里提交的关系会直接生效；Runtime 发现的变化仍只能提交 Rewire，并在")}<a href="/decisions">${L("决定中心")}</a>${L("等待你确认。")}</small></p></div>
+      <fieldset class="relation-direction-control"><legend>${L("关系从哪里发出")}</legend><div><label><input type="radio" name="direction" value="outgoing" checked><span><strong>${L("当前 Goal → 其他 Goal")}</strong><small>${L("当前 Goal 是关系左侧")}</small></span></label><label><input type="radio" name="direction" value="incoming"><span><strong>${L("其他 Goal → 当前 Goal")}</strong><small>${L("当前 Goal 是关系右侧")}</small></span></label></div></fieldset>
       <div class="relation-builder">
-        <label><span>关系类型</span><select name="type">${typeOptions}</select></label>
-        <label><span>另一个 Goal</span><select name="target_goal_id">${targetOptions}</select></label>
+        <label><span>${L("关系类型")}</span><select name="type">${typeOptions}</select></label>
+        <label><span>${L("另一个 Goal")}</span><select name="target_goal_id">${targetOptions}</select></label>
       </div>
-      <div class="relation-live-preview" data-relation-live-preview><small>方向预览</small><strong>${escapeHtml(item.goal.title)} <span>→ 属于 →</span> ${escapeHtml(firstTarget.title)}</strong><p>只改变 Goal Tree 层级，不要求上级先完成</p></div>
-      <label class="relation-reason-field"><span>建立原因</span><textarea name="reason" rows="3" required placeholder="说明为什么方向是 A → B，而不是 B → A；这个理由会进入关系历史"></textarea></label>
+      <div class="relation-live-preview" data-relation-live-preview><small>${L("方向预览")}</small><strong>${escapeHtml(item.goal.title)} <span>${L("→ 属于 →")}</span> ${escapeHtml(firstTarget.title)}</strong><p>${L("只改变 Goal Tree 层级，不要求上级先完成")}</p></div>
+      <label class="relation-reason-field"><span>${L("建立原因")}</span><textarea name="reason" rows="3" required placeholder="${L("说明为什么方向是 A → B，而不是 B → A；这个理由会进入关系历史")}"></textarea></label>
       <p class="form-error" data-relation-error role="alert" hidden></p>
-      <footer><p>提交后直接生效并写入事件历史；不会创建或启动 Runtime。</p><button class="button-primary" type="submit">建立关系</button></footer>
+      <footer><p>${L("提交后直接生效并写入事件历史；不会创建或启动 Runtime。")}</p><button class="button-primary" type="submit">${L("建立关系")}</button></footer>
     </form>
   </details>`;
 }
 
 function renderClaimCell(item: WebGoalView): string {
   const claim = item.active_claim ?? item.claims.at(-1);
-  if (!claim) return '<p class="empty-row">尚未被 Runtime 认领</p>';
-  return `<dl class="runtime-facts"><div><dt>Runtime</dt><dd>${escapeHtml(claim.actor_id)}</dd></div><div><dt>角色</dt><dd>${escapeHtml(claim.role)}</dd></div><div><dt>状态</dt><dd>${escapeHtml(claim.state)}</dd></div><div><dt>Goal Mode</dt><dd>${claim.goal_mode_attestation ? "已开启" : "未开启"}</dd></div></dl>`;
+  if (!claim) return `<p class="empty-row">${L("尚未被 Runtime 认领")}</p>`;
+  return `<dl class="runtime-facts"><div><dt>Runtime</dt><dd>${escapeHtml(claim.actor_id)}</dd></div><div><dt>${L("角色")}</dt><dd>${escapeHtml(claim.role)}</dd></div><div><dt>${L("状态")}</dt><dd>${escapeHtml(claim.state)}</dd></div><div><dt>Goal Mode</dt><dd>${claim.goal_mode_attestation ? L("已开启") : L("未开启")}</dd></div></dl>`;
 }
 
 function renderRunCell(item: WebGoalView): string {
   const run = item.runs.at(-1);
-  if (!run) return '<p class="empty-row">认领后可开始执行</p>';
-  return `<dl class="runtime-facts"><div><dt>Run</dt><dd>${escapeHtml(run.run_id)}</dd></div><div><dt>状态</dt><dd>${escapeHtml(run.state)}</dd></div><div><dt>开始</dt><dd>${formatDate(run.started_at)}</dd></div>${
-    run.block_reason ? `<div><dt>阻塞</dt><dd>${escapeHtml(run.block_reason)}</dd></div>` : ""
+  if (!run) return `<p class="empty-row">${L("认领后可开始执行")}</p>`;
+  return `<dl class="runtime-facts"><div><dt>Run</dt><dd>${escapeHtml(run.run_id)}</dd></div><div><dt>${L("状态")}</dt><dd>${escapeHtml(run.state)}</dd></div><div><dt>${L("开始")}</dt><dd>${formatDate(run.started_at)}</dd></div>${
+    run.block_reason ? `<div><dt>${L("阻塞")}</dt><dd>${escapeHtml(run.block_reason)}</dd></div>` : ""
   }</dl>${
     run.output_refs.length
       ? `<div class="ref-stack">${run.output_refs.map((ref) => renderReference(ref)).join("")}</div>`
@@ -579,7 +590,7 @@ function evidenceResultIcon(result: EvidenceRecord["result"]): GoalBoardIcon {
 function renderEvidenceRecord(evidence: EvidenceRecord): string {
   return `<article class="evidence-record">
     <span class="evidence-result evidence-result--${evidence.result}">${icon(evidenceResultIcon(evidence.result))}</span>
-    <div><header><strong>${escapeHtml(EVIDENCE_KIND_LABELS[evidence.kind])} · ${escapeHtml(EVIDENCE_RESULT_LABELS[evidence.result])}</strong><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="复制 Evidence ID">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join("、") || "未绑定验收项")}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}</div>
+    <div><header><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="${L("复制 Evidence ID")}">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、") || L("未绑定验收项"))}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}</div>
   </article>`;
 }
 
@@ -587,7 +598,7 @@ function renderEvidenceSubmitForm(item: WebGoalView): string {
   const criteria = item.goal.acceptance_criteria;
   if (item.goal.archived_at || item.goal.trashed_at) return "";
   if (!criteria.length) {
-    return '<p class="evidence-submit-note">这条 Goal 还没有验收条件，无法绑定人工 Evidence。请先通过当前 Runtime 或 Draft 流程补齐 Contract。</p>';
+    return `<p class="evidence-submit-note">${L("这条 Goal 还没有验收条件，无法绑定人工 Evidence。请先通过当前 Runtime 或 Draft 流程补齐 Contract。")}</p>`;
   }
   const criterionChoices = criteria
     .map(
@@ -596,19 +607,19 @@ function renderEvidenceSubmitForm(item: WebGoalView): string {
     )
     .join("");
   const kindChoices = (Object.entries(EVIDENCE_KIND_LABELS) as Array<[EvidenceRecord["kind"], string]>)
-    .map(([kind, label]) => `<option value="${kind}"${kind === "attestation" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .map(([kind, label]) => `<option value="${kind}"${kind === "attestation" ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
   const resultChoices = (Object.entries(EVIDENCE_RESULT_LABELS) as Array<[EvidenceRecord["result"], string]>)
-    .map(([result, label]) => `<option value="${result}"${result === "passed" ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .map(([result, label]) => `<option value="${result}"${result === "passed" ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
-  return `<details class="evidence-submit" data-persist-open="evidence-submit-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("evidence")}<strong>提交人工 Evidence</strong><small>用户直接记录的验收事实会进入同一完成门禁</small></span>${icon("chevron-down")}</summary>
+  return `<details class="evidence-submit" data-persist-open="evidence-submit-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("evidence")}<strong>${L("提交人工 Evidence")}</strong><small>${L("用户直接记录的验收事实会进入同一完成门禁")}</small></span>${icon("chevron-down")}</summary>
     <form data-evidence-form data-live-form="evidence-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
-      <fieldset class="evidence-criteria"><legend>绑定验收条件</legend><div>${criterionChoices}</div></fieldset>
-      <div class="evidence-form-row"><label><span>Evidence 类型</span><select name="kind">${kindChoices}</select></label><label><span>本次结果</span><select name="result">${resultChoices}</select></label></div>
-      <label><span>定位引用</span><textarea name="locator" rows="2" required placeholder="https://…、project://src/… 或项目内相对路径"></textarea><small>HTTP(S) 和安全的项目内相对路径可打开；其他引用会保留为可复制文本。</small></label>
-      <label><span>补充说明 <small>可选</small></span><textarea name="digest" rows="2" placeholder="说明观察到的事实、版本或可复核线索"></textarea></label>
+      <fieldset class="evidence-criteria"><legend>${L("绑定验收条件")}</legend><div>${criterionChoices}</div></fieldset>
+      <div class="evidence-form-row"><label><span>${L("Evidence 类型")}</span><select name="kind">${kindChoices}</select></label><label><span>${L("本次结果")}</span><select name="result">${resultChoices}</select></label></div>
+      <label><span>${L("定位引用")}</span><textarea name="locator" rows="2" required placeholder="${L("https://…、project://src/… 或项目内相对路径")}"></textarea><small>${L("HTTP(S) 和安全的项目内相对路径可打开；其他引用会保留为可复制文本。")}</small></label>
+      <label><span>${L("补充说明 ")}<small>${L("可选")}</small></span><textarea name="digest" rows="2" placeholder="${L("说明观察到的事实、版本或可复核线索")}"></textarea></label>
       <p class="form-error" data-evidence-error role="alert" hidden></p>
-      <footer><span>这条 Evidence 由当前 Web 用户提交，不会伪造 Runtime Run。</span><button class="button-primary" type="submit">提交 Evidence</button></footer>
+      <footer><span>${L("这条 Evidence 由当前 Web 用户提交，不会伪造 Runtime Run。")}</span><button class="button-primary" type="submit">${L("提交 Evidence")}</button></footer>
     </form>
   </details>`;
 }
@@ -616,12 +627,12 @@ function renderEvidenceSubmitForm(item: WebGoalView): string {
 function renderEvidenceCell(item: WebGoalView): string {
   const records = item.evidence.length
     ? `<div class="evidence-list">${item.evidence.slice().reverse().map(renderEvidenceRecord).join("")}</div>`
-    : '<p class="empty-row">尚未提交验收证据</p>';
+    : `<p class="empty-row">${L("尚未提交验收证据")}</p>`;
   return `${records}${renderEvidenceSubmitForm(item)}`;
 }
 
 function renderReviewCell(item: WebGoalView): string {
-  if (!item.review_obligations.length) return '<p class="empty-row">当前策略不要求额外 Review</p>';
+  if (!item.review_obligations.length) return `<p class="empty-row">${L("当前策略不要求额外 Review")}</p>`;
   return `<div class="review-list">${item.review_obligations
     .map((obligation) => {
       const latest = item.reviews
@@ -630,26 +641,26 @@ function renderReviewCell(item: WebGoalView): string {
       const detail = latest
         ? latest.verdict + " · " + latest.actor_id
         : obligation.state === "waived"
-          ? "已豁免"
-          : "等待提交";
-      return `<div class="review-row"><span class="review-state review-state--${obligation.state}"></span><span><strong>${escapeHtml(REVIEW_LABELS[obligation.role] ?? obligation.role)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
+          ? L("已豁免")
+          : L("等待提交");
+      return `<div class="review-row"><span class="review-state review-state--${obligation.state}"></span><span><strong>${escapeHtml(L(REVIEW_LABELS[obligation.role]) ?? obligation.role)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
     })
     .join("")}</div>`;
 }
 
 function renderAcceptance(item: WebGoalView): string {
   if (!item.goal.acceptance_criteria.length) {
-    return '<p class="empty-row empty-row--warning">还没有验收条件；这个 Goal 需要继续澄清，暂不能交给执行者。</p>';
+    return `<p class="empty-row empty-row--warning">${L("还没有验收条件；这个 Goal 需要继续澄清，暂不能交给执行者。")}</p>`;
   }
   return `<ul class="check-list">${item.goal.acceptance_criteria
     .map((criterion) => {
       const passed = item.passed_criteria.includes(criterion.criterion_id);
       const target = criterion.target == null
-        ? "未设置目标值"
+        ? L("未设置目标值")
         : Object.keys(criterion.target).length === 1 && "value" in criterion.target
           ? String(criterion.target.value)
           : JSON.stringify(criterion.target);
-      return `<li><span class="check-box${passed ? " is-checked" : ""}">${passed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong><small>通过条件：${escapeHtml(criterion.pass_condition)}</small><small>判断：${escapeHtml(criterion.decision_method)} · 目标：${escapeHtml(target)} · 证据：${escapeHtml(criterion.required_evidence.join("、") || "未指定")}</small></span></li>`;
+      return `<li><span class="check-box${passed ? " is-checked" : ""}">${passed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong><small>${L("通过条件：")}${escapeHtml(criterion.pass_condition)}</small><small>${L("判断：")}${escapeHtml(criterion.decision_method)} · ${L("目标：")}${escapeHtml(target)} · ${L("证据：")}${escapeHtml(criterion.required_evidence.join(currentLocale() === "en" ? ", " : "、") || L("未指定"))}</small></span></li>`;
     })
     .join("")}</ul>`;
 }
@@ -657,13 +668,13 @@ function renderAcceptance(item: WebGoalView): string {
 function renderReasons(item: WebGoalView): string {
   const blockers = item.reasons.filter((reason) => reason.severity === "blocker");
   if (!blockers.length) {
-    return `<p class="clear-row"><span class="check-box is-checked">${icon("check")}</span>当前没有阻塞项</p>`;
+    return `<p class="clear-row"><span class="check-box is-checked">${icon("check")}</span>${L("当前没有阻塞项")}</p>`;
   }
   return `<ul class="blocker-list">${blockers
     .map(
       (reason) =>
         `<li>${icon("blocked")}<span><strong>${escapeHtml(reason.message)}</strong>${
-          reason.remediation ? `<small>建议：${escapeHtml(reason.remediation)}</small>` : ""
+          reason.remediation ? `<small>${L("建议：")}${escapeHtml(reason.remediation)}</small>` : ""
         }</span></li>`,
     )
     .join("")}</ul>`;
@@ -671,20 +682,20 @@ function renderReasons(item: WebGoalView): string {
 
 function renderScope(item: WebGoalView): string {
   return `<div class="contract-list">
-    <section><h3>包含什么</h3>${renderList(item.goal.in_scope, "尚未记录范围")}</section>
-    <section><h3>明确不做</h3>${renderList(item.goal.out_of_scope, "尚未记录非目标")}</section>
-    <section><h3>必须遵守</h3>${renderList(item.goal.constraints, "暂无额外约束")}</section>
-    <section><h3>需要的输入</h3>${renderList(item.goal.required_inputs, "暂无前置输入")}</section>
-    <section><h3>承诺的输出</h3>${renderList(item.goal.promised_outputs, "尚未记录输出")}</section>
-    <section><h3>绑定资料</h3>${
+    <section><h3>${L("包含什么")}</h3>${renderList(item.goal.in_scope, "尚未记录范围")}</section>
+    <section><h3>${L("明确不做")}</h3>${renderList(item.goal.out_of_scope, "尚未记录非目标")}</section>
+    <section><h3>${L("必须遵守")}</h3>${renderList(item.goal.constraints, "暂无额外约束")}</section>
+    <section><h3>${L("需要的输入")}</h3>${renderList(item.goal.required_inputs, "暂无前置输入")}</section>
+    <section><h3>${L("承诺的输出")}</h3>${renderList(item.goal.promised_outputs, "尚未记录输出")}</section>
+    <section><h3>${L("绑定资料")}</h3>${
       item.input_bindings.length
         ? `<div class="bound-list">${item.input_bindings.map((binding) => `<article>${renderReference(binding.source_ref, binding.input_name)}<small>${escapeHtml(binding.state)} · ${escapeHtml(binding.reason)}${binding.snapshot_digest ? ` · ${escapeHtml(binding.snapshot_digest)}` : ""}</small></article>`).join("")}</div>`
-        : '<p class="empty-row">暂无资料绑定</p>'
+        : `<p class="empty-row">${L("暂无资料绑定")}</p>`
     }</section>
-    <section><h3>需求覆盖</h3>${
+    <section><h3>${L("需求覆盖")}</h3>${
       item.coverage.length
-        ? `<div class="bound-list">${item.coverage.map((coverage) => `<article><strong>${escapeHtml(coverage.requirement_id)} · ${escapeHtml(coverage.statement)}</strong><small>${escapeHtml(coverage.disposition)} · ${coverage.blocking ? "阻塞" : "非阻塞"}${coverage.reason ? ` · ${escapeHtml(coverage.reason)}` : ""}${coverage.revisit_condition ? ` · 复查：${escapeHtml(coverage.revisit_condition)}` : ""}</small></article>`).join("")}</div>`
-        : '<p class="empty-row">暂无需求覆盖记录</p>'
+        ? `<div class="bound-list">${item.coverage.map((coverage) => `<article><strong>${escapeHtml(coverage.requirement_id)} · ${escapeHtml(coverage.statement)}</strong><small>${escapeHtml(coverage.disposition)} · ${coverage.blocking ? L("阻塞") : L("非阻塞")}${coverage.reason ? ` · ${escapeHtml(coverage.reason)}` : ""}${coverage.revisit_condition ? ` · ${L("复查：")}${escapeHtml(coverage.revisit_condition)}` : ""}</small></article>`).join("")}</div>`
+        : `<p class="empty-row">${L("暂无需求覆盖记录")}</p>`
     }</section>
   </div>`;
 }
@@ -718,17 +729,17 @@ function riskStateEffect(
   const active = state === "open" || state === "triggered";
   if (!active) {
     return blockingMode === "invalidate_on_trigger"
-      ? "当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。"
-      : "当前状态不再施加领取或完成门禁。";
+      ? L("当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。")
+      : L("当前状态不再施加领取或完成门禁。");
   }
-  if (blockingMode === "claim") return "当前会阻止所有关联 Goal 被新的 Runtime 领取。";
-  if (blockingMode === "completion") return "当前会阻止所有关联 Goal 被标记为完成。";
+  if (blockingMode === "claim") return L("当前会阻止所有关联 Goal 被新的 Runtime 领取。");
+  if (blockingMode === "completion") return L("当前会阻止所有关联 Goal 被标记为完成。");
   if (blockingMode === "invalidate_on_trigger") {
     return state === "triggered"
-      ? "Risk 已触发，所有关联 Goal 立即失效。"
-      : "Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。";
+      ? L("Risk 已触发，所有关联 Goal 立即失效。")
+      : L("Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。");
   }
-  return "这是一条持续观察的事实，不直接阻塞领取或完成。";
+  return L("这是一条持续观察的事实，不直接阻塞领取或完成。");
 }
 
 function riskSelectOptions<T extends string>(
@@ -736,7 +747,7 @@ function riskSelectOptions<T extends string>(
   selected: T,
 ): string {
   return values
-    .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
 }
 
@@ -749,9 +760,9 @@ function renderRiskGoalPicker(
   const selected = new Set(selectedGoalIds);
   const goals = sortGoals([...view.goals, ...view.archived_goals]);
   return `<details class="risk-goal-picker" data-persist-open="${escapeHtml(key)}">
-    <summary><span><strong>受影响 Goal</strong><small>${selected.size} 个已选择 · 至少选择一个</small></span>${icon("chevron-down")}</summary>
-    <div><label class="risk-goal-search">${icon("search")}<input type="search" data-risk-goal-filter placeholder="按名称或 ID 筛选" aria-label="筛选${escapeHtml(label)}的受影响 Goal"></label>
-      <div class="risk-goal-options">${goals.map((item) => `<label data-risk-goal-option data-search="${escapeHtml(`${item.goal.title} ${item.goal.goal_id}`.toLocaleLowerCase())}"><input type="checkbox" name="goal_ids" value="${escapeHtml(item.goal.goal_id)}"${selected.has(item.goal.goal_id) ? " checked" : ""}><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}${item.goal.archived_at ? " · 已归档" : ""}</small></span></label>`).join("")}</div>
+    <summary><span><strong>${L("受影响 Goal")}</strong><small>${L("{count} 个已选择 · 至少选择一个", { count: selected.size })}</small></span>${icon("chevron-down")}</summary>
+    <div><label class="risk-goal-search">${icon("search")}<input type="search" data-risk-goal-filter placeholder="${L("按名称或 ID 筛选")}" aria-label="${L("筛选{label}的受影响 Goal", { label })}"></label>
+      <div class="risk-goal-options">${goals.map((item) => `<label data-risk-goal-option data-search="${escapeHtml(`${item.goal.title} ${item.goal.goal_id}`.toLocaleLowerCase())}"><input type="checkbox" name="goal_ids" value="${escapeHtml(item.goal.goal_id)}"${selected.has(item.goal.goal_id) ? " checked" : ""}><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}${item.goal.archived_at ? L(" · 已归档") : ""}</small></span></label>`).join("")}</div>
     </div>
   </details>`;
 }
@@ -764,16 +775,16 @@ function renderRiskFactsForm(
   const treatment = risk?.treatment ?? "mitigate";
   const blockingMode = risk?.blocking_mode ?? "none";
   const formKey = risk?.risk_id ?? `new-${currentGoalId}`;
-  return `<label class="risk-form-wide"><span>风险描述</span><textarea name="description" rows="2" required placeholder="什么可能使 Goal 无法按 Contract 完成">${escapeHtml(risk?.description ?? "")}</textarea></label>
-    <label><span>发生概率</span><input name="probability" required value="${escapeHtml(risk?.probability ?? "")}" placeholder="低 / 中 / 高，或量化概率"></label>
-    <label><span>影响程度</span><input name="impact" required value="${escapeHtml(risk?.impact ?? "")}" placeholder="低 / 中 / 高，或具体影响"></label>
-    <label class="risk-form-wide"><span>受影响区域 <small>每行一项</small></span><textarea name="affected_surfaces" rows="2" placeholder="例如 src/web 或 onboarding-flow">${escapeHtml(risk?.affected_surfaces.join("\n") ?? "")}</textarea></label>
-    <label class="risk-form-wide"><span>触发条件</span><textarea name="trigger" rows="2" required placeholder="什么事实发生时算 Risk 已触发">${escapeHtml(risk?.trigger ?? "")}</textarea></label>
-    <label><span>处理方式</span><select name="treatment">${riskSelectOptions([["mitigate", "缓解"], ["avoid", "规避"], ["defer", "延后"], ["accept", "接受"]], treatment)}</select></label>
-    <label><span>阻塞方式</span><select name="blocking_mode" data-risk-blocking-mode>${riskSelectOptions([["none", "不阻塞"], ["claim", "阻止领取"], ["completion", "阻止完成"], ["invalidate_on_trigger", "触发后失效"]], blockingMode)}</select></label>
-    <label class="risk-form-wide"><span>复查条件</span><textarea name="revisit_condition" rows="2" required placeholder="什么时候需要重新判断这项风险">${escapeHtml(risk?.revisit_condition ?? "")}</textarea></label>
-    <label><span>负责人</span><input name="owner" required value="${escapeHtml(risk?.owner ?? "")}" placeholder="用户、团队或角色"></label>
-    ${renderRiskGoalPicker(view, risk?.goal_ids ?? [currentGoalId], risk?.description ?? "新 Risk", `risk-goals-${formKey}`)}`;
+  return `<label class="risk-form-wide"><span>${L("风险描述")}</span><textarea name="description" rows="2" required placeholder="${L("什么可能使 Goal 无法按 Contract 完成")}">${escapeHtml(risk?.description ?? "")}</textarea></label>
+    <label><span>${L("发生概率")}</span><input name="probability" required value="${escapeHtml(risk?.probability ?? "")}" placeholder="${L("低 / 中 / 高，或量化概率")}"></label>
+    <label><span>${L("影响程度")}</span><input name="impact" required value="${escapeHtml(risk?.impact ?? "")}" placeholder="${L("低 / 中 / 高，或具体影响")}"></label>
+    <label class="risk-form-wide"><span>${L("受影响区域 ")}<small>${L("每行一项")}</small></span><textarea name="affected_surfaces" rows="2" placeholder="${L("例如 src/web 或 onboarding-flow")}">${escapeHtml(risk?.affected_surfaces.join("\n") ?? "")}</textarea></label>
+    <label class="risk-form-wide"><span>${L("触发条件")}</span><textarea name="trigger" rows="2" required placeholder="${L("什么事实发生时算 Risk 已触发")}">${escapeHtml(risk?.trigger ?? "")}</textarea></label>
+    <label><span>${L("处理方式")}</span><select name="treatment">${riskSelectOptions([["mitigate", "缓解"], ["avoid", "规避"], ["defer", "延后"], ["accept", "接受"]], treatment)}</select></label>
+    <label><span>${L("阻塞方式")}</span><select name="blocking_mode" data-risk-blocking-mode>${riskSelectOptions([["none", "不阻塞"], ["claim", "阻止领取"], ["completion", "阻止完成"], ["invalidate_on_trigger", "触发后失效"]], blockingMode)}</select></label>
+    <label class="risk-form-wide"><span>${L("复查条件")}</span><textarea name="revisit_condition" rows="2" required placeholder="${L("什么时候需要重新判断这项风险")}">${escapeHtml(risk?.revisit_condition ?? "")}</textarea></label>
+    <label><span>${L("负责人")}</span><input name="owner" required value="${escapeHtml(risk?.owner ?? "")}" placeholder="${L("用户、团队或角色")}"></label>
+    ${renderRiskGoalPicker(view, risk?.goal_ids ?? [currentGoalId], risk?.description ?? L("新 Risk"), `risk-goals-${formKey}`)}`;
 }
 
 function renderRiskGoalLinks(risk: WebRiskRecord, view: GoalBoardWebView): string {
@@ -788,26 +799,26 @@ function renderRiskGoalLinks(risk: WebRiskRecord, view: GoalBoardWebView): strin
 function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoardWebView): string {
   const readOnly = Boolean(item.goal.archived_at);
   const stateOptions = riskSelectOptions(
-    [["open", "开放"], ["triggered", "已触发"], ["resolved", "已解决"], ["accepted", "已接受"], ["expired", "已过期"]],
+    [["open", L("开放")], ["triggered", L("已触发")], ["resolved", L("已解决")], ["accepted", L("已接受")], ["expired", L("已过期")]],
     risk.state,
   );
   return `<article class="risk-record" id="risk-${escapeHtml(risk.risk_id)}">
-    <header><span class="risk-record-icon">${icon("risk")}</span><div><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(RISK_STATE_LABELS[risk.state])}</span><h4>${escapeHtml(risk.description)}</h4><small>${escapeHtml(risk.risk_id)} · 更新于 ${formatDate(risk.updated_at)}</small></div></header>
+    <header><span class="risk-record-icon">${icon("risk")}</span><div><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(L(RISK_STATE_LABELS[risk.state]))}</span><h4>${escapeHtml(risk.description)}</h4><small>${escapeHtml(risk.risk_id)} · 更新于 ${formatDate(risk.updated_at)}</small></div></header>
     <dl class="risk-facts">
-      <div><dt>概率 / 影响</dt><dd>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)}</dd></div>
-      <div><dt>处理 / 阻塞</dt><dd>${escapeHtml(RISK_TREATMENT_LABELS[risk.treatment])} / ${escapeHtml(RISK_BLOCKING_LABELS[risk.blocking_mode])}</dd></div>
-      <div class="risk-fact-wide"><dt>触发条件</dt><dd>${escapeHtml(risk.trigger)}</dd></div>
-      <div class="risk-fact-wide"><dt>复查条件</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div>
-      <div><dt>负责人</dt><dd>${escapeHtml(risk.owner)}</dd></div>
-      <div><dt>受影响区域</dt><dd>${risk.affected_surfaces.length ? escapeHtml(risk.affected_surfaces.join("、")) : "未单独标记"}</dd></div>
-      <div class="risk-fact-wide"><dt>受影响 Goal</dt><dd>${renderRiskGoalLinks(risk, view)}</dd></div>
+      <div><dt>${L("概率 / 影响")}</dt><dd>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)}</dd></div>
+      <div><dt>${L("处理 / 阻塞")}</dt><dd>${escapeHtml(L(RISK_TREATMENT_LABELS[risk.treatment]))} / ${escapeHtml(L(RISK_BLOCKING_LABELS[risk.blocking_mode]))}</dd></div>
+      <div class="risk-fact-wide"><dt>${L("触发条件")}</dt><dd>${escapeHtml(risk.trigger)}</dd></div>
+      <div class="risk-fact-wide"><dt>${L("复查条件")}</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div>
+      <div><dt>${L("负责人")}</dt><dd>${escapeHtml(risk.owner)}</dd></div>
+      <div><dt>${L("受影响区域")}</dt><dd>${risk.affected_surfaces.length ? escapeHtml(risk.affected_surfaces.join(currentLocale() === "en" ? ", " : "、")) : "未单独标记"}</dd></div>
+      <div class="risk-fact-wide"><dt>${L("受影响 Goal")}</dt><dd>${renderRiskGoalLinks(risk, view)}</dd></div>
     </dl>
-    <p class="risk-effect risk-effect--${escapeHtml(risk.state)}">${icon(risk.state === "triggered" ? "blocked" : "info")}<span><strong>当前影响</strong>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</span></p>
+    <p class="risk-effect risk-effect--${escapeHtml(risk.state)}">${icon(risk.state === "triggered" ? "blocked" : "info")}<span><strong>${L("当前影响")}</strong>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</span></p>
     ${readOnly ? '<p class="risk-readonly">已归档 Goal 中的 Risk 只读展示；恢复 Goal 后可以继续维护。</p>' : `<div class="risk-actions">
       <details data-persist-open="risk-edit-${escapeHtml(risk.risk_id)}"><summary><span>${icon("settings")}<strong>编辑事实</strong></span>${icon("chevron-down")}</summary>
         <form class="risk-form" data-risk-edit-form data-live-form="risk-edit-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}">
           ${renderRiskFactsForm(risk, item.goal.goal_id, view)}
-          <label class="risk-form-wide"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="为什么需要更新这项 Risk 的事实或关联 Goal"></textarea></label>
+          <label class="risk-form-wide"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么需要更新这项 Risk 的事实或关联 Goal")}"></textarea></label>
           <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
           <footer class="risk-form-wide"><span>状态不会随事实编辑而改变。</span><button class="button-primary" type="submit">保存 Risk 事实</button></footer>
         </form>
@@ -816,7 +827,7 @@ function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoar
         <form class="risk-state-form" data-risk-state-form data-live-form="risk-state-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}">
           <label><span>新状态</span><select name="state" data-risk-state-select>${stateOptions}</select></label>
           <p class="risk-state-preview" data-risk-state-preview>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</p>
-          <label class="risk-form-wide"><span>决定理由</span><textarea name="reason" rows="2" required placeholder="说明为什么现在进入这个状态，以及依据是什么"></textarea></label>
+          <label class="risk-form-wide"><span>${L("决定理由")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么现在进入这个状态，以及依据是什么")}"></textarea></label>
           <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
           <footer class="risk-form-wide"><button class="button-primary" type="submit">记录状态变化</button></footer>
         </form>
@@ -839,14 +850,14 @@ const IMPACT_STATE_LABELS: Record<ImpactBindingRecord["state"], string> = {
 };
 
 function impactStateEffect(impact: ImpactBindingRecord): string {
-  if (impact.state === "inactive") return "这条绑定只作为历史保留，不再参与 Runtime 领取冲突判断。";
-  if (impact.state === "proposed") return "这条绑定尚未确认，不会形成 Runtime 领取门禁。";
-  if (impact.access === "exclusive") return "当前 Goal 独占该区域；其他 active Goal 不能同时读取、写入或作出决策。";
-  if (impact.access === "decide") return "当前 Goal 对该区域作出业务决策；其他 active Goal 的读取、写入或决策会发生冲突。";
-  if (impact.access === "write") return "当前 Goal 会写入该区域；其他写入会冲突，读取方必须固定输入快照。";
+  if (impact.state === "inactive") return L("这条绑定只作为历史保留，不再参与 Runtime 领取冲突判断。");
+  if (impact.state === "proposed") return L("这条绑定尚未确认，不会形成 Runtime 领取门禁。");
+  if (impact.access === "exclusive") return L("当前 Goal 独占该区域；其他 active Goal 不能同时读取、写入或作出决策。");
+  if (impact.access === "decide") return L("当前 Goal 对该区域作出业务决策；其他 active Goal 的读取、写入或决策会发生冲突。");
+  if (impact.access === "write") return L("当前 Goal 会写入该区域；其他写入会冲突，读取方必须固定输入快照。");
   return impact.input_snapshot
-    ? "当前 Goal 只读取该区域，并已固定输入快照，可与写入方并行推进。"
-    : "当前 Goal 只读取该区域，但未固定输入快照；同一区域的 active 写入会阻止领取。";
+    ? L("当前 Goal 只读取该区域，并已固定输入快照，可与写入方并行推进。")
+    : L("当前 Goal 只读取该区域，但未固定输入快照；同一区域的 active 写入会阻止领取。");
 }
 
 function renderImpactFactsForm(
@@ -856,41 +867,41 @@ function renderImpactFactsForm(
   const access = impact?.access ?? "read";
   const state = impact?.state === "proposed" ? "proposed" : "confirmed";
   return `<input type="hidden" name="goal_id" value="${escapeHtml(goalId)}">
-    <label class="impact-form-wide"><span>影响区域</span><input name="surface" required value="${escapeHtml(impact?.surface ?? "")}" placeholder="例如 src/web 或 onboarding-flow"></label>
-    <label><span>访问类型</span><select name="access">${riskSelectOptions([["read", "读取"], ["write", "写入"], ["decide", "决策"], ["exclusive", "独占"]], access)}</select></label>
-    <label><span>当前状态</span><select name="state">${riskSelectOptions([["confirmed", "已确认"], ["proposed", "提议中"]], state)}</select></label>
-    <label class="impact-form-wide"><span>输入快照 <small>读取方可用 commit、文件版本或事实引用固定输入</small></span><input name="input_snapshot" value="${escapeHtml(impact?.input_snapshot ?? "")}" placeholder="可选，例如 commit://abc123 或 contract://GOAL-ID"></label>
-    <label class="impact-form-wide"><span>绑定理由</span><textarea name="reason" rows="2" required placeholder="为什么这个 Goal 会影响该区域">${escapeHtml(impact?.reason ?? "")}</textarea></label>`;
+    <label class="impact-form-wide"><span>${L("影响区域")}</span><input name="surface" required value="${escapeHtml(impact?.surface ?? "")}" placeholder="${L("例如 src/web 或 onboarding-flow")}"></label>
+    <label><span>${L("访问类型")}</span><select name="access">${riskSelectOptions([["read", "读取"], ["write", "写入"], ["decide", "决策"], ["exclusive", "独占"]], access)}</select></label>
+    <label><span>${L("当前状态")}</span><select name="state">${riskSelectOptions([["confirmed", "已确认"], ["proposed", "提议中"]], state)}</select></label>
+    <label class="impact-form-wide"><span>${L("输入快照 ")}<small>${L("读取方可用 commit、文件版本或事实引用固定输入")}</small></span><input name="input_snapshot" value="${escapeHtml(impact?.input_snapshot ?? "")}" placeholder="${L("可选，例如 commit://abc123 或 contract://GOAL-ID")}"></label>
+    <label class="impact-form-wide"><span>${L("绑定理由")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么这个 Goal 会影响该区域")}">${escapeHtml(impact?.reason ?? "")}</textarea></label>`;
 }
 
 function renderImpactRecord(impact: ImpactBindingRecord, item: WebGoalView): string {
   const inactive = impact.state === "inactive";
   const readOnly = Boolean(item.goal.archived_at);
   return `<article class="impact-record${inactive ? " impact-record--inactive" : ""}" id="impact-${escapeHtml(impact.binding_id)}">
-    <header><span class="impact-record-icon">${icon("impact")}</span><div><span class="impact-access impact-access--${escapeHtml(impact.access)}">${escapeHtml(IMPACT_ACCESS_LABELS[impact.access])}</span><h4>${escapeHtml(impact.surface)}</h4><small>${escapeHtml(impact.binding_id)} · ${inactive ? `停用于 ${formatDate(impact.deactivated_at ?? impact.updated_at)}` : `更新于 ${formatDate(impact.updated_at)}`}</small></div><span class="impact-state impact-state--${escapeHtml(impact.state)}">${escapeHtml(IMPACT_STATE_LABELS[impact.state])}</span></header>
+    <header><span class="impact-record-icon">${icon("impact")}</span><div><span class="impact-access impact-access--${escapeHtml(impact.access)}">${escapeHtml(L(IMPACT_ACCESS_LABELS[impact.access]))}</span><h4>${escapeHtml(impact.surface)}</h4><small>${escapeHtml(impact.binding_id)} · ${inactive ? `停用于 ${formatDate(impact.deactivated_at ?? impact.updated_at)}` : `更新于 ${formatDate(impact.updated_at)}`}</small></div><span class="impact-state impact-state--${escapeHtml(impact.state)}">${escapeHtml(L(IMPACT_STATE_LABELS[impact.state]))}</span></header>
     <dl class="impact-facts">
-      <div><dt>访问 / 状态</dt><dd>${escapeHtml(IMPACT_ACCESS_LABELS[impact.access])} / ${escapeHtml(IMPACT_STATE_LABELS[impact.state])}</dd></div>
-      <div><dt>创建者</dt><dd>${escapeHtml(impact.created_by)} · ${formatDate(impact.created_at)}</dd></div>
-      <div class="impact-fact-wide"><dt>输入快照</dt><dd>${impact.input_snapshot ? renderReference(impact.input_snapshot, "输入快照") : "未固定"}</dd></div>
-      <div class="impact-fact-wide"><dt>绑定理由</dt><dd>${escapeHtml(impact.reason)}</dd></div>
-      ${inactive ? `<div class="impact-fact-wide"><dt>停用原因</dt><dd>${escapeHtml(impact.deactivation_reason ?? "未记录")}</dd></div>` : ""}
+      <div><dt>${L("访问 / 状态")}</dt><dd>${escapeHtml(L(IMPACT_ACCESS_LABELS[impact.access]))} / ${escapeHtml(L(IMPACT_STATE_LABELS[impact.state]))}</dd></div>
+      <div><dt>${L("创建者")}</dt><dd>${escapeHtml(impact.created_by)} · ${formatDate(impact.created_at)}</dd></div>
+      <div class="impact-fact-wide"><dt>${L("输入快照")}</dt><dd>${impact.input_snapshot ? renderReference(impact.input_snapshot, "输入快照") : "未固定"}</dd></div>
+      <div class="impact-fact-wide"><dt>${L("绑定理由")}</dt><dd>${escapeHtml(impact.reason)}</dd></div>
+      ${inactive ? `<div class="impact-fact-wide"><dt>停用原因</dt><dd>${escapeHtml(impact.deactivation_reason ?? L("未记录"))}</dd></div>` : ""}
     </dl>
-    <p class="impact-effect impact-effect--${escapeHtml(impact.state)}">${icon(inactive ? "history" : "info")}<span><strong>当前影响</strong>${escapeHtml(impactStateEffect(impact))}</span></p>
+    <p class="impact-effect impact-effect--${escapeHtml(impact.state)}">${icon(inactive ? "history" : "info")}<span><strong>${L("当前影响")}</strong>${escapeHtml(impactStateEffect(impact))}</span></p>
     ${readOnly || inactive ? (readOnly && !inactive ? '<p class="impact-readonly">已归档 Goal 中的 Impact 只读展示；恢复 Goal 后可以继续维护。</p>' : "") : `<div class="impact-actions">
       <details data-persist-open="impact-edit-${escapeHtml(impact.binding_id)}"><summary><span>${icon("settings")}<strong>编辑绑定</strong></span>${icon("chevron-down")}</summary>
         <form class="impact-form" data-impact-edit-form data-live-form="impact-edit-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
           ${renderImpactFactsForm(impact, item.goal.goal_id)}
-          <label class="impact-form-wide"><span>修改说明</span><textarea name="audit_reason" rows="2" required placeholder="为什么需要更新影响区域、访问方式或状态"></textarea></label>
+          <label class="impact-form-wide"><span>${L("修改说明")}</span><textarea name="audit_reason" rows="2" required placeholder="${L("为什么需要更新影响区域、访问方式或状态")}"></textarea></label>
           <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
           <footer class="impact-form-wide"><span>修改会进入事件历史；已停用记录不会原地恢复。</span><button class="button-primary" type="submit">保存 Impact</button></footer>
         </form>
       </details>
       <details class="impact-deactivate" data-persist-open="impact-deactivate-${escapeHtml(impact.binding_id)}"><summary><span>${icon("archive")}<strong>停用绑定</strong></span>${icon("chevron-down")}</summary>
         <form data-impact-deactivate-form data-live-form="impact-deactivate-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
-          <p>停用后不再参与领取冲突判断，但完整绑定事实和停用原因会保留在历史中。</p>
-          <label><span>停用原因</span><textarea name="reason" rows="2" required placeholder="为什么这条 Impact 已不再有效"></textarea></label>
+          <p>${L("停用后不再参与领取冲突判断，但完整绑定事实和停用原因会保留在历史中。")}</p>
+          <label><span>${L("停用原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么这条 Impact 已不再有效")}"></textarea></label>
           <p class="form-error" data-impact-error role="alert" hidden></p>
-          <footer><button class="danger-confirm" type="submit">确认停用</button></footer>
+          <footer><button class="danger-confirm" type="submit">${L("确认停用")}</button></footer>
         </form>
       </details>
     </div>`}
@@ -902,28 +913,28 @@ function renderSafety(item: WebGoalView, view: GoalBoardWebView): string {
   const activeImpacts = item.impacts.filter((impact) => impact.state !== "inactive");
   const inactiveImpacts = item.impacts.filter((impact) => impact.state === "inactive");
   return `<div class="safety-workbench" id="risk-workbench-${escapeHtml(item.goal.goal_id)}">
-    <section class="risk-register"><header class="safety-subheading"><div><h3>风险</h3><p>记录事实、触发条件、影响范围和处理责任；状态决定是否形成门禁。</p></div><span>${item.risks.length} 项</span></header>
-      ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view)).join("")}</div>` : '<p class="risk-empty">暂无已登记 Risk。需要持续观察、阻止领取或影响完成的事项，都从这里记录。</p>'}
-      ${canEdit ? `<details class="risk-create" data-persist-open="risk-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="risk-record-icon">${icon("plus")}</span><span><strong>新增 Risk</strong><small>完整记录事实，并明确关联到哪些 Goal</small></span>${icon("chevron-down")}</summary>
+    <section class="risk-register"><header class="safety-subheading"><div><h3>${L("风险")}</h3><p>${L("记录事实、触发条件、影响范围和处理责任；状态决定是否形成门禁。")}</p></div><span>${L("{count} 项", { count: item.risks.length })}</span></header>
+      ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view)).join("")}</div>` : `<p class="risk-empty">${L("暂无已登记 Risk。需要持续观察、阻止领取或影响完成的事项，都从这里记录。")}</p>`}
+      ${canEdit ? `<details class="risk-create" data-persist-open="risk-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="risk-record-icon">${icon("plus")}</span><span><strong>${L("新增 Risk")}</strong><small>${L("完整记录事实，并明确关联到哪些 Goal")}</small></span>${icon("chevron-down")}</summary>
         <form class="risk-form" data-risk-create-form data-live-form="risk-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
           ${renderRiskFactsForm(null, item.goal.goal_id, view)}
-          <label class="risk-form-wide"><span>登记原因</span><textarea name="reason" rows="2" required placeholder="为什么现在需要记录这项 Risk"></textarea></label>
+          <label class="risk-form-wide"><span>${L("登记原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么现在需要记录这项 Risk")}"></textarea></label>
           <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
-          <footer class="risk-form-wide"><span>新 Risk 默认处于“开放”状态。</span><button class="button-primary" type="submit">登记 Risk</button></footer>
+          <footer class="risk-form-wide"><span>${L("新 Risk 默认处于“开放”状态。")}</span><button class="button-primary" type="submit">${L("登记 Risk")}</button></footer>
         </form>
       </details>` : ""}
     </section>
-    <section class="impact-register" id="impact-workbench-${escapeHtml(item.goal.goal_id)}"><header class="safety-subheading"><div><h3>影响面</h3><p>明确这个 Goal 会读取、写入、决策或独占哪些区域，以及它如何影响并行领取。</p></div><span>${activeImpacts.length} 项生效${inactiveImpacts.length ? ` · ${inactiveImpacts.length} 项历史` : ""}</span></header>
+    <section class="impact-register" id="impact-workbench-${escapeHtml(item.goal.goal_id)}"><header class="safety-subheading"><div><h3>${L("影响面")}</h3><p>${L("明确这个 Goal 会读取、写入、决策或独占哪些区域，以及它如何影响并行领取。")}</p></div><span>${L("{count} 项生效", { count: activeImpacts.length })}${inactiveImpacts.length ? ` · ${L("{count} 项历史", { count: inactiveImpacts.length })}` : ""}</span></header>
       <div class="impact-ledger">
-      ${activeImpacts.length ? `<div class="impact-list">${activeImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div>` : '<p class="impact-empty">暂无生效中的 Impact。需要约束并行读取、写入或决策时，从这里登记。</p>'}
-      ${canEdit ? `<details class="impact-create" data-persist-open="impact-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="impact-record-icon">${icon("plus")}</span><span><strong>新增 Impact</strong><small>记录影响区域、访问方式、输入快照和绑定理由</small></span>${icon("chevron-down")}</summary>
+      ${activeImpacts.length ? `<div class="impact-list">${activeImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div>` : `<p class="impact-empty">${L("暂无生效中的 Impact。需要约束并行读取、写入或决策时，从这里登记。")}</p>`}
+      ${canEdit ? `<details class="impact-create" data-persist-open="impact-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="impact-record-icon">${icon("plus")}</span><span><strong>${L("新增 Impact")}</strong><small>${L("记录影响区域、访问方式、输入快照和绑定理由")}</small></span>${icon("chevron-down")}</summary>
         <form class="impact-form" data-impact-create-form data-live-form="impact-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
           ${renderImpactFactsForm(null, item.goal.goal_id)}
           <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
-          <footer class="impact-form-wide"><span>已确认绑定会立即参与 Runtime 领取冲突判断。</span><button class="button-primary" type="submit">登记 Impact</button></footer>
+          <footer class="impact-form-wide"><span>${L("已确认绑定会立即参与 Runtime 领取冲突判断。")}</span><button class="button-primary" type="submit">${L("登记 Impact")}</button></footer>
         </form>
       </details>` : ""}
-      ${inactiveImpacts.length ? `<details class="impact-history" data-persist-open="impact-history-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>已停用记录</strong><small>${inactiveImpacts.length} 条 · 仍可查看原事实和停用原因</small></span>${icon("chevron-down")}</summary><div class="impact-list">${inactiveImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div></details>` : ""}
+      ${inactiveImpacts.length ? `<details class="impact-history" data-persist-open="impact-history-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已停用记录")}</strong><small>${inactiveImpacts.length} ${L("条 · 仍可查看原事实和停用原因")}</small></span>${icon("chevron-down")}</summary><div class="impact-list">${inactiveImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div></details>` : ""}
       </div>
     </section>
   </div>`;
@@ -970,7 +981,7 @@ function renderGoalModeChoices(selected: GoalPolicy["goal_mode"]): string {
     >
   )
     .map(
-      ([value, copy]) => `<label><input type="radio" name="goal_mode" value="${value}"${selected === value ? " checked" : ""}><span><strong>${copy.label}</strong><small>${copy.description}</small></span></label>`,
+      ([value, copy]) => `<label><input type="radio" name="goal_mode" value="${value}"${selected === value ? " checked" : ""}><span><strong>${L(copy.label)}</strong><small>${L(copy.description)}</small></span></label>`,
     )
     .join("")}</div>`;
 }
@@ -981,7 +992,7 @@ function renderPolicyToggle(
   title: string,
   description: string,
 ): string {
-  return `<label class="policy-toggle"><input type="checkbox" name="${name}"${checked ? " checked" : ""}><span class="policy-switch" aria-hidden="true"></span><span class="policy-toggle-copy"><strong>${title}</strong><small>${description}</small></span></label>`;
+  return `<label class="policy-toggle"><input type="checkbox" name="${name}"${checked ? " checked" : ""}><span class="policy-switch" aria-hidden="true"></span><span class="policy-toggle-copy"><strong>${L(title)}</strong><small>${L(description)}</small></span></label>`;
 }
 
 function renderPolicyCounter(
@@ -990,13 +1001,13 @@ function renderPolicyCounter(
   title: string,
   description: string,
 ): string {
-  return `<label class="policy-counter"><span><strong>${title}</strong><small>${description}</small></span><span class="policy-counter-input"><input name="${name}" type="number" min="0" step="1" value="${value}" aria-label="${title}人数"><span>人</span></span></label>`;
+  return `<label class="policy-counter"><span><strong>${L(title)}</strong><small>${L(description)}</small></span><span class="policy-counter-input"><input name="${name}" type="number" min="0" step="1" value="${value}" aria-label="${L(title + "人数")}"><span>${L("人")}</span></span></label>`;
 }
 
 function policyLeaseDescription(seconds: number): string {
-  if (seconds % 3600 === 0) return `约 ${seconds / 3600} 小时`;
-  if (seconds % 60 === 0) return `约 ${seconds / 60} 分钟`;
-  return "到期后其他 Runtime 可以重新领取";
+  if (seconds % 3600 === 0) return L("约 {hours} 小时", { hours: seconds / 3600 });
+  if (seconds % 60 === 0) return L("约 {minutes} 分钟", { minutes: seconds / 60 });
+  return L("到期后其他 Runtime 可以重新领取");
 }
 
 function renderPolicyForm(
@@ -1006,40 +1017,40 @@ function renderPolicyForm(
   binding: WebPolicyBinding | undefined,
 ): string {
   const goalScope = scope === "goal";
-  const scopeLabel = goalScope ? "当前 Goal 额外规则" : "项目默认规则";
+  const scopeLabel = goalScope ? L("当前 Goal 额外规则") : L("项目默认规则");
   const description = goalScope
-    ? "只作用于当前 Goal；可以增加要求，但不能削弱项目默认最低门槛。"
-    : "所有 Goal 的共同基线；修改后影响后续新的领取与 Review。";
+    ? L("只作用于当前 Goal；可以增加要求，但不能削弱项目默认最低门槛。")
+    : L("所有 Goal 的共同基线；修改后影响后续新的领取与 Review。");
   const saved = binding
-    ? `已保存 · ${formatDate(binding.created_at)} · ${binding.created_by}`
+    ? `${L("已保存 · ")}${formatDate(binding.created_at)} · ${binding.created_by}`
     : goalScope
-      ? "尚未单独设置，当前沿用项目默认"
-      : "尚未单独设置，当前使用系统默认";
-  const scopeState = binding ? (goalScope ? "已设置 Goal 规则" : "已设置项目基线") : (goalScope ? "完全继承" : "系统默认");
+      ? L("尚未单独设置，当前沿用项目默认")
+      : L("尚未单独设置，当前使用系统默认");
+  const scopeState = binding ? (goalScope ? L("已设置 Goal 规则") : L("已设置项目基线")) : (goalScope ? L("完全继承") : L("系统默认"));
   const context = goalScope
     ? binding
-      ? "下面是当前 Goal 保存的完整规则。项目默认仍是最低门槛，不能被这里削弱。"
-      : "字段先展示继承后的当前值；只有修改并保存，才会建立这条 Goal 的单独规则。"
+      ? L("下面是当前 Goal 保存的完整规则。项目默认仍是最低门槛，不能被这里削弱。")
+      : L("字段先展示继承后的当前值；只有修改并保存，才会建立这条 Goal 的单独规则。")
     : binding
-      ? "这组规则是所有 Goal 的共同最低门槛；当前 Goal 只能在它之上增加要求。"
-      : "当前仍使用系统默认。保存后，这组规则会成为整个项目的共同最低门槛。";
+      ? L("这组规则是所有 Goal 的共同最低门槛；当前 Goal 只能在它之上增加要求。")
+      : L("当前仍使用系统默认。保存后，这组规则会成为整个项目的共同最低门槛。");
   return `<details class="policy-source policy-source--${goalScope ? "goal" : "project"}"${goalScope ? " open" : ""}>
     <summary><span class="policy-source-title"><span class="policy-scope-index">${goalScope ? "02" : "01"}</span><span><small>${goalScope ? "GOAL OVERRIDE" : "PROJECT DEFAULT"}</small><strong>${scopeLabel}</strong><span>${escapeHtml(description)}</span></span></span><span class="policy-source-state"><strong>${escapeHtml(scopeState)}</strong><small>${escapeHtml(saved)}</small>${icon("chevron-down")}</span></summary>
     <form class="policy-form" data-policy-form data-live-form="policy-${escapeHtml(scope)}-${escapeHtml(item.goal.goal_id)}">
       <input type="hidden" name="scope" value="${scope}">
       ${goalScope ? `<input type="hidden" name="goal_id" value="${escapeHtml(item.goal.goal_id)}">` : ""}
       <p class="policy-scope-notice">${icon(goalScope ? "target" : "database")}<span>${escapeHtml(context)}</span></p>
-      <section class="policy-form-group"><header><span>${icon("workflow")}</span><div><h3>Runtime 领取</h3><p>决定 Runtime 以什么方式进入 Goal，以及一次认领能保持多久。</p></div></header>
-        <fieldset class="policy-control"><legend>Goal Mode</legend><p>这是 Runtime 领取前对工作模式的约束。</p>${renderGoalModeChoices(policy.goal_mode)}</fieldset>
-        <div class="policy-control policy-control--split"><label class="policy-input"><span><strong>Runtime 必需能力</strong><small>必须声明全部能力后才能领取；用逗号分隔。</small></span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="例如 browser, typescript"></label><label class="policy-input"><span><strong>最长领取时间</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>秒</span></span></label></div>
+      <section class="policy-form-group"><header><span>${icon("workflow")}</span><div><h3>${L("Runtime 领取")}</h3><p>${L("决定 Runtime 以什么方式进入 Goal，以及一次认领能保持多久。")}</p></div></header>
+        <fieldset class="policy-control"><legend>Goal Mode</legend><p>${L("这是 Runtime 领取前对工作模式的约束。")}</p>${renderGoalModeChoices(policy.goal_mode)}</fieldset>
+        <div class="policy-control policy-control--split"><label class="policy-input"><span><strong>${L("Runtime 必需能力")}</strong><small>${L("必须声明全部能力后才能领取；用逗号分隔。")}</small></span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="${L("例如 browser, typescript")}"></label><label class="policy-input"><span><strong>${L("最长领取时间")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>${L("秒")}</span></span></label></div>
       </section>
-      <section class="policy-form-group"><header><span>${icon("shield")}</span><div><h3>验证与 Review</h3><p>决定执行结果需要经过哪些独立检查，谁拥有最终确认权。</p></div></header>
+      <section class="policy-form-group"><header><span>${icon("shield")}</span><div><h3>${L("验证与 Review")}</h3><p>${L("决定执行结果需要经过哪些独立检查，谁拥有最终确认权。")}</p></div></header>
         <div class="policy-toggle-list">${renderPolicyToggle("self_verification", policy.self_verification, "执行者自我验证", "执行者提交结果前先验证自己的 Evidence")}${renderPolicyToggle("human_approval", policy.human_approval, "用户最终确认", "完成前必须由用户提交 Human Review")}</div>
         <div class="policy-review-counts">${renderPolicyCounter("cross_reviewers", policy.cross_reviewers, "交叉验证", "由独立 Reviewer 复核结果与证据")}${renderPolicyCounter("adversarial_reviewers", policy.adversarial_reviewers, "对抗性验证", "主动寻找反例、遗漏和错误假设")}</div>
       </section>
-      <section class="policy-form-group policy-form-group--reason"><header><span>${icon("history")}</span><div><h3>变更说明</h3><p>Policy 是可审计事实；说明为什么现在需要调整。</p></div></header><label class="policy-reason"><span>修改原因</span><textarea name="reason" rows="2" required placeholder="例如：这个 Goal 涉及用户数据，需要独立 Review 和最终确认"></textarea></label></section>
+      <section class="policy-form-group policy-form-group--reason"><header><span>${icon("history")}</span><div><h3>${L("变更说明")}</h3><p>${L("Policy 是可审计事实；说明为什么现在需要调整。")}</p></div></header><label class="policy-reason"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("例如：这个 Goal 涉及用户数据，需要独立 Review 和最终确认")}"></textarea></label></section>
       <p class="form-error" data-policy-error role="alert" hidden></p>
-      <footer><span>${goalScope ? "保存后会与项目默认合并，并立即成为这条 Goal 的领取门槛。" : "旧规则会标记为已替换，历史仍保留。"}</span><button class="button-primary" type="submit">保存${scopeLabel}</button></footer>
+      <footer><span>${goalScope ? L("保存后会与项目默认合并，并立即成为这条 Goal 的领取门槛。") : L("旧规则会标记为已替换，历史仍保留。")}</span><button class="button-primary" type="submit">${L("保存")}${scopeLabel}</button></footer>
     </form>
   </details>`;
 }
@@ -1052,8 +1063,8 @@ function renderPolicyEditor(item: WebGoalView): string {
   const policy = item.resolved_policy;
   const mode = GOAL_MODE_COPY[policy.goal_mode];
   return `<div class="policy-workbench">
-    <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><small>EFFECTIVE POLICY</small><h3>当前最终生效规则</h3><p>Runtime 实际领取和完成这条 Goal 时，必须满足下面这组门槛。</p></div><span class="policy-effective-state">已生效</span></header><dl><div><dt>Goal Mode</dt><dd><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.description)}</small></dd></div><div><dt>执行者自检</dt><dd><strong>${policy.self_verification ? "需要" : "不需要"}</strong><small>${policy.self_verification ? "提交前必须验证" : "不设自检门槛"}</small></dd></div><div><dt>独立 Review</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} 人</strong><small>交叉 ${policy.cross_reviewers} · 对抗 ${policy.adversarial_reviewers}</small></dd></div><div><dt>用户确认</dt><dd><strong>${policy.human_approval ? "需要" : "不需要"}</strong><small>${policy.human_approval ? "用户拥有最终确认权" : "无需 Human Review"}</small></dd></div><div><dt>最长领取</dt><dd><strong>${policy.max_lease_seconds} 秒</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>必需能力</dt><dd><strong>${escapeHtml(policy.required_capabilities.join("、") || "无")}</strong><small>${policy.required_capabilities.length ? "Runtime 必须全部声明" : "不限制能力标签"}</small></dd></div></dl></section>
-    <div class="policy-inheritance" aria-label="Policy 继承关系"><span><small>01 · 项目默认</small><strong>${projectBinding ? "项目基线已设置" : "使用系统默认"}</strong></span>${icon("arrow")}<span><small>02 · 当前 Goal</small><strong>${goalBinding ? "已增加单独规则" : "完全继承项目"}</strong></span>${icon("arrow")}<span><small>结果</small><strong>最终生效门槛</strong></span></div>
+    <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><h3>${L("当前最终生效规则")}</h3><p>${L("Runtime 实际领取和完成这条 Goal 时，必须满足下面这组门槛。")}</p></div></header><dl><div><dt>Goal Mode</dt><dd><strong>${escapeHtml(L(mode.label))}</strong><small>${escapeHtml(L(mode.description))}</small></dd></div><div><dt>${L("执行者自检")}</dt><dd><strong>${policy.self_verification ? L("需要") : L("不需要")}</strong><small>${policy.self_verification ? L("提交前必须验证") : L("不设自检门槛")}</small></dd></div><div><dt>${L("独立 Review")}</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} ${L("人")}</strong><small>${L("交叉")} ${policy.cross_reviewers} · ${L("对抗")} ${policy.adversarial_reviewers}</small></dd></div><div><dt>${L("用户确认")}</dt><dd><strong>${policy.human_approval ? L("需要") : L("不需要")}</strong><small>${policy.human_approval ? L("用户拥有最终确认权") : L("无需 Human Review")}</small></dd></div><div><dt>${L("最长领取")}</dt><dd><strong>${policy.max_lease_seconds} ${L("秒")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>${L("必需能力")}</dt><dd><strong>${escapeHtml(policy.required_capabilities.join(currentLocale() === "en" ? ", " : "、") || L("无"))}</strong><small>${policy.required_capabilities.length ? L("Runtime 必须全部声明") : L("不限制能力标签")}</small></dd></div></dl></section>
+    <div class="policy-inheritance" aria-label="${L("Policy 继承关系")}"><span><small>${L("01 · 项目默认")}</small><strong>${projectBinding ? L("项目基线已设置") : L("使用系统默认")}</strong></span>${icon("arrow")}<span><small>${L("02 · 当前 Goal")}</small><strong>${goalBinding ? L("已增加单独规则") : L("完全继承项目")}</strong></span>${icon("arrow")}<span><small>${L("结果")}</small><strong>${L("最终生效门槛")}</strong></span></div>
     ${renderPolicyForm(item, "project_default", projectPolicy, projectBinding)}
     ${renderPolicyForm(item, "goal", goalPolicy, goalBinding)}
   </div>`;
@@ -1074,13 +1085,13 @@ function renderHumanReview(item: WebGoalView): string {
         )
         .join("")
     : '<p class="empty-row">当前还没有已提交 Evidence；仍可在下方填写外部引用。</p>';
-  return `<div class="human-review-list"><header><strong>等待你的最终确认</strong><p>请根据 Contract 和 Evidence 给出结论。Human Review 只能由用户入口提交。</p></header>${pending
+  return `<div class="human-review-list"><header><strong>${L("等待你的最终确认")}</strong><p>${L("请根据 Contract 和 Evidence 给出结论。Human Review 只能由用户入口提交。")}</p></header>${pending
     .map(
       (obligation) => `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}">
         <label class="review-verdict"><span>Review 结论</span><select name="verdict"><option value="pass">通过</option><option value="needs_changes">需要修改</option><option value="fail">不通过</option><option value="inconclusive">证据不足</option></select></label>
         <fieldset><legend>引用已有 Evidence</legend><div class="evidence-choice-list">${evidenceChoices}</div></fieldset>
-        <label><span>补充 Evidence 引用 <small>可选，每行一条</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="https://… 或项目内文件引用"></textarea></label>
-        <label><span>判断理由</span><textarea name="reasoning" rows="3" required placeholder="说明为什么给出这个结论，以及哪些证据支撑判断"></textarea></label>
+        <label><span>补充 Evidence 引用 <small>可选，每行一条</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="${L("https://… 或项目内文件引用")}"></textarea></label>
+        <label><span>判断理由</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些证据支撑判断")}"></textarea></label>
         <p class="form-error" data-review-error role="alert" hidden></p>
         <footer><small>${escapeHtml(obligation.independence_rule)} · ${escapeHtml(obligation.obligation_id)}</small><button class="button-primary" type="submit">提交用户 Review</button></footer>
       </form>`,
@@ -1100,9 +1111,9 @@ function renderHistory(item: WebGoalView): string {
 }
 
 function renderEventPayload(payload: unknown): string {
-  if (payload == null) return "无结构化详情";
+  if (payload == null) return L("无结构化详情");
   try {
-    return JSON.stringify(payload, null, 2) ?? "无结构化详情";
+    return JSON.stringify(payload, null, 2) ?? L("无结构化详情");
   } catch {
     return String(payload);
   }
@@ -1110,33 +1121,33 @@ function renderEventPayload(payload: unknown): string {
 
 function renderFullRecords(item: WebGoalView): string {
   const events = item.events.slice().sort((left, right) => right.seq - left.seq);
-  return `<details class="full-records"><summary>查看完整事实记录与事件账本 <span>${events.length} 条事件</span></summary><div class="record-grid">
-    <section><h3>Claim 历史</h3>${
+  return `<details class="full-records"><summary>${L("查看完整事实记录与事件账本 ")}<span>${L("{count} 条事件", { count: events.length })}</span></summary><div class="record-grid">
+    <section><h3>${L("Claim 历史")}</h3>${
       item.claims.length
         ? item.claims.map((claim) => `<p><strong>${escapeHtml(claim.actor_id)}</strong><small>${escapeHtml(claim.claim_id)} · ${escapeHtml(claim.role)} · ${escapeHtml(claim.state)} · ${formatDate(claim.claimed_at)}${claim.release_reason ? ` · ${escapeHtml(claim.release_reason)}` : ""}</small></p>`).join("")
-        : '<p class="empty-row">暂无 Claim</p>'
+        : `<p class="empty-row">${L("暂无 Claim")}</p>`
     }</section>
-    <section><h3>Run 历史</h3>${
+    <section><h3>${L("Run 历史")}</h3>${
       item.runs.length
         ? item.runs.map((run) => `<p><strong>${escapeHtml(run.run_id)}</strong><small>${escapeHtml(run.state)} · ${escapeHtml(run.actor_id)} · ${formatDate(run.started_at)}${run.block_reason ? ` · ${escapeHtml(run.block_reason)}` : ""}</small></p>`).join("")
-        : '<p class="empty-row">暂无 Run</p>'
+        : `<p class="empty-row">${L("暂无 Run")}</p>`
     }</section>
-    <section><h3>Evidence 记录</h3>${
+    <section><h3>${L("Evidence 记录")}</h3>${
       item.evidence.length
-        ? item.evidence.map((evidence) => `<p><strong>${escapeHtml(evidence.evidence_id)}</strong><small>${escapeHtml(EVIDENCE_KIND_LABELS[evidence.kind])} · ${escapeHtml(EVIDENCE_RESULT_LABELS[evidence.result])} · ${escapeHtml(evidence.criterion_ids.join("、"))} · ${escapeHtml(evidence.producer_actor_id)}</small></p>`).join("")
-        : '<p class="empty-row">暂无 Evidence</p>'
+        ? item.evidence.map((evidence) => `<p><strong>${escapeHtml(evidence.evidence_id)}</strong><small>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、"))} · ${escapeHtml(evidence.producer_actor_id)}</small></p>`).join("")
+        : `<p class="empty-row">${L("暂无 Evidence")}</p>`
     }</section>
-    <section><h3>Review 记录</h3>${
+    <section><h3>${L("Review 记录")}</h3>${
       item.reviews.length
-        ? item.reviews.map((review) => `<p><strong>${escapeHtml(review.verdict)}</strong><small>${escapeHtml(review.review_id)} · ${escapeHtml(review.actor_id)} · ${escapeHtml(review.reasoning)}${review.evidence_refs.length ? ` · ${escapeHtml(review.evidence_refs.join("、"))}` : ""}</small></p>`).join("")
-        : '<p class="empty-row">暂无 Review</p>'
+        ? item.reviews.map((review) => `<p><strong>${escapeHtml(review.verdict)}</strong><small>${escapeHtml(review.review_id)} · ${escapeHtml(review.actor_id)} · ${escapeHtml(review.reasoning)}${review.evidence_refs.length ? ` · ${escapeHtml(review.evidence_refs.join(currentLocale() === "en" ? ", " : "、"))}` : ""}</small></p>`).join("")
+        : `<p class="empty-row">${L("暂无 Review")}</p>`
     }</section>
-    <section><h3>策略绑定</h3>${
+    <section><h3>${L("策略绑定")}</h3>${
       item.policy_bindings.length
         ? item.policy_bindings.map((binding) => `<p><strong>${escapeHtml(binding.scope)}</strong><small>${escapeHtml(binding.state)} · ${escapeHtml(binding.reason)} · ${escapeHtml(JSON.stringify(binding.policy))}</small></p>`).join("")
-        : '<p class="empty-row">使用默认策略</p>'
+        : `<p class="empty-row">${L("使用默认策略")}</p>`
     }</section>
-  </div><section class="event-ledger"><header><h3>完整事件账本</h3><p>按时间倒序保留 Claim、Run、Evidence、Review、Policy、Risk、Relation、Candidate、Rewire、Contract/Goal Tree Proposal 和澄清相关事件。</p></header>${events.length ? `<ol>${events.map((event) => `<li><details><summary><time>${formatDate(event.at)}</time><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.actor_id)} · ${escapeHtml(event.object_type)} · ${escapeHtml(event.object_id)} · #${event.seq}</small></span></summary><dl><div><dt>事件 ID</dt><dd>${escapeHtml(event.event_id)}</dd></div><div><dt>理由</dt><dd>${escapeHtml(event.reason || "未记录")}</dd></div></dl><pre>${escapeHtml(renderEventPayload(event.payload))}</pre></details></li>`).join("")}</ol>` : '<p class="empty-row">暂无与这条 Goal 关联的事件</p>'}</section></details>`;
+  </div><section class="event-ledger"><header><h3>${L("完整事件账本")}</h3><p>${L("按时间倒序保留 Claim、Run、Evidence、Review、Policy、Risk、Relation、Candidate、Rewire、Contract/Goal Tree Proposal 和澄清相关事件。")}</p></header>${events.length ? `<ol>${events.map((event) => `<li><details><summary><time>${formatDate(event.at)}</time><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.actor_id)} · ${escapeHtml(event.object_type)} · ${escapeHtml(event.object_id)} · #${event.seq}</small></span></summary><dl><div><dt>${L("事件 ID")}</dt><dd>${escapeHtml(event.event_id)}</dd></div><div><dt>${L("理由")}</dt><dd>${escapeHtml(event.reason || L("未记录"))}</dd></div></dl><pre>${escapeHtml(renderEventPayload(event.payload))}</pre></details></li>`).join("")}</ol>` : `<p class="empty-row">${L("暂无与这条 Goal 关联的事件")}</p>`}</section></details>`;
 }
 
 const DEPENDENCY_BASIS_LABELS: Record<string, string> = {
@@ -1192,9 +1203,9 @@ function renderDependencyProposalList(
           ? "已拒绝"
           : "已确认";
     return `<article class="dependency-proposal">
-      <header><span class="dependency-action dependency-action--${escapeHtml(proposal.action ?? "add")}">${proposal.action === "deactivate" ? "解除依赖" : "新增依赖"}</span><span class="dependency-state dependency-state--${escapeHtml(rewire.state)}">${escapeHtml(stateLabel)}</span></header>
+      <header><span class="dependency-action dependency-action--${escapeHtml(proposal.action ?? "add")}">${proposal.action === "deactivate" ? L("解除依赖") : L("新增依赖")}</span><span class="dependency-state dependency-state--${escapeHtml(rewire.state)}">${escapeHtml(stateLabel)}</span></header>
       <div class="dependency-direction">${renderProposalGoal(fromGoalId, view)}<span>${icon("chevron-right")}<small>依赖</small></span>${renderProposalGoal(toGoalId, view)}</div>
-      <dl class="dependency-rationale"><div><dt>为什么需要</dt><dd>${escapeHtml(proposal.reason ?? "未说明")}</dd></div><div><dt>为什么是这个方向</dt><dd>${escapeHtml(proposal.direction_reason ?? "未说明")}</dd></div><div><dt>如果拒绝</dt><dd>${escapeHtml(proposal.impact_if_rejected ?? "未说明")}</dd></div><div><dt>判断依据</dt><dd>${escapeHtml(DEPENDENCY_BASIS_LABELS[proposal.basis ?? ""] ?? proposal.basis ?? "未记录")} · 可信度 ${escapeHtml(confidence)}</dd></div></dl>
+      <dl class="dependency-rationale"><div><dt>为什么需要</dt><dd>${escapeHtml(proposal.reason ?? L("未说明"))}</dd></div><div><dt>为什么是这个方向</dt><dd>${escapeHtml(proposal.direction_reason ?? L("未说明"))}</dd></div><div><dt>如果拒绝</dt><dd>${escapeHtml(proposal.impact_if_rejected ?? L("未说明"))}</dd></div><div><dt>判断依据</dt><dd>${escapeHtml(DEPENDENCY_BASIS_LABELS[proposal.basis ?? ""] ?? proposal.basis ?? L("未记录"))} · 可信度 ${escapeHtml(confidence)}</dd></div></dl>
       <div class="dependency-evidence"><strong>证据</strong>${evidenceRefs.length ? evidenceRefs.map((ref) => renderReference(ref)).join("") : '<span class="empty-row">未提供证据</span>'}</div>
     </article>`;
   }).join("")}</div>`;
@@ -1213,11 +1224,11 @@ function renderRewireSummary(
     : 0;
   const changeSummary =
     relations.length + impacts.length + risks.length === 0
-      ? "这次提案不新增关系、影响面或风险，只决定新 Goal 是否独立进入后续流程。"
+      ? L("这次提案不新增关系、影响面或风险，只决定新 Goal 是否独立进入后续流程。")
       : `这次提案包含 ${relations.length} 条 Goal 关系、${impacts.length} 个影响面和 ${risks.length} 项风险。`;
   const runSummary = activeRuns
     ? `${activeRuns} 个正在执行的 Run 会保持原目标，不会被改绑。`
-    : "当前没有需要保护的运行中 Run。";
+    : L("当前没有需要保护的运行中 Run。");
   return `<p>${changeSummary} ${runSummary}</p>`;
 }
 
@@ -1232,7 +1243,7 @@ function renderResolvedDependencyHistory(item: WebGoalView, view: GoalBoardWebVi
       }),
   );
   if (!rewires.length) return "";
-  return `<div class="dependency-history"><h3>依赖提案记录 <span>${rewires.length}</span></h3><p>保留 Runtime 的依据和用户决定，后续事实变化时可以重新检查。</p>${rewires.map((rewire) => renderDependencyProposalList(rewire, view)).join("")}</div>`;
+  return `<div class="dependency-history"><h3>${L("依赖提案记录 ")}<span>${rewires.length}</span></h3><p>${L("保留 Runtime 的依据和用户决定，后续事实变化时可以重新检查。")}</p>${rewires.map((rewire) => renderDependencyProposalList(rewire, view)).join("")}</div>`;
 }
 
 function renderRewireDecision(
@@ -1241,14 +1252,14 @@ function renderRewireDecision(
 ): string {
   const hasDependencies = dependencyRelations(rewire).length > 0;
   const note = rewire.candidate_id
-    ? "拒绝关系调整不会删除已经纳入的 Goal。"
-    : "拒绝后现有依赖保持不变；确认后才会新增或解除依赖。";
+    ? L("拒绝关系调整不会删除已经纳入的 Goal。")
+    : L("拒绝后现有依赖保持不变；确认后才会新增或解除依赖。");
   return `<form class="decision-record rewire-decision" data-rewire-decision-form data-live-form="rewire-${escapeHtml(rewire.rewire_id)}" data-rewire-id="${escapeHtml(rewire.rewire_id)}">
     <header class="decision-record-heading"><span class="decision-kind decision-kind--rewire">${icon("tree")} Rewire</span><small>${escapeHtml(rewire.rewire_id)}</small></header>
     <div class="decision-record-body"><strong>${hasDependencies ? "依赖调整提案" : "关系调整提案"}</strong>${renderRewireSummary(rewire, view)}<small>${note}</small></div>
-    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="2" required placeholder="说明为什么确认或拒绝这次关系变化"></textarea></label>
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么确认或拒绝这次关系变化")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">拒绝关系调整</button><button class="button-primary" type="submit" name="decision" value="confirmed">${hasDependencies ? "确认依赖调整" : "确认调整"}</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("拒绝关系调整")}</button><button class="button-primary" type="submit" name="decision" value="confirmed">${hasDependencies ? "确认依赖调整" : "确认调整"}</button></footer>
   </form>`;
 }
 
@@ -1269,7 +1280,7 @@ function proposalSource(
 function renderProposalSource(source: ContractFieldSource | undefined): string {
   if (!source) return '<span class="proposal-source">来源待补</span>';
   const confidence = Math.round(source.confidence * 100);
-  return `<div class="proposal-source"><span>${escapeHtml(CONTRACT_SOURCE_LABELS[source.source_kind])} · 可信度 ${confidence}% · 待你确认</span><small>${escapeHtml(source.rationale)}</small>${
+  return `<div class="proposal-source"><span>${escapeHtml(L(CONTRACT_SOURCE_LABELS[source.source_kind]))} · 可信度 ${confidence}% · 待你确认</span><small>${escapeHtml(source.rationale)}</small>${
     source.source_refs.length
       ? `<div class="proposal-refs">${source.source_refs.map((ref) => renderReference(ref)).join("")}</div>`
       : ""
@@ -1277,9 +1288,9 @@ function renderProposalSource(source: ContractFieldSource | undefined): string {
 }
 
 function contractValue(value: string | number | string[]): string {
-  if (Array.isArray(value)) return value.length ? value.join("；") : "未填写";
+  if (Array.isArray(value)) return value.length ? value.join("；") : L("未填写");
   if (typeof value === "number") return String(value);
-  return value.trim() || "未填写";
+  return value.trim() || L("未填写");
 }
 
 function renderContractDiffRow(
@@ -1289,7 +1300,7 @@ function renderContractDiffRow(
   current: string | number | string[],
   proposed: string | number | string[],
 ): string {
-  return `<div class="contract-diff-row"><h4>${escapeHtml(label)}</h4><div class="contract-diff-copy"><small>当前</small><p>${escapeHtml(contractValue(current))}</p><small>提案</small><p>${escapeHtml(contractValue(proposed))}</p></div>${renderProposalSource(proposalSource(proposal, field))}</div>`;
+  return `<div class="contract-diff-row"><h4>${escapeHtml(label)}</h4><div class="contract-diff-copy"><small>${L("当前")}</small><p>${escapeHtml(contractValue(current))}</p><small>${L("提案")}</small><p>${escapeHtml(contractValue(proposed))}</p></div>${renderProposalSource(proposalSource(proposal, field))}</div>`;
 }
 
 function renderContractProposal(
@@ -1303,10 +1314,10 @@ function renderContractProposal(
   const policy = proposal.review_policy;
   const policyText = [
     `Goal Mode ${policy.goal_mode}`,
-    policy.self_verification ? "需要自检" : "不要求自检",
+    policy.self_verification ? L("需要自检") : L("不要求自检"),
     `交叉验证 ${policy.cross_reviewers} 人`,
     `对抗验证 ${policy.adversarial_reviewers} 人`,
-    policy.human_approval ? "需要用户复核" : "不要求用户复核",
+    policy.human_approval ? L("需要用户复核") : L("不要求用户复核"),
   ];
   const linkedRewires = proposal.dependency_rewire_ids
     .map((rewireId) => view.snapshot.rewires.find((rewire) => rewire.rewire_id === rewireId))
@@ -1314,7 +1325,7 @@ function renderContractProposal(
   const pendingLinkedRewires = linkedRewires.filter((rewire) => rewire.state === "pending");
   const approvalBlocked = pendingLinkedRewires.length > 0;
   return `<form class="decision-record contract-proposal" data-contract-decision-form data-live-form="contract-${escapeHtml(proposal.proposal_id)}" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}">
-    <header><div><strong>Contract 补全提案</strong><p>确认后会更新同一个 Goal，不会创建新 Goal；确认前当前正文保持不变。</p></div><span>由 ${escapeHtml(proposal.submitted_by)} 提交</span></header>
+    <header><div><strong>${L("Contract 补全提案")}</strong><p>${L("确认后会更新同一个 Goal，不会创建新 Goal；确认前当前正文保持不变。")}</p></div><span>由 ${escapeHtml(proposal.submitted_by)} 提交</span></header>
     <div class="contract-diff-list">
       ${renderContractDiffRow(proposal, "title", "目标名称", current.title, proposed.title)}
       ${renderContractDiffRow(proposal, "outcome", "要得到的结果", current.outcome, proposed.outcome)}
@@ -1328,10 +1339,10 @@ function renderContractProposal(
     </div>
     ${proposal.proposed_impacts.length ? `<div class="proposal-appendix"><strong>确认后登记的影响面</strong>${renderList(proposal.proposed_impacts.map((impact) => `${impact.surface} · ${impact.access} · ${impact.reason}`), "")}</div>` : ""}
     ${proposal.proposed_risks.length ? `<div class="proposal-appendix"><strong>确认后登记的风险</strong>${renderList(proposal.proposed_risks.map((risk) => `${risk.description}；影响：${risk.impact}；复查：${risk.revisit_condition}`), "")}</div>` : ""}
-    ${linkedRewires.length ? `<div class="proposal-appendix proposal-prerequisite"><strong>依赖前置决定</strong><div>${renderList(linkedRewires.map((rewire) => `${rewire.state === "pending" ? "等待决定" : rewire.state === "applied" ? "已确认" : "已拒绝"} · ${rewire.rewire_id}`), "")}<p>${approvalBlocked ? "请先处理上方依赖调整；完成后才可确认 Contract。" : "依赖决定已经完成，可以确认 Contract。"}</p></div></div>` : ""}
-    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="2" required placeholder="确认时说明判断依据；退回时写清需要修改的内容"></textarea></label>
+    ${linkedRewires.length ? `<div class="proposal-appendix proposal-prerequisite"><strong>依赖前置决定</strong><div>${renderList(linkedRewires.map((rewire) => `${rewire.state === "pending" ? "等待决定" : rewire.state === "applied" ? "已确认" : "已拒绝"} · ${rewire.rewire_id}`), "")}<p>${approvalBlocked ? L("请先处理上方依赖调整；完成后才可确认 Contract。") : L("依赖决定已经完成，可以确认 Contract。")}</p></div></div>` : ""}
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="2" required placeholder="${L("确认时说明判断依据；退回时写清需要修改的内容")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">退回补全</button><button class="button-primary" type="submit" name="decision" value="approved"${approvalBlocked ? ' disabled aria-disabled="true" title="先处理上方依赖调整"' : ""}>${approvalBlocked ? "先处理依赖调整" : "确认并设为可执行"}</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("退回补全")}</button><button class="button-primary" type="submit" name="decision" value="approved"${approvalBlocked ? ' disabled aria-disabled="true" title="先处理上方依赖调整"' : ""}>${approvalBlocked ? "先处理依赖调整" : "确认并设为可执行"}</button></footer>
   </form>`;
 }
 
@@ -1439,7 +1450,7 @@ function renderDecisionGoalLink(item: WebGoalView | null): string {
 }
 
 function renderCandidateList(values: string[] | undefined, empty: string): string {
-  return values?.length ? renderList(values, "") : `<p class="empty-row">${escapeHtml(empty)}</p>`;
+  return values?.length ? renderList(values, "") : `<p class="empty-row">${escapeHtml(L(empty))}</p>`;
 }
 
 function projectDefaultPolicy(view: GoalBoardWebView): GoalPolicy {
@@ -1463,24 +1474,24 @@ function renderCandidateDecision(candidate: CandidateGoalRecord, view: GoalBoard
   const acceptance = proposed.acceptance_criteria ?? [];
   const separation = owner
     ? `来源 Goal 的当前范围是「${owner.goal.in_scope.join("；") || owner.goal.outcome || "未记录"}」；Candidate 要独立交付「${proposed.promised_outputs?.join("；") || proposed.outcome}」。请判断它是否确实应越出原 Contract。`
-    : "该 Candidate 没有关联来源 Run；请根据它自己的 Contract 判断是否应该独立进入 Goal Tree。";
+    : L("该 Candidate 没有关联来源 Run；请根据它自己的 Contract 判断是否应该独立进入 Goal Tree。");
   return `<form class="decision-record candidate-decision" data-candidate-decision-form data-live-form="candidate-${escapeHtml(candidate.candidate_id)}" data-candidate-id="${escapeHtml(candidate.candidate_id)}">
     <header class="decision-record-heading"><span class="decision-kind decision-kind--candidate">${icon("plus")} Candidate</span><small>${escapeHtml(candidate.candidate_id)} · ${escapeHtml(candidate.submitted_by)}</small></header>
-    <div class="candidate-title"><div><small>候选 Goal</small><h3>${escapeHtml(proposed.title)}</h3><p>${escapeHtml(proposed.outcome)}</p></div><span>${escapeHtml(candidate.blocking_mode === "none" ? "不阻塞当前 Run" : candidate.blocking_mode === "current_run" ? "阻塞当前 Run" : "影响下游领取")}</span></div>
+    <div class="candidate-title"><div><small>${L("候选 Goal")}</small><h3>${escapeHtml(proposed.title)}</h3><p>${escapeHtml(proposed.outcome)}</p></div><span>${escapeHtml(candidate.blocking_mode === "none" ? "不阻塞当前 Run" : candidate.blocking_mode === "current_run" ? "阻塞当前 Run" : "影响下游领取")}</span></div>
     <dl class="candidate-contract">
-      <div><dt>为什么做</dt><dd>${escapeHtml(proposed.why)}</dd></div>
-      <div><dt>业务逻辑</dt><dd>${escapeHtml(proposed.business_logic)}</dd></div>
-      <div class="candidate-wide"><dt>为什么不能留在当前 Goal</dt><dd>${escapeHtml(separation)}</dd></div>
-      <div><dt>包含范围</dt><dd>${renderCandidateList(proposed.in_scope, "未记录")}</dd></div>
-      <div><dt>明确不做</dt><dd>${renderCandidateList(proposed.out_of_scope, "未记录")}</dd></div>
-      <div class="candidate-wide"><dt>验收条件</dt><dd>${acceptance.length ? `<ol class="candidate-acceptance">${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol>` : '<p class="empty-row">未记录验收条件</p>'}</dd></div>
-      <div><dt>影响面</dt><dd>${candidate.proposed_impacts.length ? renderList(candidate.proposed_impacts.map((impact) => recordSummary(impact, "impact")), "") : '<p class="empty-row">未提议影响面</p>'}</dd></div>
-      <div><dt>风险</dt><dd>${candidate.proposed_risks.length ? renderList(candidate.proposed_risks.map((risk) => recordSummary(risk, "risk")), "") : '<p class="empty-row">未提议风险</p>'}</dd></div>
+      <div><dt>${L("为什么做")}</dt><dd>${escapeHtml(proposed.why)}</dd></div>
+      <div><dt>${L("业务逻辑")}</dt><dd>${escapeHtml(proposed.business_logic)}</dd></div>
+      <div class="candidate-wide"><dt>${L("为什么不能留在当前 Goal")}</dt><dd>${escapeHtml(separation)}</dd></div>
+      <div><dt>${L("包含范围")}</dt><dd>${renderCandidateList(proposed.in_scope, "未记录")}</dd></div>
+      <div><dt>${L("明确不做")}</dt><dd>${renderCandidateList(proposed.out_of_scope, "未记录")}</dd></div>
+      <div class="candidate-wide"><dt>${L("验收条件")}</dt><dd>${acceptance.length ? `<ol class="candidate-acceptance">${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol>` : `<p class="empty-row">${L("未记录验收条件")}</p>`}</dd></div>
+      <div><dt>${L("影响面")}</dt><dd>${candidate.proposed_impacts.length ? renderList(candidate.proposed_impacts.map((impact) => recordSummary(impact, "impact")), "") : '<p class="empty-row">未提议影响面</p>'}</dd></div>
+      <div><dt>${L("风险")}</dt><dd>${candidate.proposed_risks.length ? renderList(candidate.proposed_risks.map((risk) => recordSummary(risk, "risk")), "") : '<p class="empty-row">未提议风险</p>'}</dd></div>
       <div class="candidate-wide"><dt>Review Policy</dt><dd>采用当前项目基线：Goal Mode ${escapeHtml(policy.goal_mode)}；自检 ${policy.self_verification ? "需要" : "不需要"}；交叉 / 对抗 ${policy.cross_reviewers} / ${policy.adversarial_reviewers} 人；用户确认 ${policy.human_approval ? "需要" : "不需要"}。</dd></div>
     </dl>
-    <label class="decision-reason"><span>决定理由或修改意见</span><textarea name="reason" rows="3" required placeholder="说明为什么纳入；或写清退回后需要怎样调整"></textarea></label>
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="3" required placeholder="${L("说明为什么纳入；或写清退回后需要怎样调整")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">退回并说明修改</button><button class="button-primary" type="submit" name="decision" value="approved">纳入 Goal Tree</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("退回并说明修改")}</button><button class="button-primary" type="submit" name="decision" value="approved">${L("纳入 Goal Tree")}</button></footer>
   </form>`;
 }
 
@@ -1490,8 +1501,8 @@ function renderRiskDecision(risk: RiskRecord, item: WebGoalView | null, view: Go
   return `<article class="decision-record risk-decision">
     <header class="decision-record-heading"><span class="decision-kind decision-kind--risk">${icon("risk")} Risk</span><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(risk.state)}</span></header>
     <div class="decision-record-body"><strong>${escapeHtml(risk.description)}</strong><p>概率 ${escapeHtml(risk.probability)} · 影响 ${escapeHtml(risk.impact)} · ${escapeHtml(risk.blocking_mode)}</p><small>触发：${escapeHtml(risk.trigger)}；复查：${escapeHtml(risk.revisit_condition)}；负责人：${escapeHtml(risk.owner)}</small></div>
-    <div class="risk-goal-links"><span>关联 Goal</span><div>${affectedGoals.length ? affectedGoals.map((goalView) => renderDecisionGoalLink(goalView)).join("") : "未关联 Goal"}</div></div>
-    <footer class="decision-link-row"><span>完整处理方式和生命周期在所属 Goal 中维护。</span>${item ? `<a href="${href}">打开 Risk</a>` : ""}</footer>
+    <div class="risk-goal-links"><span>${L("关联 Goal")}</span><div>${affectedGoals.length ? affectedGoals.map((goalView) => renderDecisionGoalLink(goalView)).join("") : "未关联 Goal"}</div></div>
+    <footer class="decision-link-row"><span>${L("完整处理方式和生命周期在所属 Goal 中维护。")}</span>${item ? `<a href="${href}">打开 Risk</a>` : ""}</footer>
   </article>`;
 }
 
@@ -1506,12 +1517,12 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
     risks: view.snapshot.risks.filter(riskNeedsDecision).length,
   };
   return `<article class="decision-center" data-decision-center>
-    <header class="decision-center-header"><div><small>USER AUTHORITY</small><h1>等待你的决定</h1><p>Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。</p></div><strong>${count}<small>项待处理</small></strong></header>
-    <div class="decision-summary" aria-label="待决定事项统计"><span>Contract <strong>${typeCounts.proposals}</strong></span><span>Candidate <strong>${typeCounts.candidates}</strong></span><span>Rewire <strong>${typeCounts.rewires}</strong></span><span>Human Review <strong>${typeCounts.reviews}</strong></span><span>Risk <strong>${typeCounts.risks}</strong></span></div>
+    <header class="decision-center-header"><div><small>USER AUTHORITY</small><h1>${L("等待你的决定")}</h1><p>${L("Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
+    <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>Contract <strong>${typeCounts.proposals}</strong></span><span>Candidate <strong>${typeCounts.candidates}</strong></span><span>Rewire <strong>${typeCounts.rewires}</strong></span><span>Human Review <strong>${typeCounts.reviews}</strong></span><span>Risk <strong>${typeCounts.risks}</strong></span></div>
     ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
       const goalId = group.item?.goal.goal_id ?? "board";
       return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
-        <header class="decision-owner"><div><span>所属 Goal</span>${renderDecisionGoalLink(group.item)}</div><small>${group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} 项</small></header>
+        <header class="decision-owner"><div><span>${L("所属 Goal")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} 项</small></header>
         <div class="decision-stack">
           ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
           ${group.item ? group.contractProposals.map((proposal) => renderContractProposal(proposal, group.item!.goal, view)).join("") : ""}
@@ -1520,30 +1531,121 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
           ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
         </div>
       </section>`;
-    }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>当前没有等待你的决定</h2><p>Runtime 提交新的 Contract Proposal、Candidate 或 Rewire 后，会自动出现在这里。</p></div>`}
+    }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("Runtime 提交新的 Contract Proposal、Candidate 或 Rewire 后，会自动出现在这里。")}</p></div>`}
   </article>`;
 }
 
-function renderGoalDecisionNotice(view: GoalBoardWebView, goalId: string): string {
+function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
   const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
-  if (!group) return "";
-  const count = group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
-  return `<aside class="goal-decision-notice"><div><span>${icon("user")}</span><p><strong>${count} 项等待你的决定</strong><small>属于这个 Goal 的提案、Review 或 Risk 已集中到决定中心。</small></p></div><a href="/decisions#decision-goal-${escapeHtml(goalId)}">前往处理</a></aside>`;
+  if (!group) return 0;
+  return group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
+}
+
+function situationNextStep(item: WebGoalView): { label: string; href: string | null; tone?: "blocked" | "ready" } {
+  const acceptance = `#acceptance-${item.goal.goal_id}`;
+  const execution = `#execution-${item.goal.goal_id}`;
+  const relations = `#relations-${item.goal.goal_id}`;
+  switch (item.status) {
+    case "clarification_pending":
+    case "clarifying":
+      return { label: L("补全 Draft"), href: acceptance };
+    case "clarification_blocked":
+    case "execution_blocked":
+    case "review_blocked":
+    case "revalidation_blocked":
+      return { label: L("先处理阻塞"), href: execution, tone: "blocked" };
+    case "waiting_children":
+      return { label: L("先完成子 Goal"), href: relations };
+    case "execution_pending":
+      return { label: L("可以领取执行"), href: execution };
+    case "executing":
+      return { label: L("Runtime 正在执行"), href: execution };
+    case "review_pending":
+    case "reviewing":
+      return { label: L("等待复核"), href: execution };
+    case "revalidation_pending":
+    case "revalidating":
+      return { label: L("需要重新验证"), href: execution };
+    case "invalidated":
+      return { label: L("已失效，先看原因"), href: execution, tone: "blocked" };
+    case "satisfied":
+      return { label: L("已完成，可以归档"), href: null, tone: "ready" };
+    case "archived":
+      return { label: L("已归档"), href: null };
+    case "trashed":
+      return { label: L("已在回收站"), href: null };
+  }
+}
+
+function renderSituationCell(options: {
+  label: string;
+  value: string;
+  href?: string | null;
+  extra?: string;
+  tone?: "blocked" | "ready" | "muted";
+}): string {
+  const classes = ["goal-situation-cell"];
+  if (!options.href) classes.push("goal-situation-cell--static");
+  if (options.tone) classes.push(`goal-situation-cell--${options.tone}`);
+  const body = `<span>${escapeHtml(options.label)}</span><strong>${escapeHtml(options.value)}</strong>${
+    options.extra ? `<small>${escapeHtml(options.extra)}</small>` : ""
+  }`;
+  return options.href
+    ? `<a class="${classes.join(" ")}" href="${escapeHtml(options.href)}">${body}</a>`
+    : `<div class="${classes.join(" ")}">${body}</div>`;
+}
+
+function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): string {
+  const goalId = item.goal.goal_id;
+  const next = situationNextStep(item);
+  const blockers = item.reasons.filter((reason) => reason.severity === "blocker");
+  const blocked = blockers[0];
+  const total = item.goal.acceptance_criteria.length;
+  const passed = item.passed_criteria.length;
+  const remaining = total - passed;
+  const decisions = countGoalDecisions(view, goalId);
+  const completion = !total
+    ? { value: L("还没有验收条件"), tone: "muted" as const }
+    : remaining === 0
+      ? { value: L("已满足 {passed}/{total}", { passed, total }), tone: "ready" as const }
+      : { value: L("还缺 {remaining} 条 · {passed}/{total}", { remaining, passed, total }), tone: undefined };
+  return `<nav class="goal-situation" aria-label="${L("这条 Goal 现在怎样")}">
+    ${renderSituationCell({ label: L("下一步"), value: next.label, href: next.href, tone: next.tone })}
+    ${renderSituationCell({
+      label: L("卡住"),
+      value: blocked ? blocked.message : L("当前没有阻塞"),
+      href: `#execution-${goalId}`,
+      tone: blocked ? "blocked" : "ready",
+    })}
+    ${renderSituationCell({
+      label: L("完成"),
+      value: completion.value,
+      href: `#acceptance-${goalId}`,
+      tone: completion.tone,
+    })}
+    ${renderSituationCell({
+      label: L("待决定"),
+      value: decisions ? L("{count} 项等待你的决定", { count: decisions }) : L("没有待你决定的事项"),
+      href: decisions ? `/decisions#decision-goal-${goalId}` : null,
+      extra: decisions ? L("前往处理") : undefined,
+      tone: decisions ? undefined : "muted",
+    })}
+  </nav>`;
 }
 
 function renderDraftGaps(goal: GoalRecord): string {
   if (goal.definition_state !== "draft") return "";
   const gaps = [
-    !goal.outcome.trim() ? "要得到的结果" : "",
-    !goal.why.trim() ? "为什么做" : "",
-    !goal.business_logic.trim() ? "业务逻辑" : "",
-    !goal.in_scope.length ? "包含范围" : "",
-    !goal.out_of_scope.length ? "明确不做" : "",
-    !goal.promised_outputs.length ? "承诺输出" : "",
-    !goal.acceptance_criteria.length ? "验收条件" : "",
+    !goal.outcome.trim() ? L("要得到的结果") : "",
+    !goal.why.trim() ? L("为什么做") : "",
+    !goal.business_logic.trim() ? L("业务逻辑") : "",
+    !goal.in_scope.length ? L("包含范围") : "",
+    !goal.out_of_scope.length ? L("明确不做") : "",
+    !goal.promised_outputs.length ? L("承诺输出") : "",
+    !goal.acceptance_criteria.length ? L("验收条件") : "",
   ].filter(Boolean);
   if (!gaps.length) return "";
-  return `<div class="draft-gaps"><div><strong>这还是一条待澄清的 Draft</strong><p>还需要补全：${escapeHtml(gaps.join("、"))}。澄清者可以提交提案，但只有你确认后它才会成为可执行 Goal。</p></div><a href="#acceptance-${escapeHtml(goal.goal_id)}">查看验收</a></div>`;
+  return `<div class="draft-gaps"><div><strong>${L("这还是一条待澄清的 Draft")}</strong><p>${L("还需要补全：{gaps}。澄清者可以提交提案，但只有你确认后它才会成为可执行 Goal。", { gaps: gaps.join(currentLocale() === "en" ? ", " : "、") })}</p></div><a href="#acceptance-${escapeHtml(goal.goal_id)}">${L("查看验收")}</a></div>`;
 }
 
 const DECOMPOSITION_OPTIONS = [
@@ -1555,10 +1657,10 @@ const DECOMPOSITION_OPTIONS = [
 
 function renderDecisionMethodOptions(selected: AcceptanceCriterion["decision_method"]): string {
   return ([
-    ["automated_check", "自动检查"],
-    ["measurement", "量化测量"],
-    ["inspection", "人工检查"],
-    ["human_decision", "用户判断"],
+    ["automated_check", L("自动检查")],
+    ["measurement", L("量化测量")],
+    ["inspection", L("人工检查")],
+    ["human_decision", L("用户判断")],
   ] as const)
     .map(([value, label]) => `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`)
     .join("");
@@ -1575,14 +1677,14 @@ function renderDraftCriterionRow(
   index: number,
 ): string {
   return `<article class="criterion-editor-row" data-criterion-row>
-    <header><strong data-criterion-number>验收条件 ${index}</strong><button type="button" data-remove-criterion aria-label="移除这条验收条件">${icon("x")}<span>移除</span></button></header>
+    <header><strong data-criterion-number>验收条件 ${index}</strong><button type="button" data-remove-criterion aria-label="${L("移除这条验收条件")}">${icon("x")}<span>${L("移除")}</span></button></header>
     <div class="criterion-editor-grid">
-      <label class="criterion-statement"><span>检查什么</span><input data-criterion-field="statement" value="${escapeHtml(criterion?.statement ?? "")}" placeholder="例如：用户可以保存 Draft 后再次打开"></label>
-      <label><span>判断方式</span><select data-criterion-field="decision_method">${renderDecisionMethodOptions(criterion?.decision_method ?? "inspection")}</select></label>
-      <label class="criterion-pass"><span>怎样算通过</span><textarea rows="2" data-criterion-field="pass_condition" placeholder="写出明确、可判断的通过条件">${escapeHtml(criterion?.pass_condition ?? "")}</textarea></label>
-      <label><span>目标值 <small>可选</small></span><input data-criterion-field="target" value="${escapeHtml(renderCriterionTarget(criterion?.target))}" placeholder="例如 100%、≤ 2 秒或 JSON"></label>
-      <label><span>所需证据类型</span><input data-criterion-field="required_evidence" value="${escapeHtml(criterion?.required_evidence.join(", ") ?? "")}" placeholder="例如 test, inspection"></label>
-      <label><span>条件 ID <small>可选，留空自动生成</small></span><input data-criterion-field="criterion_id" value="${escapeHtml(criterion?.criterion_id ?? "")}" placeholder="例如 DRAFT-C1"></label>
+      <label class="criterion-statement"><span>${L("检查什么")}</span><input data-criterion-field="statement" value="${escapeHtml(criterion?.statement ?? "")}" placeholder="${L("例如：用户可以保存 Draft 后再次打开")}"></label>
+      <label><span>${L("判断方式")}</span><select data-criterion-field="decision_method">${renderDecisionMethodOptions(criterion?.decision_method ?? "inspection")}</select></label>
+      <label class="criterion-pass"><span>${L("怎样算通过")}</span><textarea rows="2" data-criterion-field="pass_condition" placeholder="${L("写出明确、可判断的通过条件")}">${escapeHtml(criterion?.pass_condition ?? "")}</textarea></label>
+      <label><span>${L("目标值 ")}<small>${L("可选")}</small></span><input data-criterion-field="target" value="${escapeHtml(renderCriterionTarget(criterion?.target))}" placeholder="${L("例如 100%、≤ 2 秒或 JSON")}"></label>
+      <label><span>${L("所需证据类型")}</span><input data-criterion-field="required_evidence" value="${escapeHtml(criterion?.required_evidence.join(", ") ?? "")}" placeholder="${L("例如 test, inspection")}"></label>
+      <label><span>${L("条件 ID ")}<small>${L("可选，留空自动生成")}</small></span><input data-criterion-field="criterion_id" value="${escapeHtml(criterion?.criterion_id ?? "")}" placeholder="${L("例如 DRAFT-C1")}"></label>
     </div>
   </article>`;
 }
@@ -1595,79 +1697,80 @@ function renderDraftEditor(item: WebGoalView): string {
     : renderDraftCriterionRow(undefined, 1);
   const listValue = (values: string[]) => escapeHtml(values.join("\n"));
   const decompositionOptions = DECOMPOSITION_OPTIONS.map(
-    ([value, label, description]) => `<label class="decomposition-choice"><input type="radio" name="decomposition_state" value="${value}"${goal.decomposition_state === value ? " checked" : ""}><span><strong>${label}</strong><small>${description}</small></span></label>`,
+    ([value, label, description]) => `<label class="decomposition-choice"><input type="radio" name="decomposition_state" value="${value}"${goal.decomposition_state === value ? " checked" : ""}><span><strong>${L(label)}</strong><small>${L(description)}</small></span></label>`,
   ).join("");
   return `<div class="draft-editor-section" data-draft-editor data-goal-id="${escapeHtml(goal.goal_id)}">
     ${subsectionHeading("clipboard", "补全 Draft Contract", "只有 Draft 可以直接编辑；accepted Contract 需要通过新 Goal 与 Rewire 变更")}
     <form class="draft-contract-form" data-draft-form data-live-form="draft-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
-      <div class="draft-form-row draft-form-row--title"><label><span>Goal 名称</span><input name="title" required maxlength="120" value="${escapeHtml(goal.title)}"></label><label><span>优先级</span><input name="priority" type="number" min="0" max="100" step="1" value="${goal.priority}"></label></div>
-      <label class="draft-field"><span>要得到的结果</span><textarea name="outcome" rows="2" placeholder="完成后，用户或系统获得什么可观察结果">${escapeHtml(goal.outcome)}</textarea></label>
-      <label class="draft-field"><span>为什么现在做</span><textarea name="why" rows="2" placeholder="说明问题和这项工作的价值">${escapeHtml(goal.why)}</textarea></label>
-      <label class="draft-field"><span>业务逻辑</span><textarea name="business_logic" rows="3" placeholder="用非技术语言说明事情如何运转、边界在哪里">${escapeHtml(goal.business_logic)}</textarea></label>
+      <div class="draft-form-row draft-form-row--title"><label><span>${L("Goal 名称")}</span><input name="title" required maxlength="120" value="${escapeHtml(goal.title)}"></label><label><span>${L("优先级")}</span><input name="priority" type="number" min="0" max="100" step="1" value="${goal.priority}"></label></div>
+      <label class="draft-field"><span>${L("要得到的结果")}</span><textarea name="outcome" rows="2" placeholder="${L("完成后，用户或系统获得什么可观察结果")}">${escapeHtml(goal.outcome)}</textarea></label>
+      <label class="draft-field"><span>${L("为什么现在做")}</span><textarea name="why" rows="2" placeholder="${L("说明问题和这项工作的价值")}">${escapeHtml(goal.why)}</textarea></label>
+      <label class="draft-field"><span>${L("业务逻辑")}</span><textarea name="business_logic" rows="3" placeholder="${L("用非技术语言说明事情如何运转、边界在哪里")}">${escapeHtml(goal.business_logic)}</textarea></label>
       <div class="draft-list-grid">
-        <label><span>包含范围 <small>每行一项</small></span><textarea name="in_scope" rows="4">${listValue(goal.in_scope)}</textarea></label>
-        <label><span>明确不做 <small>每行一项</small></span><textarea name="out_of_scope" rows="4">${listValue(goal.out_of_scope)}</textarea></label>
-        <label><span>约束 <small>每行一项</small></span><textarea name="constraints" rows="4">${listValue(goal.constraints)}</textarea></label>
-        <label><span>需要的输入 <small>每行一项</small></span><textarea name="required_inputs" rows="4">${listValue(goal.required_inputs)}</textarea></label>
-        <label><span>承诺输出 <small>每行一项</small></span><textarea name="promised_outputs" rows="4">${listValue(goal.promised_outputs)}</textarea></label>
+        <label><span>${L("包含范围 ")}<small>${L("每行一项")}</small></span><textarea name="in_scope" rows="4">${listValue(goal.in_scope)}</textarea></label>
+        <label><span>${L("明确不做 ")}<small>${L("每行一项")}</small></span><textarea name="out_of_scope" rows="4">${listValue(goal.out_of_scope)}</textarea></label>
+        <label><span>${L("约束 ")}<small>${L("每行一项")}</small></span><textarea name="constraints" rows="4">${listValue(goal.constraints)}</textarea></label>
+        <label><span>${L("需要的输入 ")}<small>${L("每行一项")}</small></span><textarea name="required_inputs" rows="4">${listValue(goal.required_inputs)}</textarea></label>
+        <label><span>${L("承诺输出 ")}<small>${L("每行一项")}</small></span><textarea name="promised_outputs" rows="4">${listValue(goal.promised_outputs)}</textarea></label>
       </div>
-      <fieldset class="decomposition-editor"><legend>这条 Goal 现在拆到什么程度？</legend><div>${decompositionOptions}</div></fieldset>
+      <fieldset class="decomposition-editor"><legend>${L("这条 Goal 现在拆到什么程度？")}</legend><div>${decompositionOptions}</div></fieldset>
       <section class="criteria-editor" aria-labelledby="criteria-editor-${escapeHtml(goal.goal_id)}">
-        <header><div><h3 id="criteria-editor-${escapeHtml(goal.goal_id)}">结构化验收条件</h3><p>每条条件保留自己的判断方式、目标和证据要求。</p></div><button type="button" data-add-criterion>${icon("plus")}<span>添加验收条件</span></button></header>
+        <header><div><h3 id="criteria-editor-${escapeHtml(goal.goal_id)}">${L("结构化验收条件")}</h3><p>${L("每条条件保留自己的判断方式、目标和证据要求。")}</p></div><button type="button" data-add-criterion>${icon("plus")}<span>${L("添加验收条件")}</span></button></header>
         <div class="criteria-editor-list" data-criteria-list>${criteria}</div>
         <template data-criterion-template>${renderDraftCriterionRow(undefined, 1)}</template>
       </section>
-      <label class="draft-field"><span>本次修改原因</span><textarea name="reason" rows="2" required placeholder="例如：补充用户确认的范围和验收条件"></textarea></label>
+      <label class="draft-field"><span>${L("本次修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("例如：补充用户确认的范围和验收条件")}"></textarea></label>
       <p class="form-error" data-draft-error role="alert" hidden></p>
-      <footer><span>保存会更新同一个 Draft；已有待确认 Proposal 会失效并等待重新提案。</span><button class="button-primary" type="submit">保存 Draft Contract</button></footer>
+      <footer><span>${L("保存会更新同一个 Draft；已有待确认 Proposal 会失效并等待重新提案。")}</span><button class="button-primary" type="submit">${L("保存 Draft Contract")}</button></footer>
     </form>
     <div class="draft-auxiliary">
-      <a class="draft-policy-link" href="#risk-workbench-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>继续登记和维护 Risk</strong><small>在“风险与影响”中维护完整事实、关联 Goal 与生命周期</small></span>${icon("arrow")}</a>
-      <a class="draft-policy-link" href="#impact-workbench-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>继续登记和维护 Impact</strong><small>在“风险与影响”中维护区域、访问方式、状态与历史</small></span>${icon("arrow")}</a>
-      <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>继续设置 Runtime / Review Policy</strong><small>项目默认与当前 Goal 规则在下方独立维护</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#risk-workbench-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>${L("继续登记和维护 Risk")}</strong><small>${L("在“风险与影响”中维护完整事实、关联 Goal 与生命周期")}</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#impact-workbench-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>${L("继续登记和维护 Impact")}</strong><small>${L("在“风险与影响”中维护区域、访问方式、状态与历史")}</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>${L("继续设置 Runtime / Review Policy")}</strong><small>${L("项目默认与当前 Goal 规则在下方独立维护")}</small></span>${icon("arrow")}</a>
     </div>
   </div>`;
 }
 
 function sectionHeading(iconName: GoalBoardIcon, title: string, description = ""): string {
-  return `<header class="section-heading"><span>${icon(iconName)}</span><div><h2>${escapeHtml(title)}</h2>${
-    description ? `<p>${escapeHtml(description)}</p>` : ""
+  return `<header class="section-heading"><span>${icon(iconName)}</span><div><h2>${escapeHtml(L(title))}</h2>${
+    description ? `<p>${escapeHtml(L(description))}</p>` : ""
   }</div></header>`;
 }
 
 function subsectionHeading(iconName: GoalBoardIcon, title: string, description = ""): string {
-  return `<header class="subsection-heading"><span>${icon(iconName)}</span><div><h3>${escapeHtml(title)}</h3>${
-    description ? `<p>${escapeHtml(description)}</p>` : ""
+  return `<header class="subsection-heading"><span>${icon(iconName)}</span><div><h3>${escapeHtml(L(title))}</h3>${
+    description ? `<p>${escapeHtml(L(description))}</p>` : ""
   }</div></header>`;
 }
 
 function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
   const goal = item.goal;
-  const owner = item.active_claim_actor ?? goal.accepted_by ?? "未指定";
-  const priorityLabel = goal.priority >= 80 ? "高" : goal.priority >= 40 ? "中" : "普通";
+  const owner = item.active_claim_actor ?? goal.accepted_by ?? L("未指定");
+  const priorityLabel = goal.priority >= 80 ? L("高") : goal.priority >= 40 ? L("中") : L("普通");
   const activeGoalAction =
     goal.definition_state === "accepted" && !goal.archived_at && !goal.trashed_at
       ? view.snapshot.board.active_goal_id === goal.goal_id
-        ? `<span class="document-action document-action--current" role="status" title="当前产品聚焦 Goal；不表示 Runtime 正在执行">${icon("target")}<span>当前 Goal</span></span>`
-        : `<button class="document-action" type="button" data-set-active-goal data-goal-id="${escapeHtml(goal.goal_id)}" title="设为 Board 当前聚焦；不会领取或启动 Runtime 执行">${icon("target")}<span>设为当前 Goal</span></button>`
+        ? `<span class="document-action document-action--current" role="status" title="${L("当前产品聚焦 Goal；不表示 Runtime 正在执行")}">${icon("target")}<span>${L("当前 Goal")}</span></span>`
+        : `<button class="document-action document-action--quiet" type="button" data-set-active-goal data-goal-id="${escapeHtml(goal.goal_id)}" title="${L("设为 Board 当前聚焦；不会领取或启动 Runtime 执行")}">${icon("target")}<span>${L("设为当前 Goal")}</span></button>`
       : "";
   const archiveAction = goal.archived_at
-    ? `<button class="document-action" type="button" data-goal-archive="false" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("refresh")}<span>恢复</span></button>`
+    ? `<button class="document-action" type="button" data-goal-archive="false" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("refresh")}<span>${L("恢复")}</span></button>`
     : goal.fulfillment_state === "satisfied"
-      ? `<button class="document-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("archive")}<span>归档</span></button>`
+      ? `<button class="document-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("archive")}<span>${L("归档")}</span></button>`
       : "";
-  const trashAction = `<button class="document-action document-action--danger" type="button" data-open-goal-trash data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("archive")}<span>移入回收站</span></button>`;
+  const trashAction = `<button class="document-action document-action--danger" type="button" data-open-goal-trash data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("archive")}<span>${L("移入回收站")}</span></button>`;
+  const moreActions = `<details class="goal-more"><summary aria-label="${L("更多操作")}">${icon("more")}</summary><div>${archiveAction}${trashAction}</div></details>`;
   return `<article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${activeGoalAction}${archiveAction}${trashAction}</div></div>
-      <dl class="goal-meta"><div>${icon("clock")}<dt>创建于</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>更新于</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>负责人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>优先级</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>归档于</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
+      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${activeGoalAction}${moreActions}</div></div>
+      <dl class="goal-meta"><div>${icon("clock")}<dt>${L("创建于")}</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>${L("更新于")}</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>${L("负责人")}</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>${L("优先级")}</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>${L("归档于")}</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
     </header>
+    ${renderGoalSituationStrip(item, view)}
     <section class="document-section">
       ${sectionHeading("book", "目标是什么", "先说明用户或项目会得到什么，而不是先讲实现名词")}
       ${renderDraftGaps(goal)}
-      <div class="business-copy"><p class="outcome"><strong>要得到的结果：</strong>${escapeHtml(goal.outcome || "待澄清")}</p><p><strong>为什么做：</strong>${escapeHtml(goal.why || "待澄清")}</p><p><strong>事情如何运转：</strong>${escapeHtml(goal.business_logic || "待澄清")}</p></div>
+      <div class="business-copy"><p class="outcome"><strong>${L("要得到的结果：")}</strong>${escapeHtml(goal.outcome || L("待澄清"))}</p><p><strong>${L("为什么做：")}</strong>${escapeHtml(goal.why || L("待澄清"))}</p><p><strong>${L("事情如何运转：")}</strong>${escapeHtml(goal.business_logic || L("待澄清"))}</p></div>
     </section>
-    ${renderGoalDecisionNotice(view, goal.goal_id)}
     <section class="document-section">
       ${sectionHeading("clipboard", "怎样才算完成", "把验收、范围和依赖放在一起，先明确工作的边界")}
       <div class="document-subsection" id="acceptance-${escapeHtml(goal.goal_id)}">
@@ -1678,13 +1781,13 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
         ${subsectionHeading("folder", "范围、输入与输出", "这些内容共同构成 Goal Contract 的执行边界")}
         ${renderScope(item)}
       </div>
-      <div class="document-subsection">
+      <div class="document-subsection" id="relations-${escapeHtml(goal.goal_id)}">
         ${subsectionHeading("tree", "和其他 Goal 的关系", "区分它属于哪个目标，以及开始前必须等待什么")}
         ${renderRelations(item, view)}
       </div>
       ${renderDraftEditor(item)}
     </section>
-    <section class="document-section runtime-section" data-section="execution">
+    <section class="document-section runtime-section" data-section="execution" id="execution-${escapeHtml(goal.goal_id)}">
       ${sectionHeading("workflow", "现在怎么推进", "集中查看阻塞、认领、执行、证据和复核")}
       <div class="document-subsection">
         ${subsectionHeading("blocked", "当前阻塞", "这些事实决定当前能否继续领取或完成")}
@@ -1692,8 +1795,8 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       </div>
       <div class="document-subsection">
         ${subsectionHeading("workflow", "执行与证明", "GoalBoard 记录事实，Runtime 主动选择并推进")}
-        <div class="runtime-grid"><section><h3>Claim <span>认领</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>行动</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>证据</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>复核</span></h3>${renderReviewCell(item)}</section></div>
-        <p class="runtime-note">这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Available Goal 并认领。</p>
+        <div class="runtime-grid"><section><h3>Claim <span>${L("认领")}</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>${L("行动")}</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>${L("证据")}</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>${L("复核")}</span></h3>${renderReviewCell(item)}</section></div>
+        <p class="runtime-note">${L("这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Available Goal 并认领。")}</p>
       </div>
     </section>
     <section class="document-section">
@@ -1718,23 +1821,23 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
 function renderTrashGoalDocument(item: WebGoalView, selected: boolean): string {
   const goal = item.goal;
   const trashEvent = item.events.find((event) => event.type === "goal.trashed");
-  const owner = goal.trashed_by ?? trashEvent?.actor_id ?? "未记录";
+  const owner = goal.trashed_by ?? trashEvent?.actor_id ?? L("未记录");
   return `<article class="goal-document trash-goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus("trashed")}<button class="document-action" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>恢复</span></button></div></div>
-      <dl class="goal-meta"><div>${icon("archive")}<dt>移入于</dt><dd>${formatDate(goal.trashed_at)}</dd></div><div>${icon("user")}<dt>操作人</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("history")}<dt>最近更新</dt><dd>${formatDate(goal.updated_at)}</dd></div></dl>
+      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus("trashed")}<button class="document-action" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>${L("恢复")}</span></button></div></div>
+      <dl class="goal-meta"><div>${icon("archive")}<dt>${L("移入于")}</dt><dd>${formatDate(goal.trashed_at)}</dd></div><div>${icon("user")}<dt>${L("操作人")}</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("history")}<dt>${L("最近更新")}</dt><dd>${formatDate(goal.updated_at)}</dd></div></dl>
     </header>
     <section class="document-section">
       ${sectionHeading("archive", "回收站状态", "这不是永久删除；恢复后仍是同一个 Goal")}
-      <div class="trash-summary"><p><strong>Goal 的 Contract、Run、Evidence 与事件历史都已保留。</strong>移入时仍生效的关联关系会临时停止；恢复时，只有两端都不在回收站的关系才会安全恢复。</p>${trashEvent ? `<p><strong>移入原因：</strong>${escapeHtml(trashEvent.reason)}</p>` : ""}</div>
+      <div class="trash-summary"><p><strong>${L("Goal 的 Contract、Run、Evidence 与事件历史都已保留。")}</strong>${L("移入时仍生效的关联关系会临时停止；恢复时，只有两端都不在回收站的关系才会安全恢复。")}</p>${trashEvent ? `<p><strong>移入原因：</strong>${escapeHtml(trashEvent.reason)}</p>` : ""}</div>
     </section>
     <section class="document-section">
       ${sectionHeading("book", "原始目标")}
-      <div class="business-copy"><p class="outcome"><strong>要得到的结果：</strong>${escapeHtml(goal.outcome || "待澄清")}</p><p><strong>为什么做：</strong>${escapeHtml(goal.why || "待澄清")}</p><p><strong>事情如何运转：</strong>${escapeHtml(goal.business_logic || "待澄清")}</p></div>
+      <div class="business-copy"><p class="outcome"><strong>${L("要得到的结果：")}</strong>${escapeHtml(goal.outcome || L("待澄清"))}</p><p><strong>${L("为什么做：")}</strong>${escapeHtml(goal.why || L("待澄清"))}</p><p><strong>${L("事情如何运转：")}</strong>${escapeHtml(goal.business_logic || L("待澄清"))}</p></div>
     </section>
     <section class="document-section">
       ${sectionHeading("refresh", "恢复到 Goal Tree", "恢复不会创建新 Goal，也不会自动启动 Runtime")}
-      <div class="trash-restore-row"><p>确认恢复后，这条 Goal 会回到原来的日常列表；如果有关联仍不能安全恢复，系统会保留它们为待处理事实。</p><button class="button-primary" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>恢复这个 Goal</span></button></div>
+      <div class="trash-restore-row"><p>${L("确认恢复后，这条 Goal 会回到原来的日常列表；如果有关联仍不能安全恢复，系统会保留它们为待处理事实。")}</p><button class="button-primary" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>${L("恢复这个 Goal")}</span></button></div>
     </section>
   </article>`;
 }
@@ -1767,14 +1870,14 @@ export function renderGoalDocumentFragment(
 function renderGoalTrashDialog(): string {
   return `<dialog class="create-dialog goal-trash-dialog" data-goal-trash-dialog aria-labelledby="goal-trash-dialog-title">
     <form method="dialog" class="dialog-shell" data-goal-trash-form data-live-form="goal-trash">
-      <header><div><span class="dialog-icon dialog-icon--danger" data-goal-trash-icon>${icon("archive")}</span><div><h2 id="goal-trash-dialog-title" data-goal-trash-title>移入回收站</h2><p data-goal-trash-description>请先确认这条 Goal 和本次操作原因。</p></div></div><button class="icon-button" type="button" data-close-goal-trash aria-label="关闭">${icon("x")}</button></header>
+      <header><div><span class="dialog-icon dialog-icon--danger" data-goal-trash-icon>${icon("archive")}</span><div><h2 id="goal-trash-dialog-title" data-goal-trash-title>${L("移入回收站")}</h2><p data-goal-trash-description>${L("请先确认这条 Goal 和本次操作原因。")}</p></div></div><button class="icon-button" type="button" data-close-goal-trash aria-label="${L("关闭")}">${icon("x")}</button></header>
       <div class="dialog-body">
-        <p class="goal-trash-target"><strong data-goal-trash-target-title>未选择 Goal</strong><small data-goal-trash-target-id></small></p>
-        <p class="goal-trash-note" data-goal-trash-note>该操作可恢复：Goal 历史会保留，当前仍生效的关联关系会暂时停止。若还有有效 Claim 或执行中的 Run，系统不会改动 Goal，而会告诉你先结束哪项工作。</p>
-        <label><span data-goal-trash-reason-label>移入原因</span><textarea name="reason" rows="3" required maxlength="4000" placeholder="说明为什么暂时不再保留这条 Goal"></textarea></label>
+        <p class="goal-trash-target"><strong data-goal-trash-target-title>${L("未选择 Goal")}</strong><small data-goal-trash-target-id></small></p>
+        <p class="goal-trash-note" data-goal-trash-note>${L("该操作可恢复：Goal 历史会保留，当前仍生效的关联关系会暂时停止。若还有有效 Claim 或执行中的 Run，系统不会改动 Goal，而会告诉你先结束哪项工作。")}</p>
+        <label><span data-goal-trash-reason-label>${L("移入原因")}</span><textarea name="reason" rows="3" required maxlength="4000" placeholder="${L("说明为什么暂时不再保留这条 Goal")}"></textarea></label>
         <p class="form-error" data-goal-trash-error role="alert" hidden></p>
       </div>
-      <footer><button type="button" data-close-goal-trash>取消</button><button class="button-danger" type="submit" data-goal-trash-submit>移入回收站</button></footer>
+      <footer><button type="button" data-close-goal-trash>${L("取消")}</button><button class="button-danger" type="submit" data-goal-trash-submit>${L("移入回收站")}</button></footer>
     </form>
   </dialog>`;
 }
@@ -1788,27 +1891,27 @@ function renderCreateDialog(view: GoalBoardWebView): string {
     .join("");
   return `<dialog class="create-dialog" data-create-dialog aria-labelledby="create-dialog-title">
     <form method="dialog" class="dialog-shell" data-create-form>
-      <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="create-dialog-title">新建目标</h2><p>先记录需求事实，再由澄清者补全 Contract 与拆分。</p></div></div><button class="icon-button" type="button" data-close-create aria-label="关闭">${icon("x")}</button></header>
+      <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="create-dialog-title">${L("新建目标")}</h2><p>${L("先记录需求事实，再由澄清者补全 Contract 与拆分。")}</p></div></div><button class="icon-button" type="button" data-close-create aria-label="${L("关闭")}">${icon("x")}</button></header>
       <div class="dialog-body">
-        <div class="field-row field-row--split"><label><span>Goal ID <small>可选</small></span><input name="goal_id" autocomplete="off" placeholder="例如 GOAL-AUTHORING"></label><label><span>优先级</span><input name="priority" type="number" min="0" max="100" value="50"></label></div>
-        <label><span>目标名称</span><input name="title" required maxlength="120" placeholder="一句话说明要完成什么"></label>
-        <label><span>要得到的结果 <small>可稍后补</small></span><textarea name="outcome" rows="2" placeholder="完成后，用户或系统获得什么可观察结果"></textarea></label>
-        <label><span>为什么做 <small>可稍后补</small></span><textarea name="why" rows="2" placeholder="这个问题为什么值得现在解决"></textarea></label>
-        <label><span>业务逻辑 <small>可稍后补</small></span><textarea name="business_logic" rows="3" placeholder="用非技术语言说明事情如何运转、边界在哪里"></textarea></label>
-        <label><span>验收条件 <small>每行一条，可稍后补</small></span><textarea name="acceptance_criteria" rows="3" placeholder="例如：可以创建 Goal，并在左侧 Tree 中立即看到"></textarea></label>
+        <div class="field-row field-row--split"><label><span>Goal ID <small>${L("可选")}</small></span><input name="goal_id" autocomplete="off" placeholder="${L("例如 GOAL-AUTHORING")}"></label><label><span>${L("优先级")}</span><input name="priority" type="number" min="0" max="100" value="50"></label></div>
+        <label><span>${L("目标名称")}</span><input name="title" required maxlength="120" placeholder="${L("一句话说明要完成什么")}"></label>
+        <label><span>${L("要得到的结果 ")}<small>${L("可稍后补")}</small></span><textarea name="outcome" rows="2" placeholder="${L("完成后，用户或系统获得什么可观察结果")}"></textarea></label>
+        <label><span>${L("为什么做 ")}<small>${L("可稍后补")}</small></span><textarea name="why" rows="2" placeholder="${L("这个问题为什么值得现在解决")}"></textarea></label>
+        <label><span>${L("业务逻辑 ")}<small>${L("可稍后补")}</small></span><textarea name="business_logic" rows="3" placeholder="${L("用非技术语言说明事情如何运转、边界在哪里")}"></textarea></label>
+        <label><span>${L("验收条件 ")}<small>${L("每行一条，可稍后补")}</small></span><textarea name="acceptance_criteria" rows="3" placeholder="${L("例如：可以创建 Goal，并在左侧 Tree 中立即看到")}"></textarea></label>
         <section class="relation-field" aria-labelledby="parent-relation-title">
-          <div class="relation-field-heading"><span>目录层级</span><div><h3 id="parent-relation-title">它属于哪个更大的 Goal？ <small>可选</small></h3><p id="parent-relation-hint">表示“它是这个 Goal 的一部分”，只决定 Tree 中放在哪里，不要求上级 Goal 先完成。</p></div></div>
-          <label><span>所属上级 Goal</span><select name="parent_goal_id" aria-describedby="parent-relation-hint parent-relation-preview"><option value="">作为独立 Goal，不指定上级</option>${options}</select></label>
-          <p class="relation-preview" id="parent-relation-preview" data-parent-preview>关系预览：新 Goal 将作为独立 Goal 出现在 Tree 中。</p>
+          <div class="relation-field-heading"><span>${L("目录层级")}</span><div><h3 id="parent-relation-title">${L("它属于哪个更大的 Goal？ ")}<small>${L("可选")}</small></h3><p id="parent-relation-hint">${L("表示“它是这个 Goal 的一部分”，只决定 Tree 中放在哪里，不要求上级 Goal 先完成。")}</p></div></div>
+          <label><span>${L("所属上级 Goal")}</span><select name="parent_goal_id" aria-describedby="parent-relation-hint parent-relation-preview"><option value="">${L("作为独立 Goal，不指定上级")}</option>${options}</select></label>
+          <p class="relation-preview" id="parent-relation-preview" data-parent-preview>${L("关系预览：新 Goal 将作为独立 Goal 出现在 Tree 中。")}</p>
         </section>
         <fieldset class="relation-field" aria-describedby="dependency-relation-hint dependency-relation-preview">
-          <legend><span>执行前置</span><div><strong>开始前必须等哪些 Goal 完成？ <small>可选</small></strong><small id="dependency-relation-hint">只有确实要消费对方结果时才选择；这会成为领取和完成的硬门禁。</small></div></legend>
+          <legend><span>${L("执行前置")}</span><div><strong>${L("开始前必须等哪些 Goal 完成？ ")}<small>${L("可选")}</small></strong><small id="dependency-relation-hint">${L("只有确实要消费对方结果时才选择；这会成为领取和完成的硬门禁。")}</small></div></legend>
           <div class="goal-choice-list">${dependencyOptions}</div>
-          <p class="relation-preview" id="dependency-relation-preview" data-dependency-preview>关系预览：当前没有执行前置，Goal 可以独立推进。</p>
+          <p class="relation-preview" id="dependency-relation-preview" data-dependency-preview>${L("关系预览：当前没有执行前置，Goal 可以独立推进。")}</p>
         </fieldset>
         <p class="form-error" data-create-error role="alert" hidden></p>
       </div>
-      <footer><button type="button" data-close-create>取消</button><button class="button-primary" type="submit">创建草稿 Goal</button></footer>
+      <footer><button type="button" data-close-create>${L("取消")}</button><button class="button-primary" type="submit">${L("创建草稿 Goal")}</button></footer>
     </form>
   </dialog>`;
 }
@@ -1821,6 +1924,7 @@ const STYLES = `
     --blue: #1677ff; --blue-dark: #0d63d8; --blue-soft: #eaf3ff;
     --green: #168a4b; --green-soft: #eaf7ef; --amber: #b66a00;
     --amber-soft: #fff4dc; --red: #c63838; --red-soft: #fff0f0;
+    --terminal: #1b2129; --terminal-ink: #e8edf2;
     --shadow: 0 8px 28px rgba(26, 38, 52, .12);
     --font: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
@@ -1861,6 +1965,7 @@ const STYLES = `
   .workspace { min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
   .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr) 48px; background: #fbfcfd; border-right: 1px solid var(--line-strong); }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
+  .tree-resizer::before, .tui-resizer::before { content: ""; position: absolute; inset: 0 -5px; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
   .tree-resizer:hover::after, .tree-resizer:focus-visible::after, .tree-resizer.is-dragging::after { width: 2px; background: var(--blue); }
   .icon-button { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; display: grid; place-items: center; cursor: pointer; }
@@ -1913,6 +2018,64 @@ const STYLES = `
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; }
   .tree-footer small { margin-left: auto; color: var(--muted); }
   .document-pane { min-width: 0; overflow: auto; background: var(--paper); }
+  .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr) 5px var(--tui-width, 480px); }
+  .tui-resizer { position: relative; z-index: 3; cursor: col-resize; background: #f7f8fa; touch-action: none; }
+  .tui-resizer::after { content: ""; position: absolute; inset: 0 2px 0 auto; width: 1px; background: var(--line-strong); }
+  .tui-resizer:hover::after, .tui-resizer:focus-visible::after, .tui-resizer.is-dragging::after { width: 2px; background: var(--blue); }
+  .tui-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 40px minmax(0, 1fr); background: #f7f8fa; container-type: inline-size; }
+  .tui-tabs { min-width: 0; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); background: #f7f8fa; }
+  .tui-tab-list { min-width: 0; flex: 1; height: 100%; display: flex; align-items: center; gap: 2px; overflow: auto; scrollbar-width: none; }
+  .tui-tab-list::-webkit-scrollbar { display: none; }
+  .tui-tab { max-width: 168px; height: 28px; padding: 0 6px 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 650; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; transition: background .16s ease, color .16s ease; }
+  .tui-tab:hover { color: var(--ink); background: #edf2f7; }
+  .tui-tab.is-active { color: var(--ink); background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+  .tui-tab.is-exited { color: var(--faint); }
+  .tui-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tui-tab-close { width: 22px; height: 22px; flex: 0 0 22px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--faint); display: grid; place-items: center; }
+  .tui-tab-close svg { width: 12px; height: 12px; }
+  .tui-tab-close:hover { color: var(--red); background: var(--red-soft); }
+  .tui-add { height: 28px; flex: 0 0 auto; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; transition: background .16s ease, color .16s ease; }
+  .tui-add:hover, .tui-add[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
+  .tui-stage { min-width: 0; min-height: 0; overflow: hidden; padding: 10px 12px 12px; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
+  .tui-chrome { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .tui-chrome-actions { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .tui-chrome button { min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; color: var(--ink); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .1s ease; }
+  .tui-chrome button:hover:not(:disabled) { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
+  .tui-chrome button:active:not(:disabled) { transform: scale(.98); }
+  .tui-chrome button:disabled { color: var(--faint); cursor: default; }
+  .tui-chrome .tui-advance { border-color: var(--blue); color: #fff; background: var(--blue); }
+  .tui-chrome .tui-advance:hover:not(:disabled) { background: var(--blue-dark); color: #fff; }
+  .tui-status { margin: 0 0 0 auto; min-width: 8rem; flex: 1 1 12rem; color: var(--muted); font-size: 11px; font-weight: 650; display: flex; align-items: center; gap: 6px; line-height: 1.4; }
+  .tui-status:empty { display: none; }
+  .tui-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+  .tui-status[data-tone="live"]::before { background: var(--green); }
+  .tui-status[data-tone="busy"]::before { background: var(--blue); animation: pulse 1s infinite; }
+  .tui-status[data-tone="error"]::before { background: var(--red); }
+  .tui-terminal { position: relative; min-width: 0; min-height: 140px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ink) 55%, var(--terminal)); border-radius: 6px; background: var(--terminal); }
+  .tui-terminal .tui-xterm { position: absolute; inset: 10px 12px 12px; opacity: 0; transition: opacity .2s cubic-bezier(.16, 1, .3, 1); }
+  .tui-terminal .tui-xterm.is-ready { opacity: 1; }
+  .tui-empty { position: absolute; inset: 0; z-index: 1; min-height: 0; padding: 28px 22px; color: color-mix(in srgb, var(--terminal-ink) 72%, var(--terminal)); display: grid; place-content: center; justify-items: center; text-align: center; gap: 6px; }
+  .tui-empty-mark { width: 36px; height: 36px; margin-bottom: 4px; border-radius: 6px; color: color-mix(in srgb, var(--terminal-ink) 48%, var(--terminal)); background: color-mix(in srgb, var(--terminal-ink) 8%, var(--terminal)); display: grid; place-items: center; }
+  .tui-empty-mark svg { width: 18px; height: 18px; }
+  .tui-empty p { margin: 0; max-width: 28ch; font-size: 13px; line-height: 1.5; }
+  .tui-empty strong { color: var(--terminal-ink); font-size: 14px; font-weight: 650; }
+  .tui-menu { position: absolute; z-index: 20; top: 44px; right: 10px; width: min(320px, calc(100% - 20px)); padding: 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; box-shadow: 0 8px 28px rgba(26, 38, 52, .12); display: grid; gap: 10px; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-6px); transition: opacity .2s cubic-bezier(.16, 1, .3, 1), transform .2s cubic-bezier(.16, 1, .3, 1), visibility .2s; }
+  .tui-menu.is-open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
+  .tui-menu > strong { font-size: 13px; letter-spacing: -.015em; }
+  .tui-menu p { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.45; }
+  .tui-menu label { display: grid; gap: 4px; color: var(--ink); font-size: 12px; font-weight: 650; }
+  .tui-menu input, .tui-menu select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
+  .tui-runtime-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tui-runtime-choices button { min-height: 34px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; text-align: left; padding: 0 10px; font-weight: 650; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+  .tui-runtime-choices button[data-tui-kind="generic"] { grid-column: 1 / -1; }
+  .tui-runtime-choices button:hover, .tui-runtime-choices button.is-selected { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
+  .tui-menu-actions { display: flex; justify-content: flex-end; gap: 6px; }
+  .tui-menu-actions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; font-weight: 650; }
+  .tui-menu-actions button[type="submit"] { border-color: var(--blue); color: #fff; background: var(--blue); }
+  @container (max-width: 380px) {
+    .tui-add span { display: none; }
+    .tui-add { width: 28px; padding: 0; }
+  }
   .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
   .goal-header { padding: 0 0 20px; border-bottom: 1px solid var(--line-strong); }
   .goal-title-row { display: flex; align-items: flex-start; gap: 18px; }
@@ -1920,13 +2083,34 @@ const STYLES = `
   .goal-title-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
   .goal-title-copy > small { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
   .goal-title-row h1 { margin: 0; font-size: clamp(22px, 2.1vw, 29px); line-height: 1.3; letter-spacing: -.03em; }
-  .goal-title-actions > .goal-status { padding: 7px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; font-size: 14px; }
+  .goal-title-actions > .goal-status { padding: 0; border: 0; background: transparent; font-size: 13px; }
   .document-action { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
   .document-action:hover { color: var(--blue); border-color: color-mix(in srgb, var(--blue), var(--line) 60%); }
+  .document-action--quiet { border-color: transparent; background: transparent; color: var(--muted); }
+  .document-action--quiet:hover { color: var(--blue-dark); background: var(--blue-soft); }
   .document-action--current { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); cursor: default; }
   .document-action--danger { color: #a52e2e; }
   .document-action--danger:hover { color: #a52e2e; border-color: #dfbaba; background: var(--red-soft); }
   .document-action:disabled { opacity: .55; cursor: wait; }
+  .goal-more { position: relative; }
+  .goal-more > summary { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: grid; place-items: center; color: var(--muted); cursor: pointer; list-style: none; }
+  .goal-more > summary::-webkit-details-marker { display: none; }
+  .goal-more > summary:hover { color: var(--blue-dark); border-color: color-mix(in srgb, var(--blue), var(--line) 60%); }
+  .goal-more[open] > summary { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); }
+  .goal-more > div { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; min-width: 168px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; box-shadow: 0 8px 28px rgba(26, 38, 52, .12); display: grid; }
+  .goal-more .document-action { width: 100%; justify-content: flex-start; border: 0; height: 32px; }
+  .goal-situation { margin: 16px 0 0; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .goal-situation-cell { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); color: inherit; text-decoration: none; display: grid; gap: 2px; }
+  .goal-situation-cell:last-child { border-right: 0; }
+  .goal-situation-cell:hover { background: #f7faff; }
+  .goal-situation-cell span { color: var(--muted); font-size: 11px; font-weight: 650; }
+  .goal-situation-cell strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+  .goal-situation-cell small { color: var(--blue-dark); font-size: 11px; font-weight: 650; }
+  .goal-situation-cell--static { cursor: default; }
+  .goal-situation-cell--static:hover { background: transparent; }
+  .goal-situation-cell--blocked strong { color: var(--red); }
+  .goal-situation-cell--ready strong { color: var(--green); }
+  .goal-situation-cell--muted strong { color: var(--muted); font-weight: 500; }
   .archive-empty { min-height: 100%; padding: 72px 28px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
   .archive-empty svg { width: 30px; height: 30px; margin-bottom: 12px; color: var(--faint); }
   .archive-empty h1 { margin: 0 0 5px; color: var(--ink); font-size: 20px; }
@@ -2320,19 +2504,17 @@ const MORE_STYLES = `
   .fact-row small { color: var(--muted); overflow-wrap: anywhere; }
   .policy-list div { grid-template-columns: minmax(0, 1fr) auto; }
   .policy-workbench { padding-top: 2px; border-top: 1px solid var(--line-strong); display: grid; gap: 14px; }
-  .policy-effective { margin-top: 14px; padding: 17px 18px 15px; border: 1px solid #bcd4f2; border-left: 3px solid var(--blue); border-radius: 6px; background: linear-gradient(135deg, #f5f9ff 0%, #fbfdff 68%, #f2f7ff 100%); }
-  .policy-effective > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; }
-  .policy-effective-icon { width: 34px; height: 34px; margin-top: 1px; border-radius: 5px; color: #fff; background: var(--blue); display: grid; place-items: center; font-size: 17px; }
-  .policy-effective header > div > small { color: var(--blue-dark); font-size: 9px; font-weight: 800; letter-spacing: .11em; }
-  .policy-effective h3 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
+  .policy-effective { margin-top: 14px; padding: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+  .policy-effective > header { padding: 12px 14px; display: flex; align-items: flex-start; gap: 8px; }
+  .policy-effective-icon { width: 20px; height: 20px; margin-top: 1px; color: #59626f; display: grid; place-items: center; }
+  .policy-effective h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
   .policy-effective header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
-  .policy-effective-state { padding: 3px 7px; border-radius: 3px; color: var(--green); background: var(--green-soft); font-size: 10px; font-weight: 700; }
-  .policy-effective dl { margin: 15px 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid #cfe0f5; }
+  .policy-effective dl { margin: 0; padding: 0 14px 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
   .policy-effective dl div { min-width: 0; padding: 10px 12px 1px 0; display: grid; gap: 1px; }
-  .policy-effective dt { color: var(--muted); font-size: 10px; font-weight: 650; }
+  .policy-effective dt { color: var(--muted); font-size: 11px; font-weight: 650; }
   .policy-effective dd { min-width: 0; margin: 0; display: grid; overflow-wrap: anywhere; }
-  .policy-effective dd strong { font-size: 14px; }
-  .policy-effective dd small { color: var(--muted); font-size: 10px; }
+  .policy-effective dd strong { font-size: 13px; }
+  .policy-effective dd small { color: var(--muted); font-size: 11px; }
   .policy-inheritance { min-width: 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 5px; background: #f8f9fb; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; }
   .policy-inheritance > span { min-width: 0; display: grid; }
   .policy-inheritance small { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
@@ -2472,12 +2654,6 @@ const MORE_STYLES = `
   .history-list span { min-width: 0; display: grid; }
   .history-list strong, .history-list small { overflow-wrap: anywhere; }
   .history-list small { color: var(--muted); }
-  .goal-decision-notice { margin-top: 14px; padding: 10px 12px; border: 1px solid #c8dcf8; border-left: 3px solid var(--blue); border-radius: 4px; background: #f5f9ff; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-  .goal-decision-notice > div { min-width: 0; display: flex; align-items: flex-start; gap: 9px; }
-  .goal-decision-notice > div > span { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
-  .goal-decision-notice p { min-width: 0; margin: 0; display: grid; }
-  .goal-decision-notice small { color: var(--muted); }
-  .goal-decision-notice a { flex: 0 0 auto; color: var(--blue-dark); font-weight: 650; text-decoration: none; }
   .decision-center { width: min(100%, 1080px); margin: 0 auto; padding: 34px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
   .decision-center-header { padding-bottom: 22px; border-bottom: 1px solid var(--line-strong); display: flex; align-items: flex-end; justify-content: space-between; gap: 26px; }
   .decision-center-header > div { max-width: 710px; }
@@ -2658,8 +2834,9 @@ const RESPONSIVE_STYLES = `
     .evidence-submit footer button { align-self: flex-end; }
     .event-ledger details > summary { grid-template-columns: 1fr; gap: 3px; }
     .event-ledger dl div { grid-template-columns: 1fr; gap: 2px; }
-    .policy-effective > header { grid-template-columns: auto minmax(0, 1fr); }
-    .policy-effective-state { grid-column: 2; width: fit-content; }
+    .goal-situation { grid-template-columns: 1fr 1fr; }
+    .goal-situation-cell:nth-child(2n) { border-right: 0; }
+    .goal-situation-cell:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
     .policy-effective dl { grid-template-columns: 1fr 1fr; }
     .policy-inheritance { grid-template-columns: 1fr; gap: 5px; }
     .policy-inheritance > svg { transform: rotate(90deg); }
@@ -2715,6 +2892,7 @@ const RESPONSIVE_STYLES = `
   @media (max-width: 1180px) {
     .app, .topbar, .workspace { min-width: 0; }
     .workspace { grid-template-columns: var(--tree-width, 280px) 5px minmax(0, 1fr); }
+    .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 5px var(--tui-width, 400px); }
     .project-context { min-width: 0; padding-inline: 16px; }
     .project-context > span:not(.sync-state) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
     .global-search { min-width: 140px; max-width: 180px; }
@@ -2753,13 +2931,20 @@ const RESPONSIVE_STYLES = `
     .top-spacer { flex: 1; }
     .top-action { margin-right: 8px; border-left: 0; }
     .top-action span { display: none; }
-    .mobile-switch { grid-row: 2; display: grid; grid-template-columns: 1fr 1fr; padding: 5px; border-bottom: 1px solid var(--line); background: #f7f8fa; }
+    .mobile-switch { grid-row: 2; display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); padding: 5px; border-bottom: 1px solid var(--line); background: #f7f8fa; }
     .mobile-switch button { border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
     .mobile-switch button.is-active { color: var(--ink); background: #fff; box-shadow: 0 1px 3px rgba(22, 31, 43, .1); }
     .workspace { grid-row: 3; grid-template-columns: 1fr; }
-    .tree-resizer { display: none; }
-    .workspace[data-mobile-view="tree"] .document-pane { display: none; }
-    .workspace[data-mobile-view="document"] .tree-pane { display: none; }
+    .tree-resizer, .tui-resizer { display: none; }
+    .workspace.is-desktop-tui { grid-template-columns: 1fr; }
+    .workspace.is-desktop-tui .tree-resizer, .workspace.is-desktop-tui .tui-resizer { display: none; }
+    .workspace[data-mobile-view="tree"] .document-pane,
+    .workspace[data-mobile-view="tree"] .tui-pane { display: none; }
+    .workspace[data-mobile-view="document"] .tree-pane,
+    .workspace[data-mobile-view="document"] .tui-pane { display: none; }
+    .workspace[data-mobile-view="tui"] .tree-pane,
+    .workspace[data-mobile-view="tui"] .document-pane { display: none; }
+    .workspace[data-mobile-view="tui"] .tui-pane { display: grid; }
     .tree-pane { border-right: 0; }
     .goal-document { padding: 20px 18px 64px; }
     .goal-title-row { display: grid; gap: 10px; }
@@ -2816,7 +3001,9 @@ const RESPONSIVE_STYLES = `
     .candidate-wide { grid-column: 1; }
     .decision-reason { grid-template-columns: 1fr; gap: 5px; }
     .decision-reason > span { padding-top: 0; }
-    .goal-decision-notice { align-items: flex-start; }
+    .goal-situation { grid-template-columns: 1fr 1fr; }
+    .goal-situation-cell:nth-child(2n) { border-right: 0; }
+    .goal-situation-cell:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
     .contract-proposal > header { display: grid; }
     .contract-diff-row, .proposal-appendix { grid-template-columns: 1fr; gap: 6px; }
     .proposal-source { padding: 7px 0 0; border-left: 0; border-top: 1px dashed var(--line); }
@@ -2846,6 +3033,7 @@ const PROJECT_INDEX_STYLES = `
   .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
   .project-index-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
   .project-index-heading p { max-width: 52ch; margin: 7px 0 0; color: var(--muted); }
+  .project-index-desktop-note { max-width: none; margin-top: 14px; padding: 10px 12px; border: 1px solid #bcd4f2; border-radius: 4px; background: var(--blue-soft); color: var(--blue-dark); font-size: 13px; font-weight: 650; }
   .project-list { list-style: none; margin: 0; padding: 0; }
   .project-list li + li { border-top: 1px solid var(--line); }
   .project-list a { min-height: 74px; padding: 16px 24px 16px 30px; color: inherit; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 18px; text-decoration: none; }
@@ -2942,7 +3130,7 @@ const PROJECT_INDEX_CLIENT_SCRIPT = `
       const values = new FormData(form);
       const confirmed = values.get("user_confirmed") === "on";
       if (!confirmed) {
-        errorBox.textContent = "请先确认你要迁移这份已有 GoalBoard 数据。";
+        errorBox.textContent = L("请先确认你要迁移这份已有 GoalBoard 数据。");
         errorBox.hidden = false;
         return;
       }
@@ -2960,10 +3148,10 @@ const PROJECT_INDEX_CLIENT_SCRIPT = `
           }),
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "迁移失败，请检查来源 DB 后重试");
+        if (!response.ok) throw new Error(result.error || L("迁移失败，请检查来源 DB 后重试"));
         location.assign(result.project_path);
       } catch (error) {
-        errorBox.textContent = error.message || "迁移失败，请检查来源 DB 后重试";
+        errorBox.textContent = error.message || L("迁移失败，请检查来源 DB 后重试");
         errorBox.hidden = false;
         submit.disabled = false;
       }
@@ -3166,16 +3354,16 @@ const SETTINGS_CLIENT_SCRIPT = `
         const action = button.dataset.runtimeAction;
         activePlan = null;
         reloadOnClose = false;
-        title.textContent = "正在准备接入预览";
-        message.textContent = "GoalBoard 正在只读检查当前 Runtime 配置。";
+        title.textContent = L("正在准备接入预览");
+        message.textContent = L("GoalBoard 正在只读检查当前 Runtime 配置。");
         changes.innerHTML = "";
-        backup.textContent = "检查中";
-        restart.textContent = "检查中";
+        backup.textContent = L("检查中");
+        restart.textContent = L("检查中");
         confirmRow.hidden = true;
         confirmInput.checked = false;
         applyButton.disabled = true;
         applyButton.hidden = false;
-        applyButton.textContent = "确认应用";
+        applyButton.textContent = L("确认应用");
         errorBox.hidden = true;
         dialog.showModal();
         try {
@@ -3185,27 +3373,27 @@ const SETTINGS_CLIENT_SCRIPT = `
             body: JSON.stringify({ action }),
           });
           const plan = await response.json();
-          if (!response.ok) throw new Error(plan.error || "无法生成 Runtime 接入预览");
+          if (!response.ok) throw new Error(plan.error || L("无法生成 Runtime 接入预览"));
           activePlan = plan;
-          title.textContent = plan.display_name + (plan.action === "remove" ? " · 移除预览" : " · 接入预览");
+          title.textContent = plan.display_name + (plan.action === "remove" ? L(" · 移除预览") : L(" · 接入预览"));
           message.textContent = plan.message;
-          changes.innerHTML = (plan.changes || []).map((change) => "<li><strong>" + escapeText(change.operation === "remove" ? "移除" : change.operation === "replace" ? "替换" : "新增") + "</strong><div><p>" + escapeText(change.target_path) + "</p><small>" + escapeText(change.before) + " → " + escapeText(change.after) + "</small></div></li>").join("") || "<li><strong>无变更</strong><div><p>当前状态无需写入。</p></div></li>";
-          backup.textContent = plan.backup_path || "当前变更无须备份";
-          restart.textContent = (plan.restart_instructions || []).join(" ") || "无须重启";
+          changes.innerHTML = (plan.changes || []).map((change) => "<li><strong>" + escapeText(change.operation === "remove" ? L("移除") : change.operation === "replace" ? L("替换") : L("新增")) + "</strong><div><p>" + escapeText(change.target_path) + "</p><small>" + escapeText(change.before) + " → " + escapeText(change.after) + "</small></div></li>").join("") || L("<li><strong>无变更</strong><div><p>当前状态无需写入。</p></div></li>");
+          backup.textContent = plan.backup_path || L("当前变更无须备份");
+          restart.textContent = (plan.restart_instructions || []).join(" ") || L("无须重启");
           confirmRow.hidden = plan.status !== "ready";
           confirmLabel.textContent = plan.confirmation;
           applyButton.hidden = plan.status !== "ready";
         } catch (error) {
-          errorBox.textContent = error.message || "无法生成 Runtime 接入预览";
+          errorBox.textContent = error.message || L("无法生成 Runtime 接入预览");
           errorBox.hidden = false;
-          message.textContent = "没有修改任何配置。";
+          message.textContent = L("没有修改任何配置。");
         }
       });
     });
     applyButton?.addEventListener("click", async () => {
       if (!activePlan || !confirmInput.checked) return;
       applyButton.disabled = true;
-      applyButton.textContent = "正在验证…";
+      applyButton.textContent = L("正在验证…");
       errorBox.hidden = true;
       try {
         const response = await fetch("/api/settings/runtimes/" + encodeURIComponent(activePlan.runtime_id) + "/confirm", {
@@ -3214,18 +3402,18 @@ const SETTINGS_CLIENT_SCRIPT = `
           body: JSON.stringify({ plan_id: activePlan.plan_id, decision: "confirmed" }),
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.message || result.error || "Runtime 接入未完成");
+        if (!response.ok) throw new Error(result.message || result.error || L("Runtime 接入未完成"));
         message.textContent = result.message;
-        changes.innerHTML = "<li><strong>完成</strong><div><p>" + escapeText(result.message) + "</p></div></li>";
+        changes.innerHTML = L("<li><strong>完成</strong><div><p>") + escapeText(result.message) + "</p></div></li>";
         confirmRow.hidden = true;
         applyButton.hidden = true;
         reloadOnClose = true;
         showToast(result.message);
       } catch (error) {
-        errorBox.textContent = error.message || "Runtime 接入未完成";
+        errorBox.textContent = error.message || L("Runtime 接入未完成");
         errorBox.hidden = false;
         applyButton.disabled = false;
-        applyButton.textContent = "重新确认";
+        applyButton.textContent = L("重新确认");
       }
     });
     const createForm = document.querySelector("[data-project-create]");
@@ -3234,7 +3422,7 @@ const SETTINGS_CLIENT_SCRIPT = `
       const values = new FormData(createForm);
       const error = createForm.querySelector(".settings-form-error");
       if (values.get("user_confirmed") !== "on") {
-        error.textContent = "请先确认创建这个项目。";
+        error.textContent = L("请先确认创建这个项目。");
         error.hidden = false;
         return;
       }
@@ -3244,10 +3432,10 @@ const SETTINGS_CLIENT_SCRIPT = `
       try {
         const response = await fetch("/api/settings/projects", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ display_name: String(values.get("display_name") || "").trim(), user_confirmed: true }) });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "项目创建失败");
+        if (!response.ok) throw new Error(result.error || L("项目创建失败"));
         location.assign(result.project_path);
       } catch (caught) {
-        error.textContent = caught.message || "项目创建失败";
+        error.textContent = caught.message || L("项目创建失败");
         error.hidden = false;
         submit.disabled = false;
       }
@@ -3263,11 +3451,11 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const response = await fetch("/api/settings/projects/" + encodeURIComponent(form.dataset.projectRename) + "/rename", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ display_name: String(values.get("display_name") || "").trim() }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "项目改名失败");
-          showToast("项目已改名为“" + result.project.display_name + "”");
+          if (!response.ok) throw new Error(result.error || L("项目改名失败"));
+          showToast(L("项目已改名为“") + result.project.display_name + "”");
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          error.textContent = caught.message || "项目改名失败";
+          error.textContent = caught.message || L("项目改名失败");
           error.hidden = false;
           submit.disabled = false;
         }
@@ -3280,7 +3468,7 @@ const SETTINGS_CLIENT_SCRIPT = `
         const error = form.querySelector(".settings-form-error");
         const submit = form.querySelector("button[type=submit]");
         if (values.get("user_confirmed") !== "on") {
-          error.textContent = "请先确认要切换这个 Session 的项目关联。";
+          error.textContent = L("请先确认要切换这个 Session 的项目关联。");
           error.hidden = false;
           return;
         }
@@ -3289,11 +3477,11 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionRebind) + "/rebind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Session 项目切换失败");
-          showToast("Session 已切换到“" + result.connection.project_name + "”");
+          if (!response.ok) throw new Error(result.error || L("Session 项目切换失败"));
+          showToast(L("Session 已切换到“") + result.connection.project_name + "”");
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          error.textContent = caught.message || "Session 项目切换失败";
+          error.textContent = caught.message || L("Session 项目切换失败");
           error.hidden = false;
           submit.disabled = false;
         }
@@ -3306,7 +3494,7 @@ const SETTINGS_CLIENT_SCRIPT = `
         const error = form.querySelector(".settings-form-error");
         const submit = form.querySelector("button[type=submit]");
         if (values.get("user_confirmed") !== "on") {
-          error.textContent = "请先确认只解绑这个 Session。";
+          error.textContent = L("请先确认只解绑这个 Session。");
           error.hidden = false;
           return;
         }
@@ -3315,11 +3503,11 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionUnbind) + "/unbind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Session 解绑失败");
-          showToast("Session 已解绑；项目和其他关联保持不变");
+          if (!response.ok) throw new Error(result.error || L("Session 解绑失败"));
+          showToast(L("Session 已解绑；项目和其他关联保持不变"));
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          error.textContent = caught.message || "Session 解绑失败";
+          error.textContent = caught.message || L("Session 解绑失败");
           error.hidden = false;
           submit.disabled = false;
         }
@@ -3332,7 +3520,7 @@ const SETTINGS_CLIENT_SCRIPT = `
         const error = form.querySelector(".settings-form-error");
         const submit = form.querySelector("button[type=submit]");
         if (values.get("user_confirmed") !== "on") {
-          error.textContent = "请先确认更改这个目录的默认项目。";
+          error.textContent = L("请先确认更改这个目录的默认项目。");
           error.hidden = false;
           return;
         }
@@ -3341,11 +3529,11 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceDefault) + "/default", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "目录默认项目更新失败");
-          showToast("目录默认项目已更新");
+          if (!response.ok) throw new Error(result.error || L("目录默认项目更新失败"));
+          showToast(L("目录默认项目已更新"));
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          error.textContent = caught.message || "目录默认项目更新失败";
+          error.textContent = caught.message || L("目录默认项目更新失败");
           error.hidden = false;
           submit.disabled = false;
         }
@@ -3358,7 +3546,7 @@ const SETTINGS_CLIENT_SCRIPT = `
         const error = form.querySelector(".settings-form-error");
         const submit = form.querySelector("button[type=submit]");
         if (values.get("user_confirmed") !== "on") {
-          error.textContent = "请先确认解除这个目录关联。";
+          error.textContent = L("请先确认解除这个目录关联。");
           error.hidden = false;
           return;
         }
@@ -3367,11 +3555,11 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceUnlink) + "/projects/" + encodeURIComponent(form.dataset.workspaceProject) + "/unlink", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "目录关联解除失败");
-          showToast("目录关联已解除；GoalBoard 项目仍然保留");
+          if (!response.ok) throw new Error(result.error || L("目录关联解除失败"));
+          showToast(L("目录关联已解除；GoalBoard 项目仍然保留"));
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          error.textContent = caught.message || "目录关联解除失败";
+          error.textContent = caught.message || L("目录关联解除失败");
           error.hidden = false;
           submit.disabled = false;
         }
@@ -3382,21 +3570,21 @@ const SETTINGS_CLIENT_SCRIPT = `
         const action = button.dataset.demoAction;
         const error = button.closest("section, details")?.querySelector("[data-demo-error]") || document.querySelector("[data-demo-error]");
         const message = action === "create"
-          ? "创建一份明确标记为可重建数据的示例项目？"
+          ? L("创建一份明确标记为可重建数据的示例项目？")
           : action === "reset"
-            ? "重建 demo 会清除其中的所有改动，但不会影响用户项目。确认继续？"
-            : "删除这个可重建 demo？用户项目不会被删除。";
+            ? L("重建 demo 会清除其中的所有改动，但不会影响用户项目。确认继续？")
+            : L("删除这个可重建 demo？用户项目不会被删除。");
         if (!window.confirm(message)) return;
         button.disabled = true;
         if (error) error.hidden = true;
         try {
           const response = await fetch("/api/settings/demo", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ action, user_confirmed: true }) });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "demo 操作失败");
-          showToast(result.message || "demo 已更新");
+          if (!response.ok) throw new Error(result.error || L("demo 操作失败"));
+          showToast(result.message || L("demo 已更新"));
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
-          if (error) { error.textContent = caught.message || "demo 操作失败"; error.hidden = false; }
+          if (error) { error.textContent = caught.message || L("demo 操作失败"); error.hidden = false; }
           button.disabled = false;
         }
       });
@@ -3409,13 +3597,13 @@ const SETTINGS_CLIENT_SCRIPT = `
         try {
           const previewResponse = await fetch("/api/settings/web-service/plan", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ action: button.dataset.webServiceAction }) });
           const plan = await previewResponse.json();
-          if (!previewResponse.ok) throw new Error(plan.error || "无法生成常驻服务预览");
+          if (!previewResponse.ok) throw new Error(plan.error || L("无法生成常驻服务预览"));
           if (plan.status === "no_change") {
             showToast(plan.message);
             button.disabled = false;
             return;
           }
-          if (plan.status !== "ready") throw new Error(plan.message || "当前不能执行这项常驻服务操作");
+          if (plan.status !== "ready") throw new Error(plan.message || L("当前不能执行这项常驻服务操作"));
           const changes = (plan.changes || []).map((change) => "• " + change.operation + "：" + change.target).join("\\n");
           if (!window.confirm(plan.message + "\\n\\n" + changes + "\\n\\n" + plan.confirmation)) {
             await fetch("/api/settings/web-service/confirm", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ plan_id: plan.plan_id, decision: "declined" }) });
@@ -3424,12 +3612,12 @@ const SETTINGS_CLIENT_SCRIPT = `
           }
           const confirmResponse = await fetch("/api/settings/web-service/confirm", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ plan_id: plan.plan_id, decision: "confirmed" }) });
           const result = await confirmResponse.json();
-          if (!confirmResponse.ok) throw new Error(result.error || "常驻服务操作失败");
+          if (!confirmResponse.ok) throw new Error(result.error || L("常驻服务操作失败"));
           showToast(result.message);
           setTimeout(() => location.reload(), 450);
         } catch (caught) {
           if (error) {
-            error.textContent = caught.message || "常驻服务操作失败";
+            error.textContent = caught.message || L("常驻服务操作失败");
             error.hidden = false;
           }
           button.disabled = false;
@@ -3455,6 +3643,8 @@ const CLIENT_SCRIPT = `
     const documentPane = document.querySelector("[data-document-pane]");
     const treePane = document.querySelector("#goal-tree-pane");
     const treeResizer = document.querySelector("[data-tree-resizer]");
+    const tuiResizer = document.querySelector("[data-tui-resizer]");
+    const tuiPane = document.querySelector("[data-tui-pane]");
     const treeScroll = document.querySelector("[data-tree-scroll]");
     const globalSearch = document.querySelector("[data-global-search]");
     const treeSearch = globalSearch;
@@ -3508,7 +3698,7 @@ const CLIENT_SCRIPT = `
       if (dependencyPreview) {
         const names = dependencies.map((input) => "「" + (input.dataset.goalName || input.value) + "」");
         dependencyPreview.textContent = names.length
-          ? "关系预览：新 Goal → 依赖 → " + names.join("、") + "；这些 Goal 完成前不能领取或完成新 Goal。"
+          ? "关系预览：新 Goal → 依赖 → " + names.join(currentLocale() === "en" ? ", " : "、") + "；这些 Goal 完成前不能领取或完成新 Goal。"
           : "关系预览：当前没有执行前置，Goal 可以独立推进。";
       }
     };
@@ -3709,8 +3899,8 @@ const CLIENT_SCRIPT = `
       const claims = Array.isArray(result.blocking_claim_ids) ? result.blocking_claim_ids : [];
       const runs = Array.isArray(result.blocking_run_ids) ? result.blocking_run_ids : [];
       const records = [
-        claims.length ? "有效 Claim：" + claims.join("、") : "",
-        runs.length ? "执行中 Run：" + runs.join("、") : "",
+        claims.length ? "有效 Claim：" + claims.join(currentLocale() === "en" ? ", " : "、") : "",
+        runs.length ? "执行中 Run：" + runs.join(currentLocale() === "en" ? ", " : "、") : "",
       ].filter(Boolean).join("；");
       return "现在无法移入回收站：这条 Goal 仍有正在进行的 Runtime 工作。" +
         (records ? records + "。" : "") +
@@ -3777,8 +3967,17 @@ const CLIENT_SCRIPT = `
       });
     };
 
+    const setTuiWidth = (value, persist = true) => {
+      if (!tuiResizer || !workspace.classList.contains("is-desktop-tui")) return;
+      const width = Math.round(Math.min(720, Math.max(280, Number(value) || 480)));
+      workspace.style.setProperty("--tui-width", width + "px");
+      tuiResizer.setAttribute("aria-valuenow", String(width));
+      if (persist) queueSave();
+    };
+
     const setTreeWidth = (value, persist = true) => {
-      if (matchMedia("(max-width: 760px)").matches) return;
+      if (matchMedia("(max-width: 760px)").matches && !workspace.classList.contains("is-desktop-tui")) return;
+      if (!treeResizer) return;
       const maximum = Math.min(520, Math.max(320, innerWidth * 0.48));
       const width = Math.round(Math.min(maximum, Math.max(260, Number(value) || 320)));
       workspace.style.setProperty("--tree-width", width + "px");
@@ -3793,6 +3992,7 @@ const CLIENT_SCRIPT = `
       treeTop: treeScroll.scrollTop,
       documentTop: documentPane.scrollTop,
       treeWidth: treePane.getBoundingClientRect().width,
+      tuiWidth: tuiPane?.getBoundingClientRect().width,
       query: treeSearch.value,
       statuses: [...selectedStatuses],
       mobileView: workspace.dataset.mobileView || "tree",
@@ -3800,6 +4000,7 @@ const CLIENT_SCRIPT = `
 
     const applyUiState = (ui) => {
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
+      if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
       const collapsed = new Set(ui?.collapsed || []);
       document.querySelectorAll("[data-tree-item]").forEach((item) => {
         const isCollapsed = collapsed.has(item.dataset.goalId);
@@ -3842,6 +4043,8 @@ const CLIENT_SCRIPT = `
       const item = visibleGoals().find((entry) => entry.goal.goal_id === goalId);
       if (!item) return false;
       selected = goalId;
+      document.querySelector("[data-tui-pane]")?.setAttribute("data-goal-id", goalId);
+      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: { goalId } }));
       document.querySelectorAll(".tree-node[data-select-goal]").forEach((button) => {
         const active = button.dataset.selectGoal === goalId;
         button.classList.toggle("is-selected", active);
@@ -3965,9 +4168,10 @@ const CLIENT_SCRIPT = `
       const empty = treeScroll.querySelector("[data-tree-filter-empty]");
       const suffix = count?.dataset.treeSuffix || "";
       if (count) {
+        const suffixText = suffix ? suffix + " " : "";
         count.textContent = !query && selectedStatuses.size === 0
-          ? "共 " + items.length + " 个" + suffix + "目标"
-          : "显示 " + matched.length + " / " + items.length + " 个" + suffix + "目标";
+          ? L("共 {count} 个{suffix}目标", { count: items.length, suffix: suffixText })
+          : L("显示 {shown} / {total} 个{suffix}目标", { shown: matched.length, total: items.length, suffix: suffixText });
       }
       if (empty) empty.hidden = matched.length > 0 || items.length === 0;
     }
@@ -4171,30 +4375,55 @@ const CLIENT_SCRIPT = `
         option.hidden = Boolean(query) && !String(option.dataset.search || "").includes(query);
       });
     });
-    treeResizer.addEventListener("pointerdown", (event) => {
-      if (matchMedia("(max-width: 760px)").matches) return;
+    treeResizer?.addEventListener("pointerdown", (event) => {
+      if (matchMedia("(max-width: 760px)").matches && !workspace.classList.contains("is-desktop-tui")) return;
       resizeStartX = event.clientX;
       resizeStartWidth = treePane.getBoundingClientRect().width;
       treeResizer.classList.add("is-dragging");
       treeResizer.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
-    treeResizer.addEventListener("pointermove", (event) => {
+    treeResizer?.addEventListener("pointermove", (event) => {
       if (!treeResizer.hasPointerCapture(event.pointerId)) return;
       setTreeWidth(resizeStartWidth + event.clientX - resizeStartX);
     });
     const finishTreeResize = (event) => {
-      if (treeResizer.hasPointerCapture(event.pointerId)) treeResizer.releasePointerCapture(event.pointerId);
-      treeResizer.classList.remove("is-dragging");
+      if (treeResizer?.hasPointerCapture(event.pointerId)) treeResizer.releasePointerCapture(event.pointerId);
+      treeResizer?.classList.remove("is-dragging");
       saveUiState();
     };
-    treeResizer.addEventListener("pointerup", finishTreeResize);
-    treeResizer.addEventListener("pointercancel", finishTreeResize);
-    treeResizer.addEventListener("keydown", (event) => {
+    treeResizer?.addEventListener("pointerup", finishTreeResize);
+    treeResizer?.addEventListener("pointercancel", finishTreeResize);
+    treeResizer?.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
       setTreeWidth(treePane.getBoundingClientRect().width + (event.key === "ArrowRight" ? 16 : -16));
     });
+    if (tuiResizer && tuiPane) {
+      tuiResizer.addEventListener("pointerdown", (event) => {
+        resizeStartX = event.clientX;
+        resizeStartWidth = tuiPane.getBoundingClientRect().width;
+        tuiResizer.classList.add("is-dragging");
+        tuiResizer.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+      tuiResizer.addEventListener("pointermove", (event) => {
+        if (!tuiResizer.hasPointerCapture(event.pointerId)) return;
+        setTuiWidth(resizeStartWidth - (event.clientX - resizeStartX));
+      });
+      const finishTuiResize = (event) => {
+        if (tuiResizer.hasPointerCapture(event.pointerId)) tuiResizer.releasePointerCapture(event.pointerId);
+        tuiResizer.classList.remove("is-dragging");
+        saveUiState();
+      };
+      tuiResizer.addEventListener("pointerup", finishTuiResize);
+      tuiResizer.addEventListener("pointercancel", finishTuiResize);
+      tuiResizer.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        setTuiWidth(tuiPane.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 16 : -16));
+      });
+    }
 
     treeFilterTrigger?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -4886,10 +5115,15 @@ const CLIENT_SCRIPT = `
     addEventListener("resize", () => setTreeWidth(treePane.getBoundingClientRect().width, false));
 
     setTreeWidth(treePane.getBoundingClientRect().width, false);
+    if (tuiPane) setTuiWidth(tuiPane.getBoundingClientRect().width, false);
     try {
       const stored = JSON.parse(sessionStorage.getItem(storageKey) || "null");
       if (stored) applyUiState(stored);
     } catch {}
+    if (selected && tuiPane) {
+      tuiPane.setAttribute("data-goal-id", selected);
+      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: { goalId: selected } }));
+    }
     updateRelationPreviews();
     updateAllRelationFormPreviews();
     setInterval(refreshBoard, 4000);
@@ -4900,17 +5134,17 @@ function renderProjectMigrationDialog(): string {
   return `<dialog class="project-migration-dialog" data-project-migration-dialog aria-labelledby="project-migration-title">
   <form class="project-migration-form" data-project-migration-form>
     <header>
-      <div><h2 id="project-migration-title">迁移已有 GoalBoard 数据</h2><p>这是一次单独确认的文件迁移，不会绑定或切换任何 Runtime Session。</p></div>
-      <button class="icon-button" type="button" data-close-project-migration aria-label="关闭迁移窗口">${icon("x")}</button>
+      <div><h2 id="project-migration-title">${L("迁移已有 GoalBoard 数据")}</h2><p>${L("这是一次单独确认的文件迁移，不会绑定或切换任何 Runtime Session。")}</p></div>
+      <button class="icon-button" type="button" data-close-project-migration aria-label="${L("关闭迁移窗口")}">${icon("x")}</button>
     </header>
     <div class="project-migration-body">
-      <label>已有 GoalBoard DB<input name="legacy_database_path" type="text" required autocomplete="off" placeholder="/绝对路径/到/goalboard.db"><small>请输入你明确要迁移的本机 GoalBoard 数据库路径。</small></label>
-      <label>迁移后项目名 <small>可选</small><input name="display_name" type="text" maxlength="160" autocomplete="off" placeholder="留空则使用旧 Board 的名称"></label>
-      <p class="project-migration-warning">确认后，来源 DB 会由 GoalBoard 的受管理项目目录接管，原位置不再保留该 DB；Goal、Claim、Run、Evidence 和审计历史会原样迁入。迁移失败时来源 DB 不会被移动。</p>
-      <label class="project-migration-confirm"><input name="user_confirmed" type="checkbox"><span>我确认要迁移这份已有 GoalBoard 数据，并理解成功后来源 DB 将移入 GoalBoard 管理目录。</span></label>
+      <label>${L("已有 GoalBoard DB")}<input name="legacy_database_path" type="text" required autocomplete="off" placeholder="${L("/绝对路径/到/goalboard.db")}"><small>${L("请输入你明确要迁移的本机 GoalBoard 数据库路径。")}</small></label>
+      <label>${L("迁移后项目名 ")}<small>${L("可选")}</small><input name="display_name" type="text" maxlength="160" autocomplete="off" placeholder="${L("留空则使用旧 Board 的名称")}"></label>
+      <p class="project-migration-warning">${L("确认后，来源 DB 会由 GoalBoard 的受管理项目目录接管，原位置不再保留该 DB；Goal、Claim、Run、Evidence 和审计历史会原样迁入。迁移失败时来源 DB 不会被移动。")}</p>
+      <label class="project-migration-confirm"><input name="user_confirmed" type="checkbox"><span>${L("我确认要迁移这份已有 GoalBoard 数据，并理解成功后来源 DB 将移入 GoalBoard 管理目录。")}</span></label>
       <p class="project-migration-error" data-project-migration-error role="alert" hidden></p>
     </div>
-    <footer><button type="button" data-close-project-migration>取消</button><button class="project-migration-submit" type="submit" data-project-migration-submit>确认迁移</button></footer>
+    <footer><button type="button" data-close-project-migration>${L("取消")}</button><button class="project-migration-submit" type="submit" data-project-migration-submit>${L("确认迁移")}</button></footer>
   </form>
 </dialog>`;
 }
@@ -4918,44 +5152,48 @@ function renderProjectMigrationDialog(): string {
 export function renderGoalBoardProjectIndex(
   projects: readonly WebProjectNavigation[],
   controlToken = "",
+  desktopShell = false,
 ): string {
+  const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const projectRows = projects
     .map(
-      (project) => `<li><a href="/projects/${encodeURIComponent(project.project_id)}"><span><strong>${escapeHtml(project.display_name)}${project.data_class === "regenerable_demo" ? ' <small>演示数据 · 可重建</small>' : ""}</strong><span>打开这个项目的 Goal Tree</span></span>${icon("chevron-down")}</a></li>`,
+      (project) => `<li><a href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}"><span><strong>${escapeHtml(project.display_name)}${project.data_class === "regenerable_demo" ? ` <small>${L("演示数据 · 可重建")}</small>` : ""}</strong><span>${L("打开这个项目的 Goal Tree")}</span></span>${icon("chevron-down")}</a></li>`,
     )
     .join("");
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${htmlLang()}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${controlTokenMeta(controlToken)}
-  <title>选择项目 · GoalBoard</title>
-  <style>${STYLES}${PROJECT_INDEX_STYLES}</style>
+  <title>${L("选择项目 · GoalBoard")}</title>
+  <style>${STYLES}${PROJECT_INDEX_STYLES}${LOCALE_SWITCH_STYLES}</style>
 </head>
-<body class="project-index-page">
+<body class="project-index-page"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
   <header class="topbar">
-    <a class="brand" href="/" aria-label="GoalBoard 项目列表">${icon("brand")}<strong>GoalBoard</strong></a>
-    <div class="project-context"><strong>项目列表</strong><small>选择后只改变当前网页浏览位置</small></div>
+    <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
+    <div class="project-context"><strong>${L("项目列表")}</strong><small>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
     <div class="top-spacer"></div>
-    <a class="top-action" href="/settings/runtimes">${icon("settings")}<span>设置</span></a>
+    ${renderLocaleSwitch("/")}
+    <a class="top-action" href="${href("/settings/runtimes")}">${icon("settings")}<span>${L("设置")}</span></a>
   </header>
   <main class="project-index">
     <section class="project-index-panel" aria-labelledby="project-index-title">
       <header class="project-index-heading">
-        <h1 id="project-index-title">选择一个项目</h1>
-        <p>你可以在网页创建、导入和打开项目，也可以在 Runtime 中通过 GoalBoard Skill 连接。网页选择项目不会自动绑定或切换 Runtime Session。</p>
+        <h1 id="project-index-title">${L("选择一个项目")}</h1>
+        <p>${L("你可以在网页创建、导入和打开项目，也可以在 Runtime 中通过 GoalBoard Skill 连接。网页选择项目不会自动绑定或切换 Runtime Session。")}</p>
+        <p class="project-index-desktop-note">${L("打开项目后，Goal 详情右侧会出现终端栏。点「添加终端」即可在当前 Goal 上打开 TUI。")}</p>
       </header>
       ${projects.length
         ? `<ul class="project-list">${projectRows}</ul>`
-        : `<div class="project-index-empty"><h2>从一个真实项目开始</h2><p>你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。</p><div class="project-index-start"><a href="/settings/projects">创建第一个项目</a><a href="/settings/runtimes">设置 Runtime 接入</a></div></div>`}
-      <section class="project-index-migration"><div><strong>已有一份旧的 GoalBoard DB？</strong><small>只有你明确选择并确认后，才会迁移它并保留已有历史。</small></div><button class="project-index-migrate" type="button" data-open-project-migration>迁移已有 GoalBoard 数据</button></section>
-      <p class="project-index-note">选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。</p>
+        : `<div class="project-index-empty"><h2>${L("从一个真实项目开始")}</h2><p>${L("你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。")}</p><div class="project-index-start"><a href="${href("/settings/projects")}">${L("创建第一个项目")}</a><a href="${href("/settings/runtimes")}">${L("设置 Runtime 接入")}</a></div></div>`}
+      <section class="project-index-migration"><div><strong>${L("已有一份旧的 GoalBoard DB？")}</strong><small>${L("只有你明确选择并确认后，才会迁移它并保留已有历史。")}</small></div><button class="project-index-migrate" type="button" data-open-project-migration>${L("迁移已有 GoalBoard 数据")}</button></section>
+      <p class="project-index-note">${L("选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。")}</p>
     </section>
   </main>
   ${renderProjectMigrationDialog()}
-  <script>${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -4965,12 +5203,12 @@ function runtimeStatePresentation(state: RuntimeIntegrationDetection["connection
   tone: "neutral" | "success" | "warning" | "danger";
   description: string;
 } {
-  if (state === "connected") return { label: "已接入", tone: "success", description: "MCP 与 GoalBoard Skill 都指向当前安装。" };
-  if (state === "needs_repair") return { label: "需要修复", tone: "warning", description: "检测到旧版或不完整的 GoalBoard 接入。" };
-  if (state === "conflict") return { label: "存在冲突", tone: "danger", description: "同名配置或 Skill 不属于 GoalBoard，不会自动覆盖。" };
-  if (state === "goalboard_unavailable") return { label: "本体不完整", tone: "danger", description: "请先查看诊断并修复 GoalBoard 本体安装。" };
-  if (state === "not_detected") return { label: "未检测到", tone: "neutral", description: "这台设备上没有找到对应 Runtime。" };
-  return { label: "未接入", tone: "neutral", description: "尚未把 GoalBoard MCP 与 Skill 写入这个 Runtime。" };
+  if (state === "connected") return { label: L("已接入"), tone: "success", description: L("MCP 与 GoalBoard Skill 都指向当前安装。") };
+  if (state === "needs_repair") return { label: L("需要修复"), tone: "warning", description: L("检测到旧版或不完整的 GoalBoard 接入。") };
+  if (state === "conflict") return { label: L("存在冲突"), tone: "danger", description: L("同名配置或 Skill 不属于 GoalBoard，不会自动覆盖。") };
+  if (state === "goalboard_unavailable") return { label: L("本体不完整"), tone: "danger", description: L("请先查看诊断并修复 GoalBoard 本体安装。") };
+  if (state === "not_detected") return { label: L("未检测到"), tone: "neutral", description: L("这台设备上没有找到对应 Runtime。") };
+  return { label: L("未接入"), tone: "neutral", description: L("尚未把 GoalBoard MCP 与 Skill 写入这个 Runtime。") };
 }
 
 function renderRuntimeSettings(view: GoalBoardSettingsView): string {
@@ -4978,19 +5216,19 @@ function renderRuntimeSettings(view: GoalBoardSettingsView): string {
     const state = runtimeStatePresentation(runtime.connection_state);
     const unavailable = runtime.connection_state === "not_detected" || runtime.connection_state === "goalboard_unavailable";
     const action = runtime.connection_state === "connected" ? "remove" : "connect";
-    const actionLabel = action === "remove" ? "预览移除" : runtime.connection_state === "needs_repair" ? "预览修复" : "查看并接入";
+    const actionLabel = action === "remove" ? L("预览移除") : runtime.connection_state === "needs_repair" ? L("预览修复") : L("查看并接入");
     return `<article class="settings-record runtime-record" data-runtime-row="${escapeHtml(runtime.runtime_id)}">
       <header>
         <div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h2>${escapeHtml(runtime.display_name)}</h2><p>${escapeHtml(state.description)}</p></div></div>
         <div class="settings-record-action"><span class="settings-state settings-state--${state.tone}">${escapeHtml(state.label)}</span><button type="button" data-runtime-plan="${escapeHtml(runtime.runtime_id)}" data-runtime-action="${action}"${unavailable ? " disabled" : ""}>${escapeHtml(actionLabel)}</button></div>
       </header>
-      <dl class="settings-paths"><div><dt>Runtime</dt><dd>${runtime.executable_path ? escapeHtml(runtime.executable_path) : "未找到可执行文件"}</dd></div><div><dt>配置</dt><dd>${escapeHtml(runtime.config_path)}</dd></div><div><dt>Skill</dt><dd>${escapeHtml(runtime.skill_path)}</dd></div></dl>
+      <dl class="settings-paths"><div><dt>Runtime</dt><dd>${runtime.executable_path ? escapeHtml(runtime.executable_path) : L("未找到可执行文件")}</dd></div><div><dt>${L("配置")}</dt><dd>${escapeHtml(runtime.config_path)}</dd></div><div><dt>Skill</dt><dd>${escapeHtml(runtime.skill_path)}</dd></div></dl>
     </article>`;
   }).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">Runtime 接入</h1><p>先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。</p></header>
-    <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>没有可探测的 Runtime</h2><p>GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。</p></div>`}</div>
-    <p class="settings-footnote">当前自动适配 Codex 和 Claude Code。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。</p>
+    <header class="settings-heading"><h1 id="settings-title">${L("Runtime 接入")}</h1><p>${L("先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。")}</p></header>
+    <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>${L("没有可探测的 Runtime")}</h2><p>${L("GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。")}</p></div>`}</div>
+    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。")}</p>
   </section>`;
 }
 
@@ -4998,14 +5236,14 @@ function renderConnectionSettings(view: GoalBoardSettingsView): string {
   const rows = view.connections.map((connection) => {
     const alternateProjects = view.projects.filter((project) => project.project_id !== connection.project_id);
     const switchForm = alternateProjects.length
-      ? `<form class="connection-action-form" data-connection-rebind="${escapeHtml(connection.binding_id)}"><label>切换到<select name="project_id" required>${alternateProjects.map((project) => `<option value="${escapeHtml(project.project_id)}">${escapeHtml(project.display_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认只把这个 Session 从“${escapeHtml(connection.project_name)}”切换到所选项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">确认切换</button></form>`
-      : `<div class="connection-action-form"><p class="settings-footnote">当前没有其他项目可切换。先创建或导入另一个项目。</p></div>`;
+      ? `<form class="connection-action-form" data-connection-rebind="${escapeHtml(connection.binding_id)}"><label>${L("切换到")}<select name="project_id" required>${alternateProjects.map((project) => `<option value="${escapeHtml(project.project_id)}">${escapeHtml(project.display_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认只把这个 Session 从“{name}”切换到所选项目", { name: connection.project_name })}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("确认切换")}</button></form>`
+      : `<div class="connection-action-form"><p class="settings-footnote">${L("当前没有其他项目可切换。先创建或导入另一个项目。")}</p></div>`;
     return `<article class="settings-record connection-record" data-connection-row="${escapeHtml(connection.binding_id)}">
-      <header><div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h3>${escapeHtml(connection.context_label)}</h3><p>${escapeHtml(connection.runtime_name)} · 当前项目 <strong>${escapeHtml(connection.project_name)}</strong></p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">已关联</span></div></header>
-      <div class="connection-record-tools"><details><summary>${icon("refresh")}<span>切换项目</span>${icon("chevron-down")}</summary>${switchForm}</details><details><summary>${icon("blocked")}<span>解绑</span>${icon("chevron-down")}</summary><form class="connection-action-form connection-action-form--danger" data-connection-unbind="${escapeHtml(connection.binding_id)}"><p class="settings-footnote">只停止这个 Session 使用 GoalBoard；不会删除“${escapeHtml(connection.project_name)}”或其他 Session 关联。</p><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认解绑这个 Session</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">确认解绑</button></form></details></div>
+      <header><div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h3>${escapeHtml(connection.context_label)}</h3><p>${escapeHtml(connection.runtime_name)}${L(" · 当前项目 ")}<strong>${escapeHtml(connection.project_name)}</strong></p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${L("已关联")}</span></div></header>
+      <div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("切换项目")}</span>${icon("chevron-down")}</summary>${switchForm}</details><details><summary>${icon("blocked")}<span>${L("解绑")}</span>${icon("chevron-down")}</summary><form class="connection-action-form connection-action-form--danger" data-connection-unbind="${escapeHtml(connection.binding_id)}"><p class="settings-footnote">${L("只停止这个 Session 使用 GoalBoard；不会删除“{name}”或其他 Session 关联。", { name: connection.project_name })}</p><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解绑这个 Session")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("确认解绑")}</button></form></details></div>
     </article>`;
   }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">已关联的 Runtime Session</h2><p>这里只显示你已经在对应 Runtime 对话里确认过的 Session。新 Session 会先询问你要不要关联，不会自动出现在这里。</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>还没有已确认的 Session 关联</h3><p>在 Runtime 中使用 GoalBoard Skill 后，当前 Session 会先询问你要连接哪个项目。</p></div>`}</div></section>`;
+  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">${L("已关联的 Runtime Session")}</h2><p>${L("这里只显示你已经在对应 Runtime 对话里确认过的 Session。新 Session 会先询问你要不要关联，不会自动出现在这里。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有已确认的 Session 关联")}</h3><p>${L("在 Runtime 中使用 GoalBoard Skill 后，当前 Session 会先询问你要连接哪个项目。")}</p></div>`}</div></section>`;
 }
 
 function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
@@ -5016,40 +5254,40 @@ function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
     groups.set(membership.workspace_id, current);
   }
   const rows = [...groups.entries()].map(([workspaceId, memberships]) => {
-    const workspaceName = memberships[0]?.workspace_name ?? "未命名目录";
+    const workspaceName = memberships[0]?.workspace_name ?? L("未命名目录");
     const defaultMembership = memberships.find((membership) => membership.is_default);
     const defaultChoices = memberships.filter((membership) => !membership.is_default);
     const defaultForm = defaultChoices.length
-      ? `<form class="connection-action-form" data-workspace-default="${escapeHtml(workspaceId)}"><label>新 Session 默认使用<select name="project_id" required>${defaultChoices.map((membership) => `<option value="${escapeHtml(membership.project_id)}">${escapeHtml(membership.project_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认更改“${escapeHtml(workspaceName)}”的默认项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">设为默认</button></form>`
-      : `<div class="connection-action-form"><p class="settings-footnote">当前没有其他已关联项目可设为默认。</p></div>`;
-    const projects = memberships.map((membership) => `<li><span><strong>${escapeHtml(membership.project_name)}</strong>${membership.is_default ? `<span class="settings-state settings-state--success">默认</span>` : ""}</span><form data-workspace-unlink="${escapeHtml(workspaceId)}" data-workspace-project="${escapeHtml(membership.project_id)}"><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认解除关联</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">解除</button></form></li>`).join("");
-    return `<article class="settings-record connection-record" data-workspace-row="${escapeHtml(workspaceId)}"><header><div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h3>${escapeHtml(workspaceName)}</h3><p>${defaultMembership ? `新 Session 默认进入 <strong>${escapeHtml(defaultMembership.project_name)}</strong>` : "已关联多个项目，进入新 Session 时需要选择"}</p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${memberships.length} 个项目</span></div></header><ul class="workspace-project-list">${projects}</ul><div class="connection-record-tools"><details><summary>${icon("refresh")}<span>更改默认项目</span>${icon("chevron-down")}</summary>${defaultForm}</details></div></article>`;
+      ? `<form class="connection-action-form" data-workspace-default="${escapeHtml(workspaceId)}"><label>${L("新 Session 默认使用")}<select name="project_id" required>${defaultChoices.map((membership) => `<option value="${escapeHtml(membership.project_id)}">${escapeHtml(membership.project_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认更改“{name}”的默认项目", { name: workspaceName })}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("设为默认")}</button></form>`
+      : `<div class="connection-action-form"><p class="settings-footnote">${L("当前没有其他已关联项目可设为默认。")}</p></div>`;
+    const projects = memberships.map((membership) => `<li><span><strong>${escapeHtml(membership.project_name)}</strong>${membership.is_default ? `<span class="settings-state settings-state--success">${L("默认")}</span>` : ""}</span><form data-workspace-unlink="${escapeHtml(workspaceId)}" data-workspace-project="${escapeHtml(membership.project_id)}"><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解除关联")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("解除")}</button></form></li>`).join("");
+    return `<article class="settings-record connection-record" data-workspace-row="${escapeHtml(workspaceId)}"><header><div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h3>${escapeHtml(workspaceName)}</h3><p>${defaultMembership ? `${L("新 Session 默认进入 ")}<strong>${escapeHtml(defaultMembership.project_name)}</strong>` : L("已关联多个项目，进入新 Session 时需要选择")}</p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${memberships.length}${L("个项目")}</span></div></header><ul class="workspace-project-list">${projects}</ul><div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("更改默认项目")}</span>${icon("chevron-down")}</summary>${defaultForm}</details></div></article>`;
   }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">项目目录关联</h2><p>一个目录可以关联多个 GoalBoard 项目，并指定新 Session 自动进入的默认项目。这里不展示完整目录路径。</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>还没有目录关联</h3><p>在某个项目目录的 Runtime 对话中首次选择 GoalBoard 项目后，这里会出现关联。</p></div>`}</div></section>`;
+  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">${L("项目目录关联")}</h2><p>${L("一个目录可以关联多个 GoalBoard 项目，并指定新 Session 自动进入的默认项目。这里不展示完整目录路径。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有目录关联")}</h3><p>${L("在某个项目目录的 Runtime 对话中首次选择 GoalBoard 项目后，这里会出现关联。")}</p></div>`}</div></section>`;
 }
 
 function renderProjectSettings(view: GoalBoardSettingsView): string {
   const demo = view.projects.find((project) => project.data_class === "regenerable_demo");
   const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
     <header>
-      <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? "演示数据 · 可随时重建，不属于用户项目" : project.source === "migrated" ? "用户数据 · 由已有 GoalBoard 数据迁入" : "用户数据 · 在 GoalBoard 中创建"}</p></div></div>
-      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? '<span class="settings-state settings-state--warning">可重建 demo</span>' : '<span class="settings-state settings-state--success">用户数据</span>'}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">打开 Goal Tree</a></div>
+      <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? L("演示数据 · 可随时重建，不属于用户项目") : project.source === "migrated" ? L("用户数据 · 由已有 GoalBoard 数据迁入") : L("用户数据 · 在 GoalBoard 中创建")}</p></div></div>
+      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
     </header>
     <div class="project-record-tools">
-      <details><summary>${icon("settings")}<span>改名</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>项目名称<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">保存名称</button></form></details>
-      <details><summary>${icon("database")}<span>DB 信息</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>项目 ID</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>数据库</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
-      ${project.data_class === "regenerable_demo" ? `<details><summary>${icon("refresh")}<span>重建或删除 demo</span>${icon("chevron-down")}</summary><div class="connection-action-form connection-action-form--danger"><p class="settings-footnote">重建会清除你在 demo 中做的改动；删除只移除这个可重建项目，不影响用户项目。</p><p class="settings-form-error" data-demo-error role="alert" hidden></p><div class="service-action-row"><button type="button" data-demo-action="reset">重建 demo</button><button type="button" data-demo-action="remove">删除 demo</button></div></div></details>` : ""}
+      <details><summary>${icon("settings")}<span>${L("改名")}</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>${L("项目名称")}<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("保存名称")}</button></form></details>
+      <details><summary>${icon("database")}<span>${L("DB 信息")}</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>${L("项目 ID")}</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>${L("数据库")}</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
+      ${project.data_class === "regenerable_demo" ? `<details><summary>${icon("refresh")}<span>${L("重建或删除 demo")}</span>${icon("chevron-down")}</summary><div class="connection-action-form connection-action-form--danger"><p class="settings-footnote">${L("重建会清除你在 demo 中做的改动；删除只移除这个可重建项目，不影响用户项目。")}</p><p class="settings-form-error" data-demo-error role="alert" hidden></p><div class="service-action-row"><button type="button" data-demo-action="reset">${L("重建 demo")}</button><button type="button" data-demo-action="remove">${L("删除 demo")}</button></div></div></details>` : ""}
     </div>
   </article>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">项目</h1><p>每个项目有独立 DB；项目名称用于识别，DB 路径只是辅助信息。网页项目选择不会改变 Runtime Session 绑定。</p></header>
-    <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">创建项目</h2><p>创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。</p></div><form class="inline-settings-form" data-project-create><label>项目名称<input name="display_name" required maxlength="160" placeholder="例如：新产品发布"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>确认创建这个项目</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">创建并打开</button></form></section>
-    <section class="settings-action-section" aria-labelledby="demo-project-title"><div><h2 id="demo-project-title">产品示例</h2><p>${demo ? "示例项目已单独标记为可重建数据，可以放心重置或删除。" : "创建一份明确标记为可重建的示例数据；普通卸载会清理它，但保留用户项目。"}</p></div>${demo ? `<a class="settings-button" href="/projects/${encodeURIComponent(demo.project_id)}/">打开示例</a>` : '<button type="button" data-demo-action="create">创建示例项目</button>'}<p class="settings-form-error" data-demo-error role="alert" hidden></p></section>
-    <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>还没有项目</h2><p>在上方创建第一个项目，或从下方迁入一份已有 GoalBoard DB。</p></div>`}</div>
+    <header class="settings-heading"><h1 id="settings-title">${L("项目")}</h1><p>${L("每个项目有独立 DB；项目名称用于识别，DB 路径只是辅助信息。网页项目选择不会改变 Runtime Session 绑定。")}</p></header>
+    <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">${L("创建项目")}</h2><p>${L("创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。")}</p></div><form class="inline-settings-form" data-project-create><label>${L("项目名称")}<input name="display_name" required maxlength="160" placeholder="${L("例如：新产品发布")}"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认创建这个项目")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("创建并打开")}</button></form></section>
+    <section class="settings-action-section" aria-labelledby="demo-project-title"><div><h2 id="demo-project-title">${L("产品示例")}</h2><p>${demo ? L("示例项目已单独标记为可重建数据，可以放心重置或删除。") : L("创建一份明确标记为可重建的示例数据；普通卸载会清理它，但保留用户项目。")}</p></div>${demo ? `<a class="settings-button" href="/projects/${encodeURIComponent(demo.project_id)}/">${L("打开示例")}</a>` : `<button type="button" data-demo-action="create">${L("创建示例项目")}</button>`}<p class="settings-form-error" data-demo-error role="alert" hidden></p></section>
+    <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>${L("还没有项目")}</h2><p>${L("在上方创建第一个项目，或从下方迁入一份已有 GoalBoard DB。")}</p></div>`}</div>
     ${renderWorkspaceSettings(view)}
     ${renderConnectionSettings(view)}
-    <section class="settings-import-row"><div><h2>导入已有 GoalBoard DB</h2><p>明确选择并确认后，来源 DB 会移入 GoalBoard 的项目目录。</p></div><button type="button" data-open-project-migration>选择 DB 并预览迁移</button></section>
-    <p class="settings-footnote">普通用户项目不会被 demo 操作或普通卸载删除；永久清除用户数据需要在 CLI 里单独确认精确目录和项目数量。</p>
+    <section class="settings-import-row"><div><h2>${L("导入已有 GoalBoard DB")}</h2><p>${L("明确选择并确认后，来源 DB 会移入 GoalBoard 的项目目录。")}</p></div><button type="button" data-open-project-migration>${L("选择 DB 并预览迁移")}</button></section>
+    <p class="settings-footnote">${L("普通用户项目不会被 demo 操作或普通卸载删除；永久清除用户数据需要在 CLI 里单独确认精确目录和项目数量。")}</p>
   </section>`;
 }
 
@@ -5057,71 +5295,120 @@ function renderDiagnosticsSettings(view: GoalBoardSettingsView): string {
   const diagnostics = view.diagnostics;
   const service = view.web_service;
   const installation = diagnostics.installation_state === "ready"
-    ? { label: "安装完整", tone: "success" }
+    ? { label: L("安装完整"), tone: "success" }
     : diagnostics.installation_state === "missing"
-      ? { label: "尚未安装本体", tone: "warning" }
-      : { label: "安装清单无效", tone: "danger" };
-  const launchers = diagnostics.launchers.map((launcher) => `<li><span>${icon(launcher.state === "ready" ? "check" : "blocked")}<strong>${launcher.name}</strong><small>${escapeHtml(launcher.path)}</small></span><span class="settings-state settings-state--${launcher.state === "ready" ? "success" : "danger"}">${launcher.state === "ready" ? "可用" : "缺失"}</span></li>`).join("");
+      ? { label: L("尚未安装本体"), tone: "warning" }
+      : { label: L("安装清单无效"), tone: "danger" };
+  const launchers = diagnostics.launchers.map((launcher) => `<li><span>${icon(launcher.state === "ready" ? "check" : "blocked")}<strong>${launcher.name}</strong><small>${escapeHtml(launcher.path)}</small></span><span class="settings-state settings-state--${launcher.state === "ready" ? "success" : "danger"}">${launcher.state === "ready" ? L("可用") : L("缺失")}</span></li>`).join("");
   const serviceTone = service.state === "running" ? "success" : service.state === "stopped" || service.state === "absent" || service.state === "unhealthy" ? "warning" : "danger";
-  const serviceLabel = service.state === "running" ? "运行中" : service.state === "stopped" ? "已安装，未运行" : service.state === "unhealthy" ? "进程运行中，页面不可用" : service.state === "absent" ? "未启用" : service.state === "unsupported" ? "当前系统不支持" : service.state === "conflict" ? "配置冲突" : "需要修复";
+  const serviceLabel = service.state === "running" ? L("运行中") : service.state === "stopped" ? L("已安装，未运行") : service.state === "unhealthy" ? L("进程运行中，页面不可用") : service.state === "absent" ? L("未启用") : service.state === "unsupported" ? L("当前系统不支持") : service.state === "conflict" ? L("配置冲突") : L("需要修复");
   const serviceActions = service.state === "running"
-    ? [["restart", "重启"], ["stop", "停止"], ["remove", "移除"]]
+    ? [["restart", L("重启")], ["stop", L("停止")], ["remove", L("移除")]]
     : service.state === "stopped"
-      ? [["start", "启动"], ["remove", "移除"]]
+      ? [["start", L("启动")], ["remove", L("移除")]]
       : service.state === "unhealthy"
-        ? [["restart", "重启并检查"], ["remove", "移除"]]
+        ? [["restart", L("重启并检查")], ["remove", L("移除")]]
       : service.state === "absent" || service.state === "needs_repair"
-        ? [["install", "启用常驻服务"]]
+        ? [["install", L("启用常驻服务")]]
         : [];
   const serviceButtons = serviceActions.map(([action, label]) => `<button type="button" data-web-service-action="${action}">${label}</button>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">诊断</h1><p>这里只读取 GoalBoard 自己的安装状态，不扫描项目内容，也不会自动修复或修改 Runtime。</p></header>
-    <section class="diagnostics-summary"><div><h2>GoalBoard 本体</h2><span class="settings-state settings-state--${installation.tone}">${installation.label}</span></div><dl><div><dt>版本</dt><dd>${escapeHtml(diagnostics.version ?? "未识别")}</dd></div><div><dt>Home</dt><dd>${escapeHtml(diagnostics.home_directory)}</dd></div><div><dt>Release</dt><dd>${escapeHtml(diagnostics.release_directory ?? "未找到")}</dd></div><div><dt>项目数</dt><dd>${diagnostics.project_count}</dd></div></dl></section>
-    <section class="launcher-section" aria-labelledby="launcher-title"><h2 id="launcher-title">启动入口</h2><ul>${launchers}</ul></section>
-    <section class="diagnostics-summary" aria-labelledby="web-service-title"><div><div><h2 id="web-service-title">Web 常驻服务</h2><p>${escapeHtml(service.message)}</p></div><span class="settings-state settings-state--${serviceTone}">${serviceLabel}</span></div><dl><div><dt>方式</dt><dd>${service.provider === "macos-launchagent" ? "macOS 用户级 LaunchAgent" : "尚未提供"}</dd></div><div><dt>命令</dt><dd>${escapeHtml(service.command.join(" "))}</dd></div><div><dt>配置</dt><dd>${escapeHtml(service.plist_path)}</dd></div><div><dt>日志</dt><dd>${escapeHtml(service.stdout_log)}<br>${escapeHtml(service.stderr_log)}</dd></div></dl><div class="service-action-row">${serviceButtons}</div><p class="settings-form-error" data-web-service-error role="alert" hidden></p></section>
-    <p class="settings-footnote">如果本体不完整，请在终端重新运行 <code>goalboard install</code>。常驻服务操作会先展示预览并要求确认；不会在后台使用 nohup。</p>
+    <header class="settings-heading"><h1 id="settings-title">${L("诊断")}</h1><p>${L("这里只读取 GoalBoard 自己的安装状态，不扫描项目内容，也不会自动修复或修改 Runtime。")}</p></header>
+    <section class="diagnostics-summary"><div><h2>${L("GoalBoard 本体")}</h2><span class="settings-state settings-state--${installation.tone}">${installation.label}</span></div><dl><div><dt>${L("版本")}</dt><dd>${escapeHtml(diagnostics.version ?? L("未识别"))}</dd></div><div><dt>Home</dt><dd>${escapeHtml(diagnostics.home_directory)}</dd></div><div><dt>Release</dt><dd>${escapeHtml(diagnostics.release_directory ?? L("未找到"))}</dd></div><div><dt>${L("项目数")}</dt><dd>${diagnostics.project_count}</dd></div></dl></section>
+    <section class="launcher-section" aria-labelledby="launcher-title"><h2 id="launcher-title">${L("启动入口")}</h2><ul>${launchers}</ul></section>
+    <section class="diagnostics-summary" aria-labelledby="web-service-title"><div><div><h2 id="web-service-title">${L("Web 常驻服务")}</h2><p>${escapeHtml(L(service.message))}</p></div><span class="settings-state settings-state--${serviceTone}">${serviceLabel}</span></div><dl><div><dt>${L("方式")}</dt><dd>${service.provider === "macos-launchagent" ? L("macOS 用户级 LaunchAgent") : L("尚未提供")}</dd></div><div><dt>${L("命令")}</dt><dd>${escapeHtml(service.command.join(" "))}</dd></div><div><dt>${L("配置")}</dt><dd>${escapeHtml(service.plist_path)}</dd></div><div><dt>${L("日志")}</dt><dd>${escapeHtml(service.stdout_log)}<br>${escapeHtml(service.stderr_log)}</dd></div></dl><div class="service-action-row">${serviceButtons}</div><p class="settings-form-error" data-web-service-error role="alert" hidden></p></section>
+    <p class="settings-footnote">${L("如果本体不完整，请在终端重新运行 ")}<code>goalboard install</code>${L("。常驻服务操作会先展示预览并要求确认；不会在后台使用 nohup。")}</p>
   </section>`;
 }
 
 function renderRuntimePlanDialog(): string {
   return `<dialog class="runtime-plan-dialog" data-runtime-plan-dialog aria-labelledby="runtime-plan-title">
     <div class="runtime-plan-shell">
-      <header><div><h2 id="runtime-plan-title" data-runtime-plan-title>Runtime 接入预览</h2><p data-runtime-plan-message>正在读取变更计划…</p></div><button class="icon-button" type="button" data-runtime-plan-close aria-label="关闭预览">${icon("x")}</button></header>
-      <div class="runtime-plan-body"><ul class="runtime-change-list" data-runtime-change-list></ul><dl class="runtime-plan-meta"><div><dt>备份</dt><dd data-runtime-plan-backup>无须备份</dd></div><div><dt>完成后</dt><dd data-runtime-plan-restart>按页面提示重启 Runtime</dd></div></dl><label class="runtime-plan-confirm" data-runtime-confirm-row><input type="checkbox" data-runtime-confirm><span data-runtime-confirm-label>我已查看并确认这份变更</span></label><p class="settings-form-error" data-runtime-plan-error role="alert" hidden></p></div>
-      <footer><button type="button" data-runtime-plan-close>取消</button><button class="runtime-plan-apply" type="button" data-runtime-plan-apply disabled>确认应用</button></footer>
+      <header><div><h2 id="runtime-plan-title" data-runtime-plan-title>${L("Runtime 接入预览")}</h2><p data-runtime-plan-message>${L("正在读取变更计划…")}</p></div><button class="icon-button" type="button" data-runtime-plan-close aria-label="${L("关闭预览")}">${icon("x")}</button></header>
+      <div class="runtime-plan-body"><ul class="runtime-change-list" data-runtime-change-list></ul><dl class="runtime-plan-meta"><div><dt>${L("备份")}</dt><dd data-runtime-plan-backup>${L("无须备份")}</dd></div><div><dt>${L("完成后")}</dt><dd data-runtime-plan-restart>${L("按页面提示重启 Runtime")}</dd></div></dl><label class="runtime-plan-confirm" data-runtime-confirm-row><input type="checkbox" data-runtime-confirm><span data-runtime-confirm-label>${L("我已查看并确认这份变更")}</span></label><p class="settings-form-error" data-runtime-plan-error role="alert" hidden></p></div>
+      <footer><button type="button" data-runtime-plan-close>${L("取消")}</button><button class="runtime-plan-apply" type="button" data-runtime-plan-apply disabled>${L("确认应用")}</button></footer>
     </div>
   </dialog>`;
 }
 
+function renderTuiPane(selectedGoalId: string): string {
+  return `
+      <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
+      <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" aria-label="${L("终端面板")}">
+        <div class="tui-tabs">
+          <div class="tui-tab-list" data-tui-tabs></div>
+          <button class="tui-add" type="button" data-tui-add aria-expanded="false" aria-controls="tui-open-menu" aria-haspopup="true" aria-label="${L("添加终端")}">${icon("plus")}<span>${L("添加终端")}</span></button>
+        </div>
+        <div class="tui-stage">
+          <div class="tui-chrome">
+            <div class="tui-chrome-actions">
+              <button class="tui-advance" type="button" data-tui-advance disabled>${icon("play")}<span>${L("推进这个 Goal")}</span></button>
+              <button type="button" data-tui-fill disabled>${L("填入不发送")}</button>
+              <button type="button" data-tui-reopen hidden>${icon("refresh")}<span>${L("重新打开")}</span></button>
+            </div>
+            <p class="tui-status" data-tui-status role="status"></p>
+          </div>
+          <div class="tui-terminal" data-tui-terminal>
+            <div class="tui-empty" data-tui-empty>
+              <span class="tui-empty-mark" aria-hidden="true">${icon("terminal")}</span>
+              <p><strong>${L("还没有终端")}</strong></p>
+              <p>${L("点右上角「添加终端」，在这个 Goal 上打开常用 Runtime 或自定义命令。")}</p>
+            </div>
+          </div>
+        </div>
+        <form class="tui-menu" id="tui-open-menu" data-tui-menu aria-hidden="true" inert>
+          <strong>${L("在这个 Goal 上打开终端")}</strong>
+          <p>${L("标签只属于当前 Goal。打开不会自动发送或领取。")}</p>
+          <div class="tui-runtime-choices">
+            <button type="button" data-tui-kind="claude-code">Claude Code</button>
+            <button type="button" data-tui-kind="codex">Codex</button>
+            <button type="button" data-tui-kind="opencode">OpenCode</button>
+            <button type="button" data-tui-kind="pi-agent">Pi Agent</button>
+            <button type="button" data-tui-kind="grok-build">Grok Build</button>
+            <button type="button" data-tui-kind="generic">${L("自定义命令")}</button>
+          </div>
+          <label data-tui-generic-fields hidden>${L("命令")}<input name="command" type="text" autocomplete="off" placeholder="opencode"></label>
+          <label>${L("继续会话 ID（可选）")}<input name="resume_session_id" type="text" autocomplete="off"></label>
+          <div class="tui-menu-actions">
+            <button type="button" data-tui-menu-cancel>${L("取消")}</button>
+            <button type="submit" data-tui-generic-open hidden>${L("打开")}</button>
+          </div>
+        </form>
+      </aside>`;
+}
+
 export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = ""): string {
-  const title = view.section === "runtimes" ? "Runtime 接入" : view.section === "projects" ? "项目" : "诊断";
+  const title = view.section === "runtimes" ? L("Runtime 接入") : view.section === "projects" ? L("项目") : L("诊断");
   const content = view.section === "runtimes"
     ? renderRuntimeSettings(view)
     : view.section === "projects"
       ? renderProjectSettings(view)
       : renderDiagnosticsSettings(view);
   return `<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · GoalBoard 设置</title><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}</style></head>
+<html lang="${htmlLang()}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}</style></head>
 <body class="settings-page" data-settings-section="${view.section}">
   ${renderIconSprite()}
-  <header class="topbar"><a class="brand" href="/" aria-label="返回 GoalBoard 项目列表">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"><strong>设置</strong><small>Runtime、项目与诊断</small></div><div class="top-spacer"></div><a class="top-action" href="/">${icon("folder")}<span>项目列表</span></a></header>
+  <header class="topbar"><a class="brand" href="/" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"><strong>${L("设置")}</strong><small>${L("Runtime、项目与诊断")}</small></div><div class="top-spacer"></div>${renderLocaleSwitch(`/settings/${view.section}`)}<a class="top-action" href="/">${icon("folder")}<span>${L("项目列表")}</span></a></header>
   <main class="settings-shell">
-    <nav class="settings-navigation" aria-label="GoalBoard 设置"><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>Runtime 接入</strong><small>MCP 与 Skill</small></span></a><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>项目</strong><small>创建、导入与改名</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>诊断</strong><small>安装与启动入口</small></span></a></nav>
+    <nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}"><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>${L("Runtime 接入")}</strong><small>${L("MCP 与 Skill")}</small></span></a><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>${L("项目")}</strong><small>${L("创建、导入与改名")}</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装与启动入口")}</small></span></a></nav>
     <div class="settings-content">${content}</div>
   </main>
   ${renderRuntimePlanDialog()}
   ${renderProjectMigrationDialog()}
   <div class="toast" data-settings-toast role="status" aria-live="polite"></div>
-  <script>${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${SETTINGS_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${SETTINGS_CLIENT_SCRIPT}</script>
 </body></html>`;
 }
 
-function prefixLocalLinks(html: string, routePrefix: string): string {
-  const prefixed = routePrefix ? html.replaceAll('href="/', `href="${routePrefix}/`) : html;
-  return prefixed
+function prefixLocalLinks(html: string, routePrefix: string, desktopShell = false): string {
+  const prefixed = routePrefix
+    ? html.replace(/href="\/(?!locale(?:\?|"))/g, `href="${routePrefix}/`)
+    : html;
+  const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
     .replaceAll('href="__SETTINGS__"', 'href="/settings/runtimes"');
+  return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
 }
 
 export function renderGoalBoardWeb(
@@ -5131,11 +5418,12 @@ export function renderGoalBoardWeb(
   decisionView = false,
   trashView = false,
   controlToken = "",
+  desktopShell = false,
 ): string {
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
-  const collectionTitle = trashView ? "回收站" : archiveView ? "已归档" : "Goal Tree";
-  const collectionSuffix = trashView ? "回收站" : archiveView ? "归档" : "";
+  const collectionTitle = trashView ? L("回收站") : archiveView ? L("已归档") : "Goal Tree";
+  const collectionSuffix = trashView ? L("回收站") : archiveView ? L("归档") : "";
   const selected = decisionView
     ? undefined
     : visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
@@ -5143,19 +5431,19 @@ export function renderGoalBoardWeb(
       visibleGoals[0];
   const selectedId = selected?.goal.goal_id ?? "";
   const title = decisionView
-    ? "等待你的决定 · GoalBoard"
+    ? L("等待你的决定 · GoalBoard")
     : selected
     ? selected.goal.title + " · GoalBoard"
     : trashView
-      ? "回收站 · GoalBoard"
+      ? L("回收站 · GoalBoard")
     : archiveView
-      ? "已归档 Goal · GoalBoard"
+      ? L("已归档 Goal · GoalBoard")
       : "GoalBoard";
   const phaseSummary = [
-    { label: "澄清中", count: view.counts.clarifying },
-    { label: "执行中", count: view.counts.executing },
-    { label: "复核中", count: view.counts.reviewing },
-    { label: "重新验证中", count: view.counts.revalidating },
+    { label: L("澄清中"), count: view.counts.clarifying },
+    { label: L("执行中"), count: view.counts.executing },
+    { label: L("复核中"), count: view.counts.reviewing },
+    { label: L("重新验证中"), count: view.counts.revalidating },
   ]
     .filter((item) => item.count > 0)
     .map((item) => `${item.label} ${item.count}`)
@@ -5166,15 +5454,37 @@ export function renderGoalBoardWeb(
     view.counts.review_blocked +
     view.counts.revalidation_blocked +
     view.counts.invalidated;
-  const footerStatus = [phaseSummary, blockedCount > 0 ? `受阻 ${blockedCount}` : ""]
+  const footerStatus = [phaseSummary, blockedCount > 0 ? L("受阻 {count}", { count: blockedCount }) : ""]
     .filter(Boolean)
-    .join(" · ") || "当前没有进行中的 Goal";
+    .join(" · ") || L("当前没有进行中的 Goal");
   const collectionNote = trashView
-    ? "可恢复；历史与关联处理记录会保留"
+    ? L("可恢复；历史与关联处理记录会保留")
     : archiveView
-      ? "可随时恢复"
+      ? L("可随时恢复")
       : footerStatus;
-  const projectContext = `<div class="project-context"><strong>项目：</strong><span>${escapeHtml(view.project?.display_name ?? "当前项目")}</span>${view.project ? '<a href="__PROJECT_INDEX__">切换项目</a>' : ""}${view.demo ? "<small>示例数据</small>" : ""}<span class="sync-state" data-sync-state>已同步</span></div>`;
+  const searchPlaceholder = trashView
+    ? L("在回收站内搜索")
+    : archiveView
+      ? L("在已归档 Goal 中搜索")
+      : L("在当前 Goal Tree 内搜索");
+  const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
+  const localeNextPath = decisionView
+    ? `${view.route_prefix}/decisions`
+    : trashView
+      ? selectedId
+        ? `${view.route_prefix}/trash/goals/${encodeURIComponent(selectedId)}`
+        : `${view.route_prefix}/trash`
+    : archiveView
+      ? selectedId
+        ? `${view.route_prefix}/archive/goals/${encodeURIComponent(selectedId)}`
+        : `${view.route_prefix}/archive`
+      : selectedId
+        ? `${view.route_prefix}/goals/${encodeURIComponent(selectedId)}`
+        : view.route_prefix
+          ? `${view.route_prefix}/`
+          : "/";
+  const projectContext = `<div class="project-context"><strong>${L("项目：")}</strong><span>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}${view.demo ? `<small>${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></div>`;
+  const showTui = !decisionView && !archiveView && !trashView;
   const html = `<!--
 THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
 OWN-WORLD: 使用参考图的高密度桌面工作台语言：顶部全局栏、左侧 IDE Goal Tree、右侧连续文档。
@@ -5184,51 +5494,54 @@ FORM: Reference-led desktop Goal workbench, pinned screenshot authority, Operate
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <!doctype html>
-<html lang="zh-CN">
+<html lang="${htmlLang()}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${controlTokenMeta(controlToken)}
   <title>${escapeHtml(title)}</title>
-  <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
+  <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
-<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}">
+<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
   <div class="app">
     <header class="topbar">
       <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
       ${projectContext}
       <div class="top-spacer"></div>
-      <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="${trashView ? "在回收站内搜索" : archiveView ? "在已归档 Goal 中搜索" : "在当前 Goal Tree 内搜索"}" aria-label="${trashView ? "搜索回收站" : archiveView ? "搜索已归档 Goal" : "搜索 Goal"}"><kbd>⌘F</kbd></label>
+      <label class="global-search">${icon("search")}<input type="search" data-global-search placeholder="${searchPlaceholder}" aria-label="${searchLabel}"><kbd>⌘F</kbd></label>
       <div class="top-filter-control">
-        <button class="top-action" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="筛选目标">${icon("filter")}<span>状态</span></button>
+        <button class="top-action" type="button" data-tree-filter-trigger aria-expanded="false" aria-controls="tree-status-filter" aria-label="${L("筛选目标")}">${icon("filter")}<span>${L("状态")}</span></button>
         ${renderTreeStatusFilter(visibleGoals)}
       </div>
-      <button class="top-action" type="button" data-open-create aria-label="新建目标">${icon("plus")}<span>新建目标</span></button>
-      <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="待决定 ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>待决定 ${pendingDecisionCount(view)}</span></a>
-      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? "返回 Goal Tree" : "查看已归档 Goal"}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? "返回 Goal Tree" : `已归档 ${view.archived_goals.length}`}</span></a>
-      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? "返回 Goal Tree" : "查看回收站"}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? "返回 Goal Tree" : `回收站 ${view.trashed_goals.length}`}</span></a>
-      <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="打开 GoalBoard 设置">${icon("settings")}<span>设置</span></a>
-      <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>收起</span></button>
+      <button class="top-action" type="button" data-open-create aria-label="${L("新建目标")}">${icon("plus")}<span>${L("新建目标")}</span></button>
+      <a class="top-action${decisionView ? " is-current" : ""}" data-view-action data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingDecisionCount(view)}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")} ${pendingDecisionCount(view)}</span></a>
+      <a class="top-action${archiveView ? " is-current" : ""}" data-view-action href="${archiveView ? "/" : "/archive"}" aria-label="${archiveView ? L("返回 Goal Tree") : L("查看已归档 Goal")}"${archiveView ? ' aria-current="page"' : ""}>${icon(archiveView ? "tree" : "archive")}<span>${archiveView ? L("返回 Goal Tree") : `${L("已归档")} ${view.archived_goals.length}`}</span></a>
+      <a class="top-action${trashView ? " is-current" : ""}" data-view-action href="${trashView ? "/" : "/trash"}" aria-label="${trashView ? L("返回 Goal Tree") : L("查看回收站")}"${trashView ? ' aria-current="page"' : ""}>${icon(trashView ? "tree" : "archive")}<span>${trashView ? L("返回 Goal Tree") : `${L("回收站")} ${view.trashed_goals.length}`}</span></a>
+      ${renderLocaleSwitch(localeNextPath)}
+      <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="${L("打开 GoalBoard 设置")}">${icon("settings")}<span>${L("设置")}</span></a>
+      <button class="top-action" type="button" data-view-action data-collapse-all>${icon("tree")}<span>${L("收起")}</span></button>
     </header>
-    <nav class="mobile-switch" role="tablist" aria-label="移动端视图"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? "决定中心" : "Goal 正文"}</button></nav>
-    <main class="workspace" data-workspace data-mobile-view="tree">
+    <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? L("决定中心") : L("Goal 正文")}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${L("终端")}</button>` : ""}</nav>
+    <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree">
       <aside class="tree-pane" id="goal-tree-pane">
-        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} 目标列表">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>没有符合当前筛选条件的 Goal。</p><button type="button" data-clear-tree-filter>清除所有筛选</button></div></div>
-        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${collectionSuffix}">共 ${visibleGoals.length} 个${collectionSuffix}目标</span><small>${collectionNote}</small></footer>
+        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div>
+        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
       </aside>
-      <div class="tree-resizer" role="separator" aria-label="调整 Goal Tree 宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
+      <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>回收站是空的</h1><p>移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。</p><a href="/">返回 Goal Tree</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>还没有归档 Goal</h1><p>已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。</p><a href="/">返回 Goal Tree</a></div>`}
+        ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
       </section>
+      ${showTui ? renderTuiPane(selectedId) : ""}
     </main>
   </div>
   ${renderCreateDialog(view)}
   ${renderGoalTrashDialog()}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
-  <script>${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}</script>
+  ${showTui ? '<script src="/desktop/pty-client.js"></script>' : ""}
 </body>
 </html>`;
-  return prefixLocalLinks(html, view.route_prefix);
+  return prefixLocalLinks(html, view.route_prefix, desktopShell);
 }

@@ -1020,3 +1020,74 @@ test("project deletion needs separate confirmation, protects active work, and re
     }
   });
 });
+
+test("opening a desktop TUI panel binds that work context to the Goal and aliases a later host session", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const home = join(directory, "home", ".goalboard");
+    const workspace = join(directory, "repo");
+    await mkdir(workspace, { recursive: true });
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    try {
+      const project = await catalog.createProject({ display_name: "桌面项目", actor_id: "user" });
+      assert.throws(
+        () => catalog.openDesktopPanel({
+          project_id: project.project_id,
+          goal_id: "leaf-goal",
+          runtime_kind: "codex",
+          launch_command: "codex",
+          actor_id: "user",
+          user_confirmed: false,
+        }),
+        (error: unknown) =>
+          error instanceof GoalBoardProjectCatalogError && error.code === "catalog.panel_confirmation_required",
+      );
+
+      const panel = catalog.openDesktopPanel({
+        project_id: project.project_id,
+        goal_id: "leaf-goal",
+        runtime_kind: "codex",
+        launch_command: "codex",
+        cwd: workspace,
+        actor_id: "user",
+        user_confirmed: true,
+      });
+      assert.equal(panel.goal_id, "leaf-goal");
+      assert.equal(panel.project_id, project.project_id);
+      assert.equal(catalog.listDesktopPanels(project.project_id, "leaf-goal").length, 1);
+      assert.equal(catalog.listDesktopPanels(project.project_id, "other-goal").length, 0);
+      assert.equal(
+        catalog.resolveRuntimeContext(stableContext("codex", panel.work_context_id)).status,
+        "bound",
+      );
+      assert.equal(
+        catalog.resolveRuntimeContext(stableContext("codex", panel.work_context_id)).project?.project_id,
+        project.project_id,
+      );
+
+      const aliased = catalog.aliasDesktopPanelSession({
+        panel_id: panel.panel_id,
+        runtime_id: "codex",
+        host_session_id: "codex-thread-99",
+        actor_id: "desktop-panel",
+      });
+      assert.equal(aliased.host_session_id, "codex-thread-99");
+      assert.equal(
+        catalog.findDesktopPanelByWorkContext("codex", "codex-thread-99")?.panel_id,
+        panel.panel_id,
+      );
+      assert.equal(
+        catalog.resolveRuntimeContext(stableContext("codex", "codex-thread-99")).project?.project_id,
+        project.project_id,
+      );
+
+      catalog.closeDesktopPanel(panel.panel_id, "user");
+      assert.equal(catalog.listDesktopPanels(project.project_id, "leaf-goal").length, 0);
+      assert.equal(
+        catalog.resolveRuntimeContext(stableContext("codex", panel.work_context_id)).status,
+        "bound",
+      );
+    } finally {
+      catalog.close();
+    }
+  });
+});

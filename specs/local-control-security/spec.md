@@ -18,7 +18,8 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 - Web server 只接受 loopback `Host`（`127.0.0.1`、`localhost`、`::1`）。
 - 每个 Web server 实例生成高熵随机 control token；测试可注入固定 token。
 - 所有 `/api/` 非安全方法统一校验：同源 `Origin`、control token、一次性 idempotency key。
-- token 只写入 GoalBoard 自己返回的 HTML meta，不写日志、不进 JSON API、不进 Runtime 配置或项目 DB。
+- 本机终端 WebSocket `/pty` 在升级时校验 loopback `Host`；若请求带 Origin，必须与 Host 一致。浏览器无法给 WebSocket 加自定义 header，因此连接后的首包必须携带同一 control token，通过后才转发 PTY 指令。
+- token 只写入 GoalBoard 自己返回的 HTML meta，不写日志、不进 JSON API、不进 Runtime 配置或项目 DB。终端 WebSocket 只在首包使用该 token，不把它放进 URL。
 - 项目列表、设置页和 Goal 工作台使用同一个客户端 header helper；每次用户动作生成一次请求键。
 - 服务端原子保留请求键：正在处理或已经成功的重复键返回冲突，不再次进入领域方法；失败请求释放键，用户修正后可重试。
 - 保留领域层的明确确认、plan freshness、Runtime host identity 和 MCP authority；HTTP 门禁不替代它们。
@@ -50,13 +51,14 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 
 ## 输入、输出与依赖
 
-- 输入：HTTP Host、Origin、`x-goalboard-control-token`、`x-goalboard-idempotency-key`。
+- 输入：HTTP Host、Origin、`x-goalboard-control-token`、`x-goalboard-idempotency-key`；终端通道另有 WebSocket 首包 token。
 - 输出：允许进入现有路由，或返回不泄露秘密的 400 / 403 / 409 JSON。
 - 依赖：Node `crypto`、现有 render/client script 和 Web server。
 
 ## 文件与模块边界
 
 - `src/web/server.ts`：token 生命周期、loopback/Origin/token/请求键门禁。
+- `src/web/pty-socket.ts`：`/pty` 升级与首包 token。
 - `src/web/render.ts`：token meta 和统一写请求 headers。
 - `tests/web.test.ts`：合法请求 helper、跨站/缺凭据/Host/重放安全回归。
 - `README.md`：说明 Web 仅本机监听以及浏览器写入门禁。
@@ -67,7 +69,7 @@ GoalBoard Web 默认只监听 `127.0.0.1`，但浏览器中的其他站点仍可
 - 跨站 Origin、缺少/错误 token、非 loopback Host 的敏感请求在领域写入前被拒绝。
 - 合法同源页面仍可完成 Runtime 配置、项目、Session 和 Goal 的现有流程。
 - 同一成功请求键不会造成第二次写入；失败请求可修正重试。
-- HTML/API/日志不暴露用户原始 Runtime 配置、宿主 Session ID 或 control token；token 只存在于本机页面 meta 和请求 header。
+- HTML/API/日志不暴露用户原始 Runtime 配置、宿主 Session ID 或 control token；token 只存在于本机页面 meta、写请求 header，以及终端 WebSocket 首包。
 - 完整 Web 与项目/Runtime/MCP 回归通过。
 
 ## 验证命令
