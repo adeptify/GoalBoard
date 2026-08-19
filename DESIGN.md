@@ -19,6 +19,8 @@ colors:
   rewire-violet: "#6b4eb6"
   red: "#c63838"
   red-soft: "#fff0f0"
+  terminal: "#1b2129"
+  terminal-ink: "#e8edf2"
 typography:
   display:
     fontFamily: 'Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
@@ -81,6 +83,13 @@ components:
     typography: "{typography.label}"
     height: "58px"
     padding: "0"
+  locale-switch:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.muted}"
+    typography: "{typography.label}"
+    rounded: "{rounded.control}"
+    height: "28px"
+    padding: "2px"
   tree-node-selected:
     backgroundColor: "{colors.blue}"
     textColor: "{colors.paper}"
@@ -100,6 +109,12 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     padding: "0"
+  goal-situation:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.ink}"
+    typography: "{typography.label}"
+    rounded: "{rounded.control}"
+    padding: "10px 12px"
   decision-center:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
@@ -158,7 +173,7 @@ The visual character is compact, calm, and operational. Hairline borders and sma
 
 **Key Characteristics:**
 
-- Light 58px toolbar over a two-pane desktop workspace.
+- Light 58px toolbar over a three-pane Goal workspace: Tree, continuous document, and TUI.
 - Searchable, resizable IDE-style Goal Tree with Goal names primary, IDs secondary, and one toolbar-owned multi-state filter.
 - Continuous white document surface with strong reading order and minimal ornament.
 - Draft-only Contract authoring, structured acceptance, full Risk and Impact registers, and Policy remain in the Goal document; Human Review belongs to the Decision Center.
@@ -194,6 +209,7 @@ The palette uses cool near-whites and graphite text as the working material, wit
 - **Faint Slate:** Low-priority counts, placeholders, and supporting timestamps.
 - **Hairline Gray:** Section dividers and ordinary boundaries.
 - **Strong Hairline:** Emphasized input and container boundaries.
+- **Graphite Terminal:** The TUI well. `#1b2129` is the viewport surface; `#e8edf2` is readable terminal ink. This pair stays inside the third column and never inverts the Goal document.
 
 ### Named Rules
 
@@ -224,19 +240,21 @@ The palette uses cool near-whites and graphite text as the working material, wit
 
 ## Layout
 
-The project selector and desktop workspace use the same 58px toolbar. Beneath the project toolbar, the workspace divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line. Search, creation, collection navigation, and status filtering have one canonical home in the toolbar instead of being repeated above the Tree. The toolbar filter icon opens a status panel below its trigger: users may select several currently present work states, combine them with the keyword query, and still see the ancestor path of each direct match.
+The project selector and desktop workspace use the same 58px toolbar. Beneath the project toolbar, the web workspace divides into a resizable Goal Tree, a 5px separator, and a flexible document pane. Goal pages append another 5px separator and a TUI column. That column is a quiet workbench rail, not a second document: a 40px tab strip, GoalBoard chrome (advance / fill / reopen) with a worded connection status, then a graphite terminal well inset by 10–12px so the TUI sits on the page like a viewport beside paper. The column defaults to 480px, resizes between 280px and 720px, and persists like the Tree. Each tab belongs to the selected Goal, not the Tree. Switching Goals swaps the visible tab group and leaves other PTYs running. The Tree defaults to `clamp(280px, 22vw, 360px)`. Pointer dragging or Left/Right Arrow keys in 16px steps adjust it within the shipped viewport-aware 260px–520px bounds, and the chosen width persists in session storage. The Goal document centers within the available pane at a maximum width of 1080px with 38px side gutters, 30px top space, and 80px of finishing space below the last section. Tree rows use a 38px minimum rhythm around 34px selectable nodes; the Goal name is the primary line and its ID is a smaller secondary line. Search, creation, collection navigation, and status filtering have one canonical home in the toolbar instead of being repeated above the Tree. The toolbar filter icon opens a status panel below its trigger: users may select several currently present work states, combine them with the keyword query, and still see the ancestor path of each direct match.
 
-The selected Goal is itself an inline-size container. Its continuous document has five primary chapters: `目标是什么`, `怎样才算完成`, `现在怎么推进`, `风险与规则`, and `历史`. Existing facts are regrouped rather than duplicated: Outcome, Why, and business logic establish intent; acceptance, scope, inputs/outputs, relations, and the Draft editor define completion; blockers and Claim/Run/Evidence/Review describe current work; Risk, Impact, and Policy share one governance chapter; events and full records close the document. No catch-all execution disclosure or parallel status is introduced. When that Goal has pending user-owned work, a short notice remains in the reading flow with a count and deep link to its `/decisions` group. When the usable document width falls to 660px, chapter subsections lose their left indent and Draft and acceptance fields, Risk fact and lifecycle forms, Impact forms, and Human Review labels stack above their controls. Policy keeps its effective summary at two columns, turns the inheritance path vertical, hides source descriptions and saved subtext, and moves every editing control to one column. Footers become vertical. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
+The selected Goal is itself an inline-size container. Its continuous document opens with the Goal title, then a four-cell situation strip (`下一步`, `卡住`, `完成`, `待决定`) built from existing status, blocker, acceptance, and Decision Center facts. The five primary chapters still follow in the same order: `目标是什么`, `怎样才算完成`, `现在怎么推进`, `风险与规则`, and `历史`. Existing facts are regrouped rather than duplicated: Outcome, Why, and business logic establish intent; acceptance, scope, inputs/outputs, relations, and the Draft editor define completion; blockers and Claim/Run/Evidence/Review describe current work; Risk, Impact, and Policy share one governance chapter; events and full records close the document. No catch-all execution disclosure or parallel status is introduced. Pending user-owned work appears in the situation strip as a count and deep link to its `/decisions` group, not as a second blue notice between chapters. When the usable document width falls to 660px, chapter subsections lose their left indent and Draft and acceptance fields, Risk fact and lifecycle forms, Impact forms, and Human Review labels stack above their controls. Policy keeps its effective summary at two columns, turns the inheritance path vertical, hides source descriptions and saved subtext, and moves every editing control to one column. Footers become vertical. This document-local rule responds to a narrow resizable work area even when the browser viewport is still wide, preventing label columns from squeezing content into one-character lines.
 
 The Decision Center occupies the same 1080px continuous-paper work area with 38px side gutters. Its header combines the total count with a five-type summary, then groups records by owner Goal. Multi-Goal or ambiguously owned Risks appear once under `Board 级事项` while listing every associated Goal. Within each group, Rewire precedes a linked Contract Proposal so prerequisites can be resolved before approval; Candidate, Human Review, and Risk follow in the same vertical stack.
 
-At 1360px and below, the toolbar tightens brand/source padding, truncates the source label, reduces search width, and compacts action padding. At 1180px and below, the Tree fallback becomes 280px while a saved width remains respected, four-part execution content reduces to two columns, and relationship and Risk records remain one-column ledgers; only the fact fields inside an open Risk editor use two columns. Contract content stays a continuous row list with a 138px label column and flexible content. At 900px and below, secondary view actions leave the toolbar while Create Goal and the counted Decision Center entry remain visible; search collapses to a 34px icon and expands over the toolbar on focus so the Tree remains searchable without restoring a duplicate field. At 760px and below, both project and detail toolbars become 52px, the Decision Center entry keeps its Lucide user icon while its label collapses, the separator disappears, and a 42px Tree / Goal正文-or-决定中心 switch exposes one pane at a time. Goal documents use 18px side gutters; the Decision Center uses 24px side gutters and stacks its header, Candidate context, reason fields, Contract diffs, and relationship evidence into one column. Relation direction, type, target, reason, and action also stack without losing the readable A → B preview. Form controls become 16px, and the create dialog fills the viewport.
+At 1360px and below, the toolbar tightens brand/source padding, truncates the source label, reduces search width, and compacts action padding. At 1180px and below, the Tree fallback becomes 280px while a saved width remains respected, four-part execution content reduces to two columns, and relationship and Risk records remain one-column ledgers; only the fact fields inside an open Risk editor use two columns. Contract content stays a continuous row list with a 138px label column and flexible content. At 900px and below, secondary view actions leave the toolbar while Create Goal and the counted Decision Center entry remain visible; search collapses to a 34px icon and expands over the toolbar on focus so the Tree remains searchable without restoring a duplicate field. At 760px and below, both project and detail toolbars become 52px, the Decision Center entry keeps its Lucide user icon while its label collapses, the separator disappears, and a 42px Tree / Goal正文-or-决定中心 / 终端 switch exposes one pane at a time. Goal documents use 18px side gutters; the Decision Center uses 24px side gutters and stacks its header, Candidate context, reason fields, Contract diffs, and relationship evidence into one column. Relation direction, type, target, reason, and action also stack without losing the readable A → B preview. Form controls become 16px, and the create dialog fills the viewport.
 
-**The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface organized as intent → completion → current work → risk and rules → history. Related facts use quieter subsection headings inside those five chapters; unresolved user authority remains visible and routes to the Decision Center.
+**The Continuous Document Rule.** The Tree chooses the file; all selected-Goal truth remains in one continuous reading surface organized as intent → completion → current work → risk and rules → history. Related facts use quieter subsection headings inside those five chapters; unresolved user authority remains visible and routes to the Decision Center. The TUI column is a viewport beside that document, not a second Goal truth surface.
+
+**The Desktop Terminal Tab Rule.** A terminal tab is associated with the Goal where it was opened. Chrome buttons may type a short advance prompt into the PTY after an explicit click; opening a tab does not send, claim, or fill the input. Parent and child Goals do not inherit each other's tabs.
 
 **The Stable Workspace Rule.** The initial page contains only the selected Goal document. Tree selection requests that Goal through the project-scoped document endpoint and atomically replaces the current document; unselected Goal histories and forms never remain hidden in the DOM. A cursor-driven refresh first checks the lightweight board cursor and only retrieves an authoritative single-document page after a change. It preserves selection, collapsed branches, keyword and status filters, scroll positions, mobile view, Tree width, in-progress create form values, and URL history whenever their context remains valid. Search focus, typing, and IME composition defer and merge background refresh so filtering keeps priority; if any `data-live-form` owns focus, background refresh defers and reports “编辑中”. A successful submission forces the authoritative refresh without a white frame.
 
-**The Single Decision Door Rule.** `/decisions` is the only place where users approve, reject, return, or review pending work. A Goal document may show its own short count-and-link notice, but it never duplicates the full Contract Proposal, Candidate, Rewire, Human Review, or Risk decision context.
+**The Single Decision Door Rule.** `/decisions` is the only place where users approve, reject, return, or review pending work. A Goal document may show the count in its situation strip with a deep link, but it never duplicates the full Contract Proposal, Candidate, Rewire, Human Review, or Risk decision context.
 
 **The Draft Authority Rule.** Only a Goal whose `definition_state` is `draft` exposes the inline Contract editor. An accepted Contract remains readable but cannot be edited in place; changing it proceeds through a new Goal and Rewire decision so accepted truth and its history are not silently rewritten.
 
@@ -255,7 +273,7 @@ The system is flat by default. Page, Tree, and paper are separated primarily by 
 - **Policy Switch Thumb** (`0 1px 2px rgba(20, 30, 42, .2)`): Local definition inside compact Policy switch rows, not surface elevation.
 - **Tree Filter Disclosure** (`0 9px 24px rgba(25, 34, 45, .14)`): Brief local depth for the status selector while it is open; it never changes the document layout or becomes a persistent card.
 
-The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, Policy source chevrons and switches respond over `.16s ease`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
+The Goal document and Decision Center enter over `.24s` with a `cubic-bezier(.16, 1, .3, 1)` easing, toast feedback transitions over `.16s`, Policy source chevrons and switches respond over `.16s ease`, the desktop TUI add-menu arrives over `.2s` from the add control, a live terminal fades in over `.2s`, and the syncing indicator pulses on a `1s` cycle. Live refresh suppresses Goal-document re-entry animation. Reduced-motion mode shortens all animation and transition timing to `.01ms`.
 
 **The Modal Elevation Rule.** Keep normal work surfaces flat; reserve sustained floating depth and backdrop treatment for the create dialog.
 
@@ -305,6 +323,11 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Structure:** A 5px separator with a one-pixel center line between Tree and document.
 - **Behavior:** Pointer drag adjusts continuously; Left/Right Arrow adjusts by 16px; hover, keyboard focus, and active drag thicken the line to 2px and turn it blue.
 - **Persistence:** The width is restored from session storage and remains stable through live cursor updates; the separator is hidden below 760px.
+
+### Desktop TUI Column
+
+- **Structure:** Present on Goal pages in the browser and the App. A 40px tab rail, wrapping chrome actions, a status line with a semantic dot plus words, and a 6px-radius graphite terminal well with inner padding. Empty state is centered in the well. Opening a TUI uses the same dialog elevation as other local disclosures. The Decision Center, archive, and trash stay two-pane.
+- **Behavior:** Tabs belong to the selected Goal. Switching Goals keeps other PTYs running and reconnects without restarting them. Advance and fill stay disabled until the PTY is live. Escape and outside click close the add menu. Below 760px the terminal is a third exclusive mobile pane, not a squeezed third column. Motion is limited to the menu arrival (0.2s), terminal fade-in, connection pulse, and control press; reduced-motion collapses timing with the rest of the workbench.
 
 ### Buttons
 
@@ -392,7 +415,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 
 ### Policy Workbench
 
-- **Effective first:** A blue-edged 6px panel leads with `EFFECTIVE POLICY`, `当前最终生效规则`, and a text-bearing `已生效` state. Its six gates summarize localized Goal Mode, self-verification, independent Review with cross/adversarial breakdown, user confirmation, maximum lease, and required capabilities in a three-column definition list.
+- **Effective first:** A quiet hairline panel leads with `当前最终生效规则` at subsection weight. Its six gates summarize localized Goal Mode, self-verification, independent Review with cross/adversarial breakdown, user confirmation, maximum lease, and required capabilities in a three-column definition list. It does not use a gradient, left accent bar, English eyebrow, or a louder badge than the Goal chapters.
 - **Inheritance:** A visible strip explains `01 · 项目默认 → 02 · 当前 Goal → 结果`. Each step names whether the project baseline is saved or system-provided, whether the Goal adds rules or fully inherits, and that the result is the final effective gate.
 - **Source details:** Project Default and Goal Override are separate 6px disclosure surfaces with source index, English eyebrow, Chinese title, source-specific status, and saved actor/time when present. Project uses quiet gray; Goal uses a blue wash and is open by default. Goal rules may add requirements but cannot weaken the project minimum.
 - **Runtime entry:** Goal Mode is three accessible radio choices—关闭, 建议, 强制—with a plain-language consequence under each label. Required capabilities and maximum lease share their own Runtime group instead of appearing as unlabeled row values.
@@ -436,7 +459,7 @@ Shapes are compact and engineered: 3px priority markers, 4px Tree selections and
 - **Do** preserve each acceptance criterion's decision method, pass condition, target, and Evidence requirements as structured fields.
 - **Do** use the four shipped decomposition choices, the full Risk Register, and the complete Impact Binding Workbench to make execution boundaries explicit before acceptance.
 - **Do** keep active Impact bindings, creation, and inactive history in one continuous ledger; require reasons for updates and stopping a binding, and retain history instead of erasing it.
-- **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / route-specific Goal正文-or-决定中心 switch.
+- **Do** collapse internal grids at the shipped 1180px and 760px breakpoints, then use the mobile Tree / route-specific Goal正文-or-决定中心 / 终端 switch.
 - **Do** let the 660px document-container rule stack Draft, Risk, Impact, and Human Review fields while turning Policy inheritance vertical and Policy controls into one column, even inside a wide viewport.
 - **Do** read Policy as final effective gates → 01 Project Default → 02 Goal Override, preserving each source's status, saved provenance, and required audit reason.
 - **Do** present Goal Mode as three labeled radio choices, self/human requirements as switches, and reviewer counts with their purpose beside them.

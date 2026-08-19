@@ -1,7 +1,38 @@
+# Dependencies and build output
 node_modules/
 dist/
-.requirements/
+*.tsbuildinfo
+
+# Local GoalBoard home / leftover install dirs if created in-repo
 .goalboard/
-.impeccable/qa/
+.requirements/
+
+# Desktop / Rust
+target/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/WixTools/
+*.app
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Logs, OS, editors
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 .DS_Store
+Thumbs.db
+.idea/
+*.swp
+*~
+
+# Test / QA artifacts
+coverage/
+.nyc_output/
+.impeccable/qa/
+.impeccable/config.local.json

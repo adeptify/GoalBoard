@@ -4,13 +4,13 @@
 
 ## Platform
 
-web
+web + desktop
 
 ## Users
 
 主要用户是同时使用 Codex、Claude Code、Cursor 等 AI Runtime 推进真实项目的个人开发者、产品负责人和小团队。他们需要在多个 Session 或 Runtime 之间持续工作，但不希望靠聊天记录猜测当前目标、下一步、风险和完成标准。
 
-V1 首先服务单设备、单 Workspace 的本地使用场景。用户在正在对话的 Runtime 中调用统一 Skill；Runtime 通过 MCP 主动选择和领取工作，并在同一对话中澄清与承接用户决定。CLI 是管理和调试入口，Web 是可选查看与确认界面，不是 Runtime 的必经步骤。
+V1 首先服务单设备、单 Workspace 的本地使用场景。用户在正在对话的 Runtime 中调用统一 Skill；Runtime 通过 MCP 主动选择和领取工作，并在同一对话中澄清与承接用户决定。CLI 是管理和调试入口，Web 是可选查看与确认界面，不是 Runtime 的必经步骤。macOS App 与浏览器打开同一套 loopback Web 工作台；Goal 详情右侧都可以托管用户显式打开的本地 TUI 视口。打开终端标签属于该 Goal，打开页面不会自动绑定 Session，Board 仍不派单。
 
 ## Product Purpose
 
@@ -65,7 +65,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - SQLite 是权威真相源；JSON/Markdown 只用于导入、导出和可读快照。
 - Goal 必须包含面向人的 `business_logic`，不用技术术语解释业务闭环。
 - Goal 逐步拆解，不要求一开始列出所有远端 Goal。
-- Runtime-neutral；不启动、托管、调度或选择 Runtime。
+- Runtime-neutral。网页和 App 都可以托管用户显式打开的本地 TUI 视口，仍不派单、不选择谁来做。打开页面不等于启动 Runtime，也不自动绑定 Session。
 - GoalBoard 是 pull-based 真相源：Runtime 自己读取、认领和回传，不由 Board 分发任务。
 - 支持 self、cross、adversarial、human Review Policy，以及 Runtime Goal Mode 要求。
 - Web UI 必须能查看 Goal Spine、Ready/Blocked、风险、Claim/Run、Evidence/Review 和 Candidate 决策。
@@ -74,7 +74,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 
 ## Brand Commitments
 
-产品名使用 GoalBoard。界面默认中文，必要的协议字段保留简短英文。
+产品名使用 GoalBoard。界面默认中文，可切换英文；必要的协议字段保留简短英文。Goal 标题和用户正文保持原文，不随界面语言改写。
 
 语言必须直接、具体、口语化：优先说“下一步”“为什么被挡住”“完成还缺什么”，避免“赋能、范式、编排中枢、智能协同”等空泛表达。视觉可以有鲜明个性，但不能牺牲任务、状态和操作的可读性。
 
@@ -88,6 +88,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - `src/v1/`：SQLite Store、Coordinator、V1 types、管理 CLI 与一次性旧数据导入。
 - `src/cli/main.ts` 与 `src/mcp/server.ts`：V1-only CLI/MCP 入口及 Runtime/management audience 边界。
 - `src/web/`：读取同一 SQLite 的 Goal Tree 与文档式工作区。
+- `desktop/`：可选 macOS App 壳，复用同一套带 TUI 的 Web 工作台。
 - `tests/v1.test.ts`、`tests/mcp.test.ts`、`tests/web.test.ts`：状态门禁、权限、迁移和 UI 数据流证据。
 
 ## Product Principles

@@ -500,12 +500,31 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-tree-resizer/);
   assert.match(html, /role="separator" aria-label="调整 Goal Tree 宽度"/);
   assert.match(html, /treeWidth: treePane\.getBoundingClientRect\(\)\.width/);
-  assert.match(html, /treeResizer\.addEventListener\("pointermove"/);
-  assert.match(html, /treeResizer\.addEventListener\("keydown"/);
+  assert.match(html, /querySelector\("\[data-tree-resizer\]"\)/);
+  assert.match(html, /treeResizer\??\.addEventListener\("pointermove"/);
+  assert.match(html, /treeResizer\??\.addEventListener\("keydown"/);
   assert.match(html, /tree-copy"><strong>让第一次使用的人顺利完成一轮目标协作<\/strong><small>V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-section="execution"/);
-  assert.match(coreHtml, /href="\/decisions#decision-goal-CORE">前往处理<\/a>/);
+  assert.match(html, /class="goal-situation"/);
+  assert.match(html, /这条 Goal 现在怎样/);
+  assert.match(html, /先完成子 Goal/);
+  assert.match(html, /当前没有阻塞/);
+  assert.match(html, /href="#execution-V1"/);
+  assert.match(html, /href="#acceptance-V1"/);
+  assert.match(html, /class="goal-more"/);
+  assert.match(html, /aria-label="更多操作"/);
+  assert.ok(html.indexOf("class=\"goal-title-actions\"") < html.indexOf("class=\"goal-more\""));
+  assert.doesNotMatch(
+    html.slice(html.indexOf("class=\"goal-title-actions\""), html.indexOf("class=\"goal-more\"")),
+    /data-open-goal-trash|data-goal-archive/,
+  );
+  assert.match(html, /data-open-goal-trash/);
+  assert.doesNotMatch(html, /EFFECTIVE POLICY/);
+  assert.doesNotMatch(html, /class="goal-decision-notice"/);
+  assert.match(coreHtml, /href="\/decisions#decision-goal-CORE"/);
+  assert.match(coreHtml, /前往处理/);
+  assert.match(coreHtml, /项等待你的决定/);
   assert.doesNotMatch(html, /<form class="decision-record rewire-decision"/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
   assert.match(decisionHtml, /href="\/goals\/CORE"><strong>让每项工作都有可信的完成依据<\/strong>/);
@@ -530,6 +549,11 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /\.candidate-contract \{ grid-template-columns: 1fr; \}/);
   assert.match(html, /\.create-dialog \{ width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border-radius: 0; \}/);
   assert.doesNotMatch(html, /track-map|class="signal"|signal-box|railway/i);
+  assert.match(html, /class="tui-pane"/);
+  assert.match(html, /推进这个 Goal/);
+  assert.match(html, /pty-client\.js/);
+  assert.match(html, /class="workspace is-desktop-tui"/);
+  assert.doesNotMatch(decisionHtml, /class="tui-pane"|推进这个 Goal|pty-client\.js|class="workspace is-desktop-tui"/);
   store.close();
 });
 
@@ -1190,6 +1214,60 @@ test("Web project catalog empty state does not create a project or Runtime bindi
     assert.deepEqual(catalog.listRuntimeContextBindingEvents(), []);
   } finally {
     catalog.close();
+  }
+});
+
+test("Web chrome switches between Chinese and English without translating Goal titles", async () => {
+  const fixture = await webProjectCatalogFixture();
+  addProjectGoal(fixture.alpha, "GOAL-I18N", "让页面看懂下一步");
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const chinese = await (await webFetch(`${origin}/`)).text();
+    assert.match(chinese, /lang="zh-CN"/);
+    assert.match(chinese, /选择一个项目/);
+    assert.match(chinese, /class="locale-switch"/);
+    assert.match(chinese, />中文</);
+    assert.match(chinese, />EN</);
+
+    const switched = await webFetch(`${origin}/locale?lang=en&next=/`, { redirect: "manual" });
+    assert.equal(switched.status, 302);
+    assert.match(String(switched.headers.get("set-cookie")), /goalboard_locale=en/);
+    assert.equal(switched.headers.get("location"), "/");
+
+    const hostile = await webFetch(`${origin}/locale?lang=en&next=//evil.example`, { redirect: "manual" });
+    assert.equal(hostile.headers.get("location"), "/");
+
+    const english = await (await webFetch(`${origin}/`, {
+      headers: { cookie: "goalboard_locale=en" },
+    })).text();
+    assert.match(english, /lang="en"/);
+    assert.match(english, /<title>Choose a project · GoalBoard<\/title>/);
+    assert.match(english, /<h1 id="project-index-title">Choose a project<\/h1>/);
+    assert.match(english, />Settings</);
+    assert.doesNotMatch(english, /<h1 id="project-index-title">选择一个项目<\/h1>/);
+
+    const accepted = await (await webFetch(`${origin}/`, {
+      headers: { "accept-language": "en-US,en;q=0.9" },
+    })).text();
+    assert.match(accepted, /lang="en"/);
+    assert.match(accepted, /Choose a project/);
+
+    const board = await (await webFetch(`${origin}/projects/${fixture.alpha.project_id}/`, {
+      headers: { cookie: "goalboard_locale=en" },
+    })).text();
+    assert.match(board, /lang="en"/);
+    assert.match(board, /让页面看懂下一步/);
+    assert.match(board, /New Goal/);
+    assert.match(board, /Settings/);
+    assert.match(board, /href="\/locale\?lang=zh/);
+    assertInlineScriptsCompile(english);
+    assertInlineScriptsCompile(board);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 });
 
@@ -2023,7 +2101,9 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     const page = await (await webFetch(`${origin}/goals/FIRST-DRAFT`)).text();
     assert.match(page, /这还是一条待澄清的 Draft/);
     assert.match(page, /2 项等待你的决定/);
-    assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT">前往处理<\/a>/);
+    assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT"/);
+    assert.match(page, /前往处理/);
+    assert.match(page, /补全 Draft/);
     assert.doesNotMatch(page, /<form class="decision-record contract-proposal"/);
     const decisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(decisionPage, /Contract 补全提案/);
@@ -2781,7 +2861,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /当前最终生效规则/);
     assert.match(page, /项目默认规则/);
     assert.match(page, /当前 Goal 额外规则/);
-    assert.match(page, /EFFECTIVE POLICY/);
+    assert.doesNotMatch(page, /EFFECTIVE POLICY/);
+    assert.match(page, /class="policy-effective"/);
     assert.match(page, /aria-label="Policy 继承关系"/);
     assert.match(page, /PROJECT DEFAULT/);
     assert.match(page, /GOAL OVERRIDE/);
@@ -2802,7 +2883,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.doesNotMatch(page, /documentPane\.innerHTML = nextDocument\.innerHTML/);
     assert.match(page, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
-    assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB">前往处理<\/a>/);
+    assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB"/);
+    assert.match(page, /前往处理/);
     assert.doesNotMatch(page, /<form class="human-review-form"/);
     assert.match(page, new RegExp(evidence.evidence_id));
     assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);

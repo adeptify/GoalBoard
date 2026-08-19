@@ -1830,4 +1830,71 @@ describe("mcp server", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("links a desktop panel host threadId onto the same project binding", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-panel-"));
+    const home = path.join(directory, "home", ".goalboard");
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+      meta?: Record<string, string>,
+    ) =>
+      server.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
+      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    try {
+      const project = await catalog.createProject({ display_name: "面板项目", actor_id: "user" });
+      const panel = catalog.openDesktopPanel({
+        project_id: project.project_id,
+        goal_id: "panel-goal",
+        runtime_kind: "codex",
+        launch_command: "codex",
+        actor_id: "user",
+        user_confirmed: true,
+      });
+      const host = {
+        homeDirectory: home,
+        runtimeContext: {
+          runtime_id: "codex",
+          stable_work_context_id: panel.work_context_id,
+          host_declares_stable: true,
+        },
+        panelId: panel.panel_id,
+      };
+      const runtime = new GoalBoardServer("runtime", null, host);
+      const resolved = await call(runtime, "goalboard_v1_context_resolve", {}, { threadId: "live-codex-thread" });
+      assert.equal(resolved.result.isError, false, resolved.result.content[0]?.text);
+      const payload = JSON.parse(resolved.result.content[0]?.text ?? "{}") as {
+        status: string;
+        connection?: { project_id: string };
+      };
+      assert.equal(payload.status, "bound");
+      assert.equal(payload.connection?.project_id, project.project_id);
+      catalog.close();
+      const reopened = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+      try {
+        assert.equal(
+          reopened.findDesktopPanelByWorkContext("codex", "live-codex-thread")?.panel_id,
+          panel.panel_id,
+        );
+        assert.equal(
+          reopened.resolveRuntimeContext({
+            runtime_id: "codex",
+            stable_work_context_id: "live-codex-thread",
+            host_declares_stable: true,
+          }).project?.project_id,
+          project.project_id,
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

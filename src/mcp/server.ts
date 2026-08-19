@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { createHash } from "node:crypto";
 import {
   GoalBoardProjectCatalog,
+  GoalBoardProjectCatalogError,
   type GoalBoardRuntimeContextResolution,
   type RuntimeProjectSuggestionClue,
   type RuntimeWorkContext,
@@ -116,6 +117,8 @@ export interface GoalBoardRuntimeContextHost {
    * Runtime MCP tool argument.
    */
   projectSuggestionClues?: readonly RuntimeProjectSuggestionClue[];
+  /** Desktop TUI panel that launched this MCP process, if any. */
+  panelId?: string | null;
 }
 
 interface McpToolDefinition {
@@ -1049,6 +1052,7 @@ export function runtimeContextHostFromEnvironment(
       workspace: workspaceContext,
     },
     webBaseUrl: environment.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
+    panelId: environment.GOALBOARD_PANEL_ID?.trim() || null,
     // The working directory and title are ranking hints only. They can make a
     // fresh Session suggestion useful, but never become identity or a binding.
     projectSuggestionClues,
@@ -1125,6 +1129,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext = EMPTY_TOOL_CALL_CONTEXT,
   ): Promise<string> {
     this.assertToolAllowed(name, arguments_, callContext);
+    await this.linkDesktopPanelHostSession(callContext);
     if (name === "goalboard_v1_context_resolve") return this.resolveRuntimeContext(callContext);
     if (name === "goalboard_v1_context_list_projects") return this.listRuntimeProjects(callContext);
     if (name === "goalboard_v1_context_reject_suggestion") return this.rejectRuntimeContextSuggestion(arguments_, callContext);
@@ -1189,6 +1194,31 @@ export class GoalBoardServer {
         "mcp.board_mismatch",
         `MCP 连接拒绝：Runtime 必须使用宿主固定的 board_id ${this.runtimeConnection.boardId}`,
       );
+    }
+  }
+
+  private async linkDesktopPanelHostSession(
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<void> {
+    const host = this.runtimeContextHost;
+    const panelId = host?.panelId?.trim() || "";
+    const sessionId = callContext.sessionId?.trim() || "";
+    if (!host || !panelId || !sessionId) return;
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
+    try {
+      catalog.aliasDesktopPanelSession({
+        panel_id: panelId,
+        runtime_id: host.runtimeContext.runtime_id,
+        host_session_id: sessionId,
+        actor_id: `desktop-panel:${panelId}`,
+      });
+    } catch (error) {
+      if (error instanceof GoalBoardProjectCatalogError && error.code === "catalog.panel_not_found") {
+        return;
+      }
+      throw error;
+    } finally {
+      catalog.close();
     }
   }
 

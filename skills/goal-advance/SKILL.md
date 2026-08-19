@@ -129,15 +129,27 @@ Do not treat “use another project”, “not this suggestion”, “stop using
 
 不展示：数据库路径、`project_id`、宿主提供的原始线索（目录、仓库名、会话标题）。只展示用户可读的项目名和通用原因。
 
+## 1.2 Desktop App 打开的 Goal
+
+If the process environment has `GOALBOARD_GOAL_ID`, the user already opened this Runtime in the GoalBoard App beside that Goal. After `goalboard_v1_context_resolve` returns `bound`:
+
+1. Call `goalboard_v1_contract` for that `goal_id` and read the contract.
+2. Do **not** call `select_goal`, `claim`, or `run_start` just because the tab is open. Opening a terminal is not claiming work and is not an instruction to start.
+3. When the user clicks **推进这个 Goal** (a short prompt is typed into this TUI) or explicitly asks to advance that Goal, continue from its current `work_state` using section 3. Claim only when that path requires `select_goal` and the Goal is available.
+4. Stay on that Goal unless the user asks to work on another. The terminal tab remains associated with the Goal where it was opened even if you later update a different Goal through MCP.
+
+`GOALBOARD_WORK_CONTEXT_ID` and `GOALBOARD_PANEL_ID` are host identity for this tab; do not invent replacements and do not ask the user to paste a Session ID.
+
 ## 2. Route the user's request in the same conversation
 
-After a project is connected, take exactly the route that matches the user's request.
+After a project is connected, take exactly the route that matches the user's request. If `GOALBOARD_GOAL_ID` is set, prefer that Goal for “继续推进” instead of picking another Available item, and still do not claim until the work-state path requires it.
 
 | User intent | Current Runtime action |
 |---|---|
 | A new rough idea | Call `goalboard_v1_draft_dialogue_start` with the user's words. It atomically creates the smallest `draft / abstract` Goal, clarifier Claim, and Run. |
 | Continue a specified Draft | Read `goalboard_v1_contract`. If it has an open clarification session, call `goalboard_v1_draft_dialogue_resume`; otherwise call `goalboard_v1_draft_dialogue_start` with that `goal_id` and the user's request to continue. It reuses the existing Draft rather than creating a second Goal. |
-| “继续推进” or “领一件能做的” | Call `goalboard_v1_available`. Choose one returned item using its Contract, blockers, priority, and the user's current request. GoalBoard does not return a unique next task. Call `goalboard_v1_select_goal` with the returned `role`; it atomically creates both Claim and Run. |
+| Desktop App typed “推进这个 Goal” | Read that Goal's contract. Follow its current work state. Do not claim until the Goal is available and this path requires `select_goal`. |
+| “继续推进” or “领一件能做的” | Call `goalboard_v1_available`. Choose one returned item using its Contract, blockers, priority, and the user's current request. GoalBoard does not return a unique next task. Call `goalboard_v1_select_goal` with the returned `role`; it atomically creates both Claim and Run. When `GOALBOARD_GOAL_ID` is set, use that Goal instead of choosing a different Available item. |
 | A specified accepted Goal | Read its Contract, then find that Goal in `goalboard_v1_available`. If it is available, call `goalboard_v1_select_goal` with that item's returned `role`. If it is not available, call `goalboard_v1_explain` and report the real blocker instead of claiming it anyway. |
 | Ask what is in the trash | Call `goalboard_v1_goal_trash_list`; it is read-only and stays in this conversation. |
 | Explicitly delete or restore one Goal | First identify the exact `goal_id` and explain that deletion is recoverable. Only after the user's clear current-conversation instruction call `goalboard_v1_goal_trash` or `goalboard_v1_goal_restore` with `user_confirmed=true`. |
