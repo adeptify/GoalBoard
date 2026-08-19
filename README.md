@@ -9,7 +9,7 @@
 所以我们推出 **GoalBoard**——一个**不侵入**的、提供**丰富 MCP** 的、**不包含自身 AI 功能**的，人和 AI 之间的**目标对账本**：
 
 - **不侵入**：不启动你的 AI，也不把任务硬塞给谁；能做的事摆在列表里，AI 自己挑着做；
-- **丰富 MCP**：接入 Codex、Claude Code 等任何 MCP Runtime；换对话、换 AI，目标都在；
+- **丰富 MCP**：设置页可自动适配 Codex、Claude Code、OpenCode、Pi Agent、Grok Build；其他 MCP Runtime 也能连上同一套协议。换对话、换 AI，目标都在；
 - **没有自己的 AI**：不捆绑任何模型，你的 AI 才是主角；
 - **目标对账本**：目标、拆分、进度、完成标准都记在账上——谁在干、做到哪、卡在哪、还差什么、什么在等你决定，打开就清楚，不用靠聊天记录去猜。
 
@@ -34,6 +34,8 @@
 
 示例还包含待决定事项、首次接入后忘记新开会话的 Risk，以及一条可在回收站恢复的旧方案。Goal 正文按“目标是什么 → 怎样才算完成 → 现在怎么推进 → 风险与规则 → 历史”阅读。与当前结构或示例内容不一致的旧正文截图不再展示。
 
+浏览器和可选的 macOS App 打开同一套本机页面（`http://127.0.0.1:4173`）。Goal 详情是三栏工作台：左边 Goal Tree，中间连续文档，右边本机终端。点「添加终端」可在**当前这条 Goal** 上打开 Claude Code、Codex、OpenCode、Pi Agent、Grok Build 或自定义命令；标签跟着 Goal 走，切到另一条 Goal 会换文档和那一组标签，原来的终端继续在后台跑。打开页面不会绑定 Session，也不会替你领取工作；只有点开终端才绑定这个工作入口，只有点「推进这个 Goal」才往输入框打字。决定中心、归档和回收站保持两栏。界面默认中文，可切换英文；Goal 标题和正文保持原文。
+
 ## 3 分钟体验
 
 需要 Node.js 20+、pnpm，以及 macOS（常驻 Web 服务目前使用 LaunchAgent；其他系统仍可前台启动 Web）。
@@ -55,9 +57,9 @@ pnpm install:local
 
 打开 `http://127.0.0.1:4173`：
 
-1. 进入示例项目，查看 Goal Tree、待决定事项和完成证据。
-2. 在“设置 → Runtime”中选择 Codex 或 Claude Code，先看改动预览，再确认接入。
-3. **新开一个 Runtime Session**，说“继续用 GoalBoard”。Runtime 只在 Session 启动时读取 MCP 和 Skill，所以当前对话不会凭空出现刚安装的工具。
+1. 进入示例项目，查看 Goal Tree、待决定事项和完成证据；打开一条 Goal 后，右侧可以「添加终端」。
+2. 在“设置 → Runtime”中选择 Codex、Claude Code、OpenCode、Pi Agent 或 Grok Build，先看改动预览，再确认接入。
+3. **新开一个该 Runtime 的 Session**，说“继续用 GoalBoard”。Runtime 只在 Session 启动时读取 MCP 和 Skill，所以当前对话不会凭空出现刚安装的工具。
 
 接入生效后也可以直接对 Runtime 说“启动 GoalBoard”。它会先检查受管理的服务状态：macOS
 首次启用时会说明这是登录后自启、关闭终端后仍运行的用户级后台服务，并在你明确确认后安装；
@@ -132,7 +134,7 @@ pnpm install:local
 "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Codex / Claude Code 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。
+打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Runtime 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。macOS 上也可从仓库运行 `pnpm desktop`，App 只是同一套页面的窗口壳。
 
 直接运行 `goalboard-web` 仍是前台模式，适合临时调试；关闭终端会同时关闭页面。macOS 上可改用用户级 LaunchAgent 常驻服务，先预览再确认：
 >
@@ -179,9 +181,9 @@ pnpm install:local
 
 `goalboard install` 只完成 GoalBoard 本体安装，默认输出安装位置、CLI/MCP/Web 启动器和安全边界；自动化可以使用 `goalboard install --json`。安装不会顺带创建项目、关联 Session、启动服务或修改 Runtime 配置。
 
-安装后的 Runtime 接入由同一领域服务完成。当前 adapter 会只读探测 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build，并先生成包含配置路径、GoalBoard MCP entry、Skill 链接、备份位置和重启说明的预览；只有用户对当前 Runtime 和当前 plan 明确确认后才会写入。MCP 与 Skill 作为一个事务验证，失败会恢复原配置字节和原 Skill 状态。移除时只撤销 GoalBoard ownership receipt 记录且仍未被用户改写的内容。未知同名配置或 Skill 会显示冲突，不会被覆盖。
+安装后的 Runtime 接入由同一领域服务完成。当前 adapter 会只读探测 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build，并按各家官方位置写入：Codex / Grok Build 用 `~/.codex/config.toml` 或 `~/.grok/config.toml` 的 `[mcp_servers.goalboard]`，Claude Code 用 `~/.claude.json` 的 `mcpServers.goalboard`，OpenCode 用 `~/.config/opencode/opencode.json` 的 `mcp.goalboard`，Pi Agent 用 `~/.pi/agent/mcp.json`（供 `pi-mcp-adapter` 读取；Pi 本体没有 MCP）。同时把 `goal-advance` Skill 链到对应 skills 目录。预览包含配置路径、MCP 入口、Skill 链接、备份位置和重启说明；只有用户对当前 Runtime 和当前 plan 明确确认后才会写入。MCP 与 Skill 作为一个事务验证，失败会恢复原配置字节和原 Skill 状态。移除时只撤销 GoalBoard ownership receipt 记录且仍未被用户改写的内容。未知同名配置或 Skill 会显示冲突，不会被覆盖。
 
-接入确认完成后，**必须新开 Codex / Claude Code Session**才会生效：Runtime 只在 Session 启动时读取 MCP 与 Skill 清单，当前对话不会动态出现刚写入的工具。新 Session 可直接复制「继续用 GoalBoard」续接；GoalBoard 会展示当前目录以前使用过的项目并请你确认。若希望以后自动进入某个项目，需要另外明确把它设为目录默认。接入预览界面会逐条展示改动内容和这段续接说明。
+接入确认完成后，**必须新开那个 Runtime 的 Session**才会生效：Runtime 只在 Session 启动时读取 MCP 与 Skill 清单，当前对话不会动态出现刚写入的工具。新 Session 可直接复制「继续用 GoalBoard」续接；GoalBoard 会展示当前目录以前使用过的项目并请你确认。若希望以后自动进入某个项目，需要另外明确把它设为目录默认。Pi 若看不到 GoalBoard 工具，先运行一次 `pi install npm:pi-mcp-adapter` 再开新会话。接入预览界面会逐条展示改动内容和这段续接说明。
 
 项目创建和当前 Session 关联是独立操作：用户在当前 Runtime 调用统一 Skill 后，Skill 使用 `context-list-projects`、`context-bind` 或 `context-create-and-bind`，并且只在用户明确选择后写入 GoalBoard 自己的数据目录。Web 可创建、导入、改名和打开项目，也可管理已经确认过的 Session 与 workspace 关联；网页中的项目选择本身不会改变 Runtime 连接，新 Session 默认仍要先询问，除非用户明确设置了目录默认项目。
 
@@ -261,7 +263,7 @@ GoalBoard 通过统一 Skill 连接项目：Runtime 可以提供 Session ID，�
 
 Runtime 宿主只在自己能保证稳定性的情况下提供 Session ID；它不是 Git 地址、目录名、仓库结构或模型从对话中推断的字符串。GoalBoard 支持任意 MCP Runtime 在每次 `tools/call` 的 `_meta.threadId`、`_meta.sessionId` 或 `_meta["goalboard/sessionId"]` 中提供 Session ID，也支持 Claude Code 等 adapter 的稳定环境信号；普通工具参数不会被当成宿主身份。同一个长驻 MCP 进程收到不同 Session ID 时会清掉前一个 Session 的连接。没有 Session ID 时，GoalBoard 仍可把 canonical workspace 用于查找历史候选，但绝不把目录或 MCP 进程伪装成 Session。一个 workspace 可关联多个 `project_id`；普通选择不自动设默认。
 
-安装本身不会写入 Runtime 配置。Codex 和 Claude Code 应由用户在接入预览中确认后使用稳定 launcher；其他 Runtime host 可以显式提供同一组环境值：
+安装本身不会写入 Runtime 配置。上述五个 Runtime 应由用户在接入预览中确认后使用稳定 launcher；其他 Runtime host 可以显式提供同一组环境值：
 
 ```bash
 GOALBOARD_HOME="$HOME/.goalboard" \
@@ -333,15 +335,19 @@ candidate-decide | rewire-confirm | import-v3
 ```text
 src/v1/                      SQLite Store、Coordinator、types、CLI 与一次性导入
 src/mcp/server.ts            V1-only MCP Server
-src/web/                     Goal Tree 与文档式 Goal 工作区
+src/web/                     Goal Tree、文档式工作区、本机 PTY 与 i18n
+src/desktop/                 第三栏启动配方与推进提示
 src/install/                 安装、Runtime 接入、常驻服务与安全卸载
 src/cli/main.ts              产品 CLI 与 V1 管理入口
+desktop/                     可选 macOS App 壳，复用同一套 Web
 examples/seed-demo.mts       调用产品 demo 生命周期的开发脚本
 docs/screenshots/            README 产品截图
 skills/goal-advance/         Runtime 工作协议
 tests/v1.test.ts             Coordinator、CLI、迁移与协议回归
 tests/mcp.test.ts            MCP audience、权限与连接回归
 tests/web.test.ts            Web 数据与交互回归
+tests/desktop-tui.test.ts    第三栏启动、面板与本机 PTY 回归
+tests/i18n.test.ts           界面语言回归
 tests/uninstall.test.ts      用户数据保留、强确认与恢复收据回归
 PRODUCT.md                   产品定义
 DESIGN.md                    shipped UI 设计系统

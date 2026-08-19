@@ -9,7 +9,7 @@ Have you been here before: the plan you worked out with AI yesterday is gone whe
 So we built **GoalBoard** — a **non-intrusive** goal ledger shared between humans and AI, with **rich MCP integration** and **no AI of its own**:
 
 - **Non-intrusive**: it doesn't launch your AI or force tasks onto anyone; work that can be done sits in a list and the AI picks it up itself;
-- **Rich MCP**: connect to Codex, Claude Code, or any MCP runtime; switch conversations or switch AIs and the goal is still there;
+- **Rich MCP**: Settings can auto-adapt Codex, Claude Code, OpenCode, Pi Agent, and Grok Build; any other MCP runtime can still use the same protocol. Switch conversations or switch AIs and the goal is still there;
 - **No AI of its own**: it isn't tied to any model — your AI stays the main actor;
 - **A goal ledger**: goals, breakdowns, progress, and completion criteria are all on the books — who's working, where things stand, what's blocked, what's missing, and what's waiting for your decision are visible at a glance, so you never have to guess from chat history.
 
@@ -34,6 +34,8 @@ Let a first-time user complete one round of goal collaboration
 
 The demo also includes pending decisions, a Risk for forgetting to open a new session after first-time integration, and an old proposal that can be restored from the trash. Goal documents read top-down: "what the goal is → what counts as done → how to move it forward → risks and rules → history." Older screenshots that no longer match the current structure or demo are not shown.
 
+The browser and the optional macOS App open the same local page (`http://127.0.0.1:4173`). A Goal page is a three-pane workbench: Goal Tree on the left, a continuous document in the middle, and a local terminal on the right. Use Add terminal to open Claude Code, Codex, OpenCode, Pi Agent, Grok Build, or a custom command **on the current Goal**. Tabs belong to that Goal; switching Goals swaps the document and that Goal's tab group, while the previous terminals keep running in the background. Opening the page does not bind a Session or claim work. Only opening a terminal binds this work entry, and only Advance this Goal types into the TUI. The Decision Center, archive, and trash stay two-pane. The UI defaults to Chinese and can switch to English; Goal titles and body text stay in their original language.
+
 ## 3-minute experience
 
 You need Node.js 20+, pnpm, and macOS (the persistent Web service currently uses LaunchAgent; other platforms can still run Web in the foreground).
@@ -56,9 +58,9 @@ pnpm install:local
 
 Open `http://127.0.0.1:4173`:
 
-1. Enter the demo project and look at the Goal Tree, pending decisions, and completion evidence.
-2. In "Settings → Runtime", pick Codex or Claude Code, review the change preview, and confirm the integration.
-3. **Open a new Runtime Session** and say "continue with GoalBoard." Runtimes read MCP and Skill manifests only at Session startup, so tools installed just now won't appear in the current conversation.
+1. Enter the demo project and look at the Goal Tree, pending decisions, and completion evidence; open a Goal and you can Add terminal on the right.
+2. In "Settings → Runtime", pick Codex, Claude Code, OpenCode, Pi Agent, or Grok Build, review the change preview, and confirm the integration.
+3. **Open a new Session of that Runtime** and say "continue with GoalBoard." Runtimes read MCP and Skill manifests only at Session startup, so tools installed just now won't appear in the current conversation.
 
 Once integrated, you can also tell the Runtime to "start GoalBoard." It first checks the managed service state: on macOS, the first enablement explains that this is a user-level background service that starts at login and keeps running after the terminal closes, and only installs after your explicit confirmation; if it is already running, it just returns the page address. Only when you explicitly say "open GoalBoard temporarily" will it use a foreground process tied to the current terminal or Session. Non-macOS platforms currently have no system-level persistent service; the Runtime says so plainly and asks whether to open it temporarily.
 
@@ -126,7 +128,7 @@ pnpm install:local
 "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-After opening `http://127.0.0.1:4173`, you can create, import, rename, and open projects in Settings, and configure Codex / Claude Code integration first. Selecting a project only changes what the page browses; it does not bind or switch the current Runtime Session. Existing legacy DBs are migrated into a project only after you explicitly select and confirm.
+After opening `http://127.0.0.1:4173`, you can create, import, rename, and open projects in Settings, and configure Runtime integration first. Selecting a project only changes what the page browses; it does not bind or switch the current Runtime Session. Existing legacy DBs are migrated into a project only after you explicitly select and confirm. On macOS you can also run `pnpm desktop`; the App is only a window around the same page.
 
 Running `goalboard-web` directly is still foreground mode, good for temporary debugging; closing the terminal closes the page too. On macOS you can instead use the user-level LaunchAgent persistent service — preview first, then confirm:
 
@@ -173,9 +175,9 @@ If a Runtime config, Skill link, LaunchAgent, or launcher was rewritten by the u
 
 `goalboard install` only installs the GoalBoard program and prints the install location, CLI/MCP/Web launchers, and safety boundaries; automation can use `goalboard install --json`. The install never creates projects, associates Sessions, starts services, or modifies Runtime configuration.
 
-Runtime integration is handled by the same domain service. The current adapter read-only probes Codex, Claude Code, OpenCode, Pi Agent, and Grok Build, then generates a preview containing config paths, the GoalBoard MCP entry, the Skill link, backup location, and restart instructions; it writes only after the user explicitly confirms the current Runtime and plan. MCP and Skill are validated as one transaction; on failure, the original config bytes and Skill state are restored. Removal only undoes what the GoalBoard ownership receipt still records as untouched by the user. Unknown same-name configs or Skills show a conflict and are never overwritten.
+Runtime integration is handled by the same domain service. The current adapter read-only probes Codex, Claude Code, OpenCode, Pi Agent, and Grok Build, then writes to each host's official location: Codex / Grok Build use `[mcp_servers.goalboard]` in `~/.codex/config.toml` or `~/.grok/config.toml`, Claude Code uses `mcpServers.goalboard` in `~/.claude.json`, OpenCode uses `mcp.goalboard` in `~/.config/opencode/opencode.json`, and Pi Agent uses `~/.pi/agent/mcp.json` for `pi-mcp-adapter` (Pi itself has no MCP). It also links the `goal-advance` Skill into the matching skills directory. The preview lists config paths, the MCP entry, the Skill link, the backup location, and restart instructions; it writes only after the user explicitly confirms the current Runtime and plan. MCP and Skill are validated as one transaction; on failure, the original config bytes and Skill state are restored. Removal only undoes what the GoalBoard ownership receipt still records as untouched by the user. Unknown same-name configs or Skills show a conflict and are never overwritten.
 
-After the integration is confirmed, **you must open a new Codex / Claude Code Session** for it to take effect: Runtimes read MCP and Skill manifests only at Session startup, and the current conversation doesn't dynamically gain just-written tools. In the new Session you can copy "continue with GoalBoard" to resume; GoalBoard shows projects previously used in the current directory and asks you to confirm. If you want a project to be entered automatically in the future, you must additionally set it as the directory default. The integration preview lists every change and this resume note item by item.
+After the integration is confirmed, **you must open a new Session of that Runtime** for it to take effect: Runtimes read MCP and Skill manifests only at Session startup, and the current conversation doesn't dynamically gain just-written tools. In the new Session you can copy "continue with GoalBoard" to resume; GoalBoard shows projects previously used in the current directory and asks you to confirm. If you want a project to be entered automatically in the future, you must additionally set it as the directory default. If Pi does not show GoalBoard tools, run `pi install npm:pi-mcp-adapter` once and open a new session. The integration preview lists every change and this resume note item by item.
 
 Creating a project and associating the current Session are separate operations: after the user invokes the unified Skill in the current Runtime, the Skill uses `context-list-projects`, `context-bind`, or `context-create-and-bind`, and writes into GoalBoard's own data directory only after the user explicitly chooses. Web can create, import, rename, and open projects, and manage already-confirmed Session and workspace associations; selecting a project in the page never changes the Runtime connection, and a new Session still asks by default unless the user explicitly set a directory default project.
 
@@ -255,7 +257,7 @@ GoalBoard connects projects through the unified Skill: the Runtime may provide a
 
 The Runtime host only provides a Session ID when it can guarantee stability; it is not a Git URL, directory name, repository structure, or a string inferred from conversation. GoalBoard supports any MCP Runtime providing a Session ID in `_meta.threadId`, `_meta.sessionId`, or `_meta["goalboard/sessionId"]` on each `tools/call`, and also supports stable environment signals from adapters like Claude Code; ordinary tool arguments are never treated as host identity. When the same long-lived MCP process receives a different Session ID, it clears the previous Session's connection. Without a Session ID, GoalBoard can still use the canonical workspace to find historical candidates, but never pretends a directory or MCP process is a Session. One workspace can associate multiple `project_id`s; a normal selection does not set a default automatically.
 
-The install itself never writes Runtime configuration. Codex and Claude Code should use the stable launcher after the user confirms the integration preview; other Runtime hosts can explicitly provide the same set of environment values:
+The install itself never writes Runtime configuration. Those five Runtimes should use the stable launcher after the user confirms the integration preview; other Runtime hosts can explicitly provide the same set of environment values:
 
 ```bash
 GOALBOARD_HOME="$HOME/.goalboard" \
@@ -327,15 +329,19 @@ Complex payloads can be passed with `--json` or `--file payload.json`. The CLI i
 ```text
 src/v1/                      SQLite Store, Coordinator, types, CLI, and one-time import
 src/mcp/server.ts            V1-only MCP Server
-src/web/                     Goal Tree and document-style Goal workspace
+src/web/                     Goal Tree, document workspace, local PTY, and i18n
+src/desktop/                 Third-pane launch recipes and advance prompt
 src/install/                 Install, Runtime integration, persistent service, and safe uninstall
 src/cli/main.ts              Product CLI and V1 management entry
+desktop/                     Optional macOS App shell around the same Web
 examples/seed-demo.mts       Dev script calling the product demo lifecycle
 docs/screenshots/            README product screenshots
 skills/goal-advance/         Runtime working protocol
 tests/v1.test.ts             Coordinator, CLI, migration, and protocol regression
 tests/mcp.test.ts            MCP audience, permission, and connection regression
 tests/web.test.ts            Web data and interaction regression
+tests/desktop-tui.test.ts    Third-pane launch, panels, and local PTY regression
+tests/i18n.test.ts           UI locale regression
 tests/uninstall.test.ts      User-data retention, strong confirmation, and receipt regression
 PRODUCT.md                   Product definition
 DESIGN.md                    Shipped UI design system

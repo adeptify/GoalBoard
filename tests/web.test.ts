@@ -136,9 +136,11 @@ function webRuntimeIntegrationFixture(homeDirectory: string) {
   writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
   const codex = join(runtimeBin, "codex");
   const claude = join(runtimeBin, "claude");
-  writeFileSync(codex, "#!/bin/sh\nexit 0\n");
-  writeFileSync(claude, "#!/bin/sh\nexit 0\n");
-  [launcher, codex, claude].forEach((file) => chmodSync(file, 0o755));
+  const opencode = join(runtimeBin, "opencode");
+  const pi = join(runtimeBin, "pi");
+  const grok = join(runtimeBin, "grok");
+  for (const file of [codex, claude, opencode, pi, grok]) writeFileSync(file, "#!/bin/sh\nexit 0\n");
+  [launcher, codex, claude, opencode, pi, grok].forEach((file) => chmodSync(file, 0o755));
   return {
     userHomeDirectory,
     skill,
@@ -146,7 +148,7 @@ function webRuntimeIntegrationFixture(homeDirectory: string) {
     service: new RuntimeIntegrationService({
       homeDirectory,
       userHomeDirectory,
-      runtimeExecutables: { codex, "claude-code": claude },
+      runtimeExecutables: { codex, "claude-code": claude, opencode, "pi-agent": pi, "grok-build": grok },
       validateConnection: () => true,
     }),
   };
@@ -695,6 +697,9 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(runtimePage, /Runtime 接入/);
     assert.match(runtimePage, /Codex/);
     assert.match(runtimePage, /Claude Code/);
+    assert.match(runtimePage, /OpenCode/);
+    assert.match(runtimePage, /Pi Agent/);
+    assert.match(runtimePage, /Grok Build/);
     assert.match(runtimePage, /未接入/);
     assert.match(runtimePage, /data-runtime-plan="codex"/);
     assert.match(runtimePage, /data-runtime-plan-dialog/);
