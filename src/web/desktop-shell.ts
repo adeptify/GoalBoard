@@ -1,16 +1,7 @@
 import type { IncomingMessage } from "node:http";
+import { cookieValue } from "./http-local.js";
 
 export const DESKTOP_COOKIE = "goalboard_desktop";
-
-function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (rawName?.trim() !== name) continue;
-    return rest.join("=").trim();
-  }
-  return undefined;
-}
 
 export function isDesktopShellRequest(request: IncomingMessage, url: URL): boolean {
   const header = request.headers["x-goalboard-desktop"];
