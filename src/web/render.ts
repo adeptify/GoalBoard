@@ -24,6 +24,7 @@ import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
 import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
 import type { GoalBoardWebServiceDetection } from "../install/web-service.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
+import { DESKTOP_TUI_MENU_RUNTIME_IDS, RUNTIME_DISPLAY_NAMES } from "../runtimes.js";
 import {
   L,
   currentLocale,
@@ -2064,7 +2065,7 @@ const STYLES = `
   .tui-menu > strong { font-size: 13px; letter-spacing: -.015em; }
   .tui-menu p { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.45; }
   .tui-menu label { display: grid; gap: 4px; color: var(--ink); font-size: 12px; font-weight: 650; }
-  .tui-menu input, .tui-menu select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
+  .tui-menu input { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
   .tui-runtime-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .tui-runtime-choices button { min-height: 34px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; text-align: left; padding: 0 10px; font-weight: 650; transition: background .16s ease, border-color .16s ease, color .16s ease; }
   .tui-runtime-choices button[data-tui-kind="generic"] { grid-column: 1 / -1; }
@@ -5360,11 +5361,7 @@ function renderTuiPane(selectedGoalId: string): string {
           <strong>${L("在这个 Goal 上打开终端")}</strong>
           <p>${L("标签只属于当前 Goal。打开不会自动发送或领取。")}</p>
           <div class="tui-runtime-choices">
-            <button type="button" data-tui-kind="claude-code">Claude Code</button>
-            <button type="button" data-tui-kind="codex">Codex</button>
-            <button type="button" data-tui-kind="opencode">OpenCode</button>
-            <button type="button" data-tui-kind="pi-agent">Pi Agent</button>
-            <button type="button" data-tui-kind="grok-build">Grok Build</button>
+            ${DESKTOP_TUI_MENU_RUNTIME_IDS.map((id) => `<button type="button" data-tui-kind="${id}">${RUNTIME_DISPLAY_NAMES[id]}</button>`).join("")}
             <button type="button" data-tui-kind="generic">${L("自定义命令")}</button>
           </div>
           <label data-tui-generic-fields hidden>${L("命令")}<input name="command" type="text" autocomplete="off" placeholder="opencode"></label>

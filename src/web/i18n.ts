@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { cookieValue } from "./http-local.js";
 
 export type WebLocale = "zh" | "en";
 
@@ -29,16 +30,6 @@ export function dateTimeLocale(locale: WebLocale = currentLocale()): string {
 
 export function listJoin(values: readonly string[], locale: WebLocale = currentLocale()): string {
   return values.join(locale === "en" ? ", " : "、");
-}
-
-function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (rawName?.trim() !== name) continue;
-    return rest.join("=").trim();
-  }
-  return undefined;
 }
 
 export function resolveWebLocale(
@@ -100,7 +91,7 @@ export function renderLocaleSwitch(nextPath: string): string {
   </nav>`;
 }
 
-export function englishCatalogJson(): string {
+function englishCatalogJson(): string {
   return JSON.stringify(EN).replaceAll("<", "\\u003c");
 }
 
@@ -1186,22 +1177,16 @@ export const EN: Record<string, string> = {
   "关闭终端": "Close terminal",
   "自定义命令": "Custom command",
   "终端已退出": "Terminal exited",
-  "没有终端。点右上角「添加终端」在这个 Goal 上打开 TUI。": "No terminal yet. Use Add terminal in the top-right to open a TUI on this Goal.",
   "还没有终端": "No terminal yet",
   "点右上角「添加终端」，在这个 Goal 上打开常用 Runtime 或自定义命令。": "Use Add terminal in the top-right to open a common Runtime or a custom command on this Goal.",
-  "请选择要打开的 TUI": "Choose a TUI to open",
   "在这个 Goal 上打开终端": "Open a terminal on this Goal",
   "标签只属于当前 Goal。打开不会自动发送或领取。": "This tab belongs only to the current Goal. Opening it does not send a prompt or claim the work.",
-  "参数": "Arguments",
-  "工作目录": "Working directory",
-  "继续会话 ID": "Resume session ID",
   "继续会话 ID（可选）": "Resume session ID (optional)",
   "终端面板": "Terminal pane",
   "调整终端宽度": "Resize terminal",
   "打开项目后，Goal 右侧可以添加终端": "After opening a project, add a terminal to the right of the Goal",
   "打开项目后，Goal 详情右侧会出现终端栏。点「添加终端」即可在当前 Goal 上打开 TUI。": "After you open a project, a terminal pane appears on the right of the Goal. Use Add terminal to open a TUI on the current Goal.",
   "打开失败": "Could not open",
-  "桌面终端通道不可用，请从 GoalBoard App 打开。": "The desktop terminal channel is unavailable. Open this page from the GoalBoard App.",
   "正在启动终端…": "Starting terminal…",
   "终端已连接": "Terminal connected",
   "已回到正在运行的终端": "Reconnected to the running terminal",

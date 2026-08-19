@@ -4,16 +4,17 @@ import { constants as fsConstants } from "node:fs";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  RUNTIME_DISPLAY_NAMES,
+  SUPPORTED_RUNTIME_IDS,
+  isSupportedRuntimeId,
+  type SupportedRuntimeId,
+} from "../runtimes.js";
+
+export { SUPPORTED_RUNTIME_IDS, isSupportedRuntimeId, type SupportedRuntimeId };
 
 const INTEGRATION_OWNER = "goalboard-runtime-integration-v1";
 const INSTALLER_OWNER = "goalboard-home-install-v1";
-
-export const SUPPORTED_RUNTIME_IDS = ["codex", "claude-code", "opencode", "pi-agent", "grok-build"] as const;
-export type SupportedRuntimeId = (typeof SUPPORTED_RUNTIME_IDS)[number];
-
-export function isSupportedRuntimeId(value: string): value is SupportedRuntimeId {
-  return (SUPPORTED_RUNTIME_IDS as readonly string[]).includes(value);
-}
 export type RuntimeIntegrationAction = "connect" | "remove";
 export type RuntimeConnectionState =
   | "not_detected"
@@ -191,45 +192,48 @@ export class RuntimeIntegrationError extends Error {
   }
 }
 
+function desiredConnectionFor(runtimeId: SupportedRuntimeId): RuntimeAdapter["desiredConnection"] {
+  return (artifacts, goalboardHome) => ({
+    runtimeId,
+    launcherPath: artifacts.launcherPath,
+    goalboardHome,
+  });
+}
+
 const CODEX_ADAPTER: RuntimeAdapter = {
   id: "codex",
-  displayName: "Codex",
+  displayName: RUNTIME_DISPLAY_NAMES.codex,
   executableNames: ["codex"],
   detectionPaths: (userHome) => [path.join(userHome, ".codex")],
   configPath: (userHome) => path.join(userHome, ".codex", "config.toml"),
   skillPath: (userHome) => path.join(userHome, ".codex", "skills", "goal-advance"),
-  desiredConnection: (artifacts, goalboardHome) => ({
-    runtimeId: "codex",
-    launcherPath: artifacts.launcherPath,
-    goalboardHome,
-  }),
+  desiredConnection: desiredConnectionFor("codex"),
   inspectConfig: inspectCodexConfig,
   connectConfig: connectCodexConfig,
   removeConfig: removeCodexConfig,
-  restartInstructions: restartInstructionsFor("Codex"),
+  restartInstructions: restartInstructionsFor(RUNTIME_DISPLAY_NAMES.codex),
 };
 
 const CLAUDE_CODE_ADAPTER: RuntimeAdapter = {
   id: "claude-code",
-  displayName: "Claude Code",
+  displayName: RUNTIME_DISPLAY_NAMES["claude-code"],
   executableNames: ["claude"],
   detectionPaths: (userHome) => [path.join(userHome, ".claude"), path.join(userHome, ".claude.json")],
   configPath: (userHome) => path.join(userHome, ".claude.json"),
   skillPath: (userHome) => path.join(userHome, ".claude", "skills", "goal-advance"),
-  desiredConnection: (artifacts, goalboardHome) => ({
-    runtimeId: "claude-code",
-    launcherPath: artifacts.launcherPath,
-    goalboardHome,
+  desiredConnection: desiredConnectionFor("claude-code"),
+  ...jsonMcpHandlers({
+    parse: parseJsonObject,
+    label: "Claude Code 用户配置",
+    rootKey: "mcpServers",
+    desiredEntry: desiredClaudeEntry,
   }),
-  inspectConfig: inspectClaudeConfig,
-  connectConfig: connectClaudeConfig,
-  removeConfig: removeClaudeConfig,
-  restartInstructions: restartInstructionsFor("Claude Code"),
+  restartInstructions: restartInstructionsFor(RUNTIME_DISPLAY_NAMES["claude-code"]),
 };
 
 const OPENCODE_ADAPTER: RuntimeAdapter = {
   id: "opencode",
-  displayName: "OpenCode",
+  displayName: RUNTIME_DISPLAY_NAMES.opencode,
   executableNames: ["opencode"],
   detectionPaths: (userHome) => [
     path.join(userHome, ".config", "opencode"),
@@ -237,54 +241,49 @@ const OPENCODE_ADAPTER: RuntimeAdapter = {
   ],
   configPath: (userHome) => path.join(userHome, ".config", "opencode", "opencode.json"),
   skillPath: (userHome) => path.join(userHome, ".config", "opencode", "skills", "goal-advance"),
-  desiredConnection: (artifacts, goalboardHome) => ({
-    runtimeId: "opencode",
-    launcherPath: artifacts.launcherPath,
-    goalboardHome,
+  desiredConnection: desiredConnectionFor("opencode"),
+  ...jsonMcpHandlers({
+    parse: parseJsoncObject,
+    label: "OpenCode 用户配置",
+    rootKey: "mcp",
+    emptyRoot: { $schema: "https://opencode.ai/config.json" },
+    desiredEntry: desiredOpenCodeEntry,
   }),
-  inspectConfig: inspectOpenCodeConfig,
-  connectConfig: connectOpenCodeConfig,
-  removeConfig: removeOpenCodeConfig,
-  restartInstructions: restartInstructionsFor("OpenCode"),
+  restartInstructions: restartInstructionsFor(RUNTIME_DISPLAY_NAMES.opencode),
 };
 
 const PI_AGENT_ADAPTER: RuntimeAdapter = {
   id: "pi-agent",
-  displayName: "Pi Agent",
+  displayName: RUNTIME_DISPLAY_NAMES["pi-agent"],
   executableNames: ["pi"],
   detectionPaths: (userHome) => [path.join(userHome, ".pi"), path.join(userHome, ".pi", "agent")],
   configPath: (userHome) => path.join(userHome, ".pi", "agent", "mcp.json"),
   skillPath: (userHome) => path.join(userHome, ".pi", "agent", "skills", "goal-advance"),
-  desiredConnection: (artifacts, goalboardHome) => ({
-    runtimeId: "pi-agent",
-    launcherPath: artifacts.launcherPath,
-    goalboardHome,
+  desiredConnection: desiredConnectionFor("pi-agent"),
+  ...jsonMcpHandlers({
+    parse: parseJsonObject,
+    label: "Pi Agent MCP 配置",
+    rootKey: "mcpServers",
+    desiredEntry: desiredPiEntry,
   }),
-  inspectConfig: inspectPiConfig,
-  connectConfig: connectPiConfig,
-  removeConfig: removePiConfig,
   restartInstructions: [
-    ...restartInstructionsFor("Pi Agent"),
+    ...restartInstructionsFor(RUNTIME_DISPLAY_NAMES["pi-agent"]),
     "Pi 本体不内置 MCP。GoalBoard 会写入 ~/.pi/agent/mcp.json，供 pi-mcp-adapter 读取。若新 Session 里看不到 GoalBoard 工具，先运行 `pi install npm:pi-mcp-adapter` 再开新会话。Skill 不依赖 adapter，可用 /skill:goal-advance。",
   ],
 };
 
 const GROK_BUILD_ADAPTER: RuntimeAdapter = {
   id: "grok-build",
-  displayName: "Grok Build",
+  displayName: RUNTIME_DISPLAY_NAMES["grok-build"],
   executableNames: ["grok"],
   detectionPaths: (userHome) => [path.join(userHome, ".grok")],
   configPath: (userHome) => path.join(userHome, ".grok", "config.toml"),
   skillPath: (userHome) => path.join(userHome, ".grok", "skills", "goal-advance"),
-  desiredConnection: (artifacts, goalboardHome) => ({
-    runtimeId: "grok-build",
-    launcherPath: artifacts.launcherPath,
-    goalboardHome,
-  }),
+  desiredConnection: desiredConnectionFor("grok-build"),
   inspectConfig: inspectCodexConfig,
   connectConfig: connectCodexConfig,
   removeConfig: removeCodexConfig,
-  restartInstructions: restartInstructionsFor("Grok Build"),
+  restartInstructions: restartInstructionsFor(RUNTIME_DISPLAY_NAMES["grok-build"]),
 };
 
 const ADAPTERS: readonly RuntimeAdapter[] = [
@@ -539,7 +538,7 @@ export class RuntimeIntegrationService {
       });
     }
 
-    const publicPlan = this.publicPlan(common, alreadyConnected && receipt ? "no_change" : "ready", changes, backupPath,
+    const publicPlan = runtimePublicPlan(common, alreadyConnected && receipt ? "no_change" : "ready", changes, backupPath,
       alreadyConnected && receipt ? `${adapter.displayName} 已经接入，无需重复写入。` : `准备接入 ${adapter.displayName}。`);
     return {
       publicPlan,
@@ -607,7 +606,7 @@ export class RuntimeIntegrationService {
       },
     ];
     return {
-      publicPlan: this.publicPlan(common, "ready", changes, backupPath, `准备移除 ${adapter.displayName} 的 GoalBoard 接入。`),
+      publicPlan: runtimePublicPlan(common, "ready", changes, backupPath, `准备移除 ${adapter.displayName} 的 GoalBoard 接入。`),
       adapter,
       beforeConfigText: snapshot.configText,
       beforeConfigHash: snapshot.configHash,
@@ -641,31 +640,6 @@ export class RuntimeIntegrationService {
       planHash,
       adapter: snapshot.adapter,
       action,
-    };
-  }
-
-  private publicPlan(
-    common: { planId: string; planHash: string; adapter: RuntimeAdapter; action: RuntimeIntegrationAction },
-    status: RuntimeIntegrationPlan["status"],
-    changes: RuntimeIntegrationChange[],
-    backupPath: string | null,
-    message: string,
-  ): RuntimeIntegrationPlan {
-    const verb = common.action === "connect" ? "接入" : "移除接入";
-    return {
-      schema_version: 1,
-      plan_id: common.planId,
-      plan_hash: common.planHash,
-      runtime_id: common.adapter.id,
-      display_name: common.adapter.displayName,
-      action: common.action,
-      status,
-      changes,
-      backup_path: backupPath,
-      confirmation: `确认${verb} ${common.adapter.displayName}`,
-      alternative: "可以保持当前状态，稍后再从设置页操作；GoalBoard 本体和已有项目不会受影响。",
-      restart_instructions: [...common.adapter.restartInstructions],
-      message,
     };
   }
 
@@ -844,6 +818,31 @@ function detectionMessage(state: RuntimeConnectionState, displayName: string): s
   return `${displayName} 存在同名配置冲突`;
 }
 
+function runtimePublicPlan(
+  common: { planId: string; planHash: string; adapter: RuntimeAdapter; action: RuntimeIntegrationAction },
+  status: RuntimeIntegrationPlan["status"],
+  changes: RuntimeIntegrationChange[],
+  backupPath: string | null,
+  message: string,
+): RuntimeIntegrationPlan {
+  const verb = common.action === "connect" ? "接入" : "移除接入";
+  return {
+    schema_version: 1,
+    plan_id: common.planId,
+    plan_hash: common.planHash,
+    runtime_id: common.adapter.id,
+    display_name: common.adapter.displayName,
+    action: common.action,
+    status,
+    changes,
+    backup_path: backupPath,
+    confirmation: `确认${verb} ${common.adapter.displayName}`,
+    alternative: "可以保持当前状态，稍后再从设置页操作；GoalBoard 本体和已有项目不会受影响。",
+    restart_instructions: [...common.adapter.restartInstructions],
+    message,
+  };
+}
+
 function preparedWithStatus(
   common: { planId: string; planHash: string; adapter: RuntimeAdapter; action: RuntimeIntegrationAction },
   snapshot: RuntimeSnapshot,
@@ -851,23 +850,8 @@ function preparedWithStatus(
   status: RuntimeIntegrationPlan["status"],
   message: string,
 ): PreparedPlan {
-  const verb = common.action === "connect" ? "接入" : "移除接入";
   return {
-    publicPlan: {
-      schema_version: 1,
-      plan_id: common.planId,
-      plan_hash: common.planHash,
-      runtime_id: common.adapter.id,
-      display_name: common.adapter.displayName,
-      action: common.action,
-      status,
-      changes: [],
-      backup_path: null,
-      confirmation: `确认${verb} ${common.adapter.displayName}`,
-      alternative: "可以保持当前状态，稍后再从设置页操作；GoalBoard 本体和已有项目不会受影响。",
-      restart_instructions: [...common.adapter.restartInstructions],
-      message,
-    },
+    publicPlan: runtimePublicPlan(common, status, [], null, message),
     adapter: common.adapter,
     beforeConfigText: snapshot.configText,
     beforeConfigHash: snapshot.configHash,
@@ -952,15 +936,24 @@ async function restoreSkillSnapshot(targetPath: string, snapshot: SkillSnapshot)
   }
 }
 
+function goalboardProcessEnv(desired: DesiredConnection): Record<string, string> {
+  return {
+    GOALBOARD_HOME: desired.goalboardHome,
+    GOALBOARD_MCP_AUDIENCE: "runtime",
+    GOALBOARD_RUNTIME_ID: desired.runtimeId,
+  };
+}
+
 function desiredCodexFamily(desired: DesiredConnection): string {
+  const env = goalboardProcessEnv(desired);
   return [
     "[mcp_servers.goalboard]",
     `command = ${tomlString(desired.launcherPath)}`,
     "",
     "[mcp_servers.goalboard.env]",
-    `GOALBOARD_HOME = ${tomlString(desired.goalboardHome)}`,
-    `GOALBOARD_MCP_AUDIENCE = ${tomlString("runtime")}`,
-    `GOALBOARD_RUNTIME_ID = ${tomlString(desired.runtimeId)}`,
+    `GOALBOARD_HOME = ${tomlString(env.GOALBOARD_HOME)}`,
+    `GOALBOARD_MCP_AUDIENCE = ${tomlString(env.GOALBOARD_MCP_AUDIENCE)}`,
+    `GOALBOARD_RUNTIME_ID = ${tomlString(env.GOALBOARD_RUNTIME_ID)}`,
   ].join("\n");
 }
 
@@ -1020,42 +1013,8 @@ function desiredClaudeEntry(desired: DesiredConnection): Record<string, unknown>
     type: "stdio",
     command: desired.launcherPath,
     args: [],
-    env: {
-      GOALBOARD_HOME: desired.goalboardHome,
-      GOALBOARD_MCP_AUDIENCE: "runtime",
-      GOALBOARD_RUNTIME_ID: desired.runtimeId,
-    },
+    env: goalboardProcessEnv(desired),
   };
-}
-
-function inspectClaudeConfig(contents: string | null, desired: DesiredConnection): ConfigInspection {
-  if (contents == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const root = parseJsonObject(contents, "Claude Code 用户配置");
-  const servers = objectOrEmpty(root.mcpServers);
-  const entry = servers.goalboard;
-  if (entry == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const expected = desiredClaudeEntry(desired);
-  if (canonicalJson(entry) === canonicalJson(expected)) {
-    return { state: "current", summary: "当前 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(expected)) };
-  }
-  if (/goalboard|GOALBOARD_/i.test(canonicalJson(entry))) {
-    return { state: "legacy", summary: "旧版 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(entry)) };
-  }
-  return { state: "conflict", summary: "同名 MCP entry 不属于 GoalBoard", entryFingerprint: digest(canonicalJson(entry)) };
-}
-
-function connectClaudeConfig(contents: string | null, desired: DesiredConnection): string {
-  const root = contents == null ? {} : parseJsonObject(contents, "Claude Code 用户配置");
-  const servers = { ...objectOrEmpty(root.mcpServers), goalboard: desiredClaudeEntry(desired) };
-  return replaceTopLevelJsonProperty(contents, root, "mcpServers", servers);
-}
-
-function removeClaudeConfig(contents: string | null): string | null {
-  if (contents == null) return null;
-  const root = parseJsonObject(contents, "Claude Code 用户配置");
-  const servers = { ...objectOrEmpty(root.mcpServers) };
-  delete servers.goalboard;
-  return replaceTopLevelJsonProperty(contents, root, "mcpServers", servers);
 }
 
 function desiredOpenCodeEntry(desired: DesiredConnection): Record<string, unknown> {
@@ -1063,86 +1022,54 @@ function desiredOpenCodeEntry(desired: DesiredConnection): Record<string, unknow
     type: "local",
     command: [desired.launcherPath],
     enabled: true,
-    environment: {
-      GOALBOARD_HOME: desired.goalboardHome,
-      GOALBOARD_MCP_AUDIENCE: "runtime",
-      GOALBOARD_RUNTIME_ID: desired.runtimeId,
-    },
+    environment: goalboardProcessEnv(desired),
   };
-}
-
-function inspectOpenCodeConfig(contents: string | null, desired: DesiredConnection): ConfigInspection {
-  if (contents == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const root = parseJsoncObject(contents, "OpenCode 用户配置");
-  const entry = objectOrEmpty(root.mcp).goalboard;
-  if (entry == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const expected = desiredOpenCodeEntry(desired);
-  if (canonicalJson(entry) === canonicalJson(expected)) {
-    return { state: "current", summary: "当前 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(expected)) };
-  }
-  if (/goalboard|GOALBOARD_/i.test(canonicalJson(entry))) {
-    return { state: "legacy", summary: "旧版 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(entry)) };
-  }
-  return { state: "conflict", summary: "同名 MCP entry 不属于 GoalBoard", entryFingerprint: digest(canonicalJson(entry)) };
-}
-
-function connectOpenCodeConfig(contents: string | null, desired: DesiredConnection): string {
-  const root = contents == null
-    ? { $schema: "https://opencode.ai/config.json" }
-    : parseJsoncObject(contents, "OpenCode 用户配置");
-  const mcp = { ...objectOrEmpty(root.mcp), goalboard: desiredOpenCodeEntry(desired) };
-  return replaceTopLevelJsonProperty(contents, root, "mcp", mcp);
-}
-
-function removeOpenCodeConfig(contents: string | null): string | null {
-  if (contents == null) return null;
-  const root = parseJsoncObject(contents, "OpenCode 用户配置");
-  const mcp = { ...objectOrEmpty(root.mcp) };
-  delete mcp.goalboard;
-  return replaceTopLevelJsonProperty(contents, root, "mcp", mcp);
 }
 
 function desiredPiEntry(desired: DesiredConnection): Record<string, unknown> {
   return {
     command: desired.launcherPath,
     args: [],
-    env: {
-      GOALBOARD_HOME: desired.goalboardHome,
-      GOALBOARD_MCP_AUDIENCE: "runtime",
-      GOALBOARD_RUNTIME_ID: desired.runtimeId,
-    },
+    env: goalboardProcessEnv(desired),
     lifecycle: "eager",
   };
 }
 
-function inspectPiConfig(contents: string | null, desired: DesiredConnection): ConfigInspection {
-  if (contents == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const root = parseJsonObject(contents, "Pi Agent MCP 配置");
-  const servers = objectOrEmpty(root.mcpServers);
-  const entry = servers.goalboard;
-  if (entry == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
-  const expected = desiredPiEntry(desired);
-  if (canonicalJson(entry) === canonicalJson(expected)) {
-    return { state: "current", summary: "当前 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(expected)) };
-  }
-  if (/goalboard|GOALBOARD_/i.test(canonicalJson(entry))) {
-    return { state: "legacy", summary: "旧版 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(entry)) };
-  }
-  return { state: "conflict", summary: "同名 MCP entry 不属于 GoalBoard", entryFingerprint: digest(canonicalJson(entry)) };
-}
-
-function connectPiConfig(contents: string | null, desired: DesiredConnection): string {
-  const root = contents == null ? {} : parseJsonObject(contents, "Pi Agent MCP 配置");
-  const servers = { ...objectOrEmpty(root.mcpServers), goalboard: desiredPiEntry(desired) };
-  return replaceTopLevelJsonProperty(contents, root, "mcpServers", servers);
-}
-
-function removePiConfig(contents: string | null): string | null {
-  if (contents == null) return null;
-  const root = parseJsonObject(contents, "Pi Agent MCP 配置");
-  const servers = { ...objectOrEmpty(root.mcpServers) };
-  delete servers.goalboard;
-  return replaceTopLevelJsonProperty(contents, root, "mcpServers", servers);
+function jsonMcpHandlers(layout: {
+  parse: (contents: string, label: string) => Record<string, unknown>;
+  label: string;
+  rootKey: string;
+  emptyRoot?: Record<string, unknown>;
+  desiredEntry: (desired: DesiredConnection) => Record<string, unknown>;
+}): Pick<RuntimeAdapter, "inspectConfig" | "connectConfig" | "removeConfig"> {
+  return {
+    inspectConfig(contents, desired) {
+      if (contents == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
+      const root = layout.parse(contents, layout.label);
+      const entry = objectOrEmpty(root[layout.rootKey]).goalboard;
+      if (entry == null) return { state: "absent", summary: "未配置 GoalBoard MCP", entryFingerprint: null };
+      const expected = layout.desiredEntry(desired);
+      if (canonicalJson(entry) === canonicalJson(expected)) {
+        return { state: "current", summary: "当前 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(expected)) };
+      }
+      if (/goalboard|GOALBOARD_/i.test(canonicalJson(entry))) {
+        return { state: "legacy", summary: "旧版 GoalBoard MCP 配置", entryFingerprint: digest(canonicalJson(entry)) };
+      }
+      return { state: "conflict", summary: "同名 MCP entry 不属于 GoalBoard", entryFingerprint: digest(canonicalJson(entry)) };
+    },
+    connectConfig(contents, desired) {
+      const root = contents == null ? { ...(layout.emptyRoot ?? {}) } : layout.parse(contents, layout.label);
+      const bag = { ...objectOrEmpty(root[layout.rootKey]), goalboard: layout.desiredEntry(desired) };
+      return replaceTopLevelJsonProperty(contents, root, layout.rootKey, bag);
+    },
+    removeConfig(contents) {
+      if (contents == null) return null;
+      const root = layout.parse(contents, layout.label);
+      const bag = { ...objectOrEmpty(root[layout.rootKey]) };
+      delete bag.goalboard;
+      return replaceTopLevelJsonProperty(contents, root, layout.rootKey, bag);
+    },
+  };
 }
 
 function replaceTopLevelJsonProperty(

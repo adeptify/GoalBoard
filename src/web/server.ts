@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import os from "node:os";
@@ -11,8 +11,10 @@ import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
 import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
-import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
+import { desktopLaunchSpec, desktopPanelSpawnPayload, isDesktopRuntimeKind } from "../desktop/launch.js";
+import { runtimeDisplayName } from "../runtimes.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
+import { isLoopbackHostname, requestHost, timingSafeTokenEquals } from "./http-local.js";
 import { attachGoalBoardPtySocket } from "./pty-socket.js";
 import type {
   GoalBoardProjectRecord,
@@ -22,7 +24,6 @@ import type {
 import {
   RuntimeIntegrationService,
   isSupportedRuntimeId,
-  type SupportedRuntimeId,
 } from "../install/runtime-integration.js";
 import {
   GoalBoardWebServiceManager,
@@ -548,24 +549,6 @@ function servePtyClient(response: ServerResponse): boolean {
   return true;
 }
 
-function desktopPanelSpawn(
-  catalog: GoalBoardProjectCatalog,
-  panel: { panel_id: string; runtime_kind: string; launch_command: string; launch_args: string[]; cwd: string | null; work_context_id: string; goal_id: string },
-) {
-  return {
-    command: panel.launch_command,
-    args: panel.launch_args,
-    cwd: panel.cwd,
-    env: desktopPanelEnv({
-      homeDirectory: catalog.homeDirectory,
-      runtimeId: panel.runtime_kind,
-      panelId: panel.panel_id,
-      workContextId: panel.work_context_id,
-      goalId: panel.goal_id,
-    }),
-  };
-}
-
 const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'";
 
 async function handleDesktopPanelApi(
@@ -601,7 +584,7 @@ async function handleDesktopPanelApi(
       sendJson(response, 200, {
         panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
           ...panel,
-          spawn: desktopPanelSpawn(catalog, panel),
+          spawn: desktopPanelSpawnPayload({ homeDirectory: catalog.homeDirectory, panel }),
         })),
       });
       return true;
@@ -639,7 +622,7 @@ async function handleDesktopPanelApi(
       });
       sendJson(response, 200, {
         panel,
-        spawn: desktopPanelSpawn(catalog, panel),
+        spawn: desktopPanelSpawnPayload({ homeDirectory: catalog.homeDirectory, panel }),
       });
       return true;
     }
@@ -672,7 +655,7 @@ async function handleDesktopPanelApi(
         return true;
       }
       const opened = catalog.markDesktopPanelOpen(panelId);
-      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, panel) });
+      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawnPayload({ homeDirectory: catalog.homeDirectory, panel: opened }) });
       return true;
     }
     return false;
@@ -697,29 +680,6 @@ async function handleDesktopPanelApi(
 
 type LocalMutationState = "in_flight" | "complete";
 
-function localHostname(value: string): boolean {
-  const hostname = value.toLowerCase();
-  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
-}
-
-function requestHost(request: IncomingMessage): string | null {
-  const value = request.headers.host?.trim();
-  if (!value) return null;
-  try {
-    const parsed = new URL(`http://${value}`);
-    return localHostname(parsed.hostname) ? parsed.host : null;
-  } catch {
-    return null;
-  }
-}
-
-function controlTokenMatches(expected: string, actual: string | string[] | undefined): boolean {
-  if (typeof actual !== "string") return false;
-  const expectedBytes = Buffer.from(expected);
-  const actualBytes = Buffer.from(actual);
-  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
-}
-
 function authorizeLocalWebRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -743,11 +703,11 @@ function authorizeLocalWebRequest(
     sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
-  if (origin.protocol !== "http:" || !localHostname(origin.hostname) || origin.host !== host) {
+  if (origin.protocol !== "http:" || !isLoopbackHostname(origin.hostname) || origin.host !== host) {
     sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
-  if (!controlTokenMatches(controlToken, request.headers["x-goalboard-control-token"])) {
+  if (!timingSafeTokenEquals(controlToken, request.headers["x-goalboard-control-token"])) {
     sendJson(response, 403, { error: L("本地控制请求校验失败") });
     return false;
   }
@@ -816,10 +776,6 @@ function settingsProject(project: GoalBoardProjectRecord): WebSettingsProject {
     data_class: project.data_class,
     created_at: project.created_at,
   };
-}
-
-function runtimeDisplayName(runtimeId: string): string {
-  return desktopRuntimeTitle(runtimeId);
 }
 
 function settingsConnection(
@@ -939,10 +895,6 @@ function installationDiagnostics(
       return { name, path: launcherPath, state: fs.existsSync(launcherPath) ? "ready" : "missing" };
     }),
   };
-}
-
-function supportedRuntimeId(value: string): SupportedRuntimeId | null {
-  return isSupportedRuntimeId(value) ? value : null;
 }
 
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
@@ -1101,6 +1053,10 @@ async function handleGoalBoardWebRequest(
   controlToken: string,
   mutationKeys: Map<string, LocalMutationState>,
 ): Promise<void> {
+  if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
+    servePtyClient(response);
+    return;
+  }
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
         if (request.method === "GET" && url.pathname === "/settings") {
@@ -1173,10 +1129,14 @@ async function handleGoalBoardWebRequest(
         }
         const runtimePlanMatch = url.pathname.match(/^\/api\/settings\/runtimes\/([^/]+)\/plan$/);
         if (request.method === "POST" && runtimePlanMatch) {
-          const runtimeId = supportedRuntimeId(decodeURIComponent(runtimePlanMatch[1]));
+          const runtimeId = decodeURIComponent(runtimePlanMatch[1]);
+          if (!isSupportedRuntimeId(runtimeId)) {
+            sendJson(response, 400, { error: "Runtime 或接入操作无效" });
+            return;
+          }
           const body = await readBody(request);
           const action = body.action === "connect" || body.action === "remove" ? body.action : null;
-          if (!runtimeId || !action) {
+          if (!action) {
             sendJson(response, 400, { error: "Runtime 或接入操作无效" });
             return;
           }
@@ -1189,11 +1149,11 @@ async function handleGoalBoardWebRequest(
         }
         const runtimeConfirmMatch = url.pathname.match(/^\/api\/settings\/runtimes\/([^/]+)\/confirm$/);
         if (request.method === "POST" && runtimeConfirmMatch) {
-          const runtimeId = supportedRuntimeId(decodeURIComponent(runtimeConfirmMatch[1]));
+          const runtimeId = decodeURIComponent(runtimeConfirmMatch[1]);
           const body = await readBody(request);
           const decision = body.decision === "confirmed" || body.decision === "declined" ? body.decision : null;
           const planId = typeof body.plan_id === "string" ? body.plan_id.trim() : "";
-          if (!runtimeId || !decision || !planId) {
+          if (!isSupportedRuntimeId(runtimeId) || !decision || !planId) {
             sendJson(response, 400, { error: "Runtime 接入确认缺少 plan 或明确决定" });
             return;
           }
@@ -1443,10 +1403,6 @@ async function handleGoalBoardWebRequest(
           }
           return;
         }
-        if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
-          servePtyClient(response);
-          return;
-        }
         if (request.method === "GET" && url.pathname === "/health") {
           sendJson(response, 200, { status: "ok", project_count: resolved.projects.length, desktop_tui: true });
           return;
@@ -1489,10 +1445,6 @@ async function handleGoalBoardWebRequest(
       try {
         if (request.method === "GET" && url.pathname === "/health") {
           sendJson(response, 200, { status: "ok", board_id: options.boardId, desktop_tui: true });
-          return;
-        }
-        if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
-          servePtyClient(response);
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/board/cursor") {
