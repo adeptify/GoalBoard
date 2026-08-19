@@ -1,8 +1,8 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { requestHost, timingSafeTokenEquals } from "./http-local.js";
 import { GoalBoardPtyHost, type PtySpawnRequest } from "./pty-host.js";
 
 type ClientMessage =
@@ -11,28 +11,6 @@ type ClientMessage =
   | { type: "write"; panelId: string; data: string }
   | { type: "resize"; panelId: string; cols: number; rows: number }
   | { type: "kill"; panelId: string };
-
-function localHostname(hostname: string): boolean {
-  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
-}
-
-function requestHost(request: IncomingMessage): string | null {
-  const value = request.headers.host?.trim();
-  if (!value) return null;
-  try {
-    const parsed = new URL(`http://${value}`);
-    return localHostname(parsed.hostname) ? parsed.host : null;
-  } catch {
-    return null;
-  }
-}
-
-function tokenMatches(expected: string, actual: string | null | undefined): boolean {
-  if (!actual) return false;
-  const expectedBytes = Buffer.from(expected);
-  const actualBytes = Buffer.from(actual);
-  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
-}
 
 function send(socket: WebSocket, value: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(value));
@@ -109,7 +87,7 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
       try {
         const message = parseMessage(raw);
         if (!authed) {
-          if (message.type !== "auth" || !tokenMatches(controlToken, message.token)) {
+          if (message.type !== "auth" || !timingSafeTokenEquals(controlToken, message.token)) {
             send(ws, { type: "error", message: "本地终端通道校验失败" });
             ws.close();
             return;

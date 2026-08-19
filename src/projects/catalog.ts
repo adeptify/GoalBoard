@@ -122,6 +122,7 @@ export interface GoalBoardRuntimeContextBinding {
 }
 
 export interface GoalBoardDesktopPanelRecord {
+  /** Stable panel identity. openDesktopPanel initially sets work_context_id to this same value. */
   panel_id: string;
   project_id: string;
   goal_id: string;
@@ -130,6 +131,7 @@ export interface GoalBoardDesktopPanelRecord {
   launch_args: string[];
   cwd: string | null;
   work_context_id: string;
+  /** Optional host resume alias, not a second panel identity. */
   host_session_id: string | null;
   tab_index: number;
   title: string;

@@ -1,21 +1,13 @@
-export const DESKTOP_RUNTIME_KINDS = [
-  "codex",
-  "claude-code",
-  "opencode",
-  "pi-agent",
-  "grok-build",
-  "generic",
-] as const;
-export type DesktopRuntimeKind = (typeof DESKTOP_RUNTIME_KINDS)[number];
-type NamedDesktopRuntimeKind = Exclude<DesktopRuntimeKind, "generic">;
+import {
+  isDesktopRuntimeKind,
+  isSupportedRuntimeId,
+  RUNTIME_DISPLAY_NAMES,
+  runtimeDisplayName,
+  type DesktopRuntimeKind,
+  type SupportedRuntimeId,
+} from "../runtimes.js";
 
-export function isDesktopRuntimeKind(value: string): value is DesktopRuntimeKind {
-  return (DESKTOP_RUNTIME_KINDS as readonly string[]).includes(value);
-}
-
-function isNamedDesktopRuntimeKind(value: string): value is NamedDesktopRuntimeKind {
-  return value !== "generic" && isDesktopRuntimeKind(value);
-}
+export { isDesktopRuntimeKind, runtimeDisplayName as desktopRuntimeTitle, type DesktopRuntimeKind };
 
 export interface DesktopLaunchSpec {
   runtime_kind: DesktopRuntimeKind;
@@ -26,42 +18,31 @@ export interface DesktopLaunchSpec {
 
 interface DesktopRuntimeRecipe {
   command: string;
-  title: string;
   resumeArgs: (sessionId: string) => string[];
 }
 
-const DESKTOP_RUNTIME_RECIPES: Record<NamedDesktopRuntimeKind, DesktopRuntimeRecipe> = {
+const DESKTOP_RUNTIME_RECIPES: Record<SupportedRuntimeId, DesktopRuntimeRecipe> = {
   codex: {
     command: "codex",
-    title: "Codex",
     resumeArgs: (sessionId) => ["resume", sessionId],
   },
   "claude-code": {
     command: "claude",
-    title: "Claude Code",
     resumeArgs: (sessionId) => ["--resume", sessionId],
   },
   opencode: {
     command: "opencode",
-    title: "OpenCode",
     resumeArgs: (sessionId) => ["--session", sessionId],
   },
   "pi-agent": {
     command: "pi",
-    title: "Pi Agent",
     resumeArgs: (sessionId) => ["--session", sessionId],
   },
   "grok-build": {
     command: "grok",
-    title: "Grok Build",
     resumeArgs: (sessionId) => ["--resume", sessionId],
   },
 };
-
-export function desktopRuntimeTitle(runtimeKind: string): string {
-  if (runtimeKind === "generic") return "自定义命令";
-  return isNamedDesktopRuntimeKind(runtimeKind) ? DESKTOP_RUNTIME_RECIPES[runtimeKind].title : runtimeKind;
-}
 
 export function desktopLaunchSpec(input: {
   runtime_kind: string;
@@ -70,13 +51,14 @@ export function desktopLaunchSpec(input: {
   resume_session_id?: string | null;
 }): DesktopLaunchSpec {
   const resume = input.resume_session_id?.trim() || null;
-  if (isNamedDesktopRuntimeKind(input.runtime_kind)) {
+  if (isSupportedRuntimeId(input.runtime_kind)) {
     const recipe = DESKTOP_RUNTIME_RECIPES[input.runtime_kind];
+    const title = RUNTIME_DISPLAY_NAMES[input.runtime_kind];
     return {
       runtime_kind: input.runtime_kind,
       command: input.command?.trim() || recipe.command,
       args: resume ? recipe.resumeArgs(resume) : [...(input.args ?? [])],
-      title: resume ? `${recipe.title} · ${resume.slice(0, 8)}` : recipe.title,
+      title: resume ? `${title} · ${resume.slice(0, 8)}` : title,
     };
   }
   const command = input.command?.trim();
@@ -109,5 +91,31 @@ export function desktopPanelEnv(input: {
     GOALBOARD_WEB_URL: "http://127.0.0.1:4173",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
+  };
+}
+
+export function desktopPanelSpawnPayload(input: {
+  homeDirectory: string;
+  panel: {
+    panel_id: string;
+    runtime_kind: string;
+    launch_command: string;
+    launch_args: string[];
+    cwd: string | null;
+    work_context_id: string;
+    goal_id: string;
+  };
+}): { command: string; args: string[]; cwd: string | null; env: Record<string, string> } {
+  return {
+    command: input.panel.launch_command,
+    args: input.panel.launch_args,
+    cwd: input.panel.cwd,
+    env: desktopPanelEnv({
+      homeDirectory: input.homeDirectory,
+      runtimeId: input.panel.runtime_kind,
+      panelId: input.panel.panel_id,
+      workContextId: input.panel.work_context_id,
+      goalId: input.panel.goal_id,
+    }),
   };
 }

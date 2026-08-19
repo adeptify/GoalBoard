@@ -291,6 +291,7 @@ if (pane) {
     session.fit.fit();
     const size = session.fit.proposeDimensions();
     const spawn = panel.spawn;
+    if (!spawn) throw new Error(L("打开失败"));
     setStatus(L("正在启动终端…"), "busy");
     await connectPty();
     const spawned = new Promise<PtyServerMessage>((resolve, reject) => {
@@ -313,16 +314,10 @@ if (pane) {
       await sendPty({
         type: "spawn",
         panelId: panel.panel_id,
-        command: spawn?.command ?? panel.launch_command,
-        args: spawn?.args ?? panel.launch_args,
-        cwd: spawn?.cwd ?? panel.cwd,
-        env: spawn?.env ?? {
-          GOALBOARD_PANEL_ID: panel.panel_id,
-          GOALBOARD_GOAL_ID: panel.goal_id,
-          GOALBOARD_WORK_CONTEXT_ID: panel.work_context_id,
-          GOALBOARD_WORK_CONTEXT_STABLE: "true",
-          GOALBOARD_RUNTIME_ID: panel.runtime_kind,
-        },
+        command: spawn.command,
+        args: spawn.args,
+        cwd: spawn.cwd,
+        env: spawn.env,
         cols: Math.max(20, size?.cols ?? 80),
         rows: Math.max(8, size?.rows ?? 24),
       });
