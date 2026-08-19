@@ -5228,7 +5228,7 @@ function renderRuntimeSettings(view: GoalBoardSettingsView): string {
   return `<section class="settings-document" aria-labelledby="settings-title">
     <header class="settings-heading"><h1 id="settings-title">${L("Runtime 接入")}</h1><p>${L("先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。")}</p></header>
     <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>${L("没有可探测的 Runtime")}</h2><p>${L("GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。")}</p></div>`}</div>
-    <p class="settings-footnote">${L("当前自动适配 Codex 和 Claude Code。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。")}</p>
+    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。")}</p>
   </section>`;
 }
 

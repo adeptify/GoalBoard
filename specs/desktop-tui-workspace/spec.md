@@ -18,7 +18,7 @@ Goal 工作台在详情右侧提供 TUI 标签：标签开在哪个 Goal 上就�
 - Catalog 增加 Goal 面板行：打开标签 = 该终端属于当前 Goal；关标签删除面板行并停 PTY，不自动解除 Session→Project。
 - 打开面板视为用户确认，把该面板的 work context（及后来的宿主 session 别名）绑定到当前项目。
 - 标签工具条：**推进这个 Goal**（打字并回车）、**填入不发送**、进程退出后的**重新打开**。打开时不自动发送、不自动 claim。
-- 通用 PTY 运行任意 TUI；Codex、Claude Code、OpenCode、Pi Agent、Grok Build 可带各 Runtime 的 resume 参数。进程环境带上项目连接与 `GOALBOARD_GOAL_ID`。设置页 MCP adapter 仍只覆盖 Codex / Claude Code。
+- 通用 PTY 运行任意 TUI；Codex、Claude Code、OpenCode、Pi Agent、Grok Build 可带各 Runtime 的 resume 参数。进程环境带上项目连接与 `GOALBOARD_GOAL_ID`。设置页 MCP adapter 覆盖同一组 Runtime。
 - Skill：若存在 `GOALBOARD_GOAL_ID`，视为用户已在该 Goal 旁打开对话，读取该 Goal 合同，仍不自动领取。
 
 ## 非目标

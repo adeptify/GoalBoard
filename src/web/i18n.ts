@@ -697,7 +697,7 @@ export const EN: Record<string, string> = {
   "先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。": "See the change first, then decide whether to connect. GoalBoard does not rewrite Runtime user config during install.",
   "没有可探测的 Runtime": "No Runtime could be detected",
   "GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。": "GoalBoard itself still works. Come back after you install a Runtime.",
-  "当前自动适配 Codex 和 Claude Code。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。": "Codex and Claude Code are adapted automatically. Each confirmation is for the current Runtime and the current preview. If config changes after the preview, you will need a new one.",
+  "当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。": "Codex, Claude Code, OpenCode, Pi Agent, and Grok Build are adapted automatically. Each confirmation is for the current Runtime and the current preview. If config changes after the preview, you will need a new one.",
   "切换到": "Switch to",
   "确认只把这个 Session 从“{name}”切换到所选项目": "Confirm switching only this Session from “{name}” to the selected project",
   "确认切换": "Confirm switch",
