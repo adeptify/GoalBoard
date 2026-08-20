@@ -7,6 +7,7 @@ import path from "node:path";
 
 const INTEGRATION_OWNER = "goalboard-runtime-integration-v1";
 const INSTALLER_OWNER = "goalboard-home-install-v1";
+const MCP_VALIDATION_TIMEOUT_MS = 10_000;
 
 export const SUPPORTED_RUNTIME_IDS = ["codex", "claude-code", "opencode", "pi-agent", "grok-build"] as const;
 export type SupportedRuntimeId = (typeof SUPPORTED_RUNTIME_IDS)[number];
@@ -1347,7 +1348,7 @@ async function validateGoalBoardMcpLauncher(context: RuntimeIntegrationValidatio
       child.kill();
       resolve(valid);
     };
-    const timer = setTimeout(() => finish(false), 3_000);
+    const timer = setTimeout(() => finish(false), MCP_VALIDATION_TIMEOUT_MS);
     child.on("error", () => finish(false));
     child.on("exit", () => finish(false));
     child.stdout.on("data", (chunk: Buffer) => {
