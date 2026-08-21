@@ -8,7 +8,7 @@ GoalBoard 统一管理项目的 Goal Tree、依赖关系、执行进展、完成
 
 不同 Runtime 可以读取和更新同一份项目状态。用户既可以将 GoalBoard 与现有 Harness 并排使用，也可以在具体 Goal 旁直接打开 Runtime TUI，让 Goal、Session 和执行现场保持关联。
 
-![桌面端 Runtime 与 GoalBoard 同屏：Runtime 继续执行，GoalBoard 对照当前 Goal 和项目状态](docs/screenshots/goalboard-runtime-zh.png)
+![GoalBoard 三栏工作台：Goal Tree、Goal 正文与 Runtime TUI](docs/screenshots/goalboard-tui-zh.png)
 
 ## 核心能力
 
@@ -71,8 +71,6 @@ Codex、Claude Code、OpenCode、Pi Agent、Grok Build，以及其他接入 Goal
 - 从可执行 Goal 打开 Codex、Claude Code、OpenCode、Pi Agent、Grok Build 或自定义命令；
 - 终端持续显示所属 Goal，切换页面不会改变已有终端的归属；
 - 复合父 Goal 不直接启动执行终端，而是引导进入具体子 Goal。
-
-![GoalBoard 三栏工作台：Goal Tree、Goal 正文与 Runtime TUI](docs/screenshots/goalboard-tui-zh.png)
 
 终端从哪个 Goal 打开，就持续属于哪个 Goal，避免执行上下文在长程任务中逐渐偏离。
 
