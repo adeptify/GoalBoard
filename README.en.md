@@ -8,7 +8,7 @@ GoalBoard keeps a project's Goal Tree, dependencies, execution progress, complet
 
 Different Runtimes can read and update the same project state. GoalBoard can sit beside an existing Harness, or open a Runtime TUI next to a specific Goal so that the Goal, Session, and execution context remain connected.
 
-![GoalBoard three-pane workbench: Goal Tree, Goal document, and Runtime TUI](docs/screenshots/goalboard-tui-en.png)
+![Codex beside GoalBoard: Codex reads the active Goal while GoalBoard keeps the Goal Tree, progress, and next step visible](docs/screenshots/codex-goalboard-side-by-side.png)
 
 ## Core capabilities
 
@@ -71,6 +71,8 @@ The browser and Desktop app use the same project data. A GUI-only Harness can ru
 - Open Codex, Claude Code, OpenCode, Pi Agent, Grok Build, or a custom command from an executable Goal.
 - The terminal continues to show its owner Goal; navigating elsewhere does not rebind it.
 - A compound parent does not open an execution terminal and instead directs the user to a concrete child Goal.
+
+![GoalBoard three-pane workbench: Goal Tree, Goal document, and Runtime TUI](docs/screenshots/goalboard-tui-en.png)
 
 A terminal remains owned by the Goal from which it was opened, reducing context drift during long-running work.
 
