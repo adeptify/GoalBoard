@@ -12,8 +12,18 @@
       {
         "label": "main",
         "title": "GoalBoard",
-        "width": 1440,
-        "height": 900,
+        "width": 1180,
+        "height": 760,
+        "minWidth": 460,
+        "minHeight": 560,
+        "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 16
+        },
         "url": "http://127.0.0.1:4173/?desktop=1"
       }
     ],

@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
-import type { GoalPolicy, GoalRelationRecord, RiskRecord } from "../v1/types.js";
+import type { GoalPolicy, GoalRelationRecord, GoalTreeProposalItemInput, RiskRecord } from "../v1/types.js";
 import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
+import { goalTreeProposalItemValidationIssues } from "../v1/goal-tree-proposal-validation.js";
+import { goalTreeProposalDecompositionIssues } from "../v1/goal-decomposition-validation.js";
 import { isPtyCommandAvailable, type GoalBoardPtyHost } from "./pty-host.js";
 import { attachGoalBoardPtySocket } from "./pty-socket.js";
 import { resolveWebControlToken } from "./control-token.js";
@@ -34,6 +36,7 @@ import {
   renderGoalDocumentFragment,
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
+  renderGoalBoardProjectSettings,
   renderGoalBoardSettings,
   WEB_GOAL_STATUSES,
   type GoalBoardWebView,
@@ -58,6 +61,7 @@ import {
   runWithLocale,
   safeNextPath,
 } from "./i18n.js";
+import { goalPresentationState } from "./human-language.js";
 
 export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
 
@@ -246,6 +250,7 @@ function webRiskFacts(
     affected_surfaces: uniqueTextArray(body.affected_surfaces),
     trigger: String(body.trigger ?? "").trim(),
     treatment,
+    treatment_plan: String(body.treatment_plan ?? "").trim(),
     blocking_mode: blockingMode,
     revisit_condition: String(body.revisit_condition ?? "").trim(),
     owner: String(body.owner ?? "").trim(),
@@ -355,7 +360,12 @@ export function buildGoalBoardWebView(
       actor_id: "web-observer",
       goal_mode_attestation: true,
     });
-    const status: WebGoalStatus = workState.work_state;
+    const status: WebGoalStatus = goalPresentationState(
+      workState.work_state,
+      goal,
+      snapshot,
+      workState.reasons,
+    );
     const passedCriteria = new Set<string>();
     for (const evidence of snapshot.evidence) {
       if (evidence.goal_id !== goal.goal_id || evidence.result !== "passed") continue;
@@ -603,6 +613,12 @@ async function handleDesktopPanelApi(
     if (request.method === "GET" && promptMatch) {
       const goalId = decodeURIComponent(promptMatch[1]);
       const contract = coordinator.readGoalContract(boardId, goalId);
+      if (contract.goal.decomposition_state === "closed_compound") {
+        sendJson(response, 409, {
+          error: L("这条上层 Goal 由子 Goal 共同完成，不能直接推进。请选择一个具体的子 Goal。"),
+        });
+        return true;
+      }
       sendJson(response, 200, {
         goal_id: goalId,
         title: contract.goal.title,
@@ -612,17 +628,25 @@ async function handleDesktopPanelApi(
     }
     if (request.method === "GET" && panelsMatch) {
       const goalId = decodeURIComponent(panelsMatch[1]);
+      const contract = coordinator.readGoalContract(boardId, goalId);
       sendJson(response, 200, {
         panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
           ...panel,
           spawn: desktopPanelSpawn(catalog, panel, webUrl),
         })),
+        read_only: contract.goal.decomposition_state === "closed_compound",
       });
       return true;
     }
     if (request.method === "POST" && panelsMatch) {
       const goalId = decodeURIComponent(panelsMatch[1]);
-      coordinator.readGoalContract(boardId, goalId);
+      const contract = coordinator.readGoalContract(boardId, goalId);
+      if (contract.goal.decomposition_state === "closed_compound") {
+        sendJson(response, 409, {
+          error: L("这条上层 Goal 由子 Goal 共同完成，不能直接开终端。请选择一个具体的子 Goal。"),
+        });
+        return true;
+      }
       const body = await readBody(request);
       const runtimeKind = typeof body.runtime_kind === "string" ? body.runtime_kind : "generic";
       if (!isDesktopRuntimeKind(runtimeKind)) {
@@ -688,6 +712,13 @@ async function handleDesktopPanelApi(
       const panel = catalog.getDesktopPanel(panelId);
       if (panel.project_id !== projectId) {
         sendJson(response, 404, { error: "找不到这个终端面板" });
+        return true;
+      }
+      const contract = coordinator.readGoalContract(boardId, panel.goal_id);
+      if (contract.goal.decomposition_state === "closed_compound") {
+        sendJson(response, 409, {
+          error: L("这是上层 Goal 的历史终端，只能查看。请到具体的子 Goal 继续。"),
+        });
         return true;
       }
       const opened = catalog.markDesktopPanelOpen(panelId);
@@ -1126,7 +1157,7 @@ async function handleGoalBoardWebRequest(
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
         if (request.method === "GET" && url.pathname === "/settings") {
-          response.writeHead(302, { location: "/settings/runtimes", "cache-control": "no-store" });
+          response.writeHead(302, { location: "/settings/projects", "cache-control": "no-store" });
           response.end();
           return;
         }
@@ -1150,7 +1181,7 @@ async function handleGoalBoardWebRequest(
             workspace_memberships: catalogSettings.workspace_memberships,
             web_service: await webService.detect(),
             diagnostics: installationDiagnostics(serverOptions.homeDirectory, projects.length),
-          }, controlToken));
+          }, controlToken, isDesktopShellRequest(request, url)));
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/settings/runtimes") {
@@ -1509,6 +1540,20 @@ async function handleGoalBoardWebRequest(
       const store = new SqliteGoalBoardStore(options.databasePath);
       const coordinator = new GoalBoardCoordinator(store);
       try {
+        if (request.method === "GET" && url.pathname === "/settings/rules") {
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
+          });
+          response.end(renderGoalBoardProjectSettings(
+            buildGoalBoardWebView(store, coordinator, options),
+            controlToken,
+            isDesktopShellRequest(request, url),
+          ));
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/health") {
           sendJson(response, 200, { status: "ok", board_id: options.boardId, desktop_tui: true });
           return;
@@ -2289,6 +2334,119 @@ async function handleGoalBoardWebRequest(
         );
         if (request.method === "POST" && goalTreeProposalMatch) {
           const body = await readBody(request);
+          if (Array.isArray(body.risk_repairs)) {
+            if (body.decisions != null || body.confirm_all_pending === true) {
+              sendJson(response, 400, { error: "风险修订不能同时提交采用或退回决定" });
+              return;
+            }
+            const proposalId = decodeURIComponent(goalTreeProposalMatch[1]);
+            const proposal = coordinator.listGoalTreeProposals({
+              board_id: options.boardId,
+              proposal_id: proposalId,
+              include_legacy: false,
+            }).proposals[0];
+            if (!proposal || (proposal.state !== "pending" && proposal.state !== "partially_applied")) {
+              sendJson(response, 400, { error: "这份方案已经变化，请刷新后重新处理" });
+              return;
+            }
+            if (proposal.items.some((item) => item.state === "conflict")) {
+              sendJson(response, 400, { error: "这份方案和当前 GoalBoard 状态有冲突，请先让 Runtime 更新方案" });
+              return;
+            }
+            const pendingItems = proposal.items.filter((item) => item.state === "pending");
+            const allowedTreatments = new Set<RiskRecord["treatment"]>(["accept", "mitigate", "avoid", "defer"]);
+            const repairMap = new Map<string, { treatment: RiskRecord["treatment"]; treatment_plan?: string }>();
+            for (const raw of body.risk_repairs) {
+              if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+                sendJson(response, 400, { error: "风险处理选择格式无效" });
+                return;
+              }
+              const value = raw as Record<string, unknown>;
+              const itemId = String(value.item_id ?? "").trim();
+              const treatment = String(value.treatment ?? "") as RiskRecord["treatment"];
+              if (!itemId || !allowedTreatments.has(treatment) || repairMap.has(itemId)) {
+                sendJson(response, 400, { error: "每条风险都必须且只能选择一种处理方式" });
+                return;
+              }
+              repairMap.set(itemId, {
+                treatment,
+                ...(Object.prototype.hasOwnProperty.call(value, "treatment_plan")
+                  ? { treatment_plan: String(value.treatment_plan ?? "").trim() }
+                  : {}),
+              });
+            }
+            if (!repairMap.size) {
+              sendJson(response, 400, { error: "请至少选择一条风险的处理方式" });
+              return;
+            }
+            for (const [itemId] of repairMap) {
+              const item = pendingItems.find((candidate) => candidate.item_id === itemId);
+              if (!item || item.kind !== "risk") {
+                sendJson(response, 400, { error: "要修订的风险已经变化，请刷新后重试" });
+                return;
+              }
+            }
+            const invalidTreatmentItems = pendingItems.filter((item) =>
+              item.kind === "risk" && !allowedTreatments.has(String(item.payload.treatment ?? "") as RiskRecord["treatment"]));
+            if (invalidTreatmentItems.some((item) => !repairMap.has(item.item_id))) {
+              sendJson(response, 400, { error: "请为页面列出的每条风险选择处理方式" });
+              return;
+            }
+            const reason = typeof body.reason === "string" && body.reason.trim()
+              ? body.reason.trim()
+              : "用户在决定中心为方案中的风险选择处理方式，并确认保留或修改具体措施。";
+            const revisionDecisions = pendingItems.map((item) => {
+              const repair = repairMap.get(item.item_id);
+              const previousTreatment = String(item.payload.treatment ?? "").trim();
+              const previousPlan = String(item.payload.treatment_plan ?? "").trim()
+                || (allowedTreatments.has(previousTreatment as RiskRecord["treatment"]) ? "" : previousTreatment);
+              const payload = repair
+                ? {
+                    ...item.payload,
+                    treatment: repair.treatment,
+                    treatment_plan: repair.treatment_plan ?? previousPlan,
+                  }
+                : { ...item.payload };
+              const revisedItem: GoalTreeProposalItemInput = {
+                item_id: `${item.item_id}-web-v${proposal.version + 1}-${randomUUID().slice(0, 8)}`,
+                kind: item.kind,
+                operation: item.operation,
+                payload,
+                source_refs: [...item.source_refs, `web-risk-repair:${proposal.proposal_id}`],
+                reason: item.reason,
+                confidence: item.confidence,
+                affected_objects: item.affected_objects,
+                requires_user_confirmation: true,
+                supersedes_item_id: item.item_id,
+              };
+              return {
+                item_id: item.item_id,
+                decision: "revise" as const,
+                reason,
+                revised_item: revisedItem,
+              };
+            });
+            try {
+              const result = coordinator.decideGoalTreeProposal({
+                board_id: options.boardId,
+                proposal_id: proposalId,
+                authority: {
+                  actor_id: "web-user",
+                  actor_kind: "user",
+                  authority_source: "web",
+                  conversation_ref: `web:${options.boardId}`,
+                  message_ref: `web-risk-repair:${randomUUID()}`,
+                },
+                decisions: revisionDecisions,
+                reason,
+                idempotency_key: String(body.idempotency_key ?? `web-risk-repair-${randomUUID()}`),
+              });
+              sendJson(response, 200, result);
+            } catch (error) {
+              sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+          }
           if (body.confirm_all_pending === true) {
             sendJson(response, 400, {
               error: "Web 入口不能验证上一轮是否明确请求整份确认；请逐项选择，或在当前 Runtime 对话中确认整份提案。",
@@ -2300,9 +2458,41 @@ async function handleGoalBoardWebRequest(
             return;
           }
           try {
+            const proposalId = decodeURIComponent(goalTreeProposalMatch[1]);
+            let decisions = body.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"];
+            let decisionReason = typeof body.reason === "string" ? body.reason.trim() : "";
+            if (Array.isArray(decisions) && decisions.length > 0 && decisions.every((decision) => decision.decision === "reject")) {
+              const proposal = coordinator.listGoalTreeProposals({
+                board_id: options.boardId,
+                proposal_id: proposalId,
+                include_legacy: false,
+              }).proposals[0];
+              const undecidedItems = proposal?.items.filter((item) => item.state === "pending" || item.state === "conflict") ?? [];
+              const submittedIds = new Set(decisions.map((decision) => decision.item_id));
+              const rejectsWholeOpenProposal = undecidedItems.length > 0 &&
+                submittedIds.size === undecidedItems.length &&
+                undecidedItems.every((item) => submittedIds.has(item.item_id));
+              if (proposal && rejectsWholeOpenProposal) {
+                const systemProblems = [
+                  ...undecidedItems.flatMap((item) => goalTreeProposalItemValidationIssues(item).map((issue) => issue.message)),
+                  ...goalTreeProposalDecompositionIssues(undecidedItems, store.snapshot(options.boardId)).map((issue) => issue.message),
+                  ...(undecidedItems.some((item) => item.state === "conflict")
+                    ? [`这份方案有 ${undecidedItems.filter((item) => item.state === "conflict").length} 项已和当前 GoalBoard 状态不一致。`]
+                    : []),
+                ];
+                const uniqueProblems = [...new Set(systemProblems)];
+                if (uniqueProblems.length > 0) {
+                  const automaticReason = `GoalBoard 自动退回修正：${uniqueProblems.join("；")}`;
+                  decisionReason = decisionReason
+                    ? `${automaticReason}；用户补充：${decisionReason}`
+                    : automaticReason;
+                  decisions = decisions.map((decision) => ({ ...decision, reason: decisionReason }));
+                }
+              }
+            }
             const result = coordinator.decideGoalTreeProposal({
               board_id: options.boardId,
-              proposal_id: decodeURIComponent(goalTreeProposalMatch[1]),
+              proposal_id: proposalId,
               authority: {
                 actor_id: "web-user",
                 actor_kind: "user",
@@ -2310,8 +2500,8 @@ async function handleGoalBoardWebRequest(
                 conversation_ref: `web:${options.boardId}`,
                 message_ref: `web-decision:${randomUUID()}`,
               },
-              decisions: body.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"],
-              reason: typeof body.reason === "string" ? body.reason.trim() : undefined,
+              decisions,
+              reason: decisionReason || undefined,
               idempotency_key: String(body.idempotency_key ?? `web-goal-tree-decision-${randomUUID()}`),
             });
             sendJson(response, 200, result);

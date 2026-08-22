@@ -53,6 +53,16 @@ import {
   type RiskRecord,
   type RunRecord,
 } from "./types.js";
+import { requiresParentCompletionConfirmation } from "./parent-completion.js";
+import {
+  goalTreeProposalItemValidationIssues,
+  goalTreeRiskDescription,
+} from "./goal-tree-proposal-validation.js";
+import {
+  goalProposalLeafReadinessIssues,
+  goalTreeProposalDecompositionIssues,
+  readDecompositionReview,
+} from "./goal-decomposition-validation.js";
 
 type Row = Record<string, unknown>;
 
@@ -163,6 +173,7 @@ interface RiskFactsInput {
   affected_surfaces?: string[];
   trigger: string;
   treatment: RiskRecord["treatment"];
+  treatment_plan?: string;
   blocking_mode: RiskRecord["blocking_mode"];
   revisit_condition: string;
   owner: string;
@@ -1462,9 +1473,9 @@ export class GoalBoardCoordinator {
         .prepare(`
           INSERT INTO risks (
             risk_id, board_id, description, probability, impact,
-            affected_surfaces_json, trigger, treatment, blocking_mode,
+            affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
             revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
         `)
         .run(
           riskId,
@@ -1475,6 +1486,7 @@ export class GoalBoardCoordinator {
           sqliteJson(facts.affected_surfaces),
           facts.trigger,
           facts.treatment,
+          facts.treatment_plan,
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
@@ -1536,7 +1548,7 @@ export class GoalBoardCoordinator {
         .prepare(`
           UPDATE risks SET
             description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
+            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
           WHERE risk_id = ? AND board_id = ?
         `)
         .run(
@@ -1546,6 +1558,7 @@ export class GoalBoardCoordinator {
           sqliteJson(facts.affected_surfaces),
           facts.trigger,
           facts.treatment,
+          facts.treatment_plan,
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
@@ -1680,6 +1693,7 @@ export class GoalBoardCoordinator {
     const impact = input.impact.trim();
     const affectedSurfaces = unique((input.affected_surfaces ?? []).map((item) => item.trim()).filter(Boolean));
     const trigger = input.trigger.trim();
+    const treatmentPlan = input.treatment_plan?.trim() ?? "";
     const revisitCondition = input.revisit_condition.trim();
     const owner = input.owner.trim();
     if (!goalIds.length) {
@@ -1706,6 +1720,7 @@ export class GoalBoardCoordinator {
       affected_surfaces: affectedSurfaces,
       trigger,
       treatment: input.treatment,
+      treatment_plan: treatmentPlan,
       blocking_mode: input.blocking_mode,
       revisit_condition: revisitCondition,
       owner,
@@ -2141,6 +2156,9 @@ export class GoalBoardCoordinator {
     const available: AvailableGoal[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
+      const requiresParentConfirmation =
+        workState.work_state === "clarification_pending" &&
+        requiresParentCompletionConfirmation(goal, snapshot);
       for (const action of this.availableActions(goal, snapshot, workState)) {
         const evaluation = this.evaluate({
           boardId: input.board_id,
@@ -2158,7 +2176,10 @@ export class GoalBoardCoordinator {
           work_state: workState.work_state,
           next_action: action.next_action,
           review_obligation_id: action.review_obligation_id,
-          why_now: this.workActionMessage(action.next_action),
+          requires_parent_confirmation: requiresParentConfirmation,
+          why_now: requiresParentConfirmation
+            ? "现有子 Goal 都已完成，但父 Goal 的拆分还没有确认结束；先和用户确认是否已经覆盖整个父目标，再决定收口或继续补充子 Goal"
+            : this.workActionMessage(action.next_action),
           priority_hint: evaluation.goal.priority,
           dependency_summary: this.dependencySummary(input.board_id, goal.goal_id),
           risk_summary: this.riskSummary(goal.goal_id),
@@ -2169,6 +2190,7 @@ export class GoalBoardCoordinator {
     }
     available.sort(
       (left, right) =>
+        Number(right.requires_parent_confirmation) - Number(left.requires_parent_confirmation) ||
         right.priority_hint - left.priority_hint ||
         left.goal.goal_id.localeCompare(right.goal.goal_id) ||
         left.role.localeCompare(right.role),
@@ -2683,6 +2705,15 @@ export class GoalBoardCoordinator {
       "Goal Tree 提案需要面向用户的自然语言摘要",
     );
     const items = normalizeGoalTreeProposalItems(input.items);
+    for (const [index, item] of items.entries()) {
+      const issue = goalTreeProposalItemValidationIssues(item)[0];
+      if (issue) {
+        throw new GoalBoardV1Error(
+          issue.code,
+          `第 ${index + 1} 个条目中的风险「${goalTreeRiskDescription(item)}」不能提交：${issue.message}${issue.recovery}`,
+        );
+      }
+    }
     const rootGoalId = input.root_goal_id?.trim() || null;
     const supersedesProposalId = input.supersedes_proposal_id?.trim() || null;
     const hash = requestHash({
@@ -2707,6 +2738,16 @@ export class GoalBoardCoordinator {
 
       this.requireBoard(input.board_id);
       this.requireActiveClarificationProposalRun(input.board_id, input.discovered_in_run_id, actorId);
+      const decompositionIssue = goalTreeProposalDecompositionIssues(
+        items,
+        this.store.snapshot(input.board_id),
+      )[0];
+      if (decompositionIssue) {
+        throw new GoalBoardV1Error(
+          decompositionIssue.code,
+          `${decompositionIssue.message}${decompositionIssue.recovery}`,
+        );
+      }
       const currentCursor = this.store.eventCursor(input.board_id);
       const baseEventCursor = input.base_event_cursor ?? currentCursor;
       if (!Number.isInteger(baseEventCursor) || baseEventCursor < 0 || baseEventCursor > currentCursor) {
@@ -3045,6 +3086,31 @@ export class GoalBoardCoordinator {
             `条目「${decision.item_id}」已经处理，不能再次决定`,
           );
         }
+      }
+
+      for (const decision of decisions) {
+        if (decision.decision !== "confirm") continue;
+        const item = itemsById.get(decision.item_id)!;
+        const issue = goalTreeProposalItemValidationIssues(item)[0];
+        if (issue) {
+          throw new GoalBoardV1Error(
+            issue.code,
+            `方案中的风险「${goalTreeRiskDescription(item)}」暂时不能采用：${issue.message}${issue.recovery}当前 Goal Tree 没有改变。`,
+          );
+        }
+      }
+
+      const decompositionIssue = goalTreeProposalDecompositionIssues(
+        decisions
+          .filter((decision) => decision.decision === "confirm")
+          .map((decision) => itemsById.get(decision.item_id)!),
+        this.store.snapshot(input.board_id),
+      )[0];
+      if (decompositionIssue) {
+        throw new GoalBoardV1Error(
+          decompositionIssue.code,
+          `${decompositionIssue.message}${decompositionIssue.recovery}当前 Goal Tree 没有改变。`,
+        );
       }
 
       const now = this.clock().toISOString();
@@ -4553,7 +4619,7 @@ export class GoalBoardCoordinator {
         type: "contract_proposal.submitted",
         objectType: "contract_proposal",
         objectId: proposalId,
-        reason: "clarifier 提交了同一 Draft 的 Contract 补全提案，等待用户决定",
+        reason: "目标说明方案已提交，等待用户决定",
         payload: {
           goal_id: input.goal_id,
           field_count: input.field_sources.length,
@@ -4800,9 +4866,9 @@ export class GoalBoardCoordinator {
           .prepare(`
             INSERT INTO risks (
               risk_id, board_id, description, probability, impact,
-              affected_surfaces_json, trigger, treatment, blocking_mode,
+              affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
               revisit_condition, owner, state, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
           `)
           .run(
             risk.risk_id.trim(),
@@ -4813,6 +4879,7 @@ export class GoalBoardCoordinator {
             sqliteJson(risk.affected_surfaces),
             risk.trigger.trim(),
             risk.treatment,
+            risk.treatment_plan?.trim() ?? "",
             risk.blocking_mode,
             risk.revisit_condition.trim(),
             risk.owner.trim(),
@@ -5469,6 +5536,7 @@ export class GoalBoardCoordinator {
         const impact = String(risk.impact ?? "").trim();
         const trigger = String(risk.trigger ?? "").trim();
         const treatment = String(risk.treatment ?? "");
+        const treatmentPlan = String(risk.treatment_plan ?? "").trim();
         const blockingMode = String(risk.blocking_mode ?? "none");
         const revisitCondition = String(risk.revisit_condition ?? "").trim();
         const owner = String(risk.owner ?? input.actor_id).trim();
@@ -5496,9 +5564,9 @@ export class GoalBoardCoordinator {
           .prepare(`
             INSERT INTO risks (
               risk_id, board_id, description, probability, impact,
-              affected_surfaces_json, trigger, treatment, blocking_mode,
+              affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
               revisit_condition, owner, state, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
           `)
           .run(
             riskId,
@@ -5509,6 +5577,7 @@ export class GoalBoardCoordinator {
             sqliteJson((risk.affected_surfaces as string[]) ?? []),
             trigger,
             treatment,
+            treatmentPlan,
             blockingMode,
             revisitCondition,
             owner,
@@ -6193,6 +6262,9 @@ export class GoalBoardCoordinator {
       ...(decompositionState == null
         ? {}
         : { decomposition_state: decompositionState as CreateGoalInput["decomposition_state"] }),
+      ...(readDecompositionReview(raw.decomposition_review) == null
+        ? {}
+        : { decomposition_review: readDecompositionReview(raw.decomposition_review)! }),
       ...(typeof raw.priority === "number" ? { priority: raw.priority } : {}),
       acceptance_criteria: acceptance,
     };
@@ -7000,6 +7072,7 @@ export class GoalBoardCoordinator {
       affected_surfaces: this.goalTreeStringArray(payload.affected_surfaces),
       trigger: String(payload.trigger ?? ""),
       treatment: String(payload.treatment ?? "") as RiskRecord["treatment"],
+      treatment_plan: String(payload.treatment_plan ?? ""),
       blocking_mode: String(payload.blocking_mode ?? "") as RiskRecord["blocking_mode"],
       revisit_condition: String(payload.revisit_condition ?? ""),
       owner: String(payload.owner ?? ""),
@@ -7009,9 +7082,9 @@ export class GoalBoardCoordinator {
         .prepare(`
           INSERT INTO risks (
             risk_id, board_id, description, probability, impact,
-            affected_surfaces_json, trigger, treatment, blocking_mode,
+            affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
             revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
         `)
         .run(
           riskId,
@@ -7022,6 +7095,7 @@ export class GoalBoardCoordinator {
           sqliteJson(facts.affected_surfaces),
           facts.trigger,
           facts.treatment,
+          facts.treatment_plan,
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
@@ -7032,7 +7106,7 @@ export class GoalBoardCoordinator {
       const result = this.store.db
         .prepare(`
           UPDATE risks SET description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
+            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
           WHERE board_id = ? AND risk_id = ?
         `)
         .run(
@@ -7042,6 +7116,7 @@ export class GoalBoardCoordinator {
           sqliteJson(facts.affected_surfaces),
           facts.trigger,
           facts.treatment,
+          facts.treatment_plan,
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
@@ -7546,6 +7621,15 @@ export class GoalBoardCoordinator {
     const activeClaim = activeRun
       ? activeClaimById.get(activeRun.claim_id) ?? null
       : activeClaims.at(-1) ?? null;
+    const latestClaimRun = activeClaim
+      ? snapshot.runs
+          .filter((run) => run.claim_id === activeClaim.claim_id)
+          .sort(
+            (left, right) =>
+              left.started_at.localeCompare(right.started_at) || left.run_id.localeCompare(right.run_id),
+          )
+          .at(-1) ?? null
+      : null;
     const pendingReviewObligations = snapshot.review_obligations.filter(
       (obligation) => obligation.goal_id === goal.goal_id && obligation.state === "pending",
     );
@@ -7569,7 +7653,7 @@ export class GoalBoardCoordinator {
       return { ...base, work_state: "satisfied", next_action: null, reasons: [] };
     }
     if (activeClaim && !activeRun) {
-      return this.workStateWithoutRun(base, activeClaim);
+      return this.workStateWithoutRun(base, activeClaim, latestClaimRun);
     }
 
     const needsClarification =
@@ -7709,10 +7793,15 @@ export class GoalBoardCoordinator {
     };
   }
 
-  /** A legacy/direct Claim without a non-terminal Run is never shown as work in progress. */
+  /**
+   * A direct Claim without a Run is an abnormal handoff, while a completed Run
+   * whose Claim has not yet been released is a normal, short-lived transition.
+   * Keep both unavailable without exposing protocol object names in the default UI.
+   */
   private workStateWithoutRun(
     base: Omit<GoalWorkStateView, "work_state" | "next_action" | "reasons">,
     claim: ClaimRecord,
+    latestRun: RunRecord | null,
   ): GoalWorkStateView {
     const phase =
       claim.role === "clarifier"
@@ -7732,6 +7821,36 @@ export class GoalBoardCoordinator {
           : phase === "review"
             ? "review"
             : "execute";
+    if (latestRun?.state === "completed") {
+      const enteringReview = phase === "execution" && base.pending_review_roles.length > 0;
+      const message = enteringReview
+        ? "结果已提交，正在进入检查"
+        : phase === "review"
+          ? "检查结果已提交，当前检查正在收尾"
+          : phase === "clarification"
+            ? "目标方案已整理好，当前澄清正在收尾"
+            : phase === "revalidation"
+              ? "重新核对的结果已提交，当前工作正在收尾"
+              : "结果已提交，当前执行正在收尾";
+      const remediation = enteringReview
+        ? "无需重新提交；当前执行收尾后即可开始检查。"
+        : "无需重复操作；收尾完成后系统会继续判断下一步。";
+      return {
+        ...base,
+        work_state: enteringReview ? "review_blocked" : (`${phase}_blocked` as GoalWorkState),
+        next_action: enteringReview ? "review" : nextAction,
+        reasons: [
+          reason(
+            "work.handoff_pending",
+            "claim",
+            claim.claim_id,
+            message,
+            undefined,
+            remediation,
+          ),
+        ],
+      };
+    }
     return {
       ...base,
       work_state: `${phase}_blocked` as GoalWorkState,
@@ -7741,9 +7860,9 @@ export class GoalBoardCoordinator {
           "run.missing",
           "claim",
           claim.claim_id,
-          "这个 Claim 没有未结束的 Run，不能显示为进行中",
+          "这项工作已被接手，但还没有开始推进",
           undefined,
-          "由领取 Runtime 启动 Run，或释放/撤销这个 Claim 后让其他 Runtime 重新选择",
+          "开始推进，或者先结束当前接手状态后再交给其他人。",
         ),
       ],
     };
@@ -8073,7 +8192,7 @@ export class GoalBoardCoordinator {
             "contract_proposal.user_decision_required",
             "contract_proposal",
             asText(pendingContractProposal.proposal_id),
-            "clarifier 已提交 Contract 补全提案，等待用户确认或拒绝",
+            "目标方案已经整理好，正在等你确认或退回修改",
           ),
         );
       }
@@ -8527,6 +8646,21 @@ export class GoalBoardCoordinator {
       );
     }
     this.validateGoalInput(proposedGoal);
+    const leafReadinessIssue = goalProposalLeafReadinessIssues(
+      {
+        item_id: `contract-proposal:${goalId}`,
+        kind: "contract",
+        operation: "update",
+        payload: proposedGoal as unknown as Record<string, unknown>,
+      },
+      proposedGoal as unknown as Record<string, unknown>,
+    )[0];
+    if (leafReadinessIssue) {
+      throw new GoalBoardV1Error(
+        leafReadinessIssue.code,
+        `${leafReadinessIssue.message}${leafReadinessIssue.recovery}`,
+      );
+    }
     const priority = proposedGoal.priority;
     if (!Number.isInteger(priority) || Number(priority) < 0 || Number(priority) > 100) {
       throw new GoalBoardV1Error(

@@ -218,6 +218,13 @@ describe("mcp server", () => {
     assert.match(skill, /“继续推进” or “领一件能做的”/);
     assert.match(skill, /GoalBoard does not return a unique next task/);
     assert.match(skill, /`available → select_goal`/);
+    assert.match(skill, /`requires_parent_confirmation=true`/);
+    assert.match(skill, /whether they cover the whole parent/);
+    assert.match(skill, /Do not silently close the parent or skip to unrelated work/);
+    assert.match(skill, /Put unexpected results back into the Goal lifecycle/);
+    assert.match(skill, /do not submit passing Evidence or call `complete`/);
+    assert.match(skill, /An observed failure is not a Risk substitute/);
+    assert.match(skill, /Candidate or Goal Tree Proposal for a corrective Goal/);
     assert.match(skill, /goalboard_v1_draft_dialogue_start/);
     assert.match(skill, /goalboard_v1_draft_dialogue_turn/);
     assert.match(skill, /goalboard_v1_draft_dialogue_resume/);
@@ -227,6 +234,11 @@ describe("mcp server", () => {
     assert.match(skill, /never invent a user identity, Session ID/);
     assert.match(skill, /does not mean a different Runtime or a different Session must take over/);
     assert.match(skill, /child Goal may itself have finer child Goals/);
+    assert.match(skill, /return to the user's original outcome/);
+    assert.match(skill, /A game also covers gameplay/);
+    assert.match(skill, /An App covers its core function/);
+    assert.match(skill, /One well-scoped child may own several areas/);
+    assert.match(skill, /never present a staged pause as a finished tree/);
     assert.match(skill, /`waiting_children` \(UI: “已澄清，等待子 Goal”\)/);
     assert.match(skill, /`execution_pending` \(“待执行”\)/);
     assert.match(skill, /`clarification_pending` \(“待澄清”\)/);
@@ -250,6 +262,9 @@ describe("mcp server", () => {
     assert.match(protocol, /current Runtime chooses one returned item/);
     assert.match(protocol, /A successful result always includes its Claim and started Run/);
     assert.match(protocol, /The tree can include a compound parent, a family of children, and children split more finely again/);
+    assert.match(protocol, /perform a result-chain pass/);
+    assert.match(protocol, /decomposition_review/);
+    assert.match(protocol, /Do not call any plan complete/);
     assert.match(protocol, /GoalBoard has one derived work state, not a second “clarification complete” flag/);
     assert.match(protocol, /a confirmed parent with child Goals must show “已澄清，等待子 Goal”, not “待澄清”/);
     assert.match(protocol, /auditable local provenance, not a cryptographic trust boundary/);
@@ -306,7 +321,19 @@ describe("mcp server", () => {
     assert.match(skill, /user-visible summary must show/);
     assert.match(skill, /what work state each affected Goal will have after confirmation/);
     assert.match(skill, /confirm the whole named proposal, reject it, or revise specific named items/);
+    assert.match(skill, /Before proposing any `accepted \/ closed_leaf` Goal/);
+    assert.match(skill, /one `primary_deliverable`/);
+    assert.match(skill, /separately deliverable, separately acceptable, and independently reworkable/);
+    assert.match(skill, /at least two signals are true, split it into another Goal/);
+    assert.match(skill, /same five-part result chain for every task/);
+    assert.match(skill, /AI or data work covers data sources and quality, evaluation, runtime\/cost, and safety\/governance/);
+    assert.match(skill, /Content or research covers source provenance/);
+    assert.match(skill, /Operations covers roles, permissions, tools\/workflow, exceptions, and measurement/);
+    assert.match(skill, /add a dependency from the core Goal to the foundation Goal/);
+    assert.match(skill, /`task_context=game\|app\|ai_data\|content_research\|operations\|other`/);
     assert.match(protocol, /Persist first, then continue the conversation/);
+    assert.match(protocol, /Available sets `requires_parent_confirmation=true`/);
+    assert.match(protocol, /Unexpected result and corrective work/);
     assert.match(protocol, /The first clarification checkpoint must produce readable values for the existing Goal fields/);
     assert.match(protocol, /Before `goal_tree_propose`, scan every proposed parent, child, and leaf Goal for readability/);
     assert.match(protocol, /lead with the Goal's business problem\/value, expected result, current derived `work_state`, next owner\/action, and blockers or dependencies/);
@@ -314,6 +341,14 @@ describe("mcp server", () => {
     assert.match(protocol, /If the call fails, say that the progress was not saved and stop/);
     assert.match(protocol, /The immediately preceding proposal message must be decision-complete/);
     assert.match(protocol, /A vague “可以”“继续” is whole confirmation only when/);
+    assert.match(protocol, /Every proposed `accepted \/ closed_leaf` Goal also includes an explicit readiness decision/);
+    assert.match(protocol, /output_coverage/);
+    assert.match(protocol, /split_candidates/);
+    assert.match(protocol, /Two or more true signals require `decision=split`/);
+    assert.match(protocol, /Every new proposal accounts for `final_outcome`, `operating_flow`, `core_capabilities`, `foundation_infrastructure`, and `quality_continuous_delivery`/);
+    assert.match(protocol, /task_context: game \| app \| ai_data \| content_research \| operations \| other/);
+    assert.match(protocol, /Historical `product_context=game\|app\|other` remains readable/);
+    assert.match(protocol, /Footballnia is one game regression example, not the rule's boundary/);
   });
 
   it("unknown method", async () => {

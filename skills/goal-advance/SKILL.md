@@ -149,14 +149,14 @@ After a project is connected, take exactly the route that matches the user's req
 | A new rough idea | Call `goalboard_v1_draft_dialogue_start` with the user's words. It atomically creates the smallest `draft / abstract` Goal, clarifier Claim, and Run. |
 | Continue a specified Draft | Read `goalboard_v1_contract`. If it has an open clarification session, call `goalboard_v1_draft_dialogue_resume`; otherwise call `goalboard_v1_draft_dialogue_start` with that `goal_id` and the user's request to continue. It reuses the existing Draft rather than creating a second Goal. |
 | Desktop App typed “推进这个 Goal” | Read that Goal's contract. Follow its current work state. Do not claim until the Goal is available and this path requires `select_goal`. |
-| “继续推进” or “领一件能做的” | Call `goalboard_v1_available`. Choose one returned item using its Contract, blockers, priority, and the user's current request. GoalBoard does not return a unique next task. Call `goalboard_v1_select_goal` with the returned `role`; it atomically creates both Claim and Run. When `GOALBOARD_GOAL_ID` is set, use that Goal instead of choosing a different Available item. |
+| “继续推进” or “领一件能做的” | Call `goalboard_v1_available`. Unless the user named another Goal, first choose an item with `requires_parent_confirmation=true`: its current children are done, but the parent still needs the user to confirm whether the whole outcome is covered. Otherwise choose using the Contract, blockers, priority, and the user's current request. GoalBoard does not return a unique next task. Call `goalboard_v1_select_goal` with the returned `role`; it atomically creates both Claim and Run. When `GOALBOARD_GOAL_ID` is set, use that Goal instead of choosing a different Available item. |
 | A specified accepted Goal | Read its Contract, then find that Goal in `goalboard_v1_available`. If it is available, call `goalboard_v1_select_goal` with that item's returned `role`. If it is not available, call `goalboard_v1_explain` and report the real blocker instead of claiming it anyway. |
 | Ask what is in the trash | Call `goalboard_v1_goal_trash_list`; it is read-only and stays in this conversation. |
 | Explicitly delete or restore one Goal | First identify the exact `goal_id` and explain that deletion is recoverable. Only after the user's clear current-conversation instruction call `goalboard_v1_goal_trash` or `goalboard_v1_goal_restore` with `user_confirmed=true`. |
 
 After a new rough idea starts, tell the user in plain language that you have saved it as a Draft that can be refined in this same conversation; then ask the single highest-impact question. When resuming a Draft, summarize “上次已确认 / 仍待确认 / 现在只需要决定的一件事” before continuing the saved question. Do not replay the full stored transcript.
 
-After selecting from Available, state which Goal you chose, why it fits the user's request and current constraints, and that its work state has already been updated. Then begin the work. Do not ask the user to choose from Available unless their intent or a genuine product tradeoff requires their decision.
+After selecting from Available, state which Goal you chose, why it fits the user's request and current constraints, and that its work state has already been updated. Then begin the work. For `requires_parent_confirmation=true`, “begin the work” means returning to the parent outcome with the user: summarize which current children are complete and ask one consequential question—whether they cover the whole parent. If yes, prepare the parent Contract/Goal Tree closure proposal as `accepted / closed_compound`; if not, continue clarification and propose the missing child Goals. Do not silently close the parent or skip to unrelated work. Do not ask the user to choose from Available unless their intent or a genuine product tradeoff requires their decision.
 
 Use a new `idempotency_key` for a changed operation. Reuse a key only to retry the exact same request.
 
@@ -164,13 +164,27 @@ Use a new `idempotency_key` for a changed operation. Reuse a key only to retry t
 
 For a trash result, use its returned facts rather than inventing a state change: `blocked` means report the active Claim/Run and do not force it closed; `pending_relation_ids` means another related Goal is still in the trash; `trashed` and `restored` are both idempotent, recoverable results. Never make the user open Web to finish this flow.
 
+### 2.1 Put unexpected results back into the Goal lifecycle
+
+Treat an observed result that does not match expectations as Goal information, whether it is a code Bug, an unusable design, incorrect content, a broken operating process, weak research evidence, or another task-specific failure. If it can make a Goal's completion claim false, do not leave it only in the conversation or an implementation note.
+
+First read the affected Goal and search the current Goal Tree for work that already owns the problem. Then choose the smallest truthful lifecycle action:
+
+- If the problem means a current acceptance criterion is not met, do not submit passing Evidence or call `complete`. Submit failed or inconclusive Evidence when there is a traceable check. If the active Run genuinely cannot continue, report it as blocked with the observed problem and release it when appropriate.
+- If an existing unfinished Goal already owns the correction, use that Goal rather than creating a duplicate. Explain how the new fact affects its next step or evidence.
+- If the correction is independently deliverable, independently verifiable, or must be scheduled separately, submit a Candidate or Goal Tree Proposal for a corrective Goal and relate it to the affected Goal. Use `part_of` when it is missing scope inside the parent, and `depends_on` only when the affected Goal truly consumes the correction's result before it can complete.
+- If a previously completed Goal's result is now shown to be wrong, do not silently rewrite its accepted Contract or pretend it remains trustworthy. Propose corrective work and the necessary relationship; use the supported revalidation path when changed dependencies, Risks, or facts make that path applicable.
+- Use a Risk only for an uncertain condition that may happen later. An observed failure is not a Risk substitute.
+
+When the user reports the problem, treat their report as a user-provided fact while still checking which Goal and acceptance result it affects. Tell the user which Goal was kept incomplete, blocked, or supplemented, and whether a proposed new Goal still needs confirmation. Do not continue unrelated work until a completion-blocking problem has a visible owner and next action in GoalBoard.
+
 ## 3. Continue from the returned work state
 
 Read the returned `work_state` after selecting, starting, resuming, deciding, reporting, or recovering work. It is the only user-visible work status; do not create a second mutable “clarification complete” field.
 
 | Work state | What the current Runtime does next |
 |---|---|
-| `clarifying` / `clarification_pending` | Continue the user dialogue as described below. |
+| `clarifying` / `clarification_pending` | Continue the user dialogue as described below. If Available marked `requires_parent_confirmation=true`, confirm whether the completed current children cover the whole parent before doing unrelated work. |
 | `executing` / `execution_pending` | Implement the selected leaf Goal, validate its acceptance criteria, then report evidence and completion work. |
 | `reviewing` / `review_pending` | Inspect the stated evidence and Contract; submit only the Review that the current Runtime is allowed to perform. |
 | `revalidating` / `revalidation_pending` | Recheck the accepted Contract, active dependencies, Risks, and cited evidence; call `goalboard_v1_revalidate` only from its active Run. |
@@ -195,6 +209,18 @@ Ask only questions that could change the Goal's outcome, boundary, acceptance di
 Clarify in two passes without turning them into a questionnaire. First establish enough user language to write a clear title, outcome, why, and `business_logic`; then complete scope, constraints, decomposition, and acceptance criteria. If those business fields still read like implementation shorthand, do not hide the gap behind a detailed technical Contract.
 
 For each material answer, save the user's words before composing the next question. In `known_facts`, use `user_answer` only for what the user actually said; use `repository_fact` or `document_fact` only when a traceable source supports it. Put Runtime interpretations in `assumptions` even when they seem obvious. A suggestion belongs in the visible “我的建议” or in the pending Goal Tree proposal, never in canonical facts.
+
+Before saying any complex Goal is fully decomposed, return to the user's original outcome rather than the topic discussed most recently. First check the same five-part result chain for every task: the final result and who uses it; the real operating or usage flow; the core capabilities that do the main work; the foundations and infrastructure those capabilities need; and quality, delivery, recovery, and continued operation.
+
+Then add the closest task-specific omission check. A game also covers gameplay, game systems/content, player journey, interaction/UI, and audiovisual experience. An App covers its core function, end-to-end journey, interaction/UI, and content/information. AI or data work covers data sources and quality, evaluation, runtime/cost, and safety/governance. Content or research covers source provenance, method or production flow, review/approval, and publication/distribution. Operations covers roles, permissions, tools/workflow, exceptions, and measurement. `other` still completes the five-part chain instead of treating a non-software task as having no foundation.
+
+For every area, name the existing or proposed descendant Goal that owns it, or say why it does not apply. One well-scoped child may own several areas; do not create one Goal per checklist label. If core capability and foundation are owned by different Goals, add a dependency from the core Goal to the foundation Goal and explain which foundation result it consumes. This is an omission check, not a fixed tree depth or a demand to invent distant implementation tasks.
+
+Include a `decomposition_review` with `task_context=game|app|ai_data|content_research|operations|other` in the parent Goal/Contract payload whenever this pass is recorded. Use `status=complete` and `decomposition_state=closed_compound` only when every required area is accounted for and no descendant remains `abstract` or `frontier_open`. If clarification must pause, use `status=paused`, keep the parent `abstract` or `frontier_open`, and record both `open_goal_ids` and one concrete `next_step`; never present a staged pause as a finished tree. Read historical `product_context` for compatibility, but do not use it in a new proposal.
+
+Before proposing any `accepted / closed_leaf` Goal, prove that it is one executable result rather than a small-looking bundle. Add `leaf_readiness` with one `primary_deliverable`, exact coverage for every promised output, any work that might need splitting, unresolved decisions, independent deliverables, and all acceptance criterion IDs. Classify each promised output as `primary`, `supporting`, or `independent`; exactly one may be primary, and supporting outputs must be necessary for the same acceptance rather than separately valuable results.
+
+For each candidate piece of work, check whether it is separately deliverable, separately acceptable, and independently reworkable. If at least two signals are true, split it into another Goal and use `verdict=split_required`; do not keep it inside a leaf because the title sounds small. A `ready` leaf has no unresolved decisions or independent deliverables, covers every promised output and acceptance criterion exactly, and states the scope, non-goals, required inputs, outputs, and required evidence. If this check is unfinished, keep the parent or candidate `abstract` / `frontier_open` and record the next split to clarify instead of putting a pseudo-leaf into the decision queue.
 
 When a proposal is ready, call `goalboard_v1_goal_tree_propose`, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Propose the complete change set: parent Goal, child Goals, relations, dependencies, Risks, Policy, Candidates, and Rewires where applicable. When the user is confirming a completed decomposition, include a Goal/Contract update for every completed parent that sets `definition_state=accepted` and `decomposition_state=closed_compound`; merely confirming `part_of` relations deliberately leaves that parent Draft and “待澄清”. A child Goal may itself have finer child Goals; split by independent business outcomes, not by files, technical layers, or a fixed tree depth.
 

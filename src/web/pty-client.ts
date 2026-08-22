@@ -22,6 +22,22 @@ type PanelRecord = {
 
 type SpawnMode = "start" | "attach" | "reopen" | "reconnect";
 
+type ChildGoalSummary = {
+  goal: { goal_id: string; title: string };
+  status_label: string;
+  status_meaning: string;
+  next_action: string;
+};
+
+type GoalChangedDetail = {
+  goalId?: string;
+  goalTitle?: string;
+  statusLabel?: string;
+  statusMeaning?: string;
+  parentReadOnly?: boolean;
+  children?: ChildGoalSummary[];
+};
+
 declare global {
   interface Window {
     L?: (zh: string, vars?: Record<string, string | number>) => string;
@@ -46,14 +62,16 @@ if (pane) {
   const terminalHost = pane.querySelector("[data-tui-terminal]") as HTMLElement;
   const emptyEl = pane.querySelector("[data-tui-empty]") as HTMLElement | null;
   const statusEl = pane.querySelector("[data-tui-status]") as HTMLElement | null;
+  const ownerTitleEl = pane.querySelector("[data-tui-owner-title]") as HTMLElement | null;
+  const ownerStatusEl = pane.querySelector("[data-tui-owner-status]") as HTMLElement | null;
+  const parentGuardEl = pane.querySelector("[data-tui-parent-guard]") as HTMLElement | null;
+  const childChoicesEl = pane.querySelector("[data-tui-child-choices]") as HTMLElement | null;
   const menu = pane.querySelector("[data-tui-menu]") as HTMLFormElement;
   const advanceBtn = pane.querySelector("[data-tui-advance]") as HTMLButtonElement;
   const copyBtn = pane.querySelector("[data-tui-copy]") as HTMLButtonElement | null;
   const fillBtn = pane.querySelector("[data-tui-fill]") as HTMLButtonElement;
   const reopenBtn = pane.querySelector("[data-tui-reopen]") as HTMLButtonElement;
   const addBtn = pane.querySelector("[data-tui-add]") as HTMLButtonElement;
-  const collapseBtn = pane.querySelector("[data-tui-collapse]") as HTMLButtonElement | null;
-  const expandBtn = document.querySelector("[data-tui-expand]") as HTMLButtonElement | null;
   const genericFields = menu.querySelector("[data-tui-generic-fields]") as HTMLElement | null;
   const genericOpen = menu.querySelector("[data-tui-generic-open]") as HTMLButtonElement | null;
   const L = window.L ?? ((zh: string) => zh);
@@ -73,59 +91,8 @@ if (pane) {
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectAttempt = 0;
   let reconnectStopped = false;
-  const workspaceEl = document.querySelector("[data-workspace]") as HTMLElement | null;
-  const TUI_COLLAPSE_KEY = "goalboard:tui:collapsed";
-  const TUI_WIDTH_KEY = "goalboard:tui:expanded-width";
-
-  const isNarrowScreen = () => matchMedia("(max-width: 760px)").matches;
-
-  const setTuiCollapsed = (collapsed: boolean, persist = true) => {
-    if (!workspaceEl) return;
-    const effective = collapsed && !isNarrowScreen();
-    const wasCollapsed = workspaceEl.classList.contains("is-tui-collapsed");
-    if (effective && !wasCollapsed) {
-      const width = parseFloat(workspaceEl.style.getPropertyValue("--tui-width") || "") || pane.getBoundingClientRect().width || 480;
-      try {
-        localStorage.setItem(TUI_WIDTH_KEY, String(Math.round(Math.min(720, Math.max(280, width)))));
-      } catch {
-        // Storage may be unavailable; collapsing still works.
-      }
-    } else if (!effective && wasCollapsed) {
-      const current = parseFloat(workspaceEl.style.getPropertyValue("--tui-width") || "");
-      if (!current || current < 280) {
-        let width = 480;
-        try {
-          width = Number(localStorage.getItem(TUI_WIDTH_KEY)) || 480;
-        } catch {
-          // Fall back to the default width.
-        }
-        workspaceEl.style.setProperty("--tui-width", `${Math.min(720, Math.max(280, width))}px`);
-      }
-    }
-    workspaceEl.classList.toggle("is-tui-collapsed", effective);
-    if (collapseBtn) collapseBtn.hidden = effective || isNarrowScreen();
-    if (expandBtn) expandBtn.hidden = !effective;
-    if (persist) {
-      try {
-        localStorage.setItem(TUI_COLLAPSE_KEY, effective ? "1" : "0");
-      } catch {
-        // Storage may be unavailable; the preference just won't be remembered.
-      }
-    }
-    if (!effective && wasCollapsed && activeId && sessions.has(activeId)) {
-      requestAnimationFrame(() => sessions.get(activeId!)?.fit.fit());
-    }
-  };
-
-  const initTuiCollapse = () => {
-    let collapsed = false;
-    try {
-      collapsed = localStorage.getItem(TUI_COLLAPSE_KEY) === "1";
-    } catch {
-      collapsed = false;
-    }
-    setTuiCollapsed(collapsed, false);
-  };
+  let panelLoadSequence = 0;
+  let parentReadOnly = pane.dataset.tuiParentReadOnly === "true";
 
   const headers = () => ({
     "content-type": "application/json",
@@ -171,6 +138,10 @@ if (pane) {
   };
 
   const setMenuOpen = (open: boolean) => {
+    if (open && parentReadOnly) {
+      setStatus(L("请进入一个具体的子 Goal"), "error");
+      return;
+    }
     menu.classList.toggle("is-open", open);
     menu.setAttribute("aria-hidden", String(!open));
     addBtn.setAttribute("aria-expanded", String(open));
@@ -188,6 +159,61 @@ if (pane) {
     if (typeof error === "string" && error) return error;
     if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
     return String(error);
+  };
+
+  const parentReadOnlyMessage = () =>
+    L("这条上层 Goal 由子 Goal 共同完成，当前终端只读。请进入具体的子 Goal 查看或继续。");
+
+  const panelBelongsHere = (panel: PanelRecord | null | undefined) =>
+    Boolean(panel && panel.goal_id === goalId());
+
+  const canControlPanel = (panel: PanelRecord | null | undefined): panel is PanelRecord => {
+    if (parentReadOnly) {
+      setStatus(parentReadOnlyMessage(), "error");
+      return false;
+    }
+    if (!panelBelongsHere(panel)) {
+      setStatus(
+        L("当前页面已经切到另一条 Goal，这个终端不会跟着切换。请回到它所属的 Goal 再操作。"),
+        "error",
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const renderChildChoices = (children: ChildGoalSummary[]) => {
+    if (!childChoicesEl) return;
+    childChoicesEl.innerHTML = children.length
+      ? children.map((child) => `<a class="tui-child-choice" href="${escapeHtml(route(`/goals/${encodeURIComponent(child.goal.goal_id)}`))}">
+          <span><strong>${escapeHtml(child.goal.title)}</strong><small>${escapeHtml(child.status_label)} · ${escapeHtml(child.next_action)}</small></span>
+          <b>${escapeHtml(L("打开这个子 Goal"))}<svg aria-hidden="true"><use href="#icon-chevron-right"></use></svg></b>
+        </a>`).join("")
+      : `<p>${escapeHtml(L("还没有可推进的子 Goal，请先检查 Goal 的拆分。"))}</p>`;
+  };
+
+  const updateEmptyCopy = (readOnly: boolean) => {
+    if (!emptyEl) return;
+    const paragraphs = emptyEl.querySelectorAll("p");
+    const title = paragraphs[0]?.querySelector("strong");
+    if (title) title.textContent = readOnly ? L("这个上层 Goal 不直接使用终端") : L("还没有终端");
+    if (paragraphs[1]) {
+      paragraphs[1].textContent = readOnly
+        ? L("请从上方进入一个具体的子 Goal。")
+        : L("点右上角「添加终端」，在这个 Goal 上打开常用 Runtime 或自定义命令。");
+    }
+  };
+
+  const setParentGuard = (readOnly: boolean, children: ChildGoalSummary[] = []) => {
+    parentReadOnly = readOnly;
+    pane.dataset.tuiParentReadOnly = String(readOnly);
+    pane.toggleAttribute("data-tui-read-only", readOnly);
+    if (parentGuardEl) parentGuardEl.hidden = !readOnly;
+    if (readOnly) renderChildChoices(children);
+    updateEmptyCopy(readOnly);
+    addBtn.disabled = readOnly;
+    addBtn.title = readOnly ? L("请进入一个具体的子 Goal") : "";
+    if (readOnly) setMenuOpen(false);
   };
 
   const controlToken = () =>
@@ -365,7 +391,10 @@ if (pane) {
     tabsEl.innerHTML = panels.map((panel) => {
       const active = panel.panel_id === activeId ? " is-active" : "";
       const exited = panel.status === "exited" ? " is-exited" : "";
-      return `<button class="tui-tab${active}${exited}" type="button" data-tui-select="${escapeHtml(panel.panel_id)}"><span class="tui-tab-title">${escapeHtml(panel.title)}</span><span class="tui-tab-close" data-tui-close="${escapeHtml(panel.panel_id)}" aria-label="${escapeHtml(L("关闭终端"))}"><svg aria-hidden="true"><use href="#icon-x"></use></svg></span></button>`;
+      const close = parentReadOnly
+        ? `<small class="tui-tab-readonly">${escapeHtml(L("只读"))}</small>`
+        : `<span class="tui-tab-close" data-tui-close="${escapeHtml(panel.panel_id)}" aria-label="${escapeHtml(L("关闭终端"))}"><svg aria-hidden="true"><use href="#icon-x"></use></svg></span>`;
+      return `<button class="tui-tab${active}${exited}" type="button" data-tui-select="${escapeHtml(panel.panel_id)}" title="${escapeHtml(`${ownerTitleEl?.textContent || L("当前 Goal")} · ${panel.title}`)}"><span class="tui-tab-title">${escapeHtml(panel.title)}</span>${close}</button>`;
     }).join("");
   };
 
@@ -376,10 +405,14 @@ if (pane) {
     if (emptyEl) emptyEl.hidden = panels.length > 0;
     const panel = current();
     const live = Boolean(panelId && alive.has(panelId));
-    advanceBtn.disabled = !live;
-    fillBtn.disabled = !live;
-    reopenBtn.hidden = !(panel && !live);
+    const readOnly = parentReadOnly || Boolean(panel && !panelBelongsHere(panel));
+    advanceBtn.disabled = !live || readOnly;
+    if (copyBtn) copyBtn.disabled = readOnly || !goalId();
+    fillBtn.disabled = !live || readOnly;
+    reopenBtn.hidden = !(panel && !live && !readOnly);
     if (!panel) setStatus("");
+    else if (parentReadOnly) setStatus(L("历史终端只读；请到具体的子 Goal 继续。"));
+    else if (!panelBelongsHere(panel)) setStatus(L("这个终端属于另一条 Goal，当前不可操作。"), "error");
     else if (live) setStatus(L("终端已连接"), "live");
     else setStatus(L("终端进程已不在，可重新打开"));
     if (panelId && sessions.has(panelId)) {
@@ -418,6 +451,8 @@ if (pane) {
     term.open(wrapper);
     requestAnimationFrame(() => wrapper.classList.add("is-ready"));
     term.onData((data) => {
+      const panel = panels.find((item) => item.panel_id === panelId);
+      if (!canControlPanel(panel)) return;
       void sendPty({ type: "write", panelId, data }).catch((error) => setStatus(errorText(error), "error"));
     });
     session = { term, fit, wrapper, hasOutput: false };
@@ -432,6 +467,7 @@ if (pane) {
   };
 
   const spawnPanel = async (panel: PanelRecord, mode: SpawnMode = "start") => {
+    if ((mode === "start" || mode === "reopen") && !canControlPanel(panel)) return;
     await enqueueSpawn(panel.panel_id, async () => {
       if (mode === "attach" && alive.has(panel.panel_id) && sessions.has(panel.panel_id)) return;
       const session = ensureSession(panel.panel_id);
@@ -545,6 +581,7 @@ if (pane) {
 
   const loadPanels = async () => {
     const id = goalId();
+    const requestSequence = ++panelLoadSequence;
     if (!id) {
       panels = [];
       activeId = null;
@@ -558,6 +595,7 @@ if (pane) {
     });
     if (!response.ok) return;
     const payload = await response.json() as { panels?: PanelRecord[] };
+    if (requestSequence !== panelLoadSequence || id !== goalId()) return;
     panels = payload.panels ?? [];
     if (!panels.some((item) => item.panel_id === activeId)) {
       activeId = panels[0]?.panel_id ?? null;
@@ -580,7 +618,10 @@ if (pane) {
       setStatus(L("打开项目后，Goal 右侧可以添加终端"));
       return;
     }
-    setTuiCollapsed(false);
+    if (parentReadOnly) {
+      setStatus(parentReadOnlyMessage(), "error");
+      return;
+    }
     const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/panels`), {
       method: "POST",
       headers: headers(),
@@ -607,6 +648,8 @@ if (pane) {
   };
 
   const closePanel = async (panelId: string) => {
+    const panel = panels.find((item) => item.panel_id === panelId);
+    if (!canControlPanel(panel)) return;
     await sendPty({ type: "kill", panelId }).catch(() => undefined);
     await fetch(route(`/api/panels/${encodeURIComponent(panelId)}`), {
       method: "DELETE",
@@ -621,7 +664,7 @@ if (pane) {
 
   const writePrompt = async (send: boolean) => {
     const panel = current();
-    if (!panel) return;
+    if (!canControlPanel(panel)) return;
     const text = await loadAdvancePrompt(panel.goal_id);
     await sendPty({ type: "write", panelId: panel.panel_id, data: send ? `${text}\r` : text });
   };
@@ -629,6 +672,10 @@ if (pane) {
   const loadAdvancePrompt = async (requestedGoalId?: string) => {
     const id = requestedGoalId || goalId();
     if (!id) throw new Error(L("打开失败"));
+    if (parentReadOnly) throw new Error(parentReadOnlyMessage());
+    if (requestedGoalId && requestedGoalId !== goalId()) {
+      throw new Error(L("当前页面已经切到另一条 Goal，请回到终端所属的 Goal 再操作。"));
+    }
     const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt`), {
       cache: "no-store",
       headers: desktopHeaders(),
@@ -652,21 +699,11 @@ if (pane) {
   };
 
   addBtn.addEventListener("click", () => {
+    if (parentReadOnly) {
+      setStatus(parentReadOnlyMessage(), "error");
+      return;
+    }
     setMenuOpen(!menu.classList.contains("is-open"));
-  });
-  collapseBtn?.addEventListener("click", () => {
-    setMenuOpen(false);
-    setTuiCollapsed(true);
-  });
-  expandBtn?.addEventListener("click", () => {
-    setTuiCollapsed(false);
-  });
-  document.addEventListener("goalboard:tui-collapse", () => {
-    setMenuOpen(false);
-    setTuiCollapsed(true);
-  });
-  matchMedia("(max-width: 760px)").addEventListener("change", () => {
-    initTuiCollapse();
   });
   menu.querySelector("[data-tui-menu-cancel]")?.addEventListener("click", () => {
     setMenuOpen(false);
@@ -727,7 +764,7 @@ if (pane) {
   fillBtn.addEventListener("click", () => { void writePrompt(false).catch((error) => setStatus(errorText(error), "error")); });
   reopenBtn.addEventListener("click", () => {
     const panel = current();
-    if (!panel) return;
+    if (!canControlPanel(panel)) return;
     void (async () => {
       const response = await fetch(route(`/api/panels/${encodeURIComponent(panel.panel_id)}/reopen`), {
         method: "POST",
@@ -747,7 +784,17 @@ if (pane) {
     })().catch((error) => setStatus(errorText(error), "error"));
   });
 
-  document.addEventListener("goalboard:goal-changed", () => {
+  document.addEventListener("goalboard:goal-changed", (event) => {
+    const detail = (event as CustomEvent<GoalChangedDetail>).detail;
+    if (ownerTitleEl && detail?.goalTitle) ownerTitleEl.textContent = detail.goalTitle;
+    if (ownerStatusEl) {
+      ownerStatusEl.textContent = detail?.statusLabel ?? "";
+      ownerStatusEl.title = detail?.statusMeaning ?? "";
+    }
+    promptCache = "";
+    setParentGuard(Boolean(detail?.parentReadOnly), detail?.children ?? []);
+    renderTabs();
+    showTerminal(activeId);
     void loadPanels();
   });
 
@@ -771,7 +818,6 @@ if (pane) {
 
   void (async () => {
     try {
-      initTuiCollapse();
       await connectPty();
     } catch (error) {
       setStatus(errorText(error), "error");

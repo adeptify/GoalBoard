@@ -25,7 +25,21 @@ import {
 } from "../src/web/server.js";
 
 const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
+const PTY_CLIENT_SOURCE = readFileSync(new URL("../src/web/pty-client.ts", import.meta.url), "utf8");
+const DESKTOP_CAPABILITIES = JSON.parse(
+  readFileSync(new URL("../desktop/src-tauri/capabilities/default.json", import.meta.url), "utf8"),
+) as { permissions?: string[] };
 let webRequestSequence = 0;
+
+test("Runtime stays available as a workspace view instead of an independently collapsed dock", () => {
+  assert.doesNotMatch(PTY_CLIENT_SOURCE, /goalboard:tui:collapsed/);
+  assert.doesNotMatch(PTY_CLIENT_SOURCE, /setTuiCollapsed/);
+  assert.doesNotMatch(PTY_CLIENT_SOURCE, /initTuiCollapse/);
+});
+
+test("desktop capability permits the custom title bar to drag its window", () => {
+  assert.ok(DESKTOP_CAPABILITIES.permissions?.includes("core:window:allow-start-dragging"));
+});
 
 function createGoalBoardWebServer(
   options: Parameters<typeof createBaseGoalBoardWebServer>[0] = {},
@@ -111,6 +125,64 @@ function addProjectGoal(
         acceptance_criteria: [],
       },
       { actor_id: "test-user", idempotency_key: `desktop-tui-goal-${goalId}` },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function addProjectAcceptedGoal(
+  project: { database_path: string; board_id: string },
+  goalId: string,
+  title: string,
+  decompositionState: "closed_leaf" | "closed_compound",
+): void {
+  const store = new SqliteGoalBoardStore(project.database_path);
+  try {
+    new GoalBoardCoordinator(store).createGoal(
+      project.board_id,
+      {
+        goal_id: goalId,
+        title,
+        outcome: `${title} 有明确结果`,
+        why: "验证终端始终归属于一条具体 Goal",
+        business_logic: decompositionState === "closed_compound"
+          ? "上层 Goal 只汇总子 Goal；具体工作在子 Goal 中完成。"
+          : "这条 Goal 可以独立推进和交付。",
+        definition_state: "accepted",
+        decomposition_state: decompositionState,
+        acceptance_criteria: [
+          {
+            criterion_id: `${goalId}-done`,
+            statement: `${title} 可以验收`,
+            decision_method: "inspection",
+            pass_condition: "能明确判断结果是否完成",
+          },
+        ],
+      },
+      { actor_id: "test-user", idempotency_key: `desktop-tui-accepted-${goalId}` },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function addProjectChildRelation(
+  project: { database_path: string; board_id: string },
+  childGoalId: string,
+  parentGoalId: string,
+): void {
+  const store = new SqliteGoalBoardStore(project.database_path);
+  try {
+    new GoalBoardCoordinator(store).addRelation(
+      project.board_id,
+      {
+        from_goal_id: childGoalId,
+        to_goal_id: parentGoalId,
+        type: "part_of",
+        reason: "具体工作在子 Goal 中完成，上层 Goal 只汇总结果",
+      },
+      { actor_id: "test-user", idempotency_key: `desktop-tui-child-${childGoalId}-${parentGoalId}` },
     );
   } finally {
     store.close();
@@ -312,31 +384,43 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(browser, /data-tui-kind="pi-agent"/);
     assert.match(browser, /data-tui-kind="grok-build"/);
     assert.match(browser, /data-tui-kind="generic"/);
-    assert.match(browser, /常用 Runtime 或自定义命令/);
+    assert.match(browser, /常用 Runtime 或自定义命令|请选择具体的子 Goal/);
     assert.match(desktop, /class="tui-pane"/);
     assert.match(desktop, /data-tui-pane/);
     assert.match(desktop, /推进这个 Goal/);
     assert.match(desktop, /填入不发送/);
     assert.match(desktop, /添加终端/);
-    assert.match(desktop, /还没有终端/);
+    assert.match(desktop, /还没有终端|上层 Goal 不直接使用终端/);
     assert.match(desktop, /class="tui-stage"/);
     assert.match(desktop, /\.tui-stage \{[^}]*padding: 10px 12px 12px/);
+    assert.match(desktop, /grid-template-areas: "guard" "actions" "terminal"/);
+    assert.match(desktop, /class="tui-owner"/);
+    assert.match(desktop, /<strong data-tui-owner-title>/);
+    assert.match(desktop, /<b>绑定到 Goal<\/b>/);
+    assert.match(desktop, /class="tui-mode-label">终端<\/span>/);
+    assert.match(desktop, /data-navigator-heading>目标导航/);
+    assert.match(desktop, /class="workbench-header desktop-pane-header"/);
+    assert.match(desktop, /data-workbench-view="focus"/);
+    assert.match(desktop, /data-workbench-view="runtime"/);
+    assert.doesNotMatch(desktop, /data-workbench-view="graph"/);
+    assert.match(desktop, /data-navigator-view="graph"/);
+    assert.match(desktop, /if \(mobileView === "document"\) setWorkspaceMode\("focus", false\)/);
+    assert.match(desktop, /if \(mobileView === "tui"\) setWorkspaceMode\("runtime", false\)/);
+    assert.match(desktop, /if \(matchMedia\("\(max-width: 760px\)"\)\.matches\) setWorkspaceMode\("focus", false\)/);
+    assert.match(desktop, /data-tauri-drag-region/);
+    assert.match(desktop, /\.tui-terminal \{ grid-area: terminal;/);
     assert.match(desktop, /\.tui-terminal \.tui-xterm \{[^}]*inset: 10px 12px 12px/);
     assert.match(desktop, /var\(--tui-width, 480px\)/);
-    assert.match(desktop, /data-tui-collapse/);
-    assert.match(desktop, /data-tui-expand/);
-    assert.match(desktop, /tui-expand-label/);
+    assert.doesNotMatch(desktop, /data-tui-collapse/);
+    assert.doesNotMatch(desktop, /data-tui-expand/);
+    assert.doesNotMatch(desktop, /<span class="tui-expand-label">/);
     assert.match(desktop, /复制命令/);
     assert.match(desktop, /data-tui-copy/);
-    assert.match(desktop, /\.workspace\.is-tui-collapsed/);
-    assert.match(desktop, /\.workspace\.is-tui-collapsed \.tui-expand/);
-    assert.match(desktop, /minmax\(0, 1fr\) 0 0/);
-    assert.doesNotMatch(desktop, /--tui-width, 56px/);
-    assert.match(desktop, /goalboard:tui-collapse/);
-    assert.match(desktop, /dblclick/);
+    assert.doesNotMatch(desktop, /goalboard:tui-collapse/);
     assert.match(desktop, /\.document-pane::-webkit-scrollbar/);
     assert.match(desktop, /在这个 Goal 上打开终端/);
     assert.match(desktop, /querySelector\("\[data-tree-resizer\]"\)/);
+    assert.match(desktop, /treeWidth: parseFloat\(workspace\.style\.getPropertyValue\("--tree-width"\)\)/);
     assert.match(desktop, /\.workspace\.is-desktop-tui \{ grid-template-columns: var\(--tree-width, 240px\)/);
     assert.match(desktop, /class="workspace is-desktop-tui"/);
     assert.match(desktop, /src="\/desktop\/pty-client\.js"/);
@@ -451,6 +535,126 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
+});
+
+test("compound parent terminals become read-only and direct execution APIs require a child Goal", async () => {
+  const fixture = await catalogFixture();
+  addProjectAcceptedGoal(fixture.project, "TUI-PARENT", "交付完整终端体验", "closed_compound");
+  addProjectAcceptedGoal(fixture.project, "TUI-CHILD", "实现具体终端交互", "closed_leaf");
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+  let historicalPanelId: string;
+  try {
+    historicalPanelId = catalog.openDesktopPanel({
+      project_id: fixture.project.project_id,
+      goal_id: "TUI-PARENT",
+      runtime_kind: "generic",
+      launch_command: "cat",
+      launch_args: [],
+      cwd: fixture.homeDirectory,
+      actor_id: "test-user",
+      user_confirmed: true,
+    }).panel_id;
+  } finally {
+    catalog.close();
+  }
+  addProjectChildRelation(fixture.project, "TUI-CHILD", "TUI-PARENT");
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const prefix = `/projects/${encodeURIComponent(fixture.project.project_id)}`;
+    const parentPanelsUrl = `${origin}${prefix}/api/goals/TUI-PARENT/panels`;
+
+    const parentPage = await (await webFetch(`${origin}${prefix}/goals/TUI-PARENT`)).text();
+    assert.match(parentPage, /data-tui-parent-read-only="true"/);
+    assert.match(parentPage, /data-tui-read-only="true"/);
+    assert.match(parentPage, /这个上层 Goal 不直接使用终端/);
+    assert.match(parentPage, /实现具体终端交互/);
+    assert.match(parentPage, /href="\/projects\/[^\"]+\/goals\/TUI-CHILD"/);
+    assert.match(parentPage, /data-tui-add[^>]*disabled/);
+
+    const listed = await webFetch(parentPanelsUrl);
+    assert.equal(listed.status, 200);
+    const listedBody = await listed.json() as { panels: Array<{ panel_id: string }>; read_only: boolean };
+    assert.equal(listedBody.read_only, true);
+    assert.deepEqual(listedBody.panels.map((panel) => panel.panel_id), [historicalPanelId]);
+
+    const createBlocked = await webFetch(parentPanelsUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "generic", command: "cat" }),
+    });
+    assert.equal(createBlocked.status, 409);
+    assert.match(await createBlocked.text(), /具体的子 Goal/);
+
+    const promptBlocked = await webFetch(`${origin}${prefix}/api/goals/TUI-PARENT/advance-prompt`);
+    assert.equal(promptBlocked.status, 409);
+    assert.match(await promptBlocked.text(), /不能直接推进/);
+
+    const reopenBlocked = await webFetch(
+      `${origin}${prefix}/api/panels/${encodeURIComponent(historicalPanelId)}/reopen`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(reopenBlocked.status, 409);
+    assert.match(await reopenBlocked.text(), /只能查看/);
+
+    const childOpened = await webFetch(`${origin}${prefix}/api/goals/TUI-CHILD/panels`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "generic", command: "cat" }),
+    });
+    assert.equal(childOpened.status, 200, await childOpened.clone().text());
+
+    const completionStore = new SqliteGoalBoardStore(fixture.project.database_path);
+    try {
+      completionStore.db
+        .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id IN (?, ?)")
+        .run("TUI-CHILD", "TUI-PARENT");
+    } finally {
+      completionStore.close();
+    }
+
+    const completedParentPage = await (await webFetch(`${origin}${prefix}/goals/TUI-PARENT`)).text();
+    assert.match(completedParentPage, /data-tui-parent-read-only="true"/);
+    assert.match(completedParentPage, /这项工作已经由子 Goal 完成/);
+    assert.match(completedParentPage, /data-tui-add[^>]*disabled/);
+
+    const completedListed = await webFetch(parentPanelsUrl);
+    assert.equal(completedListed.status, 200);
+    assert.equal((await completedListed.json() as { read_only: boolean }).read_only, true);
+
+    const completedCreateBlocked = await webFetch(parentPanelsUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "generic", command: "cat" }),
+    });
+    assert.equal(completedCreateBlocked.status, 409);
+
+    const completedPromptBlocked = await webFetch(`${origin}${prefix}/api/goals/TUI-PARENT/advance-prompt`);
+    assert.equal(completedPromptBlocked.status, 409);
+
+    const completedReopenBlocked = await webFetch(
+      `${origin}${prefix}/api/panels/${encodeURIComponent(historicalPanelId)}/reopen`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(completedReopenBlocked.status, 409);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("TUI client rejects cross-Goal and parent writes before touching the PTY channel", () => {
+  const client = readFileSync(join(process.cwd(), "src/web/pty-client.ts"), "utf8");
+  assert.match(client, /const canControlPanel/);
+  assert.match(client, /panel\.goal_id === goalId\(\)/);
+  assert.match(client, /term\.onData\(\(data\) => \{\s+const panel[\s\S]+if \(!canControlPanel\(panel\)\) return;/);
+  assert.match(client, /mode === "start" \|\| mode === "reopen"/);
+  assert.match(client, /panelLoadSequence/);
+  assert.match(client, /parentReadOnly/);
 });
 
 test("TUI menu greys out runtimes whose CLI is missing", () => {
