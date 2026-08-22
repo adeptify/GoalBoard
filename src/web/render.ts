@@ -12,6 +12,7 @@ import type {
   GoalPolicy,
   GoalRecord,
   GoalRelationRecord,
+  GoalTreeProposalRecord,
   GoalWorkState,
   ImpactBindingRecord,
   ReviewObligationRecord,
@@ -35,11 +36,39 @@ import {
   LOCALE_SWITCH_STYLES,
 } from "./i18n.js";
 import { appendDesktopQueryToLocalHrefs, withDesktopQuery } from "./desktop-shell.js";
+import { buildGoalGraphLayout } from "./goal-graph.js";
+import {
+  THEME_BOOTSTRAP_SCRIPT,
+  VISUAL_FOUNDATION_CLIENT_SCRIPT,
+  VISUAL_FOUNDATION_STYLES,
+} from "./visual-foundation.js";
+import {
+  explainDecision,
+  explainParentCompletion,
+  explainWorkState,
+  type GoalPresentationState,
+} from "./human-language.js";
+import {
+  goalTreeProposalItemValidationIssues,
+  goalTreeRiskDescription,
+} from "../v1/goal-tree-proposal-validation.js";
+import {
+  goalTreeProposalDecompositionIssues,
+  PRODUCT_PATH_AREA_LABELS,
+  readDecompositionReview,
+  readLeafReadiness,
+  TASK_CONTEXT_LABELS,
+  type GoalDecompositionValidationIssue,
+  type ProductPathArea,
+} from "../v1/goal-decomposition-validation.js";
 
-export type WebGoalStatus = GoalWorkState;
+export type WebGoalStatus = GoalPresentationState;
 
 export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "clarification_pending",
+  "clarification_decision_pending",
+  "compound_closure_pending",
+  "handoff_pending",
   "clarifying",
   "clarification_blocked",
   "waiting_children",
@@ -213,28 +242,11 @@ export interface GoalBoardWebView {
   events: WebEventRecord[];
 }
 
-const STATUS_LABELS: Record<WebGoalStatus, string> = {
-  clarification_pending: "待澄清",
-  clarifying: "澄清中",
-  clarification_blocked: "澄清受阻",
-  waiting_children: "已澄清，等待子 Goal",
-  execution_pending: "待执行",
-  executing: "执行中",
-  execution_blocked: "执行受阻",
-  review_pending: "待复核",
-  reviewing: "复核中",
-  review_blocked: "复核受阻",
-  revalidation_pending: "待重新验证",
-  revalidating: "重新验证中",
-  revalidation_blocked: "重新验证受阻",
-  invalidated: "已失效",
-  satisfied: "已完成",
-  trashed: "已移入回收站",
-  archived: "已归档",
-};
-
 const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   clarification_pending: "waiting",
+  clarification_decision_pending: "user",
+  compound_closure_pending: "tree",
+  handoff_pending: "refresh",
   clarifying: "play",
   clarification_blocked: "blocked",
   waiting_children: "tree",
@@ -302,13 +314,34 @@ function controlTokenMeta(controlToken: string): string {
 }
 
 function dataJson(view: GoalBoardWebView): string {
-  const summarize = (items: WebGoalView[]) => items.map((item) => ({
-    goal: {
-      goal_id: item.goal.goal_id,
-      title: item.goal.title,
-    },
-    status: item.status,
-  }));
+  const summarize = (items: WebGoalView[]) => items.map((item) => {
+    const explanation = explainWorkState(item.status);
+    const children = partOfChildViews(item.goal.goal_id, view).map((child) => {
+      const childExplanation = explainWorkState(child.status);
+      return {
+        goal: {
+          goal_id: child.goal.goal_id,
+          title: child.goal.title,
+        },
+        status: child.status,
+        status_label: childExplanation.label,
+        status_meaning: childExplanation.meaning,
+        next_action: childExplanation.nextAction,
+      };
+    });
+    return {
+      goal: {
+        goal_id: item.goal.goal_id,
+        title: item.goal.title,
+      },
+      status: item.status,
+      status_label: explanation.label,
+      status_meaning: explanation.meaning,
+      is_waiting_parent: item.status === "waiting_children",
+      is_compound_parent: item.goal.decomposition_state === "closed_compound",
+      children,
+    };
+  });
   return JSON.stringify({
     snapshot: {
       board: { board_id: view.snapshot.board.board_id },
@@ -364,17 +397,21 @@ function renderList(values: string[], empty: string): string {
 }
 
 function renderStatus(status: WebGoalStatus): string {
-  return `<span class="goal-status goal-status--${status}">${icon(STATUS_ICONS[status])}<span>${L(STATUS_LABELS[status])}</span></span>`;
+  const explanation = explainWorkState(status);
+  return `<span class="goal-status goal-status--${status}" title="${escapeHtml(explanation.meaning)}">${icon(STATUS_ICONS[status])}<span>${escapeHtml(explanation.label)}</span></span>`;
 }
 
 /** Goal Tree sibling order: work you can pick up, then in-flight, then blocked, then parked. */
 export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "execution_pending",
   "executing",
+  "handoff_pending",
   "review_pending",
   "reviewing",
   "revalidation_pending",
   "revalidating",
+  "clarification_decision_pending",
+  "compound_closure_pending",
   "clarification_pending",
   "clarifying",
   "execution_blocked",
@@ -423,6 +460,18 @@ export function goalWorkSatisfied(item: WebGoalView): boolean {
     item.status === "archived" ||
     item.goal.fulfillment_state === "satisfied"
   );
+}
+
+/**
+ * Presentation progress follows the authoritative Goal result. Evidence remains
+ * a separate fact: a compound Goal can be satisfied through its children and a
+ * human decision without producing one direct Evidence row per criterion.
+ */
+export function displayedPassedCriterionIds(item: WebGoalView): string[] {
+  const criterionIds = item.goal.acceptance_criteria.map((criterion) => criterion.criterion_id);
+  if (goalWorkSatisfied(item)) return criterionIds;
+  const knownCriterionIds = new Set(criterionIds);
+  return [...new Set(item.passed_criteria.filter((criterionId) => knownCriterionIds.has(criterionId)))];
 }
 
 export function isBlockedWorkStatus(status: WebGoalStatus): boolean {
@@ -481,9 +530,27 @@ function treeDependencySearchText(item: WebGoalView, view: GoalBoardWebView): st
 function renderTreeDependencies(item: WebGoalView, view: GoalBoardWebView): string {
   const relations = activeOutgoingDependsOn(item);
   if (!relations.length) return "";
-  return `<div class="tree-deps">${relations
-    .map((relation) => {
-      const target = findGoalView(view, relation.to_goal_id);
+  const targets = relations.map((relation) => ({
+    relation,
+    target: findGoalView(view, relation.to_goal_id),
+  }));
+  const waiting = targets.filter(({ target }) => !target || !goalWorkSatisfied(target));
+  const blocked = waiting.filter(({ target }) => target && isBlockedWorkStatus(target.status));
+  const tone = blocked.length ? "is-blocked" : waiting.length ? "is-waiting" : "is-ready";
+  const health = blocked.length
+    ? L("{count} 个阻塞", { count: blocked.length })
+    : waiting.length
+      ? L("{count} 个未完成", { count: waiting.length })
+      : L("已就绪");
+  return `<details class="tree-relations ${tone}" data-tree-relations>
+    <summary aria-label="${L("查看 {count} 个前置依赖", { count: relations.length })}">
+      <span class="tree-relations-mark" aria-hidden="true">${icon("link")}</span>
+      <strong>${L("{count} 个前置", { count: relations.length })}</strong>
+      <em>${escapeHtml(health)}</em>
+      ${icon("chevron-down")}
+    </summary>
+    <div class="tree-deps">${targets
+    .map(({ relation, target }) => {
       const title = target?.goal.title ?? relation.to_goal_id;
       const satisfied = target ? goalWorkSatisfied(target) : false;
       const blocked = Boolean(target && isBlockedWorkStatus(target.status));
@@ -496,10 +563,25 @@ function renderTreeDependencies(item: WebGoalView, view: GoalBoardWebView): stri
           : L("还在等它完成");
       return `<button class="tree-dep ${state}" type="button" data-select-goal="${escapeHtml(relation.to_goal_id)}" aria-label="${L("打开依赖")} ${escapeHtml(title)}">
         <span class="tree-dep-mark" aria-hidden="true">${icon("link")}</span>
-        <span class="tree-dep-copy"><strong>${escapeHtml(L("依赖"))} → ${escapeHtml(title)}</strong><small>${escapeHtml(relation.reason)}</small><em>${escapeHtml(statusLine)}</em></span>
+        <span class="tree-dep-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(relation.reason)}</small></span>
+        <em>${escapeHtml(statusLine)}</em>
       </button>`;
     })
-    .join("")}</div>`;
+    .join("")}</div>
+  </details>`;
+}
+
+function renderTreeChildProgress(children: readonly WebGoalView[]): string {
+  if (!children.length) return "";
+  const done = children.filter(goalWorkSatisfied).length;
+  const blocked = children.filter((child) => isBlockedWorkStatus(child.status)).length;
+  const progress = Math.round((done / children.length) * 100);
+  const label = blocked
+    ? L("{done}/{total} 完成，{blocked} 个阻塞", { done, total: children.length, blocked })
+    : L("{done}/{total} 完成", { done, total: children.length });
+  return `<span class="tree-progress${blocked ? " is-blocked" : ""}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+    <span>${done}/${children.length}</span><i aria-hidden="true"><b style="--tree-progress:${progress}%"></b></i>
+  </span>`;
 }
 
 function renderGoalTree(
@@ -538,7 +620,7 @@ function renderGoalTree(
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
         <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
-          <span class="tree-copy"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small></span>
+          <span class="tree-copy"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
           ${renderStatus(item.status)}
         </button>
       </div>
@@ -585,6 +667,10 @@ function renderTreeChrome(
   const archiveText = archiveView ? L("返回") : L("归档");
   const trashText = trashView ? L("返回") : L("回收站");
   return `<header class="tree-chrome" data-tree-chrome>
+    ${!archiveView && !trashView ? `<div class="navigator-view-switch" role="tablist" aria-label="${L("Goal 视图")}">
+      <button class="is-active" type="button" role="tab" aria-selected="true" data-navigator-view="list">${icon("list")}<span>${L("列表")}</span></button>
+      <button type="button" role="tab" aria-selected="false" data-navigator-view="graph">${icon("workflow")}<span>${L("关系图")}</span></button>
+    </div>` : ""}
     <label class="tree-search">${icon("search")}<input type="search" data-global-search placeholder="${searchPlaceholder}" aria-label="${searchLabel}"><kbd>⌘F</kbd></label>
     <div class="tree-tools">
       <div class="tree-filter-control">
@@ -599,10 +685,77 @@ function renderTreeChrome(
   </header>`;
 }
 
+function renderGoalGraph(
+  view: GoalBoardWebView,
+  selectedGoalId: string,
+  items: readonly WebGoalView[],
+): string {
+  const byId = new Map(items.map((item) => [item.goal.goal_id, item]));
+  const layout = buildGoalGraphLayout(
+    items.map((item) => ({
+      goal_id: item.goal.goal_id,
+      title: item.goal.title,
+      status: item.status,
+    })),
+    view.snapshot.relations,
+    selectedGoalId,
+  );
+  const edges = layout.edges.map((edge, edgeIndex) => {
+    const label = L(RELATION_LABELS[edge.type]?.out ?? edge.type);
+    return `<g class="graph-edge graph-edge--${edge.type}" data-graph-edge data-edge-index="${edgeIndex}" data-edge-id="${escapeHtml(edge.relation_id)}" data-edge-from="${escapeHtml(edge.from_goal_id)}" data-edge-to="${escapeHtml(edge.to_goal_id)}" data-edge-type="${escapeHtml(edge.type)}">
+      <path marker-start="url(#goal-graph-start-${edge.type})" marker-end="url(#goal-graph-arrow-${edge.type})"></path>
+      <title>${escapeHtml(`${byId.get(edge.from_goal_id)?.goal.title ?? edge.from_goal_id} → ${label} → ${byId.get(edge.to_goal_id)?.goal.title ?? edge.to_goal_id}`)}</title>
+    </g>`;
+  }).join("");
+  const nodes = layout.nodes.map((node) => {
+    const item = byId.get(node.goal_id)!;
+    const selected = node.goal_id === layout.selected_goal_id;
+    const searchValue = `${node.goal_id} ${node.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
+    return `<button class="graph-node graph-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}" type="button" data-graph-node data-graph-role="${escapeHtml(node.role)}" data-graph-ring="${node.ring}" data-graph-angle="${node.angle}" data-graph-cluster="${escapeHtml(node.cluster)}" data-graph-side="${node.side}" data-select-goal="${escapeHtml(node.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}" data-connected-to-selected="${node.connected_to_selected}" aria-pressed="${selected}" style="--graph-x:${node.x}%;--graph-y:${node.y}%">
+      <span class="graph-node-mark" aria-hidden="true"></span>
+      <span class="graph-node-copy"><strong>${escapeHtml(node.title)}</strong><small>${escapeHtml(node.goal_id)}</small></span>
+      ${renderStatus(item.status)}
+    </button>`;
+  }).join("");
+  return `<section class="goal-graph" id="goal-graph-pane" data-goal-graph hidden aria-label="${L("Goal Graph 关系视图")}">
+    <header class="graph-toolbar">
+      <div class="graph-toolbar-copy"><strong>${L("目标关系图")}</strong><small>${L("同一份 Goal 与关系事实")}</small></div>
+      <div class="graph-relation-toggles" role="group" aria-label="${L("显示关系类型")}">
+        <button class="is-active" type="button" aria-pressed="true" data-graph-relation="part_of"><span class="graph-key graph-key--parent"></span>${L("父子")}</button>
+        <button class="is-active" type="button" aria-pressed="true" data-graph-relation="depends_on"><span class="graph-key graph-key--dependency"></span>${L("依赖")}</button>
+      </div>
+      <button class="graph-focus-toggle" type="button" aria-pressed="false" data-graph-focus>${icon("target")}<span>${L("完整网络")}</span></button>
+      <div class="graph-zoom" role="group" aria-label="${L("Graph 缩放")}">
+        <button type="button" data-graph-zoom="out" aria-label="${L("缩小 Graph")}" title="${L("缩小 Graph")}">−</button>
+        <output data-graph-zoom-value>100%</output>
+        <button type="button" data-graph-zoom="in" aria-label="${L("放大 Graph")}" title="${L("放大 Graph")}">+</button>
+        <button type="button" data-graph-zoom="fit" aria-label="${L("适应窗口")}" title="${L("适应窗口")}">${icon("maximize")}</button>
+      </div>
+    </header>
+    <div class="graph-direction-note">${icon("arrow")}<span>${L("箭头按 GoalBoard 中保存的关系方向显示")}</span></div>
+    <div class="graph-viewport" data-graph-viewport>
+      <div class="graph-stage" data-graph-stage data-graph-scale="1" data-graph-rings="${layout.ring_count}">
+        <div class="graph-orbit graph-orbit--outer" aria-hidden="true"></div>
+        <div class="graph-orbit graph-orbit--middle" aria-hidden="true"></div>
+        <div class="graph-orbit graph-orbit--inner" aria-hidden="true"></div>
+        <svg class="graph-edges" data-graph-edges aria-hidden="true"><defs>
+          <marker id="goal-graph-start-part_of" class="graph-start graph-start--part_of" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><circle cx="5" cy="5" r="3.1"></circle></marker>
+          <marker id="goal-graph-start-depends_on" class="graph-start graph-start--depends_on" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><circle cx="5" cy="5" r="3.1"></circle></marker>
+          <marker id="goal-graph-arrow-part_of" class="graph-arrow graph-arrow--part_of" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker>
+          <marker id="goal-graph-arrow-depends_on" class="graph-arrow graph-arrow--depends_on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker>
+        </defs>${edges}</svg>
+        ${nodes}
+      </div>
+    </div>
+    <footer class="graph-legend"><span><i class="graph-key graph-key--parent"></i>${L("属于")}</span><span><i class="graph-key graph-key--dependency"></i>${L("依赖于")}</span><span class="graph-direction-key"><i></i>${L("起点")}<b>→</b>${L("终点")}</span><small>${L("选择节点，在右侧继续查看和推进")}</small></footer>
+  </section>`;
+}
+
 function relationRow(
   relation: GoalRelationRecord,
   item: WebGoalView,
   view: GoalBoardWebView,
+  editable = true,
 ): string {
   const outgoing = relation.from_goal_id === item.goal.goal_id;
   const relatedId = outgoing ? relation.to_goal_id : relation.from_goal_id;
@@ -620,15 +773,15 @@ function relationRow(
   );
   const stateLabel = relation.state === "active" ? L("生效") : relation.state === "proposed" ? L("待确认") : L("已解除");
   const deactivateId = `relation-deactivate-${relation.relation_id}`;
-  return `<div class="relation-record relation-record--${escapeHtml(relation.state)}" data-relation-id="${escapeHtml(relation.relation_id)}">
+  return `<div class="relation-record relation-record--${escapeHtml(relation.state)}" id="relation-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}">
     <button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}" aria-label="${L("打开")} ${escapeHtml(relatedName)}">
       <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
       <span class="relation-copy"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">${L("建立原因：")}${escapeHtml(relation.reason)}${deactivated ? ` · ${L("解除原因：")}${escapeHtml(deactivated.reason)}` : ""}</small></span>
       <span class="relation-state relation-state--${escapeHtml(relation.state)}">${escapeHtml(stateLabel)}</span>
       ${icon("chevron-right")}
     </button>
-    ${relation.state === "active" && !item.goal.archived_at ? `<button class="relation-deactivate-open" type="button" data-relation-deactivate-open aria-expanded="false" aria-controls="${escapeHtml(deactivateId)}">${L("解除")}</button>` : ""}
-    ${relation.state === "active" && !item.goal.archived_at ? `<form class="relation-deactivate-form" id="${escapeHtml(deactivateId)}" data-relation-deactivate-form data-live-form="relation-deactivate-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}" hidden>
+    ${editable && relation.state === "active" && !item.goal.archived_at ? `<button class="relation-deactivate-open" type="button" data-relation-deactivate-open aria-expanded="false" aria-controls="${escapeHtml(deactivateId)}">${L("解除")}</button>` : ""}
+    ${editable && relation.state === "active" && !item.goal.archived_at ? `<form class="relation-deactivate-form" id="${escapeHtml(deactivateId)}" data-relation-deactivate-form data-live-form="relation-deactivate-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}" hidden>
       <label><span>${L("解除原因")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么这条关系不再成立；历史记录会保留")}"></textarea></label>
       <p class="form-error" data-relation-deactivate-error role="alert" hidden></p>
       <footer><button type="button" data-relation-deactivate-cancel>${L("取消")}</button><button class="button-danger" type="submit">${L("确认解除")}</button></footer>
@@ -642,15 +795,16 @@ function relationGroup(
   relations: GoalRelationRecord[],
   item: WebGoalView,
   view: GoalBoardWebView,
+  editable = true,
 ): string {
   return `<section class="relation-group"><header><h3>${escapeHtml(L(title))} <span>${relations.length}</span></h3><p>${escapeHtml(L(hint))}</p></header><div>${
     relations.length
-      ? relations.map((relation) => relationRow(relation, item, view)).join("")
+      ? relations.map((relation) => relationRow(relation, item, view, editable)).join("")
       : `<p class="empty-row">${L("暂无关系")}</p>`
   }</div></section>`;
 }
 
-function renderRelations(item: WebGoalView, view: GoalBoardWebView): string {
+function renderRelations(item: WebGoalView, view: GoalBoardWebView, editable = true): string {
   const relations = item.relations.filter((relation) => relation.state !== "inactive");
   const inactive = item.relations.filter((relation) => relation.state === "inactive");
   const spineTypes = new Set(["depends_on", "part_of"]);
@@ -664,21 +818,20 @@ function renderRelations(item: WebGoalView, view: GoalBoardWebView): string {
     (relation) => !upstream.includes(relation) && !downstream.includes(relation),
   );
   return `<div class="relation-layout">
-    ${relationGroup("上游", "这个 Goal 开始前需要什么", upstream, item, view)}
-    ${relationGroup("下游", "哪些 Goal 等待或包含它", downstream, item, view)}
-    ${relationGroup("其他关联", "扩展、替代、修正或风险关系", other, item, view)}
+    ${relationGroup("上游", "这个 Goal 开始前需要什么", upstream, item, view, editable)}
+    ${relationGroup("下游", "哪些 Goal 等待或包含它", downstream, item, view, editable)}
+    ${relationGroup("其他关联", "扩展、替代、修正或风险关系", other, item, view, editable)}
   </div>
-  ${renderRelationEditor(item, view)}
-  ${inactive.length ? `<details class="relation-inactive-history" data-persist-open="inactive-relations-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已解除关系")}</strong><small>${inactive.length} ${L("条，保留方向与变更原因")}</small></span>${icon("chevron-down")}</summary><div>${inactive.map((relation) => relationRow(relation, item, view)).join("")}</div></details>` : ""}
+  ${editable ? renderRelationEditor(item, view) : ""}
+  ${inactive.length ? `<details class="relation-inactive-history" data-persist-open="inactive-relations-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已解除关系")}</strong><small>${inactive.length} ${L("条，保留方向与变更原因")}</small></span>${icon("chevron-down")}</summary><div>${inactive.map((relation) => relationRow(relation, item, view, false)).join("")}</div></details>` : ""}
   ${renderResolvedDependencyHistory(item, view)}`;
 }
 
-function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string {
+function renderRelationForm(item: WebGoalView, view: GoalBoardWebView, variant: "full" | "quick"): string {
   if (item.goal.archived_at) return "";
   const targets = sortGoals(view.goals).filter(
     (candidate) => candidate.goal.goal_id !== item.goal.goal_id,
   );
-  const editorKey = `relation-editor-${item.goal.goal_id}`;
   if (!targets.length) {
     return `<div class="relation-editor-empty">${icon("link")}<span><strong>${L("还没有可关联的其他 Goal")}</strong><small>${L("先新建另一个 Goal，再回来建立层级、依赖或语义关系。")}</small></span></div>`;
   }
@@ -690,23 +843,36 @@ function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string
     .join("");
   const typeOptions = RELATION_TYPES.map(({ type, label, description }) => {
     const labels = RELATION_LABELS[type];
-    return `<option value="${escapeHtml(type)}" data-out-label="${escapeHtml(L(labels.out))}" data-in-label="${escapeHtml(L(labels.in))}" data-description="${escapeHtml(L(description))}">${escapeHtml(L(label))}</option>`;
+    return `<option value="${escapeHtml(type)}"${type === "depends_on" ? " selected" : ""} data-out-label="${escapeHtml(L(labels.out))}" data-in-label="${escapeHtml(L(labels.in))}" data-description="${escapeHtml(L(description))}">${escapeHtml(L(label))}</option>`;
   }).join("");
   const firstTarget = targets[0]!.goal;
-  return `<details class="relation-editor" data-relation-editor data-persist-open="${escapeHtml(editorKey)}" data-live-form="${escapeHtml(editorKey)}">
-    <summary><span class="relation-editor-icon">${icon("link")}</span><span><strong>${L("维护关系")}</strong><small>${L("新增关系，或在上方解除已有关系")}</small></span><span class="relation-editor-action">${L("打开编辑器")}</span>${icon("chevron-down")}</summary>
-    <form class="relation-form" data-relation-form data-live-form="relation-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-current-goal-name="${escapeHtml(item.goal.title)}">
-      <div class="relation-authority"><span>${icon("shield")}</span><p><strong>${L("这是用户确认入口")}</strong><small>${L("你在这里提交的关系会直接生效；Runtime 发现的变化仍只能提交 Rewire，并在")}<a href="/decisions">${L("决定中心")}</a>${L("等待你确认。")}</small></p></div>
-      <fieldset class="relation-direction-control"><legend>${L("关系从哪里发出")}</legend><div><label><input type="radio" name="direction" value="outgoing" checked><span><strong>${L("当前 Goal → 其他 Goal")}</strong><small>${L("当前 Goal 是关系左侧")}</small></span></label><label><input type="radio" name="direction" value="incoming"><span><strong>${L("其他 Goal → 当前 Goal")}</strong><small>${L("当前 Goal 是关系右侧")}</small></span></label></div></fieldset>
+  return `<form class="relation-form${variant === "quick" ? " quick-record-form" : ""}" data-relation-form data-live-form="relation-${variant}-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-current-goal-name="${escapeHtml(item.goal.title)}" novalidate>
+      <div class="relation-authority"><span>${icon("shield")}</span><p><strong>${L("你正在直接修改 Goal 关系")}</strong><small>${L("保存后立即生效并进入历史。执行工具提出的关系变化仍会先进入")}<a href="/decisions">${L("待决定")}</a>${L("，由你确认后才生效。")}</small></p></div>
       <div class="relation-builder">
-        <label><span>${L("关系类型")}</span><select name="type">${typeOptions}</select></label>
+        <label><span>${L("这条关系表示什么")}</span><select name="relation_intent"><option value="needs">${L("当前 Goal 开始前需要它完成")}</option><option value="belongs">${L("当前 Goal 属于它")}</option><option value="enables">${L("它开始前需要当前 Goal 完成")}</option><option value="contains">${L("它属于当前 Goal")}</option><option value="other">${L("其他关系")}</option></select></label>
         <label><span>${L("另一个 Goal")}</span><select name="target_goal_id">${targetOptions}</select></label>
       </div>
-      <div class="relation-live-preview" data-relation-live-preview><small>${L("方向预览")}</small><strong>${escapeHtml(item.goal.title)} <span>${L("→ 属于 →")}</span> ${escapeHtml(firstTarget.title)}</strong><p>${L("只改变 Goal Tree 层级，不要求上级先完成")}</p></div>
-      <label class="relation-reason-field"><span>${L("建立原因")}</span><textarea name="reason" rows="3" required placeholder="${L("说明为什么方向是 A → B，而不是 B → A；这个理由会进入关系历史")}"></textarea></label>
+      <div class="relation-live-preview" data-relation-live-preview><small>${L("保存后会形成")}</small><strong>${escapeHtml(item.goal.title)} <span>${L("→ 依赖 →")}</span> ${escapeHtml(firstTarget.title)}</strong><p>${L("另一个 Goal 完成前，当前 Goal 不能开始或完成")}</p></div>
+      <label class="relation-reason-field"><span>${L("为什么需要这条关系")}</span><textarea name="reason" rows="3" required placeholder="${L("写清两条 Goal 为什么需要这样关联，方便之后判断关系是否仍然成立")}"></textarea></label>
+      <details class="factor-advanced" data-progressive-fields>
+        <summary><span><strong>${L("查看准确方向和关系类型")}</strong><small>${L("只有上面的常用选项不适用时才需要修改")}</small></span>${icon("chevron-down")}</summary>
+        <div class="factor-advanced-grid">
+          <label><span>${L("准确方向")}</span><select name="direction" required><option value="">${L("请选择方向")}</option><option value="outgoing" selected>${L("当前 Goal → 另一个 Goal")}</option><option value="incoming">${L("另一个 Goal → 当前 Goal")}</option></select></label>
+          <label><span>${L("准确关系类型")}</span><select name="type" required><option value="">${L("请选择关系类型")}</option>${typeOptions}</select></label>
+        </div>
+      </details>
       <p class="form-error" data-relation-error role="alert" hidden></p>
       <footer><p>${L("提交后直接生效并写入事件历史；不会创建或启动 Runtime。")}</p><button class="button-primary" type="submit">${L("建立关系")}</button></footer>
-    </form>
+    </form>`;
+}
+
+function renderRelationEditor(item: WebGoalView, view: GoalBoardWebView): string {
+  const editorKey = `relation-editor-${item.goal.goal_id}`;
+  const form = renderRelationForm(item, view, "full");
+  if (!form || form.includes("relation-editor-empty")) return form;
+  return `<details class="relation-editor" data-relation-editor data-persist-open="${escapeHtml(editorKey)}" data-live-form="${escapeHtml(editorKey)}">
+    <summary><span class="relation-editor-icon">${icon("link")}</span><span><strong>${L("维护关系")}</strong><small>${L("新增关系，或在上方解除已有关系")}</small></span><span class="relation-editor-action">${L("打开编辑器")}</span>${icon("chevron-down")}</summary>
+    ${form}
   </details>`;
 }
 
@@ -754,11 +920,11 @@ function renderEvidenceRecord(evidence: EvidenceRecord): string {
   </article>`;
 }
 
-function renderEvidenceSubmitForm(item: WebGoalView): string {
+function renderEvidenceForm(item: WebGoalView, variant: "full" | "quick"): string {
   const criteria = item.goal.acceptance_criteria;
   if (item.goal.archived_at || item.goal.trashed_at) return "";
   if (!criteria.length) {
-    return `<p class="evidence-submit-note">${L("这条 Goal 还没有验收条件，无法绑定人工 Evidence。请先通过当前 Runtime 或 Draft 流程补齐 Contract。")}</p>`;
+    return `<p class="evidence-submit-note">${L("这条 Goal 还没有完成标准，暂时不能添加完成依据。请先补全并确认目标说明。")}</p>`;
   }
   const criterionChoices = criteria
     .map(
@@ -772,27 +938,33 @@ function renderEvidenceSubmitForm(item: WebGoalView): string {
   const resultChoices = (Object.entries(EVIDENCE_RESULT_LABELS) as Array<[EvidenceRecord["result"], string]>)
     .map(([result, label]) => `<option value="${result}"${result === "passed" ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
-  return `<details class="evidence-submit" data-persist-open="evidence-submit-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("evidence")}<strong>${L("提交人工 Evidence")}</strong><small>${L("用户直接记录的验收事实会进入同一完成门禁")}</small></span>${icon("chevron-down")}</summary>
-    <form data-evidence-form data-live-form="evidence-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
-      <fieldset class="evidence-criteria"><legend>${L("绑定验收条件")}</legend><div>${criterionChoices}</div></fieldset>
-      <div class="evidence-form-row"><label><span>${L("Evidence 类型")}</span><select name="kind">${kindChoices}</select></label><label><span>${L("本次结果")}</span><select name="result">${resultChoices}</select></label></div>
-      <label><span>${L("定位引用")}</span><textarea name="locator" rows="2" required placeholder="${L("https://…、project://src/… 或项目内相对路径")}"></textarea><small>${L("HTTP(S) 和安全的项目内相对路径可打开；其他引用会保留为可复制文本。")}</small></label>
+  return `<form class="${variant === "quick" ? "quick-record-form" : ""}" data-evidence-form data-live-form="evidence-${variant}-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+      <fieldset class="evidence-criteria"><legend>${L("对应哪条完成标准")}</legend><div>${criterionChoices}</div></fieldset>
+      <div class="evidence-form-row"><label><span>${L("依据是什么")}</span><select name="kind">${kindChoices}</select></label><label><span>${L("这份依据说明什么")}</span><select name="result">${resultChoices}</select></label></div>
+      <label><span>${L("依据位置")}</span><textarea name="locator" rows="2" required placeholder="${L("填写链接、项目内文件路径或可复核的文字说明")}"></textarea><small>${L("链接和安全的项目内路径可以直接打开；其他内容会保留为可复制文本。")}</small></label>
       <label><span>${L("补充说明 ")}<small>${L("可选")}</small></span><textarea name="digest" rows="2" placeholder="${L("说明观察到的事实、版本或可复核线索")}"></textarea></label>
       <p class="form-error" data-evidence-error role="alert" hidden></p>
-      <footer><span>${L("这条 Evidence 由当前 Web 用户提交，不会伪造 Runtime Run。")}</span><button class="button-primary" type="submit">${L("提交 Evidence")}</button></footer>
-    </form>
+      <footer><span>${L("保存后，这份内容会作为当前 Goal 的完成依据参与判断。")}</span><button class="button-primary" type="submit">${L("保存完成依据")}</button></footer>
+    </form>`;
+}
+
+function renderEvidenceSubmitForm(item: WebGoalView): string {
+  const form = renderEvidenceForm(item, "full");
+  if (!form || form.startsWith('<p class="evidence-submit-note"')) return form;
+  return `<details class="evidence-submit" data-persist-open="evidence-submit-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("evidence")}<strong>${L("补充完成依据")}</strong><small>${L("记录可复核的测试、检查结果或产物")}</small></span>${icon("chevron-down")}</summary>
+    ${form}
   </details>`;
 }
 
-function renderEvidenceCell(item: WebGoalView): string {
+function renderEvidenceCell(item: WebGoalView, editable = true): string {
   const records = item.evidence.length
     ? `<div class="evidence-list">${item.evidence.slice().reverse().map(renderEvidenceRecord).join("")}</div>`
     : `<p class="empty-row">${L("尚未提交验收证据")}</p>`;
-  return `${records}${renderEvidenceSubmitForm(item)}`;
+  return `${records}${editable ? renderEvidenceSubmitForm(item) : ""}`;
 }
 
 function renderReviewCell(item: WebGoalView): string {
-  if (!item.review_obligations.length) return `<p class="empty-row">${L("当前策略不要求额外 Review")}</p>`;
+  if (!item.review_obligations.length) return `<p class="empty-row">${L("当前工作规则不要求额外检查")}</p>`;
   return `<div class="review-list">${item.review_obligations
     .map((obligation) => {
       const latest = item.reviews
@@ -812,9 +984,10 @@ function renderAcceptance(item: WebGoalView): string {
   if (!item.goal.acceptance_criteria.length) {
     return `<p class="empty-row empty-row--warning">${L("还没有验收条件；这个 Goal 需要继续澄清，暂不能交给执行者。")}</p>`;
   }
+  const passedCriteria = new Set(displayedPassedCriterionIds(item));
   return `<ul class="check-list">${item.goal.acceptance_criteria
     .map((criterion) => {
-      const passed = item.passed_criteria.includes(criterion.criterion_id);
+      const passed = passedCriteria.has(criterion.criterion_id);
       const target = criterion.target == null
         ? L("未设置目标值")
         : Object.keys(criterion.target).length === 1 && "value" in criterion.target
@@ -826,7 +999,9 @@ function renderAcceptance(item: WebGoalView): string {
 }
 
 function renderReasons(item: WebGoalView): string {
-  const blockers = item.reasons.filter((reason) => reason.severity === "blocker");
+  const blockers = item.reasons.filter(
+    (reason) => reason.severity === "blocker" && reason.code !== "work.handoff_pending",
+  );
   if (!blockers.length) {
     return `<p class="clear-row"><span class="check-box is-checked">${icon("check")}</span>${L("当前没有阻塞项")}</p>`;
   }
@@ -896,8 +1071,8 @@ function renderScope(item: WebGoalView): string {
 }
 
 const RISK_STATE_LABELS: Record<RiskRecord["state"], string> = {
-  open: "开放",
-  triggered: "已触发",
+  open: "待处理",
+  triggered: "已发生",
   resolved: "已解决",
   accepted: "已接受",
   expired: "已过期",
@@ -927,23 +1102,34 @@ function riskStateEffect(
       ? L("当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。")
       : L("当前状态不再施加领取或完成门禁。");
   }
-  if (blockingMode === "claim") return L("当前会阻止所有关联 Goal 被新的 Runtime 领取。");
+  if (blockingMode === "claim") return L("当前会阻止新的执行工具领取所有关联 Goal。");
   if (blockingMode === "completion") return L("当前会阻止所有关联 Goal 被标记为完成。");
   if (blockingMode === "invalidate_on_trigger") {
     return state === "triggered"
-      ? L("Risk 已触发，所有关联 Goal 立即失效。")
-      : L("Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。");
+      ? L("风险已发生，所有关联 Goal 立即失效。")
+      : L("风险仍待处理；一旦标记为已经发生，所有关联 Goal 会失效。");
   }
   return L("这是一条持续观察的事实，不直接阻塞领取或完成。");
 }
 
 function riskSelectOptions<T extends string>(
   values: Array<[T, string]>,
-  selected: T,
+  selected: T | null,
+  placeholder?: string,
 ): string {
-  return values
+  const options = values
     .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
+  return placeholder
+    ? `<option value="" disabled${selected == null ? " selected" : ""}>${escapeHtml(L(placeholder))}</option>${options}`
+    : options;
+}
+
+function riskOpenDecisionLabel(blockingMode: RiskRecord["blocking_mode"]): string {
+  if (blockingMode === "claim") return "保持待处理，继续阻止领取";
+  if (blockingMode === "completion") return "保持待处理，继续阻塞完成";
+  if (blockingMode === "invalidate_on_trigger") return "保持待处理，触发后会使 Goal 失效";
+  return "保持待处理，继续跟踪";
 }
 
 function renderRiskGoalPicker(
@@ -967,19 +1153,25 @@ function renderRiskFactsForm(
   currentGoalId: string,
   view: GoalBoardWebView,
 ): string {
-  const treatment = risk?.treatment ?? "mitigate";
-  const blockingMode = risk?.blocking_mode ?? "none";
+  const treatment = risk?.treatment ?? null;
+  const blockingMode = risk?.blocking_mode ?? null;
   const formKey = risk?.risk_id ?? `new-${currentGoalId}`;
-  return `<label class="risk-form-wide"><span>${L("风险描述")}</span><textarea name="description" rows="2" required placeholder="${L("什么可能使 Goal 无法按 Contract 完成")}">${escapeHtml(risk?.description ?? "")}</textarea></label>
-    <label><span>${L("发生概率")}</span><input name="probability" required value="${escapeHtml(risk?.probability ?? "")}" placeholder="${L("低 / 中 / 高，或量化概率")}"></label>
-    <label><span>${L("影响程度")}</span><input name="impact" required value="${escapeHtml(risk?.impact ?? "")}" placeholder="${L("低 / 中 / 高，或具体影响")}"></label>
-    <label class="risk-form-wide"><span>${L("受影响区域 ")}<small>${L("每行一项")}</small></span><textarea name="affected_surfaces" rows="2" placeholder="${L("例如 src/web 或 onboarding-flow")}">${escapeHtml(risk?.affected_surfaces.join("\n") ?? "")}</textarea></label>
-    <label class="risk-form-wide"><span>${L("触发条件")}</span><textarea name="trigger" rows="2" required placeholder="${L("什么事实发生时算 Risk 已触发")}">${escapeHtml(risk?.trigger ?? "")}</textarea></label>
-    <label><span>${L("处理方式")}</span><select name="treatment">${riskSelectOptions([["mitigate", "缓解"], ["avoid", "规避"], ["defer", "延后"], ["accept", "接受"]], treatment)}</select></label>
-    <label><span>${L("阻塞方式")}</span><select name="blocking_mode" data-risk-blocking-mode>${riskSelectOptions([["none", "不阻塞"], ["claim", "阻止领取"], ["completion", "阻止完成"], ["invalidate_on_trigger", "触发后失效"]], blockingMode)}</select></label>
-    <label class="risk-form-wide"><span>${L("复查条件")}</span><textarea name="revisit_condition" rows="2" required placeholder="${L("什么时候需要重新判断这项风险")}">${escapeHtml(risk?.revisit_condition ?? "")}</textarea></label>
-    <label><span>${L("负责人")}</span><input name="owner" required value="${escapeHtml(risk?.owner ?? "")}" placeholder="${L("用户、团队或角色")}"></label>
-    ${renderRiskGoalPicker(view, risk?.goal_ids ?? [currentGoalId], risk?.description ?? L("新 Risk"), `risk-goals-${formKey}`)}`;
+  return `<label class="risk-form-wide"><span>${L("可能发生什么")}</span><textarea name="description" rows="2" required placeholder="${L("用一句话写清可能出现的问题")}">${escapeHtml(risk?.description ?? "")}</textarea></label>
+    <label class="risk-form-wide"><span>${L("会造成什么影响")}</span><textarea name="impact" rows="2" required placeholder="${L("例如：无法按时完成、结果不可信或会影响其他 Goal")}">${escapeHtml(risk?.impact ?? "")}</textarea></label>
+    <details class="factor-advanced risk-form-wide" data-progressive-fields>
+      <summary><span><strong>${L("补充判断、处理与责任")}</strong><small>${L("保存前还需要说明触发与复查条件，并选择负责人和它是否阻塞 Goal")}</small></span>${icon("chevron-down")}</summary>
+      <div class="factor-advanced-grid">
+        <label class="risk-form-wide"><span>${L("什么时候算已经发生")}</span><textarea name="trigger" rows="2" required placeholder="${L("写一个可以观察到的触发条件")}">${escapeHtml(risk?.trigger ?? "")}</textarea></label>
+        <label class="risk-form-wide"><span>${L("什么时候重新判断")}</span><textarea name="revisit_condition" rows="2" required placeholder="${L("例如：方案确认后、开始执行前或某个结果出现时")}">${escapeHtml(risk?.revisit_condition ?? "")}</textarea></label>
+        <label><span>${L("发生概率")}</span><input name="probability" required value="${escapeHtml(risk?.probability ?? "")}" placeholder="${L("低 / 中 / 高，或量化概率")}"></label>
+        <label><span>${L("负责人")}</span><input name="owner" required value="${escapeHtml(risk?.owner ?? "")}" placeholder="${L("谁负责持续关注或处理")}"></label>
+        <label><span>${L("准备怎么处理")}</span><select name="treatment" required>${riskSelectOptions([["mitigate", "降低发生概率或影响"], ["avoid", "改变方案以避开"], ["defer", "延后处理并继续观察"], ["accept", "接受风险"]], treatment, "请选择处理方式")}</select></label>
+        <label><span>${L("它会阻止什么")}</span><select name="blocking_mode" data-risk-blocking-mode required>${riskSelectOptions([["none", "不直接阻塞"], ["claim", "阻止开始执行"], ["completion", "阻止标记完成"], ["invalidate_on_trigger", "发生后使 Goal 失效"]], blockingMode, "请选择对 Goal 的影响")}</select></label>
+        <label class="risk-form-wide"><span>${L("具体准备怎么做")} <small>${L("可选")}</small></span><textarea name="treatment_plan" rows="3" placeholder="${L("例如：先限制导入范围，让用户逐条确认，再允许同步到其他执行工具")}">${escapeHtml(risk?.treatment_plan ?? "")}</textarea></label>
+        <label class="risk-form-wide"><span>${L("受影响区域 ")}<small>${L("可选，每行一项")}</small></span><textarea name="affected_surfaces" rows="2" placeholder="${L("可以是流程、文档、系统、团队或代码区域")}">${escapeHtml(risk?.affected_surfaces.join("\n") ?? "")}</textarea></label>
+        ${renderRiskGoalPicker(view, risk?.goal_ids ?? [currentGoalId], risk?.description ?? L("新风险"), `risk-goals-${formKey}`)}
+      </div>
+    </details>`;
 }
 
 function renderRiskGoalLinks(risk: WebRiskRecord, view: GoalBoardWebView): string {
@@ -991,17 +1183,19 @@ function renderRiskGoalLinks(risk: WebRiskRecord, view: GoalBoardWebView): strin
     : '<span class="empty-row">未关联 Goal</span>';
 }
 
-function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoardWebView): string {
-  const readOnly = Boolean(item.goal.archived_at);
-  const stateOptions = riskSelectOptions(
-    [["open", L("开放")], ["triggered", L("已触发")], ["resolved", L("已解决")], ["accepted", L("已接受")], ["expired", L("已过期")]],
-    risk.state,
-  );
-  return `<article class="risk-record" id="risk-${escapeHtml(risk.risk_id)}">
+function renderRiskRecord(
+  risk: WebRiskRecord,
+  item: WebGoalView,
+  view: GoalBoardWebView,
+  readOnly = Boolean(item.goal.archived_at),
+  idPrefix = "risk",
+): string {
+  return `<article class="risk-record" id="${escapeHtml(idPrefix)}-${escapeHtml(risk.risk_id)}">
     <header><span class="risk-record-icon">${icon("risk")}</span><div><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(L(RISK_STATE_LABELS[risk.state]))}</span><h4>${escapeHtml(risk.description)}</h4><small>${escapeHtml(risk.risk_id)} · 更新于 ${formatDate(risk.updated_at)}</small></div></header>
     <dl class="risk-facts">
       <div><dt>${L("概率 / 影响")}</dt><dd>${escapeHtml(risk.probability)} / ${escapeHtml(risk.impact)}</dd></div>
-      <div><dt>${L("处理 / 阻塞")}</dt><dd>${escapeHtml(L(RISK_TREATMENT_LABELS[risk.treatment]))} / ${escapeHtml(L(RISK_BLOCKING_LABELS[risk.blocking_mode]))}</dd></div>
+      <div><dt>${L("处理方式 / 对 Goal 的影响")}</dt><dd>${escapeHtml(L(RISK_TREATMENT_LABELS[risk.treatment]))} / ${escapeHtml(L(RISK_BLOCKING_LABELS[risk.blocking_mode]))}</dd></div>
+      ${risk.treatment_plan ? `<div class="risk-fact-wide"><dt>${L("具体措施")}</dt><dd>${escapeHtml(risk.treatment_plan)}</dd></div>` : ""}
       <div class="risk-fact-wide"><dt>${L("触发条件")}</dt><dd>${escapeHtml(risk.trigger)}</dd></div>
       <div class="risk-fact-wide"><dt>${L("复查条件")}</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div>
       <div><dt>${L("负责人")}</dt><dd>${escapeHtml(risk.owner)}</dd></div>
@@ -1009,33 +1203,25 @@ function renderRiskRecord(risk: WebRiskRecord, item: WebGoalView, view: GoalBoar
       <div class="risk-fact-wide"><dt>${L("受影响 Goal")}</dt><dd>${renderRiskGoalLinks(risk, view)}</dd></div>
     </dl>
     <p class="risk-effect risk-effect--${escapeHtml(risk.state)}">${icon(risk.state === "triggered" ? "blocked" : "info")}<span><strong>${L("当前影响")}</strong>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</span></p>
-    ${readOnly ? '<p class="risk-readonly">已归档 Goal 中的 Risk 只读展示；恢复 Goal 后可以继续维护。</p>' : `<div class="risk-actions">
-      <details data-persist-open="risk-edit-${escapeHtml(risk.risk_id)}"><summary><span>${icon("settings")}<strong>编辑事实</strong></span>${icon("chevron-down")}</summary>
-        <form class="risk-form" data-risk-edit-form data-live-form="risk-edit-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}">
+    ${readOnly ? `<p class="risk-readonly">${L("这是一条只读记录；请到“关联与约束 → 风险”修改当前事实。")}</p>` : `<div class="risk-actions">
+      <details data-persist-open="risk-edit-${escapeHtml(risk.risk_id)}"><summary><span>${icon("settings")}<strong>${L("修改风险信息")}</strong></span>${icon("chevron-down")}</summary>
+        <form class="risk-form" data-risk-edit-form data-live-form="risk-edit-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" novalidate>
           ${renderRiskFactsForm(risk, item.goal.goal_id, view)}
-          <label class="risk-form-wide"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么需要更新这项 Risk 的事实或关联 Goal")}"></textarea></label>
+          <label class="risk-form-wide"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么需要更新这项风险或它关联的 Goal")}"></textarea></label>
           <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
-          <footer class="risk-form-wide"><span>状态不会随事实编辑而改变。</span><button class="button-primary" type="submit">保存 Risk 事实</button></footer>
+          <footer class="risk-form-wide"><span>${L("修改风险事实不会同时改变处理状态。")}</span><button class="button-primary" type="submit">${L("保存风险信息")}</button></footer>
         </form>
       </details>
-      <details data-persist-open="risk-state-${escapeHtml(risk.risk_id)}"><summary><span>${icon("history")}<strong>变更状态</strong></span>${icon("chevron-down")}</summary>
-        <form class="risk-state-form" data-risk-state-form data-live-form="risk-state-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}">
-          <label><span>新状态</span><select name="state" data-risk-state-select>${stateOptions}</select></label>
-          <p class="risk-state-preview" data-risk-state-preview>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</p>
-          <label class="risk-form-wide"><span>${L("决定理由")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么现在进入这个状态，以及依据是什么")}"></textarea></label>
-          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
-          <footer class="risk-form-wide"><button class="button-primary" type="submit">记录状态变化</button></footer>
-        </form>
-      </details>
+      ${riskNeedsDecision(risk) ? `<a class="risk-decision-link" href="/decisions#decision-goal-${encodeURIComponent(item.goal.goal_id)}">${icon("user")}<span><strong>${L("去待决定处理这个风险")}</strong><small>${L("风险处理会改变相关 Goal 能否领取或完成，所以统一在待决定中记录。")}</small></span>${icon("chevron-right")}</a>` : ""}
     </div>`}
   </article>`;
 }
 
 const IMPACT_ACCESS_LABELS: Record<ImpactBindingRecord["access"], string> = {
-  read: "读取",
-  write: "写入",
-  decide: "决策",
-  exclusive: "独占",
+  read: "只读取",
+  write: "会修改",
+  decide: "会作出决定",
+  exclusive: "执行时独占",
 };
 
 const IMPACT_STATE_LABELS: Record<ImpactBindingRecord["state"], string> = {
@@ -1045,34 +1231,43 @@ const IMPACT_STATE_LABELS: Record<ImpactBindingRecord["state"], string> = {
 };
 
 function impactStateEffect(impact: ImpactBindingRecord): string {
-  if (impact.state === "inactive") return L("这条绑定只作为历史保留，不再参与 Runtime 领取冲突判断。");
-  if (impact.state === "proposed") return L("这条绑定尚未确认，不会形成 Runtime 领取门禁。");
-  if (impact.access === "exclusive") return L("当前 Goal 独占该区域；其他 active Goal 不能同时读取、写入或作出决策。");
-  if (impact.access === "decide") return L("当前 Goal 对该区域作出业务决策；其他 active Goal 的读取、写入或决策会发生冲突。");
+  if (impact.state === "inactive") return L("这条记录只作为历史保留，不再参与工作冲突判断。");
+  if (impact.state === "proposed") return L("这条记录尚未确认，不会阻止其他工作开始。");
+  if (impact.access === "exclusive") return L("当前 Goal 独占该区域；其他正在进行的 Goal 不能同时读取、修改或作出决定。");
+  if (impact.access === "decide") return L("当前 Goal 会在该区域作出决定；其他正在进行的 Goal 如果也读取、修改或决策，会发生冲突。");
   if (impact.access === "write") return L("当前 Goal 会写入该区域；其他写入会冲突，读取方必须固定输入快照。");
   return impact.input_snapshot
     ? L("当前 Goal 只读取该区域，并已固定输入快照，可与写入方并行推进。")
-    : L("当前 Goal 只读取该区域，但未固定输入快照；同一区域的 active 写入会阻止领取。");
+    : L("当前 Goal 只读取该区域，但未固定输入版本；同一区域正在进行的修改会阻止领取。");
 }
 
 function renderImpactFactsForm(
   impact: ImpactBindingRecord | null,
   goalId: string,
 ): string {
-  const access = impact?.access ?? "read";
-  const state = impact?.state === "proposed" ? "proposed" : "confirmed";
+  const access = impact?.access ?? null;
+  const state = impact == null ? null : impact.state === "proposed" ? "proposed" : "confirmed";
   return `<input type="hidden" name="goal_id" value="${escapeHtml(goalId)}">
-    <label class="impact-form-wide"><span>${L("影响区域")}</span><input name="surface" required value="${escapeHtml(impact?.surface ?? "")}" placeholder="${L("例如 src/web 或 onboarding-flow")}"></label>
-    <label><span>${L("访问类型")}</span><select name="access">${riskSelectOptions([["read", "读取"], ["write", "写入"], ["decide", "决策"], ["exclusive", "独占"]], access)}</select></label>
-    <label><span>${L("当前状态")}</span><select name="state">${riskSelectOptions([["confirmed", "已确认"], ["proposed", "提议中"]], state)}</select></label>
-    <label class="impact-form-wide"><span>${L("输入快照 ")}<small>${L("读取方可用 commit、文件版本或事实引用固定输入")}</small></span><input name="input_snapshot" value="${escapeHtml(impact?.input_snapshot ?? "")}" placeholder="${L("可选，例如 commit://abc123 或 contract://GOAL-ID")}"></label>
-    <label class="impact-form-wide"><span>${L("绑定理由")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么这个 Goal 会影响该区域")}">${escapeHtml(impact?.reason ?? "")}</textarea></label>`;
+    <label class="impact-form-wide"><span>${L("会影响哪里")}</span><input name="surface" required value="${escapeHtml(impact?.surface ?? "")}" placeholder="${L("可以是流程、文档、系统、团队、数据或代码区域")}"></label>
+    <label class="impact-form-wide"><span>${L("为什么会影响这里")}</span><textarea name="reason" rows="2" required placeholder="${L("说明这条 Goal 会在这里做什么，以及为什么需要记录")}">${escapeHtml(impact?.reason ?? "")}</textarea></label>
+    <details class="factor-advanced impact-form-wide" data-progressive-fields>
+      <summary><span><strong>${L("补充影响方式")}</strong><small>${L("保存前需要明确会读取、修改、决策还是独占")}</small></span>${icon("chevron-down")}</summary>
+      <div class="factor-advanced-grid">
+        <label><span>${L("会怎么影响")}</span><select name="access" required>${riskSelectOptions([["read", "只读取或参考"], ["write", "会修改内容"], ["decide", "会在这里作出决定"], ["exclusive", "执行期间需要独占"]], access, "请选择影响方式")}</select></label>
+        <label><span>${L("这条记录是否已确认")}</span><select name="state" required>${riskSelectOptions([["confirmed", "已确认，立即参与冲突判断"], ["proposed", "暂未确认，只保留记录"]], state, "请选择记录状态")}</select></label>
+        <label class="impact-form-wide"><span>${L("固定的输入版本 ")}<small>${L("可选；只读取时可用文件版本或事实引用固定输入")}</small></span><input name="input_snapshot" value="${escapeHtml(impact?.input_snapshot ?? "")}" placeholder="${L("例如 commit://abc123、文档版本或 Goal 引用")}"></label>
+      </div>
+    </details>`;
 }
 
-function renderImpactRecord(impact: ImpactBindingRecord, item: WebGoalView): string {
+function renderImpactRecord(
+  impact: ImpactBindingRecord,
+  item: WebGoalView,
+  readOnly = Boolean(item.goal.archived_at),
+  idPrefix = "impact",
+): string {
   const inactive = impact.state === "inactive";
-  const readOnly = Boolean(item.goal.archived_at);
-  return `<article class="impact-record${inactive ? " impact-record--inactive" : ""}" id="impact-${escapeHtml(impact.binding_id)}">
+  return `<article class="impact-record${inactive ? " impact-record--inactive" : ""}" id="${escapeHtml(idPrefix)}-${escapeHtml(impact.binding_id)}">
     <header><span class="impact-record-icon">${icon("impact")}</span><div><span class="impact-access impact-access--${escapeHtml(impact.access)}">${escapeHtml(L(IMPACT_ACCESS_LABELS[impact.access]))}</span><h4>${escapeHtml(impact.surface)}</h4><small>${escapeHtml(impact.binding_id)} · ${inactive ? `停用于 ${formatDate(impact.deactivated_at ?? impact.updated_at)}` : `更新于 ${formatDate(impact.updated_at)}`}</small></div><span class="impact-state impact-state--${escapeHtml(impact.state)}">${escapeHtml(L(IMPACT_STATE_LABELS[impact.state]))}</span></header>
     <dl class="impact-facts">
       <div><dt>${L("访问 / 状态")}</dt><dd>${escapeHtml(L(IMPACT_ACCESS_LABELS[impact.access]))} / ${escapeHtml(L(IMPACT_STATE_LABELS[impact.state]))}</dd></div>
@@ -1082,19 +1277,19 @@ function renderImpactRecord(impact: ImpactBindingRecord, item: WebGoalView): str
       ${inactive ? `<div class="impact-fact-wide"><dt>停用原因</dt><dd>${escapeHtml(impact.deactivation_reason ?? L("未记录"))}</dd></div>` : ""}
     </dl>
     <p class="impact-effect impact-effect--${escapeHtml(impact.state)}">${icon(inactive ? "history" : "info")}<span><strong>${L("当前影响")}</strong>${escapeHtml(impactStateEffect(impact))}</span></p>
-    ${readOnly || inactive ? (readOnly && !inactive ? '<p class="impact-readonly">已归档 Goal 中的 Impact 只读展示；恢复 Goal 后可以继续维护。</p>' : "") : `<div class="impact-actions">
-      <details data-persist-open="impact-edit-${escapeHtml(impact.binding_id)}"><summary><span>${icon("settings")}<strong>编辑绑定</strong></span>${icon("chevron-down")}</summary>
-        <form class="impact-form" data-impact-edit-form data-live-form="impact-edit-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
+    ${readOnly || inactive ? (readOnly && !inactive ? `<p class="impact-readonly">${L("这是一条只读记录；请到“关联与约束 → 影响范围”修改当前事实。")}</p>` : "") : `<div class="impact-actions">
+      <details data-persist-open="impact-edit-${escapeHtml(impact.binding_id)}"><summary><span>${icon("settings")}<strong>${L("修改影响范围")}</strong></span>${icon("chevron-down")}</summary>
+        <form class="impact-form" data-impact-edit-form data-live-form="impact-edit-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}" novalidate>
           ${renderImpactFactsForm(impact, item.goal.goal_id)}
           <label class="impact-form-wide"><span>${L("修改说明")}</span><textarea name="audit_reason" rows="2" required placeholder="${L("为什么需要更新影响区域、访问方式或状态")}"></textarea></label>
           <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
-          <footer class="impact-form-wide"><span>修改会进入事件历史；已停用记录不会原地恢复。</span><button class="button-primary" type="submit">保存 Impact</button></footer>
+          <footer class="impact-form-wide"><span>${L("修改会进入变更历史；已停用记录不会原地恢复。")}</span><button class="button-primary" type="submit">${L("保存影响范围")}</button></footer>
         </form>
       </details>
-      <details class="impact-deactivate" data-persist-open="impact-deactivate-${escapeHtml(impact.binding_id)}"><summary><span>${icon("archive")}<strong>停用绑定</strong></span>${icon("chevron-down")}</summary>
+      <details class="impact-deactivate" data-persist-open="impact-deactivate-${escapeHtml(impact.binding_id)}"><summary><span>${icon("archive")}<strong>${L("停用这条记录")}</strong></span>${icon("chevron-down")}</summary>
         <form data-impact-deactivate-form data-live-form="impact-deactivate-${escapeHtml(impact.binding_id)}" data-impact-id="${escapeHtml(impact.binding_id)}">
-          <p>${L("停用后不再参与领取冲突判断，但完整绑定事实和停用原因会保留在历史中。")}</p>
-          <label><span>${L("停用原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么这条 Impact 已不再有效")}"></textarea></label>
+          <p>${L("停用后不再参与工作冲突判断，但原记录和停用原因会保留在历史中。")}</p>
+          <label><span>${L("停用原因")}</span><textarea name="reason" rows="2" required placeholder="${L("说明这条影响范围为什么不再有效")}"></textarea></label>
           <p class="form-error" data-impact-error role="alert" hidden></p>
           <footer><button class="danger-confirm" type="submit">${L("确认停用")}</button></footer>
         </form>
@@ -1103,35 +1298,44 @@ function renderImpactRecord(impact: ImpactBindingRecord, item: WebGoalView): str
   </article>`;
 }
 
-function renderSafety(item: WebGoalView, view: GoalBoardWebView): string {
-  const canEdit = !item.goal.archived_at;
+function renderRiskWorkbench(item: WebGoalView, view: GoalBoardWebView, editable = true, showHeading = true): string {
+  const canEdit = editable && !item.goal.archived_at;
+  return `<section class="risk-register">${showHeading ? `<header class="safety-subheading"><div><h3>${L("风险")}</h3><p>${L("记录可能影响推进或完成的情况，并说明什么时候需要重新判断。")}</p></div><span>${L("{count} 项", { count: item.risks.length })}</span></header>` : ""}
+      ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view, !canEdit, editable ? "risk" : "record-risk")).join("")}</div>` : `<p class="risk-empty">${L("当前没有已记录的风险。只有确实需要观察、处理或阻止完成的情况才需要添加。")}</p>`}
+      ${canEdit ? `<details class="risk-create" data-persist-open="risk-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="risk-record-icon">${icon("plus")}</span><span><strong>${L("记录风险")}</strong><small>${L("先写清可能发生什么，再设置它如何影响 Goal")}</small></span>${icon("chevron-down")}</summary>
+        <form class="risk-form" data-risk-create-form data-live-form="risk-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" novalidate>
+          ${renderRiskFactsForm(null, item.goal.goal_id, view)}
+          <label class="risk-form-wide"><span>${L("登记原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么现在需要记录这项风险")}"></textarea></label>
+          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
+          <footer class="risk-form-wide"><span>${L("新风险默认处于“开放”状态。")}</span><button class="button-primary" type="submit">${L("记录风险")}</button></footer>
+        </form>
+      </details>` : ""}
+    </section>`;
+}
+
+function renderImpactWorkbench(item: WebGoalView, editable = true, showHeading = true): string {
+  const canEdit = editable && !item.goal.archived_at;
   const activeImpacts = item.impacts.filter((impact) => impact.state !== "inactive");
   const inactiveImpacts = item.impacts.filter((impact) => impact.state === "inactive");
-  return `<div class="safety-workbench" id="risk-workbench-${escapeHtml(item.goal.goal_id)}">
-    <section class="risk-register"><header class="safety-subheading"><div><h3>${L("风险")}</h3><p>${L("记录事实、触发条件、影响范围和处理责任；状态决定是否形成门禁。")}</p></div><span>${L("{count} 项", { count: item.risks.length })}</span></header>
-      ${item.risks.length ? `<div class="risk-list">${item.risks.map((risk) => renderRiskRecord(risk, item, view)).join("")}</div>` : `<p class="risk-empty">${L("暂无已登记 Risk。需要持续观察、阻止领取或影响完成的事项，都从这里记录。")}</p>`}
-      ${canEdit ? `<details class="risk-create" data-persist-open="risk-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="risk-record-icon">${icon("plus")}</span><span><strong>${L("新增 Risk")}</strong><small>${L("完整记录事实，并明确关联到哪些 Goal")}</small></span>${icon("chevron-down")}</summary>
-        <form class="risk-form" data-risk-create-form data-live-form="risk-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
-          ${renderRiskFactsForm(null, item.goal.goal_id, view)}
-          <label class="risk-form-wide"><span>${L("登记原因")}</span><textarea name="reason" rows="2" required placeholder="${L("为什么现在需要记录这项 Risk")}"></textarea></label>
-          <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
-          <footer class="risk-form-wide"><span>${L("新 Risk 默认处于“开放”状态。")}</span><button class="button-primary" type="submit">${L("登记 Risk")}</button></footer>
-        </form>
-      </details>` : ""}
-    </section>
-    <section class="impact-register" id="impact-workbench-${escapeHtml(item.goal.goal_id)}"><header class="safety-subheading"><div><h3>${L("影响面")}</h3><p>${L("明确这个 Goal 会读取、写入、决策或独占哪些区域，以及它如何影响并行领取。")}</p></div><span>${L("{count} 项生效", { count: activeImpacts.length })}${inactiveImpacts.length ? ` · ${L("{count} 项历史", { count: inactiveImpacts.length })}` : ""}</span></header>
+  return `<section class="impact-register">${showHeading ? `<header class="safety-subheading"><div><h3>${L("影响范围")}</h3><p>${L("说明这条 Goal 会读取、修改或决定哪些区域，以及是否会和其他工作冲突。")}</p></div><span>${L("{count} 项生效", { count: activeImpacts.length })}${inactiveImpacts.length ? ` · ${L("{count} 项历史", { count: inactiveImpacts.length })}` : ""}</span></header>` : ""}
       <div class="impact-ledger">
-      ${activeImpacts.length ? `<div class="impact-list">${activeImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div>` : `<p class="impact-empty">${L("暂无生效中的 Impact。需要约束并行读取、写入或决策时，从这里登记。")}</p>`}
-      ${canEdit ? `<details class="impact-create" data-persist-open="impact-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="impact-record-icon">${icon("plus")}</span><span><strong>${L("新增 Impact")}</strong><small>${L("记录影响区域、访问方式、输入快照和绑定理由")}</small></span>${icon("chevron-down")}</summary>
-        <form class="impact-form" data-impact-create-form data-live-form="impact-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+      ${activeImpacts.length ? `<div class="impact-list">${activeImpacts.map((impact) => renderImpactRecord(impact, item, !canEdit, editable ? "impact" : "record-impact")).join("")}</div>` : `<p class="impact-empty">${L("当前没有已记录的影响范围。需要协调多人、多 Goal 或共享资源时再添加。")}</p>`}
+      ${canEdit ? `<details class="impact-create" data-persist-open="impact-create-${escapeHtml(item.goal.goal_id)}"><summary><span class="impact-record-icon">${icon("plus")}</span><span><strong>${L("记录影响范围")}</strong><small>${L("说明影响哪里、会做什么以及为什么")}</small></span>${icon("chevron-down")}</summary>
+        <form class="impact-form" data-impact-create-form data-live-form="impact-create-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" novalidate>
           ${renderImpactFactsForm(null, item.goal.goal_id)}
           <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
-          <footer class="impact-form-wide"><span>${L("已确认绑定会立即参与 Runtime 领取冲突判断。")}</span><button class="button-primary" type="submit">${L("登记 Impact")}</button></footer>
+          <footer class="impact-form-wide"><span>${L("已确认的影响范围会参与并行工作冲突判断。")}</span><button class="button-primary" type="submit">${L("记录影响范围")}</button></footer>
         </form>
       </details>` : ""}
-      ${inactiveImpacts.length ? `<details class="impact-history" data-persist-open="impact-history-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已停用记录")}</strong><small>${inactiveImpacts.length} ${L("条 · 仍可查看原事实和停用原因")}</small></span>${icon("chevron-down")}</summary><div class="impact-list">${inactiveImpacts.map((impact) => renderImpactRecord(impact, item)).join("")}</div></details>` : ""}
+      ${inactiveImpacts.length ? `<details class="impact-history" data-persist-open="impact-history-${escapeHtml(item.goal.goal_id)}"><summary><span>${icon("history")}<strong>${L("已停用记录")}</strong><small>${inactiveImpacts.length} ${L("条 · 仍可查看原事实和停用原因")}</small></span>${icon("chevron-down")}</summary><div class="impact-list">${inactiveImpacts.map((impact) => renderImpactRecord(impact, item, true, editable ? "impact" : "record-impact")).join("")}</div></details>` : ""}
       </div>
-    </section>
+    </section>`;
+}
+
+function renderSafety(item: WebGoalView, view: GoalBoardWebView, editable = true): string {
+  return `<div class="safety-workbench" id="risk-workbench-${escapeHtml(item.goal.goal_id)}">
+    ${renderRiskWorkbench(item, view, editable)}
+    ${renderImpactWorkbench(item, editable)}
   </div>`;
 }
 
@@ -1164,19 +1368,31 @@ function mergePolicy(base: GoalPolicy, binding?: WebPolicyBinding): GoalPolicy {
 }
 
 const GOAL_MODE_COPY: Record<GoalPolicy["goal_mode"], { label: string; description: string }> = {
-  disabled: { label: "关闭", description: "Runtime 不必声明 Goal Mode" },
-  preferred: { label: "建议", description: "提醒 Runtime 进入 Goal Mode" },
-  required: { label: "强制", description: "未声明时不能领取" },
+  disabled: { label: "不要求", description: "执行工具可以按普通会话工作" },
+  preferred: { label: "建议使用", description: "提醒执行工具按当前 Goal 的边界工作" },
+  required: { label: "必须使用", description: "未声明按 Goal 工作时不能开始" },
 };
 
-function renderGoalModeChoices(selected: GoalPolicy["goal_mode"]): string {
+const GOAL_MODE_STRENGTH: Record<GoalPolicy["goal_mode"], number> = {
+  disabled: 0,
+  preferred: 1,
+  required: 2,
+};
+
+function renderGoalModeChoices(
+  selected: GoalPolicy["goal_mode"],
+  minimum?: GoalPolicy["goal_mode"],
+): string {
   return `<div class="policy-mode-options">${(
     Object.entries(GOAL_MODE_COPY) as Array<
       [GoalPolicy["goal_mode"], { label: string; description: string }]
     >
   )
     .map(
-      ([value, copy]) => `<label><input type="radio" name="goal_mode" value="${value}"${selected === value ? " checked" : ""}><span><strong>${L(copy.label)}</strong><small>${L(copy.description)}</small></span></label>`,
+      ([value, copy]) => {
+        const locked = minimum != null && GOAL_MODE_STRENGTH[value] < GOAL_MODE_STRENGTH[minimum];
+        return `<label><input type="radio" name="goal_mode" value="${value}"${selected === value ? " checked" : ""}${locked ? " disabled" : ""}><span><strong>${L(copy.label)}</strong><small>${locked ? L("低于项目共同规则，不能选择") : L(copy.description)}</small></span></label>`;
+      },
     )
     .join("")}</div>`;
 }
@@ -1186,8 +1402,9 @@ function renderPolicyToggle(
   checked: boolean,
   title: string,
   description: string,
+  locked = false,
 ): string {
-  return `<label class="policy-toggle"><input type="checkbox" name="${name}"${checked ? " checked" : ""}><span class="policy-switch" aria-hidden="true"></span><span class="policy-toggle-copy"><strong>${L(title)}</strong><small>${L(description)}</small></span></label>`;
+  return `<label class="policy-toggle"><input type="checkbox" name="${name}"${checked ? " checked" : ""}${locked ? " disabled" : ""}><span class="policy-switch" aria-hidden="true"></span><span class="policy-toggle-copy"><strong>${L(title)}</strong><small>${locked ? L("项目共同规则已要求，当前 Goal 不能关闭") : L(description)}</small></span></label>`;
 }
 
 function renderPolicyCounter(
@@ -1195,26 +1412,39 @@ function renderPolicyCounter(
   value: number,
   title: string,
   description: string,
+  minimum = 0,
 ): string {
-  return `<label class="policy-counter"><span><strong>${L(title)}</strong><small>${L(description)}</small></span><span class="policy-counter-input"><input name="${name}" type="number" min="0" step="1" value="${value}" aria-label="${L(title + "人数")}"><span>${L("人")}</span></span></label>`;
+  const minimumCopy = minimum > 0 ? L("项目共同规则至少要求 {count} 人", { count: minimum }) : L(description);
+  return `<label class="policy-counter"><span><strong>${L(title)}</strong><small>${minimumCopy}</small></span><span class="policy-counter-input"><input name="${name}" type="number" min="${minimum}" step="1" value="${value}"${minimum > 0 ? ` data-policy-min="${minimum}"` : ""} aria-label="${L(title + "人数")}"><span>${L("人")}</span></span></label>`;
 }
 
 function policyLeaseDescription(seconds: number): string {
   if (seconds % 3600 === 0) return L("约 {hours} 小时", { hours: seconds / 3600 });
   if (seconds % 60 === 0) return L("约 {minutes} 分钟", { minutes: seconds / 60 });
-  return L("到期后其他 Runtime 可以重新领取");
+  return L("到期后其他执行工具可以重新领取");
 }
 
 function renderPolicyForm(
-  item: WebGoalView,
+  item: WebGoalView | null,
   scope: "project_default" | "goal",
   policy: GoalPolicy,
   binding: WebPolicyBinding | undefined,
+  contextKey = item?.goal.goal_id ?? "project",
+  openByDefault = scope === "goal",
+  minimumPolicy?: GoalPolicy,
 ): string {
   const goalScope = scope === "goal";
-  const scopeLabel = goalScope ? L("当前 Goal 额外规则") : L("项目默认规则");
+  if (goalScope && !item) throw new Error("Goal 规则表单必须绑定 Goal");
+  const goalId = item?.goal.goal_id ?? "";
+  const scopeLabel = goalScope
+    ? binding
+      ? L("当前 Goal 额外规则")
+      : L("为当前 Goal 增加要求")
+    : L("项目默认规则");
   const description = goalScope
-    ? L("只作用于当前 Goal；可以增加要求，但不能削弱项目默认最低门槛。")
+    ? binding
+      ? L("只作用于当前 Goal；可以继续增加要求，但不能削弱项目共同规则。")
+      : L("当前完全沿用项目规则；只有需要更严格时才在这里增加要求。")
     : L("所有 Goal 的共同基线；修改后影响后续新的领取与 Review。");
   const saved = binding
     ? `${L("已保存 · ")}${formatDate(binding.created_at)} · ${binding.created_by}`
@@ -1229,28 +1459,41 @@ function renderPolicyForm(
     : binding
       ? L("这组规则是所有 Goal 的共同最低门槛；当前 Goal 只能在它之上增加要求。")
       : L("当前仍使用系统默认。保存后，这组规则会成为整个项目的共同最低门槛。");
-  return `<details class="policy-source policy-source--${goalScope ? "goal" : "project"}"${goalScope ? " open" : ""}>
+  const additionalCapabilities = goalScope && minimumPolicy
+    ? (binding?.policy.required_capabilities ?? []).filter((capability) => !minimumPolicy.required_capabilities.includes(capability))
+    : policy.required_capabilities;
+  const capabilityHelp = goalScope
+    ? minimumPolicy?.required_capabilities.length
+      ? L("项目已要求：{list}。这里只填写当前 Goal 额外需要的能力。", { list: minimumPolicy.required_capabilities.join("、") })
+      : L("这里只填写当前 Goal 额外需要的能力；没有可以留空。")
+    : L("所有能力都满足后才能开始；用逗号分隔。");
+  return `<details class="policy-source policy-source--${goalScope ? "goal" : "project"}"${openByDefault ? " open" : ""}>
     <summary><span class="policy-source-title"><span class="policy-scope-index">${goalScope ? "02" : "01"}</span><span><small>${goalScope ? "GOAL OVERRIDE" : "PROJECT DEFAULT"}</small><strong>${scopeLabel}</strong><span>${escapeHtml(description)}</span></span></span><span class="policy-source-state"><strong>${escapeHtml(scopeState)}</strong><small>${escapeHtml(saved)}</small>${icon("chevron-down")}</span></summary>
-    <form class="policy-form" data-policy-form data-live-form="policy-${escapeHtml(scope)}-${escapeHtml(item.goal.goal_id)}">
+    <form class="policy-form" data-policy-form data-live-form="policy-${escapeHtml(scope)}-${escapeHtml(contextKey)}" novalidate>
       <input type="hidden" name="scope" value="${scope}">
-      ${goalScope ? `<input type="hidden" name="goal_id" value="${escapeHtml(item.goal.goal_id)}">` : ""}
+      ${goalScope ? `<input type="hidden" name="goal_id" value="${escapeHtml(goalId)}">` : ""}
       <p class="policy-scope-notice">${icon(goalScope ? "target" : "database")}<span>${escapeHtml(context)}</span></p>
-      <section class="policy-form-group"><header><span>${icon("workflow")}</span><div><h3>${L("Runtime 领取")}</h3><p>${L("决定 Runtime 以什么方式进入 Goal，以及一次认领能保持多久。")}</p></div></header>
-        <fieldset class="policy-control"><legend>Goal Mode</legend><p>${L("这是 Runtime 领取前对工作模式的约束。")}</p>${renderGoalModeChoices(policy.goal_mode)}</fieldset>
-        <div class="policy-control policy-control--split"><label class="policy-input"><span><strong>${L("Runtime 必需能力")}</strong><small>${L("必须声明全部能力后才能领取；用逗号分隔。")}</small></span><input name="required_capabilities" value="${escapeHtml(policy.required_capabilities.join(", "))}" placeholder="${L("例如 browser, typescript")}"></label><label class="policy-input"><span><strong>${L("最长领取时间")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1" step="1" value="${policy.max_lease_seconds}"><span>${L("秒")}</span></span></label></div>
+      ${binding ? `<p class="policy-current-reason"><strong>${L("上次修改原因")}</strong><span>${escapeHtml(binding.reason)}</span></p>` : ""}
+      <section class="policy-form-group"><header><span>${icon("shield")}</span><div><h3>${L("开始与完成要求")}</h3><p>${L("先设置最常用的三项：如何按 Goal 工作、是否自检、是否需要你最终确认。")}</p></div></header>
+        <fieldset class="policy-control"><legend>${L("执行工具是否必须按 Goal 工作")}</legend><p>${L("按 Goal 工作时，执行工具会遵守当前目标、边界和完成标准。")}</p>${renderGoalModeChoices(policy.goal_mode, minimumPolicy?.goal_mode)}</fieldset>
+        <div class="policy-toggle-list">${renderPolicyToggle("self_verification", policy.self_verification, "执行者自我验证", "执行者提交结果前先验证自己的完成依据", Boolean(minimumPolicy?.self_verification))}${renderPolicyToggle("human_approval", policy.human_approval, "用户最终确认", "完成前必须由用户确认工作结果", Boolean(minimumPolicy?.human_approval))}</div>
       </section>
-      <section class="policy-form-group"><header><span>${icon("shield")}</span><div><h3>${L("验证与 Review")}</h3><p>${L("决定执行结果需要经过哪些独立检查，谁拥有最终确认权。")}</p></div></header>
-        <div class="policy-toggle-list">${renderPolicyToggle("self_verification", policy.self_verification, "执行者自我验证", "执行者提交结果前先验证自己的 Evidence")}${renderPolicyToggle("human_approval", policy.human_approval, "用户最终确认", "完成前必须由用户提交 Human Review")}</div>
-        <div class="policy-review-counts">${renderPolicyCounter("cross_reviewers", policy.cross_reviewers, "交叉验证", "由独立 Reviewer 复核结果与证据")}${renderPolicyCounter("adversarial_reviewers", policy.adversarial_reviewers, "对抗性验证", "主动寻找反例、遗漏和错误假设")}</div>
-      </section>
-      <section class="policy-form-group policy-form-group--reason"><header><span>${icon("history")}</span><div><h3>${L("变更说明")}</h3><p>${L("Policy 是可审计事实；说明为什么现在需要调整。")}</p></div></header><label class="policy-reason"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("例如：这个 Goal 涉及用户数据，需要独立 Review 和最终确认")}"></textarea></label></section>
+      <details class="factor-advanced policy-advanced" data-progressive-fields><summary><span><strong>${L("高级执行与检查规则")}</strong><small>${L("只有需要指定能力、领取时长或额外检查人数时才修改")}</small></span>${icon("chevron-down")}</summary><div class="factor-advanced-grid">
+        <label class="policy-input"><span><strong>${L("执行工具需要的能力")}</strong><small>${capabilityHelp}</small></span><input name="required_capabilities" value="${escapeHtml(additionalCapabilities.join(", "))}" placeholder="${L("例如：浏览器操作、图像处理、数据分析")}"></label>
+        <label class="policy-input"><span><strong>${L("一次领取最长多久")}</strong><small>${minimumPolicy ? L("项目最长允许 {seconds} 秒；当前 Goal 只能缩短", { seconds: minimumPolicy.max_lease_seconds }) : escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></span><span class="policy-with-unit"><input name="max_lease_seconds" type="number" min="1"${minimumPolicy ? ` max="${minimumPolicy.max_lease_seconds}" data-policy-max="${minimumPolicy.max_lease_seconds}"` : ""} step="1" value="${policy.max_lease_seconds}"><span>${L("秒")}</span></span></label>
+        <div class="policy-review-counts policy-form-wide">${renderPolicyCounter("cross_reviewers", policy.cross_reviewers, "独立复核", "由其他执行者检查结果与依据", minimumPolicy?.cross_reviewers ?? 0)}${renderPolicyCounter("adversarial_reviewers", policy.adversarial_reviewers, "反例检查", "主动寻找遗漏、反例和错误假设", minimumPolicy?.adversarial_reviewers ?? 0)}</div>
+      </div></details>
+      <section class="policy-form-group policy-form-group--reason"><header><span>${icon("history")}</span><div><h3>${L("变更说明")}</h3><p>${L("工作规则会进入完整记录，请说明为什么现在需要调整。")}</p></div></header><label class="policy-reason"><span>${L("修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("例如：这个 Goal 涉及用户数据，需要独立检查和最终确认")}"></textarea></label></section>
       <p class="form-error" data-policy-error role="alert" hidden></p>
       <footer><span>${goalScope ? L("保存后会与项目默认合并，并立即成为这条 Goal 的领取门槛。") : L("旧规则会标记为已替换，历史仍保留。")}</span><button class="button-primary" type="submit">${L("保存")}${scopeLabel}</button></footer>
     </form>
   </details>`;
 }
 
-function renderPolicyEditor(item: WebGoalView): string {
+function renderPolicyEditor(
+  item: WebGoalView,
+  options: { editGoal?: boolean; editProject?: boolean } = { editGoal: true, editProject: false },
+): string {
   const projectBinding = activePolicyBinding(item, "project_default");
   const goalBinding = activePolicyBinding(item, "goal");
   const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
@@ -1258,37 +1501,146 @@ function renderPolicyEditor(item: WebGoalView): string {
   const policy = item.resolved_policy;
   const mode = GOAL_MODE_COPY[policy.goal_mode];
   return `<div class="policy-workbench">
-    <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><h3>${L("当前最终生效规则")}</h3><p>${L("Runtime 实际领取和完成这条 Goal 时，必须满足下面这组门槛。")}</p></div></header><dl><div><dt>Goal Mode</dt><dd><strong>${escapeHtml(L(mode.label))}</strong><small>${escapeHtml(L(mode.description))}</small></dd></div><div><dt>${L("执行者自检")}</dt><dd><strong>${policy.self_verification ? L("需要") : L("不需要")}</strong><small>${policy.self_verification ? L("提交前必须验证") : L("不设自检门槛")}</small></dd></div><div><dt>${L("独立 Review")}</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} ${L("人")}</strong><small>${L("交叉")} ${policy.cross_reviewers} · ${L("对抗")} ${policy.adversarial_reviewers}</small></dd></div><div><dt>${L("用户确认")}</dt><dd><strong>${policy.human_approval ? L("需要") : L("不需要")}</strong><small>${policy.human_approval ? L("用户拥有最终确认权") : L("无需 Human Review")}</small></dd></div><div><dt>${L("最长领取")}</dt><dd><strong>${policy.max_lease_seconds} ${L("秒")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>${L("必需能力")}</dt><dd><strong>${escapeHtml(policy.required_capabilities.join(currentLocale() === "en" ? ", " : "、") || L("无"))}</strong><small>${policy.required_capabilities.length ? L("Runtime 必须全部声明") : L("不限制能力标签")}</small></dd></div></dl></section>
-    <div class="policy-inheritance" aria-label="${L("Policy 继承关系")}"><span><small>${L("01 · 项目默认")}</small><strong>${projectBinding ? L("项目基线已设置") : L("使用系统默认")}</strong></span>${icon("arrow")}<span><small>${L("02 · 当前 Goal")}</small><strong>${goalBinding ? L("已增加单独规则") : L("完全继承项目")}</strong></span>${icon("arrow")}<span><small>${L("结果")}</small><strong>${L("最终生效门槛")}</strong></span></div>
-    ${renderPolicyForm(item, "project_default", projectPolicy, projectBinding)}
-    ${renderPolicyForm(item, "goal", goalPolicy, goalBinding)}
+    <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><h3>${L("当前最终生效规则")}</h3><p>${L("项目默认和当前 Goal 的额外要求已经合并，实际会按下面的结果执行。")}</p></div></header><dl><div><dt>${L("按 Goal 工作")}</dt><dd><strong>${escapeHtml(L(mode.label))}</strong><small>${escapeHtml(L(mode.description))}</small></dd></div><div><dt>${L("执行者自检")}</dt><dd><strong>${policy.self_verification ? L("需要") : L("不需要")}</strong><small>${policy.self_verification ? L("提交前必须验证") : L("不设自检门槛")}</small></dd></div><div><dt>${L("独立检查")}</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} ${L("人")}</strong><small>${L("独立复核")} ${policy.cross_reviewers} · ${L("反例检查")} ${policy.adversarial_reviewers}</small></dd></div><div><dt>${L("用户确认")}</dt><dd><strong>${policy.human_approval ? L("需要") : L("不需要")}</strong><small>${policy.human_approval ? L("用户拥有最终确认权") : L("无需用户最终确认")}</small></dd></div><div><dt>${L("一次领取最长")}</dt><dd><strong>${policy.max_lease_seconds} ${L("秒")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>${L("需要的能力")}</dt><dd><strong>${escapeHtml(policy.required_capabilities.join(currentLocale() === "en" ? ", " : "、") || L("无"))}</strong><small>${policy.required_capabilities.length ? L("执行工具必须全部声明") : L("不限制能力标签")}</small></dd></div></dl></section>
+    <div class="policy-inheritance" aria-label="${L("工作规则继承关系")}"><span><small>${L("01 · 项目默认")}</small><strong>${projectBinding ? L("项目基线已设置") : L("使用系统默认")}</strong></span>${icon("arrow")}<span><small>${L("02 · 当前 Goal")}</small><strong>${goalBinding ? L("已增加单独规则") : L("完全继承项目")}</strong></span>${icon("arrow")}<span><small>${L("结果")}</small><strong>${L("最终生效门槛")}</strong></span></div>
+    ${options.editProject ? renderPolicyForm(item, "project_default", projectPolicy, projectBinding) : `<p class="policy-scope-note">${icon("folder")}<span><strong>${L("项目默认规则在项目设置中维护")}</strong><small>${L("这里显示合并后的结果；当前 Goal 只能增加自己的要求。")}</small></span><a href="__SETTINGS__">${L("打开项目设置")}</a></p>`}
+    ${options.editGoal ? renderPolicyForm(item, "goal", goalPolicy, goalBinding, item.goal.goal_id, Boolean(goalBinding), projectPolicy) : ""}
   </div>`;
 }
 
-function renderHumanReview(item: WebGoalView): string {
+type DecisionEventKind = "review" | "contract" | "candidate" | "rewire" | "risk" | "goalTree";
+
+const HANDLED_DECISION_EVENT_TYPES: Record<DecisionEventKind, ReadonlySet<string>> = {
+  review: new Set(["review.submitted"]),
+  contract: new Set(["contract_proposal.approved", "contract_proposal.rejected"]),
+  candidate: new Set(["candidate.approved", "candidate.rejected"]),
+  rewire: new Set(["rewire.applied", "rewire.rejected"]),
+  risk: new Set(["risk.open", "risk.triggered", "risk.resolved", "risk.accepted", "risk.expired"]),
+  goalTree: new Set(["goal_tree_proposal.decided"]),
+};
+
+function renderNewDecisionBadge(
+  createdAt: string,
+  view: GoalBoardWebView,
+  kind: DecisionEventKind,
+  objectId: string,
+): string {
+  const handledTypes = HANDLED_DECISION_EVENT_TYPES[kind];
+  const alreadyHandled = view.events.some(
+    (event) => event.object_id === objectId && handledTypes.has(event.type) && event.at >= createdAt,
+  );
+  if (alreadyHandled) return "";
+  const latestHandled = view.events.find((event) => handledTypes.has(event.type));
+  return latestHandled && createdAt >= latestHandled.at
+    ? `<span class="decision-new" title="${L("这是最近一次处理后新生成的事项")}">${L("新事项")}</span>`
+    : "";
+}
+
+function riskDecisionCreatedAt(risk: RiskRecord, view: GoalBoardWebView): string {
+  return view.events.find(
+    (event) => event.object_id === risk.risk_id && (event.type === "risk.open" || event.type === "risk.triggered"),
+  )?.at ?? risk.created_at;
+}
+
+function renderHumanReviewScenario(item: WebGoalView): string {
+  const criteria = item.goal.acceptance_criteria;
+  const criterion = criteria.find((entry) => !item.passed_criteria.includes(entry.criterion_id)) ?? criteria[0];
+  const linkedEvidence = criterion
+    ? item.evidence.filter((evidence) => evidence.criterion_ids.includes(criterion.criterion_id)).slice().reverse()
+    : [];
+  const evidence = linkedEvidence.find((entry) => entry.result === "passed") ?? linkedEvidence[0];
+  const criterionPassed = Boolean(criterion && item.passed_criteria.includes(criterion.criterion_id));
+  let contextLabel = L("目前还缺");
+  let contextEffect = L("这条 Goal 还没有完成标准，暂时无法判断结果是否完成。");
+  if (criterion && evidence?.result === "passed") {
+    const evidenceSummary = evidence.digest?.trim() || evidence.locator;
+    contextLabel = L("当前依据");
+    contextEffect = L("完成标准「{criterion}」已有一条通过依据「{evidence}」。这份记录支持该标准，但不等于你已经确认通过。", {
+      criterion: criterion.statement,
+      evidence: evidenceSummary,
+    });
+  } else if (criterion && evidence) {
+    contextEffect = L("完成标准「{criterion}」现有依据「{evidence}」，记录结果是“{result}”，还不能证明已经达到标准。", {
+      criterion: criterion.statement,
+      evidence: evidence.digest?.trim() || evidence.locator,
+      result: L(EVIDENCE_RESULT_LABELS[evidence.result]),
+    });
+  } else if (criterion) {
+    contextEffect = L("完成标准「{criterion}」还没有对应的通过依据，现在不应选择“通过”。", {
+      criterion: criterion.statement,
+    });
+  }
+  const unpassedCriterionCount = Math.max(0, criteria.length - item.passed_criteria.length);
+  const otherPendingReviewCount = item.review_obligations.filter(
+    (obligation) => obligation.state === "pending" && obligation.role !== "human_approver",
+  ).length;
+  const blockingRiskCount = item.risks.filter(
+    (risk) => (risk.state === "open" || risk.state === "triggered") && risk.blocking_mode !== "none",
+  ).length;
+  const remainingGateCount = otherPendingReviewCount + blockingRiskCount;
+  const confirmEffect = !criterionPassed || unpassedCriterionCount > 0
+    ? L("即使选择“通过”，Goal「{title}」仍有 {count} 条完成标准缺少通过依据，不会完成。请先补齐依据。", {
+        title: item.goal.title,
+        count: unpassedCriterionCount || criteria.length,
+      })
+    : remainingGateCount > 0
+      ? L("选择“通过”只会完成这次用户检查；Goal「{title}」还会等待 {count} 项其他检查或风险处理，不会马上完成。", {
+          title: item.goal.title,
+          count: remainingGateCount,
+        })
+      : L("选择“通过”会完成这次用户检查；GoalBoard 会再核对全部门槛，都满足后 Goal「{title}」才会完成。", {
+          title: item.goal.title,
+        });
+  return renderDecisionScenario({
+    title: L("拿当前完成标准和依据来说"),
+    contextLabel,
+    contextEffect,
+    confirmLabel: L("如果选择通过"),
+    confirmEffect,
+    rejectLabel: L("如果需要修改或依据不足"),
+    rejectEffect: L("选择“需要修改”会把结果退回补充；选择“证据不足”会让 Goal 继续等待依据。两种情况都不会完成这条 Goal。"),
+  });
+}
+
+function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
   const pending = item.review_obligations.filter(
     (obligation) => obligation.role === "human_approver" && obligation.state === "pending",
   );
   if (!pending.length) return "";
+  const copy = explainDecision("review");
+  const allCriteriaPassed = item.goal.acceptance_criteria.length > 0 && item.passed_criteria.length === item.goal.acceptance_criteria.length;
+  const hasReliableRecommendation = allCriteriaPassed && item.goal.acceptance_criteria.every((criterion) =>
+    item.evidence.some((evidence) => evidence.result === "passed" && evidence.criterion_ids.includes(criterion.criterion_id)),
+  );
   const evidenceChoices = item.evidence.length
     ? item.evidence
         .slice()
         .reverse()
         .map(
           (evidence) =>
-            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(evidence.kind)} · ${escapeHtml(evidence.result)}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
+            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
         )
         .join("")
-    : '<p class="empty-row">当前还没有已提交 Evidence；仍可在下方填写外部引用。</p>';
-  return `<div class="human-review-list"><header><strong>${L("等待你的最终确认")}</strong><p>${L("请根据 Contract 和 Evidence 给出结论。Human Review 只能由用户入口提交。")}</p></header>${pending
+    : `<p class="empty-row">${L("当前还没有已提交的完成依据。你可以在下方补充外部引用。")}</p>`;
+  return `<div class="decision-record human-review-list"><header class="decision-record-heading"><span class="decision-kind">${icon("user")} ${L("确认工作结果")}${renderNewDecisionBadge(pending[0]!.created_at, view, "review", pending[0]!.obligation_id)}</span></header><div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
+    whyNow: L("工作结果已经提交，其他必要检查也已走到需要你确认的阶段。"),
+    recommendation: hasReliableRecommendation ? L("建议确认通过") : null,
+    recommendationBasis: L("{passed}/{total} 条完成标准已有通过依据，共 {evidence} 条可查看记录。", { passed: item.passed_criteria.length, total: item.goal.acceptance_criteria.length, evidence: item.evidence.length }),
+    insufficient: copy.insufficientEvidence,
+    consequences: [
+      { choice: L("通过"), effect: L("这项用户检查会完成；其他门槛也满足后，Goal 才会完成。") },
+      { choice: L("需要修改或不通过"), effect: L("结果不会完成，并会带着你的理由回到后续修改。") },
+      { choice: L("证据不足"), effect: L("暂不判断结果，等待补充与完成标准对应的依据。") },
+    ],
+  })}${renderHumanReviewScenario(item)}<details class="decision-details"><summary>${L("查看完成标准和已有依据")}${icon("chevron-down")}</summary><div class="review-context"><section><h4>${L("完成标准")}</h4>${renderAcceptanceSummary(item)}</section><section><h4>${L("已有依据")}</h4><div class="evidence-choice-list">${evidenceChoices}</div></section></div></details></div>${pending
     .map(
-      (obligation) => `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}">
-        <label class="review-verdict"><span>Review 结论</span><select name="verdict"><option value="pass">通过</option><option value="needs_changes">需要修改</option><option value="fail">不通过</option><option value="inconclusive">证据不足</option></select></label>
-        <fieldset><legend>引用已有 Evidence</legend><div class="evidence-choice-list">${evidenceChoices}</div></fieldset>
-        <label><span>补充 Evidence 引用 <small>可选，每行一条</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="${L("https://… 或项目内文件引用")}"></textarea></label>
-        <label><span>判断理由</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些证据支撑判断")}"></textarea></label>
+      (obligation) => `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}" novalidate>
+        <label class="review-verdict"><span>${L("你的结论")}</span><select name="verdict"><option value="" selected disabled>${L("请选择结论")}</option><option value="pass">${L("通过")}</option><option value="needs_changes">${L("需要修改")}</option><option value="fail">${L("不通过")}</option><option value="inconclusive">${L("证据不足")}</option></select></label>
+        <fieldset><legend>${L("选择支持结论的已有依据")}</legend><div class="evidence-choice-list">${evidenceChoices}</div></fieldset>
+        <label><span>${L("补充依据链接")} <small>${L("可选，每行一条")}</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="${L("https://… 或项目内文件引用")}"></textarea></label>
+        <label><span>${L("判断理由")}（${L("必填")}）</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些依据支撑判断")}"></textarea></label>
         <p class="form-error" data-review-error role="alert" hidden></p>
-        <footer><small>${escapeHtml(obligation.independence_rule)} · ${escapeHtml(obligation.obligation_id)}</small><button class="button-primary" type="submit">提交用户 Review</button></footer>
+        <footer><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>${escapeHtml(obligation.independence_rule)} · ${escapeHtml(obligation.obligation_id)}</small></details><button class="button-primary" type="submit">${L("提交结果确认")}</button></footer>
       </form>`,
     )
     .join("")}</div>`;
@@ -1441,20 +1793,86 @@ function renderResolvedDependencyHistory(item: WebGoalView, view: GoalBoardWebVi
   return `<div class="dependency-history"><h3>${L("依赖提案记录 ")}<span>${rewires.length}</span></h3><p>${L("保留 Runtime 的依据和用户决定，后续事实变化时可以重新检查。")}</p>${rewires.map((rewire) => renderDependencyProposalList(rewire, view)).join("")}</div>`;
 }
 
+function renderDecisionGuidance(options: {
+  whyNow: string;
+  recommendation: string | null;
+  recommendationBasis?: string;
+  insufficient: string;
+  consequences: Array<{ choice: string; effect: string }>;
+}): string {
+  return `<div class="decision-guidance">
+    <section><h4>${L("为什么现在要决定")}</h4><p>${escapeHtml(options.whyNow)}</p></section>
+    <section class="decision-recommendation${options.recommendation ? " has-recommendation" : ""}"><h4>${L("建议")}</h4><strong>${escapeHtml(options.recommendation ?? L("现在没有足够依据给出可靠建议"))}</strong><p>${escapeHtml(options.recommendation ? options.recommendationBasis ?? "" : options.insufficient)}</p></section>
+    <section class="decision-consequences"><h4>${L("选完会发生什么")}</h4><dl>${options.consequences.map((item) => `<div><dt>${escapeHtml(item.choice)}</dt><dd>${escapeHtml(item.effect)}</dd></div>`).join("")}</dl></section>
+  </div>`;
+}
+
+function renderDecisionScenario(options: {
+  title?: string;
+  contextLabel?: string;
+  contextEffect?: string;
+  confirmLabel: string;
+  confirmEffect: string;
+  rejectLabel: string;
+  rejectEffect: string;
+}): string {
+  const title = options.title ?? L("放到当前方案里看");
+  const context = options.contextLabel && options.contextEffect
+    ? `<div><dt>${escapeHtml(options.contextLabel)}</dt><dd>${escapeHtml(options.contextEffect)}</dd></div>`
+    : "";
+  return `<section class="decision-scenario" aria-label="${escapeHtml(title)}">
+    <h4>${escapeHtml(title)}</h4>
+    <dl>
+      ${context}
+      <div><dt>${escapeHtml(options.confirmLabel)}</dt><dd>${escapeHtml(options.confirmEffect)}</dd></div>
+      <div><dt>${escapeHtml(options.rejectLabel)}</dt><dd>${escapeHtml(options.rejectEffect)}</dd></div>
+    </dl>
+  </section>`;
+}
+
+function proposedGoalNextStage(goal: Record<string, unknown>): string {
+  const definitionState = String(goal.definition_state ?? "draft");
+  const decompositionState = String(goal.decomposition_state ?? "abstract");
+  if (definitionState !== "accepted") {
+    return L("随后仍是草稿，需要继续澄清，不能开始。");
+  }
+  if (decompositionState === "closed_compound") {
+    return L("随后进入“等待子 Goal”，由子 Goal 推进，不会直接开工。");
+  }
+  return L("随后进入“待执行”，但仍要由 Runtime 领取后才会开始。");
+}
+
 function renderRewireDecision(
   rewire: GoalBoardWebView["snapshot"]["rewires"][number],
   view: GoalBoardWebView,
 ): string {
+  const copy = explainDecision("rewire");
   const hasDependencies = dependencyRelations(rewire).length > 0;
   const note = rewire.candidate_id
     ? L("拒绝关系调整不会删除已经纳入的 Goal。")
     : L("拒绝后现有依赖保持不变；确认后才会新增或解除依赖。");
-  return `<form class="decision-record rewire-decision" data-rewire-decision-form data-live-form="rewire-${escapeHtml(rewire.rewire_id)}" data-rewire-id="${escapeHtml(rewire.rewire_id)}">
-    <header class="decision-record-heading"><span class="decision-kind decision-kind--rewire">${icon("tree")} Rewire</span><small>${escapeHtml(rewire.rewire_id)}</small></header>
-    <div class="decision-record-body"><strong>${hasDependencies ? "依赖调整提案" : "关系调整提案"}</strong>${renderRewireSummary(rewire, view)}<small>${note}</small></div>
-    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么确认或拒绝这次关系变化")}"></textarea></label>
+  const dependencies = dependencyRelations(rewire);
+  const evidenceCount = dependencies.reduce((count, relation) => count + (Array.isArray(relation.evidence_refs) ? relation.evidence_refs.length : 0), 0);
+  const hasReliableRecommendation = dependencies.length > 0 && dependencies.every((relation) =>
+    Boolean(relation.reason) && Boolean(relation.direction_reason) && Boolean(relation.impact_if_rejected) &&
+    typeof relation.confidence === "number" && relation.confidence >= 0.7 &&
+    Array.isArray(relation.evidence_refs) && relation.evidence_refs.length > 0,
+  );
+  return `<form class="decision-record rewire-decision" data-rewire-decision-form data-live-form="rewire-${escapeHtml(rewire.rewire_id)}" data-rewire-id="${escapeHtml(rewire.rewire_id)}" novalidate>
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--rewire">${icon("tree")} ${L("Goal 关系调整")}${renderNewDecisionBadge(rewire.created_at, view, "rewire", rewire.rewire_id)}</span><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>Rewire · ${escapeHtml(rewire.rewire_id)}</small></details></header>
+    <div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
+      whyNow: L("这项关系变化会改变哪些 Goal 必须先完成，以及它们在 Goal Tree 中的归属。"),
+      recommendation: hasReliableRecommendation ? L("建议应用这次关系调整") : null,
+      recommendationBasis: L("提案写清了关系方向、拒绝后的影响，并提供了 {count} 条可查看依据。", { count: evidenceCount }),
+      insufficient: copy.insufficientEvidence,
+      consequences: [
+        { choice: L("应用调整"), effect: L("按提案增加或解除关系；已经在运行的终端和工作不会被改到别的 Goal。") },
+        { choice: L("不调整"), effect: note },
+      ],
+    })}${renderRewireSummary(rewire, view)}</div>
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}（${L("必填")}）</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么确认或拒绝这次关系变化")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("拒绝关系调整")}</button><button class="button-primary" type="submit" name="decision" value="confirmed">${hasDependencies ? "确认依赖调整" : "确认调整"}</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("保持现有关系")}</button><button class="button-primary" type="submit" name="decision" value="confirmed">${hasDependencies ? L("应用这次依赖调整") : L("应用这次关系调整")}</button></footer>
   </form>`;
 }
 
@@ -1495,7 +1913,7 @@ function renderContractDiffRow(
   current: string | number | string[],
   proposed: string | number | string[],
 ): string {
-  return `<div class="contract-diff-row"><h4>${escapeHtml(label)}</h4><div class="contract-diff-copy"><small>${L("当前")}</small><p>${escapeHtml(contractValue(current))}</p><small>${L("提案")}</small><p>${escapeHtml(contractValue(proposed))}</p></div>${renderProposalSource(proposalSource(proposal, field))}</div>`;
+  return `<div class="contract-diff-row"><h4>${escapeHtml(L(label))}</h4><div class="contract-diff-copy"><small>${L("当前")}</small><p>${escapeHtml(contractValue(current))}</p><small>${L("提案")}</small><p>${escapeHtml(contractValue(proposed))}</p></div>${renderProposalSource(proposalSource(proposal, field))}</div>`;
 }
 
 function renderContractProposal(
@@ -1503,6 +1921,7 @@ function renderContractProposal(
   current: GoalRecord,
   view: GoalBoardWebView,
 ): string {
+  const copy = explainDecision("contract");
   const proposed = proposal.proposed_goal;
   const acceptance = proposed.acceptance_criteria.map((criterion) => criterion.statement);
   const currentAcceptance = current.acceptance_criteria.map((criterion) => criterion.statement);
@@ -1519,30 +1938,74 @@ function renderContractProposal(
     .filter((rewire): rewire is GoalBoardWebView["snapshot"]["rewires"][number] => Boolean(rewire));
   const pendingLinkedRewires = linkedRewires.filter((rewire) => rewire.state === "pending");
   const approvalBlocked = pendingLinkedRewires.length > 0;
-  return `<form class="decision-record contract-proposal" data-contract-decision-form data-live-form="contract-${escapeHtml(proposal.proposal_id)}" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}">
-    <header><div><strong>${L("Contract 补全提案")}</strong><p>${L("确认后会更新同一个 Goal，不会创建新 Goal；确认前当前正文保持不变。")}</p></div><span>由 ${escapeHtml(proposal.submitted_by)} 提交</span></header>
-    <div class="contract-diff-list">
+  const sourceFields: ContractFieldName[] = ["title", "outcome", "why", "business_logic", "acceptance_criteria"];
+  const reliableSources = sourceFields.filter((field) => {
+    const source = proposalSource(proposal, field);
+    return source && source.confidence >= 0.7 && (source.source_kind === "user_answer" || source.source_refs.length > 0);
+  });
+  const hasCompleteProposal = Boolean(
+    proposed.title.trim() && proposed.outcome.trim() && proposed.why.trim() && proposed.business_logic.trim() && acceptance.length,
+  );
+  const hasReliableRecommendation = hasCompleteProposal && reliableSources.length === sourceFields.length;
+  const recommendation = approvalBlocked
+    ? L("建议先完成关联的 Goal 关系决定")
+    : hasReliableRecommendation
+      ? L("建议确认这份目标说明")
+      : null;
+  const recommendationBasis = approvalBlocked
+    ? L("这份说明依赖上方的关系调整；先决定关系，才能知道开始顺序是否正确。")
+    : L("目标、原因、实际运转方式和完成标准都有来源，且可信度不低于 70%。");
+  const sameTitle = proposed.title.trim() === current.title.trim();
+  const confirmEffect = sameTitle
+    ? L("不会新建另一条 Goal；现有 Goal「{title}」会采用这版范围和完成标准。{stage}", {
+        title: proposed.title,
+        stage: proposedGoalNextStage(proposed as unknown as Record<string, unknown>),
+      })
+    : L("不会新建另一条 Goal；现有 Goal「{current}」会更新为「{proposed}」，并采用这版范围和完成标准。{stage}", {
+        current: current.title,
+        proposed: proposed.title,
+        stage: proposedGoalNextStage(proposed as unknown as Record<string, unknown>),
+      });
+  return `<form class="decision-record contract-proposal" data-contract-decision-form data-live-form="contract-${escapeHtml(proposal.proposal_id)}" data-contract-proposal-id="${escapeHtml(proposal.proposal_id)}" novalidate>
+    <header class="decision-record-heading"><span class="decision-kind">${icon("clipboard")} ${L("确认目标说明")}${renderNewDecisionBadge(proposal.created_at, view, "contract", proposal.proposal_id)}</span><span>${L("由 {name} 提交", { name: proposal.submitted_by })}</span></header>
+    <div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
+      whyNow: L("这条 Goal 还是草稿；你确认后，下面的目标、范围和完成标准才会成为正式依据。"),
+      recommendation,
+      recommendationBasis,
+      insufficient: copy.insufficientEvidence,
+      consequences: [
+        { choice: L("确认并允许开始"), effect: L("这份说明会成为正式依据；满足其他前置条件后，工作可以被领取和推进。") },
+        { choice: L("退回修改"), effect: L("草稿保持不变，你写下的修改意见会保留，等待提交新版本。") },
+      ],
+    })}${renderDecisionScenario({
+      confirmLabel: L("如果确认"),
+      confirmEffect,
+      rejectLabel: L("如果退回"),
+      rejectEffect: L("Goal「{title}」仍保持当前草稿；这版名称、范围和完成标准都不会写入 GoalBoard。", { title: current.title }),
+    })}</div>
+    <details class="decision-details"><summary>${L("查看修改前后和每项依据")}${icon("chevron-down")}</summary><div class="contract-diff-list">
       ${renderContractDiffRow(proposal, "title", "目标名称", current.title, proposed.title)}
       ${renderContractDiffRow(proposal, "outcome", "要得到的结果", current.outcome, proposed.outcome)}
-      ${renderContractDiffRow(proposal, "why", "为什么做", current.why, proposed.why)}
-      ${renderContractDiffRow(proposal, "business_logic", "业务逻辑", current.business_logic, proposed.business_logic)}
-      ${renderContractDiffRow(proposal, "in_scope", "包含什么", current.in_scope, proposed.in_scope ?? [])}
-      ${renderContractDiffRow(proposal, "out_of_scope", "明确不做", current.out_of_scope, proposed.out_of_scope ?? [])}
-      ${renderContractDiffRow(proposal, "promised_outputs", "承诺输出", current.promised_outputs, proposed.promised_outputs ?? [])}
-      ${renderContractDiffRow(proposal, "acceptance_criteria", "验收条件", currentAcceptance, acceptance)}
-      ${renderContractDiffRow(proposal, "review_policy", "Runtime 与 Review 规则", "使用当前默认规则", policyText)}
+      ${renderContractDiffRow(proposal, "why", "为什么现在做", current.why, proposed.why)}
+      ${renderContractDiffRow(proposal, "business_logic", "它会怎样运转", current.business_logic, proposed.business_logic)}
+      ${renderContractDiffRow(proposal, "in_scope", "这次会做", current.in_scope, proposed.in_scope ?? [])}
+      ${renderContractDiffRow(proposal, "out_of_scope", "这次不做", current.out_of_scope, proposed.out_of_scope ?? [])}
+      ${renderContractDiffRow(proposal, "promised_outputs", "完成后会交付", current.promised_outputs, proposed.promised_outputs ?? [])}
+      ${renderContractDiffRow(proposal, "acceptance_criteria", "完成标准", currentAcceptance, acceptance)}
+      ${renderContractDiffRow(proposal, "review_policy", "完成前需要的检查", "使用项目当前规则", policyText)}
     </div>
-    ${proposal.proposed_impacts.length ? `<div class="proposal-appendix"><strong>确认后登记的影响面</strong>${renderList(proposal.proposed_impacts.map((impact) => `${impact.surface} · ${impact.access} · ${impact.reason}`), "")}</div>` : ""}
-    ${proposal.proposed_risks.length ? `<div class="proposal-appendix"><strong>确认后登记的风险</strong>${renderList(proposal.proposed_risks.map((risk) => `${risk.description}；影响：${risk.impact}；复查：${risk.revisit_condition}`), "")}</div>` : ""}
-    ${linkedRewires.length ? `<div class="proposal-appendix proposal-prerequisite"><strong>依赖前置决定</strong><div>${renderList(linkedRewires.map((rewire) => `${rewire.state === "pending" ? "等待决定" : rewire.state === "applied" ? "已确认" : "已拒绝"} · ${rewire.rewire_id}`), "")}<p>${approvalBlocked ? L("请先处理上方依赖调整；完成后才可确认 Contract。") : L("依赖决定已经完成，可以确认 Contract。")}</p></div></div>` : ""}
-    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="2" required placeholder="${L("确认时说明判断依据；退回时写清需要修改的内容")}"></textarea></label>
+    ${proposal.proposed_impacts.length ? `<div class="proposal-appendix"><strong>${L("确认后会记录的影响范围")}</strong>${renderList(proposal.proposed_impacts.map((impact) => `${impact.surface} · ${impact.access} · ${impact.reason}`), "")}</div>` : ""}
+    ${proposal.proposed_risks.length ? `<div class="proposal-appendix"><strong>${L("确认后会记录的风险")}</strong>${renderList(proposal.proposed_risks.map((risk) => `${risk.description}；${L("影响：")}${risk.impact}；${L("复查：")}${risk.revisit_condition}`), "")}</div>` : ""}
+    ${linkedRewires.length ? `<div class="proposal-appendix proposal-prerequisite"><strong>${L("需要先决定的 Goal 关系")}</strong><div>${renderList(linkedRewires.map((rewire) => `${rewire.state === "pending" ? L("等待决定") : rewire.state === "applied" ? L("已确认") : L("已拒绝")} · ${rewire.rewire_id}`), "")}<p>${approvalBlocked ? L("请先处理上方的 Goal 关系调整；完成后才能确认这份目标说明。") : L("关联的 Goal 关系已经决定，现在可以确认目标说明。")}</p></div></div>` : ""}</details>
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}（${L("必填")}）</span><textarea name="reason" rows="2" required placeholder="${L("确认时说明判断依据；退回时写清需要修改的内容")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("退回补全")}</button><button class="button-primary" type="submit" name="decision" value="approved"${approvalBlocked ? ' disabled aria-disabled="true" title="先处理上方依赖调整"' : ""}>${approvalBlocked ? "先处理依赖调整" : "确认并设为可执行"}</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("退回修改")}</button><button class="button-primary" type="submit" name="decision" value="approved"${approvalBlocked ? ` disabled aria-disabled="true" title="${L("先处理上方的 Goal 关系调整")}"` : ""}>${approvalBlocked ? L("先处理 Goal 关系") : L("确认并允许开始")}</button></footer>
   </form>`;
 }
 
 interface DecisionGoalGroup {
   item: WebGoalView | null;
+  goalTreeProposals: GoalTreeProposalRecord[];
   contractProposals: ContractProposalRecord[];
   candidates: CandidateGoalRecord[];
   rewires: RewireRecord[];
@@ -1583,6 +2046,29 @@ function rewireOwnerGoalId(rewire: RewireRecord, view: GoalBoardWebView): string
   return null;
 }
 
+function goalTreeProposalNeedsDecision(proposal: GoalTreeProposalRecord): boolean {
+  return (proposal.state === "pending" || proposal.state === "partially_applied") &&
+    proposal.items.some((item) => item.state === "pending" || item.state === "conflict");
+}
+
+function goalTreeProposalOwnerGoalId(proposal: GoalTreeProposalRecord, view: GoalBoardWebView): string | null {
+  if (findGoalView(view, proposal.root_goal_id)) return proposal.root_goal_id;
+  if (proposal.discovered_in_run_id) {
+    const run = view.snapshot.runs.find((item) => item.run_id === proposal.discovered_in_run_id);
+    if (run && findGoalView(view, run.goal_id)) return run.goal_id;
+  }
+  for (const proposalItem of proposal.items) {
+    const payloadGoalIds = [
+      proposalItem.payload.goal_id,
+      proposalItem.payload.from_goal_id,
+      proposalItem.payload.to_goal_id,
+    ];
+    const owner = payloadGoalIds.find((goalId) => findGoalView(view, String(goalId ?? "")));
+    if (owner) return String(owner);
+  }
+  return null;
+}
+
 function riskNeedsDecision(risk: RiskRecord): boolean {
   return risk.state === "open" || risk.state === "triggered";
 }
@@ -1595,6 +2081,7 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
     if (existing) return existing;
     const created: DecisionGoalGroup = {
       item: findGoalView(view, goalId),
+      goalTreeProposals: [],
       contractProposals: [],
       candidates: [],
       rewires: [],
@@ -1604,6 +2091,9 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
     groups.set(key, created);
     return created;
   };
+  view.snapshot.goal_tree_proposals
+    .filter((proposal) => proposal.origin === "native" && goalTreeProposalNeedsDecision(proposal))
+    .forEach((proposal) => ensure(goalTreeProposalOwnerGoalId(proposal, view)).goalTreeProposals.push(proposal));
   view.snapshot.contract_proposals
     .filter((proposal) => proposal.state === "pending")
     .forEach((proposal) => ensure(proposal.goal_id).contractProposals.push(proposal));
@@ -1622,16 +2112,20 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
     const owners = allGoalViews(view).filter((item) => item.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
     ensure(owners.length === 1 ? owners[0]!.goal.goal_id : null).risks.push(risk);
   }
-  return [...groups.values()].filter((group) =>
-    group.contractProposals.length || group.candidates.length || group.rewires.length || group.humanReview || group.risks.length,
-  );
+  const impactScore = (group: DecisionGoalGroup): number =>
+    group.risks.reduce((score, risk) => score + (risk.state === "triggered" ? 4 : risk.blocking_mode === "none" ? 1 : 3), 0) +
+    group.rewires.length * 3 + group.goalTreeProposals.length * 3 + (group.humanReview ? 2 : 0) + group.contractProposals.length * 2 + group.candidates.length;
+  return [...groups.values()]
+    .filter((group) => group.goalTreeProposals.length || group.contractProposals.length || group.candidates.length || group.rewires.length || group.humanReview || group.risks.length)
+    .sort((left, right) => impactScore(right) - impactScore(left));
 }
 
 function pendingDecisionCount(view: GoalBoardWebView): number {
   const riskIds = new Set(
     allGoalViews(view).flatMap((item) => item.risks.filter(riskNeedsDecision).map((risk) => risk.risk_id)),
   );
-  return view.snapshot.contract_proposals.filter((item) => item.state === "pending").length +
+  return view.snapshot.goal_tree_proposals.filter((item) => item.origin === "native" && goalTreeProposalNeedsDecision(item)).length +
+    view.snapshot.contract_proposals.filter((item) => item.state === "pending").length +
     view.snapshot.candidates.filter((item) => item.state === "pending").length +
     view.snapshot.rewires.filter((item) => item.state === "pending").length +
     view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length +
@@ -1639,9 +2133,9 @@ function pendingDecisionCount(view: GoalBoardWebView): number {
 }
 
 function renderDecisionGoalLink(item: WebGoalView | null): string {
-  if (!item) return '<span class="decision-owner-link"><strong>Board 级事项</strong><small>未关联来源 Goal</small></span>';
+  if (!item) return `<span class="decision-owner-link"><strong>${L("整个项目的事项")}</strong><small>${L("没有只属于某一条 Goal")}</small></span>`;
   const base = item.goal.archived_at ? "/archive/goals/" : "/goals/";
-  return `<a class="decision-owner-link" href="${base}${encodeURIComponent(item.goal.goal_id)}"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)} · 打开 Goal</small></a>`;
+  return `<a class="decision-owner-link" href="${base}${encodeURIComponent(item.goal.goal_id)}"><strong>${escapeHtml(item.goal.title)}</strong><small>${L("返回这条 Goal 查看完整信息")}</small></a>`;
 }
 
 function renderCandidateList(values: string[] | undefined, empty: string): string {
@@ -1662,96 +2156,988 @@ function recordSummary(value: Record<string, unknown>, kind: "impact" | "risk"):
   return `${String(value.description ?? "未命名风险")} · 影响 ${String(value.impact ?? "未记录")} · ${String(value.blocking_mode ?? "不阻塞")}`;
 }
 
+function proposedGoalName(
+  value: unknown,
+  view: GoalBoardWebView,
+  proposal?: GoalTreeProposalRecord,
+): string {
+  const goalId = String(value ?? "");
+  if (!goalId) return L("未指明 Goal");
+  const proposed = proposal?.items
+    .filter((item) => item.kind === "goal" || item.kind === "contract")
+    .map((item) => goalTreeGoalPayload(item.payload))
+    .find((goal) => String(goal.goal_id ?? "") === goalId);
+  if (proposed?.title) return String(proposed.title);
+  return findGoalView(view, goalId)?.goal.title ?? goalId;
+}
+
+function goalTreeGoalPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const nested = payload.goal ?? payload.proposed_goal;
+  return nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : payload;
+}
+
+function goalTreeRelationPayloads(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const nested = payload.relations ?? payload.relation;
+  const values = Array.isArray(nested) ? nested : nested == null ? [payload] : [nested];
+  return values.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value));
+}
+
+function goalTreeProposalItemCopy(
+  item: GoalTreeProposalRecord["items"][number],
+  view: GoalBoardWebView,
+  proposal: GoalTreeProposalRecord,
+): { title: string; detail: string; facts: string[] } {
+  const payload = item.payload;
+  const operation = item.operation === "create" ? L("新增") : item.operation === "deactivate" ? L("停止使用") : L("更新");
+  if (item.kind === "contract" || item.kind === "goal") {
+    const goal = goalTreeGoalPayload(payload);
+    const title = String(goal.title ?? proposedGoalName(goal.goal_id, view));
+    const outcome = String(goal.outcome ?? "").trim();
+    const review = readDecompositionReview(goal.decomposition_review);
+    const readiness = readLeafReadiness(goal.leaf_readiness);
+    const readinessFacts = readiness == null
+      ? []
+      : [
+          readiness.verdict === "ready"
+            ? L("为什么可以直接执行：只交付并验收「{deliverable}」。", {
+                deliverable: readiness.primary_deliverable || L("尚未写明主要结果"),
+              })
+            : L("这条 Goal 仍需继续拆分，不能直接开始。"),
+          ...readiness.output_coverage.map((entry) => entry.role === "primary"
+            ? L("主要结果：{output}。{reason}", { output: entry.promised_output, reason: entry.reason })
+            : entry.role === "supporting"
+              ? L("配套产物：{output}。{reason}", { output: entry.promised_output, reason: entry.reason })
+              : L("需要另拆：{output}。{reason}", { output: entry.promised_output, reason: entry.reason })),
+          ...readiness.split_candidates
+            .filter((candidate) => candidate.decision === "keep")
+            .map((candidate) => L("保留在当前 Goal：{work}。{reason}", {
+              work: candidate.work_item,
+              reason: candidate.reason,
+            })),
+        ];
+    const reviewFacts = review == null
+      ? []
+      : [
+          ...(review.task_context == null
+            ? []
+            : [L("任务类型：{context}", { context: L(TASK_CONTEXT_LABELS[review.task_context]) })]),
+          review.status === "complete"
+            ? L("拆解判断：通用结果链和当前任务的必要路径已交代完整")
+            : L("拆解判断：这轮先暂停，后面还要继续拆"),
+          ...review.coverage.map((entry) => {
+            const area = L(PRODUCT_PATH_AREA_LABELS[entry.area as ProductPathArea] ?? entry.area);
+            if (entry.disposition === "not_applicable") {
+              return L("{area}：不适用。{reason}", { area, reason: entry.reason });
+            }
+            const owners = entry.goal_ids
+              .map((goalId) => proposedGoalName(goalId, view, proposal))
+              .map((name) => `「${name}」`)
+              .join("、");
+            return L("{area}：由 {owners} 负责。{reason}", {
+              area,
+              owners: owners || L("尚未指定 Goal"),
+              reason: entry.reason,
+            });
+          }),
+          ...(review.status === "paused"
+            ? [L("下一步：{nextStep}", { nextStep: review.next_step || L("尚未写明") })]
+            : []),
+        ];
+    return {
+      title: L("{operation} Goal「{title}」", { operation, title }),
+      detail: outcome || item.reason,
+      facts: [...readinessFacts, ...reviewFacts],
+    };
+  }
+  if (item.kind === "relation" || item.kind === "dependency") {
+    const relations = goalTreeRelationPayloads(payload);
+    const facts = relations.map((relation) => {
+      const from = proposedGoalName(relation.from_goal_id, view, proposal);
+      const to = proposedGoalName(relation.to_goal_id, view, proposal);
+      const relationLabel = RELATION_LABELS[String(relation.type ?? (item.kind === "dependency" ? "depends_on" : ""))]?.out ?? L("建立关系");
+      return L("{from} → {relation} → {to}", { from, relation: L(relationLabel), to });
+    });
+    return {
+      title: L("{operation} {count} 条 Goal 关系", { operation, count: facts.length || 1 }),
+      detail: item.reason,
+      facts,
+    };
+  }
+  if (item.kind === "risk") {
+    const description = goalTreeRiskDescription(item);
+    const treatmentKey = String(payload.treatment ?? "") as RiskRecord["treatment"];
+    const treatment = RISK_TREATMENT_LABELS[treatmentKey] ?? L("处理方式需要修正");
+    const submittedPlan = String(payload.treatment_plan ?? "").trim()
+      || (RISK_TREATMENT_LABELS[treatmentKey] ? "" : String(payload.treatment ?? "").trim());
+    return {
+      title: L("{operation}风险「{description}」", { operation, description }),
+      detail: L("发生概率：{probability} · 影响：{impact} · 计划：{treatment}", {
+        probability: String(payload.probability ?? L("未说明")),
+        impact: String(payload.impact ?? L("未说明")),
+        treatment: L(treatment),
+      }),
+      facts: submittedPlan ? [L("具体措施：{plan}", { plan: submittedPlan })] : [],
+    };
+  }
+  const kindLabels: Record<string, string> = {
+    policy: L("执行和检查规则"),
+    candidate: L("新发现的工作"),
+    rewire: L("Goal 关系"),
+  };
+  return {
+    title: L("{operation}{kind}", { operation, kind: kindLabels[item.kind] ?? item.kind }),
+    detail: String(payload.description ?? payload.reason ?? item.reason),
+    facts: [],
+  };
+}
+
+function goalTreeRelationScenario(
+  item: GoalTreeProposalRecord["items"][number],
+  view: GoalBoardWebView,
+  proposal: GoalTreeProposalRecord,
+  subjectGoalId?: string,
+): string | null {
+  const relation = goalTreeRelationPayloads(item.payload)[0];
+  if (!relation) return null;
+  const fromGoalId = String(relation.from_goal_id ?? "");
+  const from = proposedGoalName(relation.from_goal_id, view, proposal);
+  const to = proposedGoalName(relation.to_goal_id, view, proposal);
+  const type = String(relation.type ?? (item.kind === "dependency" ? "depends_on" : ""));
+  if (type === "part_of") {
+    if (subjectGoalId && fromGoalId === subjectGoalId) {
+      return L("它会成为「{parent}」的子 Goal。", { parent: to });
+    }
+    return L("Goal「{child}」会成为「{parent}」的子 Goal。", { child: from, parent: to });
+  }
+  if (type === "depends_on") {
+    if (subjectGoalId && fromGoalId === subjectGoalId) {
+      return L("它会等待「{dependency}」先完成。", { dependency: to });
+    }
+    return L("Goal「{goal}」会等待「{dependency}」先完成。", { goal: from, dependency: to });
+  }
+  const relationLabel = L(RELATION_LABELS[type]?.out ?? "建立关系");
+  return L("Goal「{from}」和「{to}」会建立“{relation}”关系。", { from, to, relation: relationLabel });
+}
+
+function renderGoalTreeProposalScenario(
+  proposal: GoalTreeProposalRecord,
+  view: GoalBoardWebView,
+  items: GoalTreeProposalRecord["items"],
+): string {
+  const goalItem = items.find((item) =>
+    (item.kind === "goal" || item.kind === "contract") && item.operation === "create",
+  ) ?? items.find((item) => item.kind === "goal" || item.kind === "contract");
+  const relationItem = items.find((item) => item.kind === "relation" || item.kind === "dependency");
+  const goal = goalItem ? goalTreeGoalPayload(goalItem.payload) : null;
+  const goalTitle = goal
+    ? String(goal.title ?? proposedGoalName(goal.goal_id, view, proposal))
+    : proposedGoalName(relationItem ? goalTreeRelationPayloads(relationItem.payload)[0]?.from_goal_id : proposal.root_goal_id, view, proposal);
+  const goalId = goal ? String(goal.goal_id ?? "") : "";
+  const goalEffect = goalItem?.operation === "create"
+    ? L("会新增 Goal「{title}」。", { title: goalTitle })
+    : goalItem?.operation === "deactivate"
+      ? L("会停止使用 Goal「{title}」。", { title: goalTitle })
+      : goalItem
+        ? L("会更新 Goal「{title}」的目标说明或状态。", { title: goalTitle })
+        : L("会按方案更新 Goal「{title}」的关系。", { title: goalTitle });
+  const relationEffect = relationItem
+    ? goalTreeRelationScenario(relationItem, view, proposal, goalId)
+    : L("本次不会自动改变 Goal「{title}」与其他 Goal 的归属或依赖。", { title: goalTitle });
+  const nextStage = goal ? proposedGoalNextStage(goal) : L("现有 Goal 是否能开始，仍由各自的状态和前置条件决定。");
+  return renderDecisionScenario({
+    confirmLabel: L("如果采用"),
+    confirmEffect: `${goalEffect}${relationEffect}${nextStage}`,
+    rejectLabel: L("如果退回"),
+    rejectEffect: L("不会写入上面这些 Goal 和关系变化；当前 Goal Tree 保持不变。"),
+  });
+}
+
+function goalTreeProposalIssueCopy(
+  issue: ReturnType<typeof goalTreeProposalItemValidationIssues>[number],
+): { message: string; recovery: string } {
+  switch (issue.field) {
+    case "goal_ids":
+      return {
+        message: L("这条风险没有关联任何 Goal。"),
+        recovery: L("请退回方案，让 Runtime 补充关联 Goal 后重新提交。"),
+      };
+    case "risk_facts":
+      return {
+        message: L("这条风险缺少：{fields}。", { fields: (issue.missing_fields ?? []).map((field) => L(field)).join("、") }),
+        recovery: L("请退回方案，让 Runtime 补全后重新提交。"),
+      };
+    case "treatment":
+      return {
+        message: L("“处理方式”必须选择“接受风险、降低风险、避开风险、延后处理”之一，不能填写一整段处理措施。"),
+        recovery: L("请在下方选择处理方式；原来的整段文字已保留为具体措施。"),
+      };
+    case "blocking_mode":
+      return {
+        message: L("“对 Goal 的影响”不是 GoalBoard 支持的选项。"),
+        recovery: L("请退回方案，让 Runtime 重新选择是否阻止开始、完成或在发生时让 Goal 失效。"),
+      };
+  }
+}
+
+function goalTreeDecompositionIssueCopy(
+  issue: GoalDecompositionValidationIssue,
+  view: GoalBoardWebView,
+  proposal: GoalTreeProposalRecord,
+): { message: string; recovery: string } {
+  const goal = proposedGoalName(issue.goal_id, view, proposal);
+  switch (issue.code) {
+    case "goal_tree_proposal.leaf_readiness_required":
+      return {
+        message: L("Goal「{goal}」还没有说明唯一要交付的结果，也没有检查哪些工作应该另拆。", { goal }),
+        recovery: L("请退回方案，让 Runtime 补充叶子粒度判断后重新提交。"),
+      };
+    case "goal_tree_proposal.leaf_readiness_invalid":
+      return {
+        message: L("Goal「{goal}」没有说清它已经可以直接执行，还是仍需继续拆分。", { goal }),
+        recovery: L("请让 Runtime 给出明确结论和判断理由。"),
+      };
+    case "goal_tree_proposal.leaf_scope_incomplete":
+      return {
+        message: L("Goal「{goal}」还缺少：{fields}。", {
+          goal,
+          fields: (issue.missing_fields ?? []).join("、"),
+        }),
+        recovery: L("请先把边界和输入输出写清楚，再判断它能否直接执行。"),
+      };
+    case "goal_tree_proposal.leaf_output_coverage_invalid":
+      return {
+        message: L("Goal「{goal}」没有逐项说明每个承诺结果是主要结果、配套产物，还是应当另拆。", { goal }),
+        recovery: L("请让 Runtime 按现有承诺结果逐项补全，不能遗漏或重复。"),
+      };
+    case "goal_tree_proposal.leaf_primary_output_invalid":
+      return {
+        message: L("Goal「{goal}」没有确定唯一的主要交付结果。", { goal }),
+        recovery: L("请只保留一个主要结果；其他结果只能是同一次验收的配套产物。"),
+      };
+    case "goal_tree_proposal.leaf_split_candidate_invalid":
+      return {
+        message: L("Goal「{goal}」有候选工作没有说明要留在当前 Goal，还是拆成独立 Goal。", { goal }),
+        recovery: L("请让 Runtime 逐项写明判断和理由。"),
+      };
+    case "goal_tree_proposal.leaf_split_signal_ignored":
+      return {
+        message: L("Goal「{goal}」仍包含可单独交付、单独验收或独立返工的工作：{items}。", {
+          goal,
+          items: (issue.affected_work_items ?? []).join("、"),
+        }),
+        recovery: L("这些工作至少命中两项拆分信号，必须成为独立 Goal。"),
+      };
+    case "goal_tree_proposal.leaf_split_verdict_required":
+      return {
+        message: L("Goal「{goal}」已经指出有工作需要另拆，却仍把整条 Goal 判断为可以直接执行。", { goal }),
+        recovery: L("请把结论改为仍需拆分，并提交对应的独立 Goal。"),
+      };
+    case "goal_tree_proposal.leaf_not_ready":
+      return {
+        message: L("Goal「{goal}」还有未解决的决定或应当拆出的独立结果，暂时不能直接执行。", { goal }),
+        recovery: L("请继续澄清或拆分，处理完后再提交。"),
+      };
+    case "goal_tree_proposal.leaf_acceptance_evidence_required":
+      return {
+        message: L("Goal「{goal}」有完成条件没有写清需要什么依据。", { goal }),
+        recovery: L("请为每条完成条件补充唯一标识和所需依据。"),
+      };
+    case "goal_tree_proposal.leaf_acceptance_coverage_invalid":
+      return {
+        message: L("Goal「{goal}」的叶子判断没有覆盖全部完成条件。", { goal }),
+        recovery: L("请逐项引用当前 Goal 的全部完成条件，不能遗漏或引用其他 Goal。"),
+      };
+    case "goal_tree_proposal.decomposition_review_required":
+      return {
+        message: L("Goal「{goal}」还没有说明这项任务真正完成需要哪些结果和支撑。", { goal }),
+        recovery: L("请退回方案，让 Runtime 补充每条路径由哪个 Goal 负责。"),
+      };
+    case "goal_tree_proposal.decomposition_review_invalid":
+      return {
+        message: L("Goal「{goal}」没有说清这棵树是已经拆完，还是这轮先暂停。", { goal }),
+        recovery: L("请退回方案，让 Runtime 明确当前状态和下一步。"),
+      };
+    case "goal_tree_proposal.product_path_incomplete":
+      return {
+        message: L("Goal「{goal}」还没有交代：{areas}。", {
+          goal,
+          areas: (issue.missing_areas ?? []).map((area) => L(PRODUCT_PATH_AREA_LABELS[area])).join("、"),
+        }),
+        recovery: L("请让 Runtime 指定负责的 Goal，或说明为什么不适用。"),
+      };
+    case "goal_tree_proposal.product_path_entry_invalid":
+    case "goal_tree_proposal.product_path_owner_required":
+      return {
+        message: L("Goal「{goal}」有关键路径没有写清由谁负责。", { goal }),
+        recovery: L("请让 Runtime 指定一个实际承担结果的子 Goal，或说明为什么不适用。"),
+      };
+    case "goal_tree_proposal.product_path_owner_unrelated":
+      return {
+        message: L("Goal「{goal}」把一条关键路径交给了不属于这棵子树的 Goal。", { goal }),
+        recovery: L("请让 Runtime 补上正确的父子关系，或改为真正负责的子 Goal。"),
+      };
+    case "goal_tree_proposal.foundation_dependency_required":
+      return {
+        message: L("Goal「{goal}」的核心能力与基础能力之间缺少依赖：{owners}。", {
+          goal,
+          owners: (issue.affected_work_items ?? []).map((owner) => proposedGoalName(owner, view, proposal)).join("、"),
+        }),
+        recovery: L("请补上“核心能力 Goal 依赖基础能力 Goal”的关系，并说明依赖原因。"),
+      };
+    case "goal_tree_proposal.decomposition_pause_invalid":
+      return {
+        message: L("Goal「{goal}」说这轮先暂停，但没有留下继续拆解的 Goal 和下一步。", { goal }),
+        recovery: L("请让 Runtime 写明接下来继续澄清哪条 Goal、要确认什么。"),
+      };
+    case "goal_tree_proposal.decomposition_not_complete":
+      return {
+        message: L("Goal「{goal}」还有未完成的拆解，不能标记为已经拆完。", { goal }),
+        recovery: L("请继续拆解，或把这轮明确保存为阶段性暂停。"),
+      };
+    case "goal_tree_proposal.compound_children_required":
+      return {
+        message: L("Goal「{goal}」下面还没有实际子 Goal，不能称为复合目标。", { goal }),
+        recovery: L("请先添加能独立推进的子 Goal。"),
+      };
+    case "goal_tree_proposal.open_descendants": {
+      const openGoals = (issue.open_goal_ids ?? []).map((goalId) => proposedGoalName(goalId, view, proposal));
+      return {
+        message: L("Goal「{goal}」下面仍有 {count} 条目标没拆完：{openGoals}。", {
+          goal,
+          count: openGoals.length,
+          openGoals: openGoals.join("、"),
+        }),
+        recovery: L("请继续拆这些目标，或把父 Goal 保持为“仍需拆分”。"),
+      };
+    }
+    default:
+      return { message: issue.message, recovery: issue.recovery };
+  }
+}
+
+function renderGoalTreeRiskRepair(item: GoalTreeProposalRecord["items"][number]): string {
+  const payload = item.payload;
+  const currentTreatment = String(payload.treatment ?? "") as RiskRecord["treatment"];
+  const submittedPlan = String(payload.treatment_plan ?? "").trim()
+    || (RISK_TREATMENT_LABELS[currentTreatment] ? "" : String(payload.treatment ?? "").trim());
+  const choices: Array<[RiskRecord["treatment"], string, string]> = [
+    ["mitigate", "降低风险", "保留方案，同时采取措施降低发生概率或影响"],
+    ["avoid", "避开风险", "改变方案或范围，避免风险出现"],
+    ["defer", "延后处理", "暂不采取措施，到复查条件出现时再决定"],
+    ["accept", "接受风险", "按现有方案继续，并明确承担可能影响"],
+  ];
+  const groupName = `risk-treatment-${item.item_id}`;
+  return `<section class="goal-tree-risk-repair" data-risk-proposal-repair data-risk-item-id="${escapeHtml(item.item_id)}">
+    <h4>${L("你需要决定：这条风险怎么处理？")}</h4>
+    <p>${L("选择一种处理方式。保存后会生成修订版，不会立即采用整份方案。")}</p>
+    <div class="goal-tree-risk-options">${choices.map(([value, label, effect]) => `<label><input type="radio" name="${escapeHtml(groupName)}" value="${value}"${currentTreatment === value ? " checked" : ""}><span><strong>${L(label)}</strong><small>${L(effect)}</small></span></label>`).join("")}</div>
+    <details class="goal-tree-risk-plan-editor"><summary><span>${L("查看或修改具体措施")}<small>${submittedPlan ? L("已保留原方案的内容") : L("当前没有具体措施")}</small></span>${icon("chevron-down")}</summary><label class="goal-tree-risk-plan"><span>${L("具体措施")} <small>${L("可以修改，也可以留空")}</small></span><textarea rows="3" data-risk-treatment-plan placeholder="${L("写清准备采取的措施；这和上面的处理方式会分开保存")}">${escapeHtml(submittedPlan)}</textarea></label></details>
+    <p class="form-error" data-risk-repair-error role="alert" hidden></p>
+  </section>`;
+}
+
+function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: GoalBoardWebView): string {
+  const undecidedItems = proposal.items.filter((item) => item.state === "pending" || item.state === "conflict");
+  const riskIssuesByItem = new Map(
+    undecidedItems
+      .map((item) => [item.item_id, goalTreeProposalItemValidationIssues(item)] as const)
+      .filter(([, issues]) => issues.length),
+  );
+  const decompositionIssues = goalTreeProposalDecompositionIssues(undecidedItems, view.snapshot);
+  const decompositionIssuesByItem = new Map<string, GoalDecompositionValidationIssue[]>();
+  for (const issue of decompositionIssues) {
+    const current = decompositionIssuesByItem.get(issue.item_id) ?? [];
+    current.push(issue);
+    decompositionIssuesByItem.set(issue.item_id, current);
+  }
+  const issuesByItem = new Map<string, Array<{ message: string; recovery: string }>>();
+  for (const item of undecidedItems) {
+    const issues = [
+      ...(riskIssuesByItem.get(item.item_id) ?? []).map(goalTreeProposalIssueCopy),
+      ...(decompositionIssuesByItem.get(item.item_id) ?? []).map((issue) =>
+        goalTreeDecompositionIssueCopy(issue, view, proposal)),
+    ];
+    if (issues.length) issuesByItem.set(item.item_id, issues);
+  }
+  const repairableRiskItemIds = new Set(
+    undecidedItems
+      .filter((item) => {
+        const issues = riskIssuesByItem.get(item.item_id) ?? [];
+        return item.kind === "risk" && issues.length > 0 && issues.every((issue) => issue.field === "treatment");
+      })
+      .map((item) => item.item_id),
+  );
+  const repairableRiskItemCount = repairableRiskItemIds.size;
+  const riskInvalidItemCount = riskIssuesByItem.size;
+  const decompositionInvalidItemCount = decompositionIssuesByItem.size;
+  const leafIssueFields = new Set<GoalDecompositionValidationIssue["field"]>([
+    "leaf_readiness",
+    "leaf_scope",
+    "output_coverage",
+    "split_candidates",
+    "acceptance_coverage",
+  ]);
+  const leafInvalidItemCount = new Set(
+    decompositionIssues.filter((issue) => leafIssueFields.has(issue.field)).map((issue) => issue.item_id),
+  ).size;
+  const compoundInvalidItemCount = new Set(
+    decompositionIssues.filter((issue) => !leafIssueFields.has(issue.field)).map((issue) => issue.item_id),
+  ).size;
+  const leafOnly = leafInvalidItemCount > 0 && compoundInvalidItemCount === 0 && riskInvalidItemCount === 0;
+  const invalidItemCount = issuesByItem.size;
+  const runtimeInvalidItemCount = [...issuesByItem.keys()].filter((itemId) => !repairableRiskItemIds.has(itemId)).length;
+  const actionableItems = undecidedItems.filter((item) => item.state === "pending" && !issuesByItem.has(item.item_id));
+  const conflictCount = undecidedItems.filter((item) => item.state === "conflict").length;
+  const problemItems = undecidedItems.filter((item) => item.state === "conflict" || issuesByItem.has(item.item_id));
+  const otherItems = undecidedItems.filter((item) => !problemItems.includes(item));
+  const problemCount = problemItems.length;
+  const contractItem = proposal.items.find((item) =>
+    (item.kind === "contract" || item.kind === "goal") &&
+    String(goalTreeGoalPayload(item.payload).goal_id ?? "") === String(proposal.root_goal_id ?? ""),
+  ) ?? proposal.items.find((item) => item.kind === "contract")
+    ?? proposal.items.find((item) => item.kind === "goal");
+  const contractPayload = contractItem ? goalTreeGoalPayload(contractItem.payload) : null;
+  const proposedTitle = String(contractPayload?.title ?? findGoalView(view, proposal.root_goal_id)?.goal.title ?? L("这份 Goal 方案"));
+  const proposedOutcome = String(contractPayload?.outcome ?? proposal.summary).trim();
+  const acceptance = Array.isArray(contractPayload?.acceptance_criteria)
+    ? contractPayload.acceptance_criteria as Array<Record<string, unknown>>
+    : [];
+  const inScope = Array.isArray(contractPayload?.in_scope) ? contractPayload.in_scope.map(String) : [];
+  const outOfScope = Array.isArray(contractPayload?.out_of_scope) ? contractPayload.out_of_scope.map(String) : [];
+  const renderItemRow = (item: GoalTreeProposalRecord["items"][number]): string => {
+    const copy = goalTreeProposalItemCopy(item, view, proposal);
+    const issueCopy = issuesByItem.get(item.item_id) ?? [];
+    const riskRepair = repairableRiskItemIds.has(item.item_id) ? renderGoalTreeRiskRepair(item) : "";
+    const blocked = item.state === "conflict" || issueCopy.length > 0;
+    return `<li class="goal-tree-proposal-item${item.state === "conflict" ? " is-conflict" : ""}${issueCopy.length ? " is-invalid" : ""}">
+      <input type="hidden" name="item_id" value="${escapeHtml(item.item_id)}">
+      <span>${icon(blocked ? "blocked" : "check")}</span><div><strong>${escapeHtml(copy.title)}</strong><small>${escapeHtml(copy.detail)}</small>${copy.facts.length ? `<ul class="goal-tree-proposal-item-facts">${copy.facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>` : ""}${issueCopy.length ? `<div class="goal-tree-proposal-item-error"><strong>${riskRepair ? L("这项需要你选择处理方式") : L("这项现在不能采用")}</strong>${issueCopy.map((issue) => `<p>${escapeHtml(issue.message)} ${escapeHtml(issue.recovery)}</p>`).join("")}</div>` : ""}${riskRepair}</div>
+    </li>`;
+  };
+  const itemRows = undecidedItems.map(renderItemRow).join("");
+  const problemRows = problemItems.map(renderItemRow).join("");
+  const otherRows = otherItems.map(renderItemRow).join("");
+  const conflictMessage = conflictCount
+    ? `<p class="goal-tree-proposal-conflict" role="status">${L("其中 {count} 项已经和当前 GoalBoard 状态不一致。请退回方案，让 Runtime 按最新状态重新整理。", { count: conflictCount })}</p>`
+    : "";
+  const riskOnly = riskInvalidItemCount > 0 && decompositionInvalidItemCount === 0;
+  const decompositionOnly = decompositionInvalidItemCount > 0 && riskInvalidItemCount === 0;
+  const invalidHeading = repairableRiskItemCount
+    ? runtimeInvalidItemCount
+      ? L("这份方案有 {riskCount} 条风险需要你选择，另有 {otherCount} 项需要补全", {
+          riskCount: repairableRiskItemCount,
+          otherCount: runtimeInvalidItemCount,
+        })
+      : L("这份方案有 {count} 条风险需要你选择处理方式", { count: repairableRiskItemCount })
+    : riskOnly
+      ? L("这份方案有 {count} 条风险信息需要修正", { count: invalidItemCount })
+      : leafOnly
+        ? L("这份方案有 {count} 个 Goal 还没拆到可以直接执行", { count: leafInvalidItemCount })
+        : decompositionOnly
+        ? L("这份方案有 {count} 个 Goal 的拆解还不完整", { count: invalidItemCount })
+        : L("这份方案有 {count} 项内容需要修正", { count: invalidItemCount });
+  const invalidSummary = repairableRiskItemCount
+    ? runtimeInvalidItemCount
+      ? L("先为下面 {riskCount} 条风险选择处理方式并保存。选择不会丢失；保存后仍有 {otherCount} 项需要 Runtime 补全。", {
+          riskCount: repairableRiskItemCount,
+          otherCount: runtimeInvalidItemCount,
+        })
+      : L("请为下面 {count} 条风险选择处理方式。原来的具体措施已经保留，你可以修改后一起保存。", { count: repairableRiskItemCount })
+    : riskOnly
+      ? L("其中 {count} 条风险信息需要 Runtime 修正。这些风险还没有写入 GoalBoard。", { count: invalidItemCount })
+      : leafOnly
+        ? L("这些 Goal 仍包含多个可独立交付的结果，或没有说明唯一主要结果和完成依据。", { count: leafInvalidItemCount })
+        : decompositionOnly
+        ? L("其中 {count} 个 Goal 还没有交代通用结果链、当前任务的必要路径，或下面仍有目标没有拆完。", { count: invalidItemCount })
+        : L("其中有风险信息或 Goal 拆解需要 Runtime 修正，修正前不会写入 Goal Tree。");
+  const invalidWhy = repairableRiskItemCount
+    ? L("风险怎么处理应当由你决定。GoalBoard 会把处理类别和具体措施分开保存，并保留方案的其他内容。")
+    : riskOnly
+      ? L("Runtime 提交的风险信息不符合 GoalBoard 的记录规则，需要修正后才能采用整份方案。")
+      : leafOnly
+        ? L("一条可执行 Goal 只能交付一个主要结果；能单独交付、验收或返工的工作需要拆开。")
+        : decompositionOnly
+        ? L("这份方案还不能证明任务要完成所需的结果、核心能力和支撑基础都有人负责，也不能证明所有子 Goal 已经拆到可执行。")
+        : L("这份方案仍有不能安全写入的内容，需要修正后再确认。");
+  const invalidBasis = repairableRiskItemCount
+    ? runtimeInvalidItemCount
+      ? L("你可以先保存 {riskCount} 条风险选择；另外 {otherCount} 项不会被掩盖，仍会明确留在待处理。", {
+          riskCount: repairableRiskItemCount,
+          otherCount: runtimeInvalidItemCount,
+        })
+      : L("保存后会生成完整修订版，其他 Goal 和关系内容保持不变。")
+    : riskOnly
+      ? L("当前有 {count} 条风险无法写入；退回不会改变现有 Goal Tree。", { count: invalidItemCount })
+      : leafOnly
+        ? L("当前有 {count} 个 Goal 仍需继续拆分；退回不会改变现有 Goal Tree。", { count: leafInvalidItemCount })
+        : decompositionOnly
+        ? L("当前有 {count} 个 Goal 的结果链、任务路径或开放分支没有交代清楚；退回不会改变现有 Goal Tree。", { count: invalidItemCount })
+        : L("当前有 {count} 项内容无法写入；退回不会改变现有 Goal Tree。", { count: invalidItemCount });
+  const disabledConfirmLabel = repairableRiskItemCount
+    ? runtimeInvalidItemCount ? L("还需补全其余问题") : L("先保存风险处理")
+    : riskOnly
+      ? L("先修正方案中的风险")
+      : leafOnly
+        ? L("先拆成可执行 Goal")
+        : decompositionOnly
+        ? L("先补全 Goal 拆解")
+        : L("先修正方案");
+  const invalidMessage = invalidItemCount
+    ? `<section class="goal-tree-proposal-readiness" role="alert"><div>${icon("blocked")}</div><div><h4>${L("这份方案暂时不能采用")}</h4><p>${invalidSummary}</p><strong>${repairableRiskItemCount ? L("你现在需要做：逐条选择风险处理方式，然后保存选择。") : L("你现在需要做：点击“退回修正”。GoalBoard 会自动附上这些问题。")}</strong></div></section>`
+    : "";
+  return `<form class="decision-record goal-tree-proposal-decision" data-goal-tree-decision-form data-live-form="goal-tree-${escapeHtml(proposal.proposal_id)}" data-goal-tree-proposal-id="${escapeHtml(proposal.proposal_id)}" data-has-system-issues="${problemCount ? "true" : "false"}" novalidate>
+    <header class="decision-record-heading"><span class="decision-kind">${icon("tree")} ${L("目标说明")}${renderNewDecisionBadge(proposal.created_at, view, "goalTree", proposal.proposal_id)}</span><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>${L("方案版本 {version}", { version: proposal.version })} · ${escapeHtml(proposal.proposal_id)}</small></details></header>
+    <div class="decision-record-body"><h3>${invalidItemCount ? invalidHeading : L("这份 Goal 方案要采用，还是退回修改？")}</h3><p>${invalidItemCount ? repairableRiskItemCount ? L("方案中的其他内容仍可查看。先完成下面的风险选择；保存后页面会继续列出剩余问题。") : L("方案中的其他内容仍可查看，但当前不能写入 Goal Tree。请先退回，让 Runtime 修正后重新提交。") : L("Runtime 已经把目标、完成条件和关系变化整理成一份方案。采用后这些内容才会进入 Goal Tree；退回则保持当前内容不变。")}</p>
+      <div class="goal-tree-proposal-summary"><small>${L("准备确认的 Goal")}</small><strong>${escapeHtml(proposedTitle)}</strong><p>${escapeHtml(proposedOutcome)}</p></div>
+      ${invalidMessage}
+      ${renderDecisionGuidance({
+        whyNow: invalidItemCount
+          ? invalidWhy
+          : L("目标已经整理完，现在只差你确认这份方案是否准确。"),
+        recommendation: invalidItemCount ? repairableRiskItemCount ? L("先完成风险选择") : L("退回修正") : null,
+        recommendationBasis: invalidItemCount ? invalidBasis : undefined,
+        insufficient: L("方案是否符合你的真实意图，需要由你判断。"),
+        consequences: invalidItemCount
+          ? [
+              ...(repairableRiskItemCount ? [{
+                choice: L("保存风险处理"),
+                effect: runtimeInvalidItemCount
+                  ? L("风险选择会进入完整修订版；其余 {count} 项仍会留在页面等待补全。", { count: runtimeInvalidItemCount })
+                  : L("风险选择会进入完整修订版；其他方案内容保持不变，之后可以确认整份方案。"),
+              }] : []),
+              { choice: L("退回修正"), effect: L("当前 Goal Tree 保持不变；GoalBoard 会附上上方问题，Runtime 据此提交修正后的新版本。") },
+              { choice: L("采用整份方案（当前不可用）"), effect: L("方案修正前，系统不会写入任何变化。") },
+            ]
+          : [
+              { choice: L("采用整份方案"), effect: L("下面列出的目标和关系变化会一起生效，Goal 会进入相应的下一阶段。") },
+              { choice: L("退回修改"), effect: L("当前 Goal Tree 不会改变；Runtime 会根据你的意见重新整理方案。") },
+            ],
+      })}${renderGoalTreeProposalScenario(proposal, view, undecidedItems)}
+    </div>
+    ${problemCount
+      ? `<details class="decision-details goal-tree-proposal-changes" open><summary><span>${L("先处理这 {count} 项", { count: problemCount })}<small>${L("需要你选择或让 Runtime 补全")}</small></span>${icon("chevron-down")}</summary><ol>${problemRows}</ol>${conflictMessage}</details>${otherItems.length ? `<details class="decision-details goal-tree-proposal-changes"><summary><span>${L("查看其余 {count} 项变化", { count: otherItems.length })}<small>${L("这些内容当前不需要你操作")}</small></span>${icon("chevron-down")}</summary><ol>${otherRows}</ol></details>` : ""}`
+      : `<details class="decision-details goal-tree-proposal-changes"><summary><span>${L("查看采用后的 {count} 项变化", { count: undecidedItems.length })}<small>${L("展开查看每项变化")}</small></span>${icon("chevron-down")}</summary><ol>${itemRows}</ol></details>`}
+    ${(acceptance.length || inScope.length || outOfScope.length) ? `<details class="decision-details"><summary>${L("查看范围和完成条件")}${icon("chevron-down")}</summary><div class="goal-tree-proposal-details">
+      ${inScope.length ? `<section><h4>${L("这次会做")}</h4>${renderList(inScope, "")}</section>` : ""}
+      ${outOfScope.length ? `<section><h4>${L("这次不做")}</h4>${renderList(outOfScope, "")}</section>` : ""}
+      ${acceptance.length ? `<section class="goal-tree-proposal-acceptance"><h4>${L("完成条件")}</h4><ol>${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol></section>` : ""}
+    </div></details>` : ""}
+    ${problemCount
+      ? `<label class="decision-reason"><span>${L("补充说明")}（${L("可选")}）</span><textarea name="reason" rows="3" placeholder="${L("GoalBoard 会自动附上上方问题；只有想补充时才填写")}"></textarea></label>`
+      : `<label class="decision-reason"><span>${L("决定理由或修改意见")}（${L("必填")}）</span><textarea name="reason" rows="3" required placeholder="${L("采用时说明为什么方案准确；退回时写清需要修改什么")}"></textarea></label>`}
+    <p class="form-error" data-decision-error role="alert" hidden></p>
+    <footer class="decision-actions"><button type="submit" name="decision" value="reject">${problemCount ? L("退回修正") : L("退回修改")}</button>${repairableRiskItemCount ? `<button class="button-primary" type="submit" name="decision" value="repair-risks">${L("保存 {count} 条风险处理", { count: repairableRiskItemCount })}</button>` : ""}<button class="${repairableRiskItemCount ? "" : "button-primary"}" type="submit" name="decision" value="confirm"${problemCount || !actionableItems.length ? ` disabled aria-disabled="true"` : ""}>${invalidItemCount ? disabledConfirmLabel : conflictCount ? L("先更新冲突项") : L("采用整份方案")}</button></footer>
+  </form>`;
+}
+
 function renderCandidateDecision(candidate: CandidateGoalRecord, view: GoalBoardWebView): string {
+  const copy = explainDecision("candidate");
   const proposed = candidate.proposed_goal;
   const owner = findGoalView(view, candidateOwnerGoalId(candidate, view));
   const policy = projectDefaultPolicy(view);
   const acceptance = proposed.acceptance_criteria ?? [];
   const separation = owner
-    ? `来源 Goal 的当前范围是「${owner.goal.in_scope.join("；") || owner.goal.outcome || "未记录"}」；Candidate 要独立交付「${proposed.promised_outputs?.join("；") || proposed.outcome}」。请判断它是否确实应越出原 Contract。`
-    : L("该 Candidate 没有关联来源 Run；请根据它自己的 Contract 判断是否应该独立进入 Goal Tree。");
-  return `<form class="decision-record candidate-decision" data-candidate-decision-form data-live-form="candidate-${escapeHtml(candidate.candidate_id)}" data-candidate-id="${escapeHtml(candidate.candidate_id)}">
-    <header class="decision-record-heading"><span class="decision-kind decision-kind--candidate">${icon("plus")} Candidate</span><small>${escapeHtml(candidate.candidate_id)} · ${escapeHtml(candidate.submitted_by)}</small></header>
-    <div class="candidate-title"><div><small>${L("候选 Goal")}</small><h3>${escapeHtml(proposed.title)}</h3><p>${escapeHtml(proposed.outcome)}</p></div><span>${escapeHtml(candidate.blocking_mode === "none" ? "不阻塞当前 Run" : candidate.blocking_mode === "current_run" ? "阻塞当前 Run" : "影响下游领取")}</span></div>
-    <dl class="candidate-contract">
-      <div><dt>${L("为什么做")}</dt><dd>${escapeHtml(proposed.why)}</dd></div>
-      <div><dt>${L("业务逻辑")}</dt><dd>${escapeHtml(proposed.business_logic)}</dd></div>
-      <div class="candidate-wide"><dt>${L("为什么不能留在当前 Goal")}</dt><dd>${escapeHtml(separation)}</dd></div>
-      <div><dt>${L("包含范围")}</dt><dd>${renderCandidateList(proposed.in_scope, "未记录")}</dd></div>
-      <div><dt>${L("明确不做")}</dt><dd>${renderCandidateList(proposed.out_of_scope, "未记录")}</dd></div>
-      <div class="candidate-wide"><dt>${L("验收条件")}</dt><dd>${acceptance.length ? `<ol class="candidate-acceptance">${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol>` : `<p class="empty-row">${L("未记录验收条件")}</p>`}</dd></div>
-      <div><dt>${L("影响面")}</dt><dd>${candidate.proposed_impacts.length ? renderList(candidate.proposed_impacts.map((impact) => recordSummary(impact, "impact")), "") : '<p class="empty-row">未提议影响面</p>'}</dd></div>
-      <div><dt>${L("风险")}</dt><dd>${candidate.proposed_risks.length ? renderList(candidate.proposed_risks.map((risk) => recordSummary(risk, "risk")), "") : '<p class="empty-row">未提议风险</p>'}</dd></div>
-      <div class="candidate-wide"><dt>Review Policy</dt><dd>采用当前项目基线：Goal Mode ${escapeHtml(policy.goal_mode)}；自检 ${policy.self_verification ? "需要" : "不需要"}；交叉 / 对抗 ${policy.cross_reviewers} / ${policy.adversarial_reviewers} 人；用户确认 ${policy.human_approval ? "需要" : "不需要"}。</dd></div>
-    </dl>
-    <label class="decision-reason"><span>${L("决定理由或修改意见")}</span><textarea name="reason" rows="3" required placeholder="${L("说明为什么纳入；或写清退回后需要怎样调整")}"></textarea></label>
+    ? L("来源 Goal 当前要做的是「{source}」；这项新工作要独立交付「{output}」。请判断它是否确实不该放在原 Goal 里。", {
+        source: owner.goal.in_scope.join("；") || owner.goal.outcome || L("未记录"),
+        output: proposed.promised_outputs?.join("；") || proposed.outcome,
+      })
+    : L("这项新工作没有关联到发现它的推进记录。请先确认来源和独立交付结果，再决定是否加入。");
+  const blockingCopy = candidate.blocking_mode === "none"
+    ? L("不影响当前工作")
+    : candidate.blocking_mode === "current_run"
+      ? L("当前工作会等待你的决定")
+      : L("后续相关工作会等待你的决定");
+  const confirmEffect = owner
+    ? L("会新建独立 Goal「{title}」；它不会自动成为「{owner}」的子 Goal，也不会自动开始执行。需要调整归属或依赖时，会作为另一项决定出现。", {
+        title: proposed.title,
+        owner: owner.goal.title,
+      })
+    : L("会新建独立 Goal「{title}」；它不会自动和现有 Goal 建立归属或依赖，也不会自动开始执行。", {
+        title: proposed.title,
+      });
+  return `<form class="decision-record candidate-decision" data-candidate-decision-form data-live-form="candidate-${escapeHtml(candidate.candidate_id)}" data-candidate-id="${escapeHtml(candidate.candidate_id)}" novalidate>
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--candidate">${icon("plus")} ${L("新发现的工作")}${renderNewDecisionBadge(candidate.created_at, view, "candidate", candidate.candidate_id)}</span><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>Candidate · ${escapeHtml(candidate.candidate_id)}</small></details></header>
+    <div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p><div class="candidate-title"><div><small>${L("准备加入的新 Goal")}</small><h3>${escapeHtml(proposed.title)}</h3><p>${escapeHtml(proposed.outcome)}</p></div><span>${escapeHtml(blockingCopy)}</span></div><p class="decision-key-fact"><strong>${L("为什么要单独拆出来：")}</strong>${escapeHtml(separation)}</p>${renderDecisionGuidance({
+      whyNow: L("推进过程中发现了一项可能超出原 Goal 的工作，需要你决定是否把它单独管理。"),
+      recommendation: null,
+      insufficient: copy.insufficientEvidence,
+      consequences: [
+        { choice: L("加入 Goal Tree"), effect: L("创建一条独立 Goal；如果还要调整归属或依赖，会作为下一项决定单独出现。") },
+        { choice: L("暂不加入"), effect: L("不会创建新 Goal；你的理由会保留，提交者可以补充后再提。") },
+      ],
+    })}${renderDecisionScenario({
+      confirmLabel: L("如果加入"),
+      confirmEffect,
+      rejectLabel: L("如果暂不加入"),
+      rejectEffect: L("不会创建 Goal「{title}」；当前 Goal Tree 保持不变，你的理由会保留。", { title: proposed.title }),
+    })}</div>
+    <details class="decision-details"><summary>${L("查看完整范围、完成标准和影响")}${icon("chevron-down")}</summary><dl class="candidate-contract">
+      <div><dt>${L("为什么现在做")}</dt><dd>${escapeHtml(proposed.why)}</dd></div>
+      <div><dt>${L("它会怎样运转")}</dt><dd>${escapeHtml(proposed.business_logic)}</dd></div>
+      <div><dt>${L("这次会做")}</dt><dd>${renderCandidateList(proposed.in_scope, "未记录")}</dd></div>
+      <div><dt>${L("这次不做")}</dt><dd>${renderCandidateList(proposed.out_of_scope, "未记录")}</dd></div>
+      <div class="candidate-wide"><dt>${L("完成标准")}</dt><dd>${acceptance.length ? `<ol class="candidate-acceptance">${acceptance.map((criterion) => `<li><strong>${escapeHtml(criterion.statement)}</strong><small>${escapeHtml(criterion.pass_condition)}</small></li>`).join("")}</ol>` : `<p class="empty-row">${L("未记录验收条件")}</p>`}</dd></div>
+      <div><dt>${L("影响范围")}</dt><dd>${candidate.proposed_impacts.length ? renderList(candidate.proposed_impacts.map((impact) => recordSummary(impact, "impact")), "") : `<p class="empty-row">${L("没有提议影响范围")}</p>`}</dd></div>
+      <div><dt>${L("风险")}</dt><dd>${candidate.proposed_risks.length ? renderList(candidate.proposed_risks.map((risk) => recordSummary(risk, "risk")), "") : `<p class="empty-row">${L("没有提议风险")}</p>`}</dd></div>
+      <div class="candidate-wide"><dt>${L("完成前需要的检查")}</dt><dd>${L("沿用项目当前规则：推进者自检 {self}；独立检查 {reviews} 次；用户最终确认 {human}。", { self: policy.self_verification ? L("需要") : L("不需要"), reviews: policy.cross_reviewers + policy.adversarial_reviewers, human: policy.human_approval ? L("需要") : L("不需要") })}</dd></div>
+    </dl></details>
+    <label class="decision-reason"><span>${L("决定理由或修改意见")}（${L("必填")}）</span><textarea name="reason" rows="3" required placeholder="${L("说明为什么纳入；或写清退回后需要怎样调整")}"></textarea></label>
     <p class="form-error" data-decision-error role="alert" hidden></p>
-    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("退回并说明修改")}</button><button class="button-primary" type="submit" name="decision" value="approved">${L("纳入 Goal Tree")}</button></footer>
+    <footer class="decision-actions"><button type="submit" name="decision" value="rejected">${L("暂不加入")}</button><button class="button-primary" type="submit" name="decision" value="approved">${L("加入 Goal Tree")}</button></footer>
   </form>`;
 }
 
 function renderRiskDecision(risk: RiskRecord, item: WebGoalView | null, view: GoalBoardWebView): string {
+  const copy = explainDecision("risk");
   const href = item ? `${item.goal.archived_at ? "/archive/goals/" : "/goals/"}${encodeURIComponent(item.goal.goal_id)}#risk-${encodeURIComponent(risk.risk_id)}` : "#";
   const affectedGoals = allGoalViews(view).filter((goalView) => goalView.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
-  return `<article class="decision-record risk-decision">
-    <header class="decision-record-heading"><span class="decision-kind decision-kind--risk">${icon("risk")} Risk</span><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(risk.state)}</span></header>
-    <div class="decision-record-body"><strong>${escapeHtml(risk.description)}</strong><p>概率 ${escapeHtml(risk.probability)} · 影响 ${escapeHtml(risk.impact)} · ${escapeHtml(risk.blocking_mode)}</p><small>触发：${escapeHtml(risk.trigger)}；复查：${escapeHtml(risk.revisit_condition)}；负责人：${escapeHtml(risk.owner)}</small></div>
+  const stateOptions = `<option value="" selected disabled>${L("请选择处理结果")}</option>${riskSelectOptions(
+    [["open", riskOpenDecisionLabel(risk.blocking_mode)], ["triggered", "标记为已经发生"], ["resolved", "已处理，不再阻塞"], ["accepted", "接受影响，不再阻塞"], ["expired", "已经过期，不再跟踪"]],
+    null,
+  )}`;
+  return `<form class="decision-record risk-decision" data-risk-state-form data-live-form="risk-decision-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}" novalidate>
+    <header class="decision-record-heading"><span class="decision-kind decision-kind--risk">${icon("risk")} ${L("风险处理")}${renderNewDecisionBadge(riskDecisionCreatedAt(risk, view), view, "risk", risk.risk_id)}</span><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(L(RISK_STATE_LABELS[risk.state]))}</span></header>
+    <div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p><div class="risk-decision-fact"><strong>${escapeHtml(risk.description)}</strong><p>${L("发生概率：")}${escapeHtml(risk.probability)} · ${L("影响程度：")}${escapeHtml(risk.impact)}</p><small>${L("当前计划：")}${escapeHtml(L(RISK_TREATMENT_LABELS[risk.treatment]))}；${L("负责人：")}${escapeHtml(risk.owner)}</small></div>${renderDecisionGuidance({
+      whyNow: riskStateEffect(risk.blocking_mode, risk.state),
+      recommendation: null,
+      insufficient: copy.insufficientEvidence,
+      consequences: [
+        { choice: L("继续跟踪"), effect: L("风险保持开放，并继续按照当前规则影响关联 Goal。") },
+        { choice: L("标记为已处理或接受"), effect: L("风险不再阻止领取或完成；决定理由会保留在记录中。") },
+        { choice: L("标记为已经发生"), effect: risk.blocking_mode === "invalidate_on_trigger" ? L("所有关联 Goal 会立即失效并需要重新确认。") : L("风险会进入已触发状态，并继续应用当前阻塞规则。") },
+      ],
+    })}<details class="decision-details"><summary>${L("查看触发条件和复查条件")}${icon("chevron-down")}</summary><dl class="risk-decision-details"><div><dt>${L("什么情况算已经发生")}</dt><dd>${escapeHtml(risk.trigger)}</dd></div><div><dt>${L("什么时候重新判断")}</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div></dl></details></div>
     <div class="risk-goal-links"><span>${L("关联 Goal")}</span><div>${affectedGoals.length ? affectedGoals.map((goalView) => renderDecisionGoalLink(goalView)).join("") : "未关联 Goal"}</div></div>
-    <footer class="decision-link-row"><span>${L("完整处理方式和生命周期在所属 Goal 中维护。")}</span>${item ? `<a href="${href}">打开 Risk</a>` : ""}</footer>
-  </article>`;
+    <div class="risk-decision-choice"><label><span>${L("你决定怎么处理")}</span><select name="state" data-risk-state-select required>${stateOptions}</select></label><p class="risk-state-preview" data-risk-state-preview>${L("选择处理结果后，这里会说明会发生什么。")}</p></div>
+    <label class="decision-reason"><span>${L("决定理由")}（${L("必填")}）</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么现在这样处理，以及你依据了什么")}"></textarea></label>
+    <p class="form-error" data-risk-error role="alert" hidden></p>
+    <footer class="decision-actions"><span>${item ? `<a href="${href}">${L("返回 Goal 查看完整风险记录")}</a>` : ""}</span><button class="button-primary" type="submit">${L("保存风险决定")}</button></footer>
+  </form>`;
+}
+
+interface RecentDecisionResult {
+  event: WebEventRecord;
+  kind: "risk" | "rewire" | "goalTree" | "contract" | "candidate" | "review";
+  kindLabel: string;
+  state: string;
+  title: string;
+  effects: string[];
+  links: Array<{ href: string; label: string }>;
+  reason?: string;
+}
+
+function eventPayload(event: WebEventRecord): Record<string, unknown> {
+  return event.payload != null && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? event.payload as Record<string, unknown>
+    : {};
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function goalResultHref(item: WebGoalView, anchor: string): string {
+  const base = item.goal.trashed_at
+    ? "/trash/goals/"
+    : item.goal.archived_at
+      ? "/archive/goals/"
+      : "/goals/";
+  return `${base}${encodeURIComponent(item.goal.goal_id)}#${encodeURIComponent(anchor)}`;
+}
+
+function recentDecisionResults(view: GoalBoardWebView): RecentDecisionResult[] {
+  const results: RecentDecisionResult[] = [];
+  const seen = new Set<string>();
+  const allGoals = allGoalViews(view);
+  const goalById = new Map(allGoals.map((item) => [item.goal.goal_id, item]));
+  const relationById = new Map(view.snapshot.relations.map((relation) => [relation.relation_id, relation]));
+  const riskById = new Map(view.snapshot.risks.map((risk) => [risk.risk_id, risk]));
+  const rewireById = new Map(view.snapshot.rewires.map((rewire) => [rewire.rewire_id, rewire]));
+  const contractById = new Map(view.snapshot.contract_proposals.map((proposal) => [proposal.proposal_id, proposal]));
+  const candidateById = new Map(view.snapshot.candidates.map((candidate) => [candidate.candidate_id, candidate]));
+  const goalTreeById = new Map(view.snapshot.goal_tree_proposals.map((proposal) => [proposal.proposal_id, proposal]));
+  const reviewById = new Map(view.snapshot.reviews.map((review) => [review.review_id, review]));
+
+  for (const event of view.events) {
+    if (results.length >= 6) break;
+    const seenKey = `${event.object_type}:${event.object_id}`;
+    if (seen.has(seenKey)) continue;
+    if (["risk.open", "risk.triggered", "risk.resolved", "risk.accepted", "risk.expired"].includes(event.type)) {
+      const risk = riskById.get(event.object_id);
+      if (!risk) continue;
+      seen.add(seenKey);
+      const payload = eventPayload(event);
+      const linkedGoalIds = stringList(payload.linked_goal_ids);
+      const goalIds = linkedGoalIds.length
+        ? linkedGoalIds
+        : allGoals.filter((item) => item.risks.some((candidate) => candidate.risk_id === risk.risk_id)).map((item) => item.goal.goal_id);
+      const links = goalIds
+        .map((goalId) => goalById.get(goalId))
+        .filter((item): item is WebGoalView => Boolean(item))
+        .map((item) => ({
+          href: goalResultHref(item, `risk-${risk.risk_id}`),
+          label: L("查看「{title}」中的风险", { title: item.goal.title }),
+        }));
+      const stateEffect = riskStateEffect(risk.blocking_mode, risk.state);
+      results.push({
+        event,
+        kind: "risk",
+        kindLabel: L("风险处理"),
+        state: L(RISK_STATE_LABELS[risk.state]),
+        title: risk.description,
+        effects: [riskNeedsDecision(risk)
+          ? L("当前结果：{state}，仍会留在待决定中。{effect}", {
+              state: L(RISK_STATE_LABELS[risk.state]),
+              effect: stateEffect,
+            })
+          : L("当前结果：{state}。{effect}", {
+              state: L(RISK_STATE_LABELS[risk.state]),
+              effect: stateEffect,
+            })],
+        links,
+      });
+      continue;
+    }
+    if (event.type === "rewire.applied" || event.type === "rewire.rejected") {
+      const rewire = rewireById.get(event.object_id);
+      if (!rewire) continue;
+      seen.add(seenKey);
+      const payload = eventPayload(event);
+      const addedIds = stringList(rewire.impact.added_relation_ids ?? payload.added_relation_ids);
+      const deactivatedIds = stringList(rewire.impact.deactivated_relation_ids ?? payload.deactivated_relation_ids);
+      const addedRiskIds = stringList(rewire.impact.added_risk_ids ?? payload.added_risk_ids);
+      const added = addedIds.map((id) => relationById.get(id)).filter((item): item is GoalRelationRecord => Boolean(item));
+      const deactivated = deactivatedIds.map((id) => relationById.get(id)).filter((item): item is GoalRelationRecord => Boolean(item));
+      const relationEffect = (relation: GoalRelationRecord, action: "add" | "deactivate"): string => {
+        const from = goalById.get(relation.from_goal_id)?.goal.title ?? relation.from_goal_id;
+        const to = goalById.get(relation.to_goal_id)?.goal.title ?? relation.to_goal_id;
+        const labels = RELATION_LABELS[relation.type] ?? { out: relation.type, in: relation.type };
+        const summary = L("{from} → {type} → {to}", { from, type: L(labels.out), to });
+        return action === "add"
+          ? L("已新增关系：{relation}", { relation: summary })
+          : L("已解除关系：{relation}", { relation: summary });
+      };
+      const effects = event.type === "rewire.rejected"
+        ? [L("这次调整未采用，现有 Goal 关系没有改变。")]
+        : [
+            ...added.map((relation) => relationEffect(relation, "add")),
+            ...deactivated.map((relation) => relationEffect(relation, "deactivate")),
+            ...(addedRiskIds.length ? [L("同时新增了 {count} 项风险。", { count: addedRiskIds.length })] : []),
+          ];
+      if (event.type === "rewire.applied" && effects.length === 0) {
+        effects.push(L("这次决定已记录，但没有新增或解除 Goal 关系，也没有新增风险。"));
+      }
+      const affectedGoalIds = [...new Set([
+        ...added.flatMap((relation) => [relation.from_goal_id, relation.to_goal_id]),
+        ...deactivated.flatMap((relation) => [relation.from_goal_id, relation.to_goal_id]),
+        String(rewire.proposal.formal_goal_id ?? ""),
+      ].filter(Boolean))];
+      const relationIdsByGoal = new Map<string, string>();
+      for (const relation of [...added, ...deactivated]) {
+        if (!relationIdsByGoal.has(relation.from_goal_id)) relationIdsByGoal.set(relation.from_goal_id, relation.relation_id);
+        if (!relationIdsByGoal.has(relation.to_goal_id)) relationIdsByGoal.set(relation.to_goal_id, relation.relation_id);
+      }
+      const links = affectedGoalIds
+        .map((goalId) => goalById.get(goalId))
+        .filter((item): item is WebGoalView => Boolean(item))
+        .map((item) => ({
+          href: goalResultHref(item, relationIdsByGoal.has(item.goal.goal_id)
+            ? `relation-${relationIdsByGoal.get(item.goal.goal_id)}`
+            : `goal-factor-panel-relations-${item.goal.goal_id}`),
+          label: L("查看「{title}」中的关系", { title: item.goal.title }),
+        }));
+      results.push({
+        event,
+        kind: "rewire",
+        kindLabel: L("Goal 关系"),
+        state: event.type === "rewire.applied" ? L("已应用") : L("未采用"),
+        title: event.type === "rewire.applied" ? L("Goal 关系调整已应用") : L("Goal 关系调整未采用"),
+        effects,
+        links,
+      });
+      continue;
+    }
+    if (event.type === "contract_proposal.approved" || event.type === "contract_proposal.rejected") {
+      const proposal = contractById.get(event.object_id);
+      if (!proposal) continue;
+      seen.add(seenKey);
+      const goal = goalById.get(proposal.goal_id);
+      results.push({
+        event,
+        kind: "contract",
+        kindLabel: L("目标说明"),
+        state: event.type.endsWith("approved") ? L("已确认") : L("已退回"),
+        title: proposal.proposed_goal.title,
+        effects: [event.type.endsWith("approved")
+          ? L("目标、范围和完成标准已成为正式依据；满足其他条件后可以开始。")
+          : L("这份修改没有写入正式目标；修改意见已保留。")],
+        links: goal ? [{ href: goalResultHref(goal, `goal-panel-overview-${goal.goal.goal_id}`), label: L("查看「{title}」的目标说明", { title: goal.goal.title }) }] : [],
+      });
+      continue;
+    }
+    if (event.type === "candidate.approved" || event.type === "candidate.rejected") {
+      const candidate = candidateById.get(event.object_id);
+      if (!candidate) continue;
+      seen.add(seenKey);
+      const createdGoalId = String(candidate.decision?.formal_goal_id ?? candidate.proposed_goal.goal_id ?? "");
+      const goal = goalById.get(createdGoalId);
+      results.push({
+        event,
+        kind: "candidate",
+        kindLabel: L("新发现的工作"),
+        state: event.type.endsWith("approved") ? L("已加入") : L("未加入"),
+        title: candidate.proposed_goal.title,
+        effects: [event.type.endsWith("approved")
+          ? L("这项工作已经成为独立 Goal；如果还要调整关系，会继续出现在待决定中。")
+          : L("这项工作没有加入 Goal Tree；你的意见已保留。")],
+        links: goal ? [{ href: goalResultHref(goal, `goal-panel-overview-${goal.goal.goal_id}`), label: L("查看新 Goal「{title}」", { title: goal.goal.title }) }] : [],
+      });
+      continue;
+    }
+    if (event.type === "review.submitted") {
+      const review = reviewById.get(event.object_id);
+      if (!review) continue;
+      seen.add(seenKey);
+      const goal = goalById.get(review.goal_id);
+      const verdictLabels: Record<string, string> = {
+        pass: L("已通过"),
+        needs_changes: L("需要修改"),
+        fail: L("未通过"),
+        inconclusive: L("证据不足"),
+      };
+      results.push({
+        event,
+        kind: "review",
+        kindLabel: L("结果确认"),
+        state: verdictLabels[review.verdict] ?? review.verdict,
+        title: goal?.goal.title ?? review.goal_id,
+        effects: [review.verdict === "pass"
+          ? L("本次用户确认已通过；Goal 是否完成仍由全部完成条件共同决定。")
+          : L("本次结果没有确认通过；后续工作会保留你的判断和依据。")],
+        links: goal ? [{ href: goalResultHref(goal, `goal-panel-completion-${goal.goal.goal_id}`), label: L("查看「{title}」的完成情况", { title: goal.goal.title }) }] : [],
+      });
+      continue;
+    }
+    if (event.type === "goal_tree_proposal.decided") {
+      const proposal = goalTreeById.get(event.object_id);
+      if (!proposal) continue;
+      seen.add(seenKey);
+      const payload = eventPayload(event);
+      const applied = stringList(payload.applied_item_ids).length;
+      const rejected = stringList(payload.rejected_item_ids).length;
+      const revised = stringList(payload.revised_item_ids).length;
+      const conflicts = stringList(payload.conflict_item_ids).length;
+      const effects = [
+        ...(applied ? [L("已采用 {count} 项变化。", { count: applied })] : []),
+        ...(rejected ? [L("已退回 {count} 项变化。", { count: rejected })] : []),
+        ...(revised ? [L("有 {count} 项需要重新整理。", { count: revised })] : []),
+        ...(conflicts ? [L("有 {count} 项因当前内容已变化而未写入。", { count: conflicts })] : []),
+      ];
+      const stateLabels: Record<string, string> = {
+        approved: L("已采用"),
+        partially_applied: L("部分已处理"),
+        rejected: L("已退回"),
+        closed: L("已处理"),
+        pending: L("部分已处理"),
+      };
+      const root = goalById.get(proposal.root_goal_id ?? "");
+      const reasons = [...new Set(proposal.decisions.filter((decision) => decision.created_at === event.at).map((decision) => decision.reason).filter(Boolean))];
+      results.push({
+        event,
+        kind: "goalTree",
+        kindLabel: L("Goal 方案"),
+        state: stateLabels[proposal.state] ?? L("已处理"),
+        title: proposal.summary,
+        effects: effects.length ? effects : [L("决定已经记录，当前 Goal Tree 没有产生新的变化。")],
+        links: root ? [{ href: goalResultHref(root, `goal-panel-overview-${root.goal.goal_id}`), label: L("查看「{title}」", { title: root.goal.title }) }] : [],
+        reason: reasons.join("；") || event.reason,
+      });
+    }
+  }
+  return results;
+}
+
+function renderRecentDecisionResults(view: GoalBoardWebView): string {
+  const results = recentDecisionResults(view);
+  if (!results.length) return "";
+  return `<section class="decision-results" aria-labelledby="decision-results-title">
+    <header><div><h2 id="decision-results-title">${L("最近处理结果")}</h2><p>${L("这些决定已经写入 GoalBoard，可直接打开对应 Goal 核对。")}</p></div><small>${L("最近 {count} 项", { count: results.length })}</small></header>
+    <div class="decision-result-list">${results.map((result) => `<article class="decision-result decision-result--${result.kind}">
+      <span class="decision-result-icon">${icon(result.kind === "risk" ? "risk" : result.kind === "rewire" ? "link" : result.kind === "review" ? "user" : result.kind === "candidate" ? "plus" : result.kind === "goalTree" ? "tree" : "clipboard")}</span>
+      <div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>
+      ${result.links.length ? `<div class="decision-result-links">${result.links.map((link) => `<a href="${link.href}">${escapeHtml(link.label)}${icon("chevron-right")}</a>`).join("")}</div>` : ""}
+    </article>`).join("")}</div>
+  </section>`;
 }
 
 function renderDecisionCenter(view: GoalBoardWebView): string {
   const groups = buildDecisionGroups(view);
   const count = pendingDecisionCount(view);
+  const nativeGoalTreeProposals = view.snapshot.goal_tree_proposals.filter(
+    (item) => item.origin === "native" && goalTreeProposalNeedsDecision(item),
+  );
   const typeCounts = {
-    proposals: view.snapshot.contract_proposals.filter((item) => item.state === "pending").length,
+    proposals: nativeGoalTreeProposals.length + view.snapshot.contract_proposals.filter((item) => item.state === "pending").length,
     candidates: view.snapshot.candidates.filter((item) => item.state === "pending").length,
     rewires: view.snapshot.rewires.filter((item) => item.state === "pending").length,
     reviews: view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length,
     risks: view.snapshot.risks.filter(riskNeedsDecision).length,
   };
   return `<article class="decision-center" data-decision-center>
-    <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("Runtime 只能提交事实和提案。这里按所属 Goal 集中呈现上下文，由你给出理由并确认。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
-    <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>Contract <strong>${typeCounts.proposals}</strong></span><span>Candidate <strong>${typeCounts.candidates}</strong></span><span>Rewire <strong>${typeCounts.rewires}</strong></span><span>Human Review <strong>${typeCounts.reviews}</strong></span><span>Risk <strong>${typeCounts.risks}</strong></span></div>
+    <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("每一项都会说明你在决定什么、为什么现在要决定、有没有可靠建议，以及选择后会发生什么。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
+    <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>${L("目标说明")} <strong>${typeCounts.proposals}</strong></span><span>${L("新发现的工作")} <strong>${typeCounts.candidates}</strong></span><span>${L("Goal 关系")} <strong>${typeCounts.rewires}</strong></span><span>${L("结果确认")} <strong>${typeCounts.reviews}</strong></span><span>${L("风险处理")} <strong>${typeCounts.risks}</strong></span></div>
     ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
       const goalId = group.item?.goal.goal_id ?? "board";
       return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
-        <header class="decision-owner"><div><span>${L("所属 Goal")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} 项</small></header>
+        <header class="decision-owner"><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} ${L("项")}</small></header>
         <div class="decision-stack">
+          ${group.goalTreeProposals.map((proposal) => renderGoalTreeProposalDecision(proposal, view)).join("")}
           ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
           ${group.item ? group.contractProposals.map((proposal) => renderContractProposal(proposal, group.item!.goal, view)).join("") : ""}
           ${group.candidates.map((candidate) => renderCandidateDecision(candidate, view)).join("")}
-          ${group.humanReview && group.item ? renderHumanReview(group.item) : ""}
+          ${group.humanReview && group.item ? renderHumanReview(group.item, view) : ""}
           ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
         </div>
       </section>`;
-    }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("Runtime 提交新的 Contract Proposal、Candidate 或 Rewire 后，会自动出现在这里。")}</p></div>`}
+    }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("需要你确认目标、工作关系、结果或风险时，会自动出现在这里。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
+    ${renderRecentDecisionResults(view)}
   </article>`;
 }
 
 function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
   const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
   if (!group) return 0;
-  return group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
+  return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
 }
 
 function situationNextStep(
   item: WebGoalView,
   blockedDescendant: WebGoalView | null,
 ): { label: string; href: string | null; tone?: "blocked" | "ready" } {
+  const explanation = explainWorkState(item.status);
   const acceptance = `#acceptance-${item.goal.goal_id}`;
   const execution = `#execution-${item.goal.goal_id}`;
   const relations = `#relations-${item.goal.goal_id}`;
   switch (item.status) {
+    case "clarification_decision_pending":
+      return {
+        label: explanation.nextAction,
+        href: `/decisions#decision-goal-${encodeURIComponent(item.goal.goal_id)}`,
+      };
+    case "compound_closure_pending":
+      return { label: explanation.nextAction, href: `#completion-${item.goal.goal_id}` };
+    case "handoff_pending":
+      return { label: explanation.nextAction, href: null };
     case "clarification_pending":
     case "clarifying":
-      return { label: L("补全 Draft"), href: acceptance };
+      return { label: explanation.nextAction, href: acceptance };
     case "clarification_blocked":
     case "execution_blocked":
     case "review_blocked":
     case "revalidation_blocked":
-      return { label: L("先处理阻塞"), href: execution, tone: "blocked" };
+      return { label: explanation.nextAction, href: execution, tone: "blocked" };
     case "waiting_children":
       return blockedDescendant
         ? {
@@ -1759,25 +3145,25 @@ function situationNextStep(
             href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
             tone: "blocked",
           }
-        : { label: L("先完成子 Goal"), href: relations };
+        : { label: explanation.nextAction, href: relations };
     case "execution_pending":
-      return { label: L("可以领取执行"), href: execution };
+      return { label: explanation.nextAction, href: execution };
     case "executing":
-      return { label: L("Runtime 正在执行"), href: execution };
+      return { label: explanation.nextAction, href: execution };
     case "review_pending":
     case "reviewing":
-      return { label: L("等待复核"), href: execution };
+      return { label: explanation.nextAction, href: execution };
     case "revalidation_pending":
     case "revalidating":
-      return { label: L("需要重新验证"), href: execution };
+      return { label: explanation.nextAction, href: execution };
     case "invalidated":
-      return { label: L("已失效，先看原因"), href: execution, tone: "blocked" };
+      return { label: explanation.nextAction, href: execution, tone: "blocked" };
     case "satisfied":
-      return { label: L("已完成，可以归档"), href: null, tone: "ready" };
+      return { label: explanation.nextAction, href: null, tone: "ready" };
     case "archived":
-      return { label: L("已归档"), href: null };
+      return { label: explanation.nextAction, href: null };
     case "trashed":
-      return { label: L("已在回收站"), href: null };
+      return { label: explanation.nextAction, href: null };
   }
 }
 
@@ -1816,7 +3202,7 @@ function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): st
       ? {
           value: L("子 Goal「{title}」{status}", {
             title: blockedDescendant.goal.title,
-            status: L(STATUS_LABELS[blockedDescendant.status]),
+            status: explainWorkState(blockedDescendant.status).label,
           }),
           href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
           extra: blockedDescendant.reasons.find((reason) => reason.severity === "blocker")?.message,
@@ -1829,7 +3215,7 @@ function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): st
           tone: "ready" as const,
         };
   const total = item.goal.acceptance_criteria.length;
-  const passed = item.passed_criteria.length;
+  const passed = displayedPassedCriterionIds(item).length;
   const remaining = total - passed;
   const decisions = countGoalDecisions(view, goalId);
   const boardPending = pendingDecisionCount(view);
@@ -1883,26 +3269,30 @@ function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): st
   </nav>`;
 }
 
-function renderDraftGaps(goal: GoalRecord): string {
+function renderDraftGaps(item: WebGoalView): string {
+  const goal = item.goal;
+  if (item.status === "clarification_decision_pending") {
+    return `<div class="draft-gaps draft-gaps--decision"><div><strong>${L("方案已经整理好")}</strong><p>${L("这条 Goal 不是还要继续澄清，而是在等你确认整理后的结果、范围和子 Goal。采用后才会更新正式内容。")}</p></div><a href="/decisions#decision-goal-${encodeURIComponent(goal.goal_id)}">${L("查看方案并决定")}</a></div>`;
+  }
   if (goal.definition_state !== "draft") return "";
   const gaps = [
     !goal.outcome.trim() ? L("要得到的结果") : "",
     !goal.why.trim() ? L("为什么做") : "",
-    !goal.business_logic.trim() ? L("业务逻辑") : "",
+    !goal.business_logic.trim() ? L("实际运转方式") : "",
     !goal.in_scope.length ? L("包含范围") : "",
     !goal.out_of_scope.length ? L("明确不做") : "",
     !goal.promised_outputs.length ? L("承诺输出") : "",
     !goal.acceptance_criteria.length ? L("验收条件") : "",
   ].filter(Boolean);
   if (!gaps.length) return "";
-  return `<div class="draft-gaps"><div><strong>${L("这还是一条待澄清的 Draft")}</strong><p>${L("还需要补全：{gaps}。澄清者可以提交提案，但只有你确认后它才会成为可执行 Goal。", { gaps: gaps.join(currentLocale() === "en" ? ", " : "、") })}</p></div><a href="#acceptance-${escapeHtml(goal.goal_id)}">${L("查看验收")}</a></div>`;
+  return `<div class="draft-gaps"><div><strong>${L("这条 Goal 还没说清楚")}</strong><p>${L("还需要补全：{gaps}。保存只会更新说明；确认后才能开始。", { gaps: gaps.join(currentLocale() === "en" ? ", " : "、") })}</p></div><a href="#acceptance-${escapeHtml(goal.goal_id)}">${L("查看完成标准")}</a></div>`;
 }
 
 const DECOMPOSITION_OPTIONS = [
   ["abstract", "仍需拆分", "方向还比较抽象，需要继续找到可独立交付的结果。"],
-  ["frontier_open", "Frontier 开放", "已经有部分可做边界，但拆分工作还没有结束。"],
-  ["closed_leaf", "最小可执行叶子", "可独立完成、独立交付，并有自己的可观察验收。"],
-  ["closed_compound", "拆分完成的复合 Goal", "自身由一组闭环子 Goal 组成，不作为一个大任务直接执行。"],
+  ["frontier_open", "已经拆出一部分", "已经有部分可以开始，但拆分工作还没有结束。"],
+  ["closed_leaf", "可以独立完成", "这条 Goal 可以独立推进、独立交付，并有自己的完成标准。"],
+  ["closed_compound", "由子 Goal 共同完成", "这条上层 Goal 不直接执行；完成所有子 Goal 后它会自动完成。"],
 ] as const;
 
 function renderDecisionMethodOptions(selected: AcceptanceCriterion["decision_method"]): string {
@@ -1950,12 +3340,12 @@ function renderDraftEditor(item: WebGoalView): string {
     ([value, label, description]) => `<label class="decomposition-choice"><input type="radio" name="decomposition_state" value="${value}"${goal.decomposition_state === value ? " checked" : ""}><span><strong>${L(label)}</strong><small>${L(description)}</small></span></label>`,
   ).join("");
   return `<div class="draft-editor-section" data-draft-editor data-goal-id="${escapeHtml(goal.goal_id)}">
-    ${subsectionHeading("clipboard", "补全 Draft Contract", "只有 Draft 可以直接编辑；accepted Contract 需要通过新 Goal 与 Rewire 变更")}
+    ${subsectionHeading("clipboard", "修改目标说明和完成标准", "这里只修改尚未确认的草稿；保存不会让它自动开始。")}
     <form class="draft-contract-form" data-draft-form data-live-form="draft-${escapeHtml(goal.goal_id)}" data-goal-id="${escapeHtml(goal.goal_id)}">
       <div class="draft-form-row draft-form-row--title"><label><span>${L("Goal 名称")}</span><input name="title" required maxlength="120" value="${escapeHtml(goal.title)}"></label><label><span>${L("优先级")}</span><input name="priority" type="number" min="0" max="100" step="1" value="${goal.priority}"></label></div>
       <label class="draft-field"><span>${L("要得到的结果")}</span><textarea name="outcome" rows="2" placeholder="${L("完成后，用户或系统获得什么可观察结果")}">${escapeHtml(goal.outcome)}</textarea></label>
       <label class="draft-field"><span>${L("为什么现在做")}</span><textarea name="why" rows="2" placeholder="${L("说明问题和这项工作的价值")}">${escapeHtml(goal.why)}</textarea></label>
-      <label class="draft-field"><span>${L("业务逻辑")}</span><textarea name="business_logic" rows="3" placeholder="${L("用非技术语言说明事情如何运转、边界在哪里")}">${escapeHtml(goal.business_logic)}</textarea></label>
+      <label class="draft-field"><span>${L("它会怎样运转")}</span><textarea name="business_logic" rows="3" placeholder="${L("用简单语言说明实际使用方式和边界")}">${escapeHtml(goal.business_logic)}</textarea></label>
       <div class="draft-list-grid">
         <label><span>${L("包含范围 ")}<small>${L("每行一项")}</small></span><textarea name="in_scope" rows="4">${listValue(goal.in_scope)}</textarea></label>
         <label><span>${L("明确不做 ")}<small>${L("每行一项")}</small></span><textarea name="out_of_scope" rows="4">${listValue(goal.out_of_scope)}</textarea></label>
@@ -1965,18 +3355,18 @@ function renderDraftEditor(item: WebGoalView): string {
       </div>
       <fieldset class="decomposition-editor"><legend>${L("这条 Goal 现在拆到什么程度？")}</legend><div>${decompositionOptions}</div></fieldset>
       <section class="criteria-editor" aria-labelledby="criteria-editor-${escapeHtml(goal.goal_id)}">
-        <header><div><h3 id="criteria-editor-${escapeHtml(goal.goal_id)}">${L("结构化验收条件")}</h3><p>${L("每条条件保留自己的判断方式、目标和证据要求。")}</p></div><button type="button" data-add-criterion>${icon("plus")}<span>${L("添加验收条件")}</span></button></header>
+        <header><div><h3 id="criteria-editor-${escapeHtml(goal.goal_id)}">${L("完成标准详情")}</h3><p>${L("每一条都要写清检查什么、怎样算通过，以及需要什么依据。")}</p></div><button type="button" data-add-criterion>${icon("plus")}<span>${L("添加完成标准")}</span></button></header>
         <div class="criteria-editor-list" data-criteria-list>${criteria}</div>
         <template data-criterion-template>${renderDraftCriterionRow(undefined, 1)}</template>
       </section>
       <label class="draft-field"><span>${L("本次修改原因")}</span><textarea name="reason" rows="2" required placeholder="${L("例如：补充用户确认的范围和验收条件")}"></textarea></label>
       <p class="form-error" data-draft-error role="alert" hidden></p>
-      <footer><span>${L("保存会更新同一个 Draft；已有待确认 Proposal 会失效并等待重新提案。")}</span><button class="button-primary" type="submit">${L("保存 Draft Contract")}</button></footer>
+      <footer><span>${L("保存只会更新这条草稿。之前等待确认的版本会作废，需要重新确认。")}</span><button class="button-primary" type="submit">${L("保存草稿修改")}</button></footer>
     </form>
     <div class="draft-auxiliary">
-      <a class="draft-policy-link" href="#risk-workbench-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>${L("继续登记和维护 Risk")}</strong><small>${L("在“风险与影响”中维护完整事实、关联 Goal 与生命周期")}</small></span>${icon("arrow")}</a>
-      <a class="draft-policy-link" href="#impact-workbench-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>${L("继续登记和维护 Impact")}</strong><small>${L("在“风险与影响”中维护区域、访问方式、状态与历史")}</small></span>${icon("arrow")}</a>
-      <a class="draft-policy-link" href="#policy-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>${L("继续设置 Runtime / Review Policy")}</strong><small>${L("项目默认与当前 Goal 规则在下方独立维护")}</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#goal-factor-panel-risks-${escapeHtml(goal.goal_id)}">${icon("risk")}<span><strong>${L("登记风险")}</strong><small>${L("记录什么情况会影响推进或完成，以及准备怎样处理。")}</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#goal-factor-panel-impacts-${escapeHtml(goal.goal_id)}">${icon("impact")}<span><strong>${L("记录影响范围")}</strong><small>${L("说明这项工作会读写哪些区域，以及影响现在是否仍然存在。")}</small></span>${icon("arrow")}</a>
+      <a class="draft-policy-link" href="#goal-factor-panel-rules-${escapeHtml(goal.goal_id)}">${icon("settings")}<span><strong>${L("设置执行和检查规则")}</strong><small>${L("设置谁可以推进、需要哪些检查，以及最长可以领取多久。")}</small></span>${icon("arrow")}</a>
     </div>
   </div>`;
 }
@@ -1993,10 +3383,268 @@ function subsectionHeading(iconName: GoalBoardIcon, title: string, description =
   }</div></header>`;
 }
 
-function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
+function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): string {
+  const goalId = item.goal.goal_id;
+  const decisions = countGoalDecisions(view, goalId);
+  if (decisions > 0) {
+    return `<a class="goal-primary-action" href="/decisions#decision-goal-${encodeURIComponent(goalId)}">${icon("user")}<span>${L("处理 {count} 项决定", { count: decisions })}</span></a>`;
+  }
+  const explanation = explainWorkState(item.status);
+  if (explanation.actionKind === "none") return "";
+  if (explanation.actionKind === "clarify") {
+    return `<button class="goal-primary-action" type="button" data-open-goal-edit>${icon("clipboard")}<span>${escapeHtml(explanation.nextAction)}</span></button>`;
+  }
+  if (explanation.actionKind === "close_parent") {
+    return `<button class="goal-primary-action" type="button" data-open-goal-tui>${icon("terminal")}<span>${escapeHtml(explanation.nextAction)}</span></button>`;
+  }
+  if (explanation.actionKind === "choose_child") {
+    const children = sortGoals(partOfChildViews(goalId, view));
+    const target = children.find((child) => !goalWorkSatisfied(child)) ?? children[0];
+    return target
+      ? `<a class="goal-primary-action" href="/goals/${encodeURIComponent(target.goal.goal_id)}">${icon("tree")}<span>${L("进入子 Goal「{title}」", { title: target.goal.title })}</span></a>`
+      : `<a class="goal-primary-action" href="#completion-${escapeHtml(goalId)}">${icon("tree")}<span>${escapeHtml(explanation.nextAction)}</span></a>`;
+  }
+  if (explanation.actionKind === "start") {
+    return `<button class="goal-primary-action" type="button" data-open-goal-tui>${icon("terminal")}<span>${L("在这条 Goal 下打开终端")}</span></button>`;
+  }
+  if (explanation.actionKind === "archive" && !item.goal.archived_at) {
+    return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}">${icon("archive")}<span>${L("归档这条已完成的 Goal")}</span></button>`;
+  }
+  const target = explanation.actionKind === "resolve_blocker" || explanation.actionKind === "view_progress" || explanation.actionKind === "review" || explanation.actionKind === "revalidate"
+    ? `#progress-${goalId}`
+    : `#completion-${goalId}`;
+  return `<a class="goal-primary-action" href="${escapeHtml(target)}">${icon(explanation.actionKind === "resolve_blocker" ? "blocked" : "arrow")}<span>${escapeHtml(explanation.nextAction)}</span></a>`;
+}
+
+function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
+  const explanation = explainWorkState(item.status);
+  const handoff = item.reasons.find((reason) => reason.code === "work.handoff_pending");
+  const blockers = item.reasons.filter(
+    (reason) => reason.severity === "blocker" && reason.code !== "work.handoff_pending",
+  );
+  const decisions = countGoalDecisions(view, item.goal.goal_id);
+  const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisions ? L("先完成等待你的决定") : explanation.nextAction);
+  const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisions ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
+  return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
+    <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2>${renderStatus(item.status)}</header>
+    <div class="goal-now-body"><span class="goal-now-mark" aria-hidden="true">${icon("arrow")}</span><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
+    ${blockers.length
+      ? `<div class="goal-now-blockers"><strong>${L("当前阻塞")}</strong><ul>${blockers.map((reason) => `<li>${escapeHtml(reason.message)}${reason.remediation ? `<small>${L("可以这样处理：")}${escapeHtml(reason.remediation)}</small>` : ""}</li>`).join("")}</ul></div>`
+      : ""}
+  </section>`;
+}
+
+function renderAcceptanceSummary(item: WebGoalView): string {
+  if (!item.goal.acceptance_criteria.length) {
+    return `<p class="empty-row empty-row--warning">${L("还没有写清怎样才算完成。先补上可判断的完成标准，才能开始工作。")}</p>`;
+  }
+  const passedCriteria = new Set(displayedPassedCriterionIds(item));
+  return `<ul class="check-list check-list--human">${item.goal.acceptance_criteria.map((criterion) => {
+    const passed = passedCriteria.has(criterion.criterion_id);
+    return `<li><span class="check-box${passed ? " is-checked" : ""}">${passed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong><small>${L("达到下面的结果就算通过：")}${escapeHtml(criterion.pass_condition)}</small></span></li>`;
+  }).join("")}</ul>`;
+}
+
+function renderGoalFocusOverview(item: WebGoalView, view: GoalBoardWebView): string {
+  const criteria = item.goal.acceptance_criteria;
+  const preview = criteria.slice(0, 5);
+  const passedCriteria = new Set(displayedPassedCriterionIds(item));
+  const passed = passedCriteria.size;
+  const remaining = Math.max(0, criteria.length - preview.length);
+  const owner = item.active_claim_actor ?? item.goal.accepted_by ?? L("未指定");
+  const dependencies = activeOutgoingDependsOn(item).length;
+  const contextRows = [
+    [L("负责人"), owner],
+    [L("工作范围"), item.goal.in_scope.length ? L("{count} 项", { count: item.goal.in_scope.length }) : L("未记录")],
+    [L("前置依赖"), dependencies ? L("{count} 项", { count: dependencies }) : L("无")],
+    [L("完成依据"), L("{count} 条", { count: item.evidence.length })],
+    [L("最近更新"), formatDate(item.goal.updated_at)],
+  ];
+  return `${renderDraftGaps(item)}
+    ${renderGoalNow(item, view)}
+    <section class="goal-focus-criteria" aria-labelledby="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">
+      <header><div><h2 id="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">${L("完成要求")}</h2><p>${criteria.length ? L("这些条件决定这条 Goal 是否真的完成。") : L("还没有可以判断完成的条件。")}</p></div><strong>${passed}/${criteria.length}</strong></header>
+      ${preview.length
+        ? `<ul>${preview.map((criterion) => {
+            const isPassed = passedCriteria.has(criterion.criterion_id);
+            return `<li><span class="check-box${isPassed ? " is-checked" : ""}">${isPassed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong>${criterion.pass_condition !== criterion.statement ? `<small>${escapeHtml(criterion.pass_condition)}</small>` : ""}</span></li>`;
+          }).join("")}</ul>`
+        : `<p class="empty-row empty-row--warning">${L("补全完成标准后，执行和复核才有共同依据。")}</p>`}
+      <a href="#acceptance-${escapeHtml(item.goal.goal_id)}">${remaining ? L("查看全部 {count} 条要求", { count: criteria.length }) : L("查看完整要求与边界")}${icon("arrow")}</a>
+    </section>
+    <section class="goal-focus-context" aria-labelledby="goal-focus-context-${escapeHtml(item.goal.goal_id)}">
+      <header><h2 id="goal-focus-context-${escapeHtml(item.goal.goal_id)}">${L("上下文")}</h2><p>${L("这条 Goal 当前最需要记住的事实。")}</p></header>
+      <dl>${contextRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+    </section>
+    ${renderCompanionRuntime(item)}`;
+}
+
+function renderCompanionRuntime(item: WebGoalView): string {
+  const claim = item.active_claim;
+  const run = [...item.runs].reverse().find((candidate) => candidate.state === "started" || candidate.state === "blocked") ?? item.runs.at(-1);
+  const total = item.goal.acceptance_criteria.length;
+  const passed = displayedPassedCriterionIds(item).length;
+  const progress = total ? Math.round((passed / total) * 100) : 0;
+  const runtime = claim?.actor_id ?? run?.actor_id ?? L("尚未绑定");
+  const state = claim
+    ? run?.state === "blocked" ? L("执行受阻") : L("正在推进")
+    : run ? L("最近有进展") : L("尚未绑定");
+  return `<section class="companion-runtime" data-companion-runtime aria-labelledby="companion-runtime-${escapeHtml(item.goal.goal_id)}">
+    <header><div><small>${L("绑定到 Goal")}</small><h2 id="companion-runtime-${escapeHtml(item.goal.goal_id)}">${escapeHtml(runtime)}</h2></div><span class="companion-runtime-state${claim ? " is-active" : ""}"><i aria-hidden="true"></i>${escapeHtml(state)}</span></header>
+    <p>${escapeHtml(plainRunState(run))}</p>
+    <div class="companion-runtime-progress" aria-label="${L("完成标准进度 {passed}/{total}", { passed, total })}"><i><b style="--companion-progress:${progress}%"></b></i><span>${passed}/${total}</span></div>
+    <dl><div><dt>${L("完成依据")}</dt><dd>${L("{count} 条", { count: item.evidence.length })}</dd></div><div><dt>${L("执行记录")}</dt><dd>${escapeHtml(run?.state ?? L("未开始"))}</dd></div></dl>
+    <button type="button" data-companion-runtime-open>${L("在 Runtime 查看会话")}${icon("chevron-right")}</button>
+  </section>`;
+}
+
+function renderCompletionBoundaries(item: WebGoalView): string {
+  const visible = [
+    [L("这次会做"), item.goal.in_scope, L("还没有写清这次会做什么。")],
+    [L("这次不做"), item.goal.out_of_scope, L("还没有写清这次不做什么。")],
+    [L("完成后会交付"), item.goal.promised_outputs, L("还没有写清完成后会交付什么。")],
+  ] as const;
+  const supporting = [
+    [L("开始前需要"), item.goal.required_inputs, L("没有额外输入要求。")],
+    [L("必须遵守"), item.goal.constraints, L("没有额外约束。")],
+  ] as const;
+  return `<div class="completion-boundaries">${visible.map(([title, values, empty]) => `<section><h3>${escapeHtml(title)}</h3>${renderList(values, empty)}</section>`).join("")}</div>
+    <details class="supporting-boundaries"><summary>${L("查看开始前需要的内容和必须遵守的限制")}${icon("chevron-down")}</summary><div>${supporting.map(([title, values, empty]) => `<section><h3>${escapeHtml(title)}</h3>${renderList(values, empty)}</section>`).join("")}</div></details>`;
+}
+
+function renderChildProgress(item: WebGoalView, view: GoalBoardWebView): string {
+  const children = sortGoals(partOfChildViews(item.goal.goal_id, view));
+  if (!children.length) return "";
+  const done = children.filter(goalWorkSatisfied).length;
+  const completion = explainParentCompletion(item.goal, done, children.length);
+  return `<div class="child-progress child-progress--${completion.tone}"><header><div><h3>${L("父 Goal 如何完成")}</h3><p class="child-progress-rule"><strong>${escapeHtml(completion.label)}</strong><span>${escapeHtml(completion.meaning)}</span></p></div><strong>${done}/${children.length}</strong></header><ul>${children.map((child) => {
+    const explanation = explainWorkState(child.status);
+    return `<li><a href="/goals/${encodeURIComponent(child.goal.goal_id)}"><span><strong>${escapeHtml(child.goal.title)}</strong><small>${escapeHtml(explanation.nextAction)}</small></span><em>${escapeHtml(explanation.label)}</em>${icon("chevron-right")}</a></li>`;
+  }).join("")}</ul></div>`;
+}
+
+function renderDependencySummary(item: WebGoalView, view: GoalBoardWebView): string {
+  const dependencies = activeOutgoingDependsOn(item).map((relation) => ({
+    relation,
+    target: findGoalView(view, relation.to_goal_id),
+  }));
+  if (!dependencies.length) return `<p class="clear-row">${icon("check")}${L("开始前不需要等待其他 Goal。")}</p>`;
+  return `<div class="dependency-summary"><h3>${L("开始前要先完成")}</h3><ul>${dependencies.map(({ relation, target }) => {
+    const done = target ? goalWorkSatisfied(target) : false;
+    return `<li><a href="/goals/${encodeURIComponent(relation.to_goal_id)}"><span class="check-box${done ? " is-checked" : ""}">${done ? icon("check") : ""}</span><span><strong>${escapeHtml(target?.goal.title ?? relation.to_goal_id)}</strong><small>${escapeHtml(done ? L("已经完成，不再挡住这条 Goal。") : relation.reason)}</small></span>${icon("chevron-right")}</a></li>`;
+  }).join("")}</ul></div>`;
+}
+
+function plainRunState(run: RunRecord | undefined): string {
+  if (!run) return L("还没有开始推进。")
+  if (run.state === "started") return L("最近一次推进正在进行。")
+  if (run.state === "blocked") return L("最近一次推进被挡住了。")
+  if (run.state === "completed") return L("最近一次推进已经结束并提交了结果。")
+  if (run.state === "failed") return L("最近一次推进失败了，需要查看原因后再试。")
+  return L("最近一次推进已经停止。")
+}
+
+function renderProgressOverview(item: WebGoalView, view: GoalBoardWebView): string {
+  const latestRun = item.runs.at(-1);
+  const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered");
+  const pendingReviews = item.review_obligations.filter((review) => review.state === "pending").length;
+  const independentReviews = item.resolved_policy.cross_reviewers + item.resolved_policy.adversarial_reviewers;
+  return `<div class="progress-overview">
+    <dl class="progress-facts">
+      <div><dt>${L("谁在推进")}</dt><dd>${escapeHtml(item.active_claim_actor ? L("{name} 正在推进", { name: item.active_claim_actor }) : L("现在还没有人或工具在推进"))}</dd></div>
+      <div><dt>${L("最近进展")}</dt><dd>${escapeHtml(plainRunState(latestRun))}${latestRun?.block_reason ? `<small>${escapeHtml(latestRun.block_reason)}</small>` : ""}</dd></div>
+      <div><dt>${L("完成依据")}</dt><dd>${L("已有 {evidence} 条依据，{passed}/{total} 条完成标准通过", { evidence: item.evidence.length, passed: displayedPassedCriterionIds(item).length, total: item.goal.acceptance_criteria.length })}</dd></div>
+      <div><dt>${L("还要检查")}</dt><dd>${pendingReviews ? L("还有 {count} 项检查没有完成", { count: pendingReviews }) : L("当前没有未完成的检查")}</dd></div>
+    </dl>
+    <div class="progress-blockers"><h3>${L("当前有什么会挡住它")}</h3>${renderReasons(item)}</div>
+    <div class="risk-summary"><header><div><h3>${L("需要留意的风险")}</h3><p>${L("这里只显示仍可能影响推进或完成的风险。")}</p></div><strong>${activeRisks.length}</strong></header>${activeRisks.length ? `<ul>${activeRisks.map((risk) => `<li><a href="#risk-${encodeURIComponent(risk.risk_id)}"><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</small></span>${icon("chevron-right")}</a></li>`).join("")}</ul>` : `<p class="clear-row">${icon("check")}${L("当前没有需要处理的开放风险。")}</p>`}</div>
+    <div class="rule-summary"><h3>${L("完成前还需要哪些检查")}</h3><ul><li>${item.resolved_policy.self_verification ? L("推进者需要先检查自己的结果。") : L("不要求推进者额外自检。")}</li><li>${independentReviews ? L("还需要 {count} 次独立检查。", { count: independentReviews }) : L("不要求额外的独立检查。")}</li><li>${item.resolved_policy.human_approval ? L("最后需要你确认结果。") : L("不需要你的最终确认。")}</li></ul></div>
+  </div>`;
+}
+
+function renderQuickRiskForm(item: WebGoalView, view: GoalBoardWebView): string {
+  if (item.goal.archived_at || item.goal.trashed_at) return "";
+  return `<form class="risk-form quick-record-form" data-risk-create-form data-live-form="risk-quick-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" novalidate>
+    ${renderRiskFactsForm(null, item.goal.goal_id, view)}
+    <label class="risk-form-wide"><span>${L("为什么现在记录")}</span><textarea name="reason" rows="2" required placeholder="${L("说明这项风险为什么需要现在进入 Goal 记录")}"></textarea></label>
+    <p class="form-error risk-form-wide" data-risk-error role="alert" hidden></p>
+    <footer class="risk-form-wide"><span>${L("保存后会回到当前 Goal，并保留在完整记录中。")}</span><button class="button-primary" type="submit">${L("记录风险")}</button></footer>
+  </form>`;
+}
+
+function renderQuickImpactForm(item: WebGoalView): string {
+  if (item.goal.archived_at || item.goal.trashed_at) return "";
+  return `<form class="impact-form quick-record-form" data-impact-create-form data-live-form="impact-quick-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" novalidate>
+    ${renderImpactFactsForm(null, item.goal.goal_id)}
+    <p class="form-error impact-form-wide" data-impact-error role="alert" hidden></p>
+    <footer class="impact-form-wide"><span>${L("保存后会参与并行工作冲突判断。")}</span><button class="button-primary" type="submit">${L("记录影响范围")}</button></footer>
+  </form>`;
+}
+
+function renderQuickRecordDialog(item: WebGoalView, view: GoalBoardWebView): string {
+  const goalId = escapeHtml(item.goal.goal_id);
+  const choices = [
+    ["evidence", "evidence", L("完成依据"), L("记录能证明完成标准是否达到的事实")],
+    ["risk", "risk", L("风险"), L("记录可能影响推进或完成的情况")],
+    ["impact", "impact", L("影响范围"), L("记录会读取、修改或决定的区域")],
+    ["relation", "link", L("Goal 关系"), L("记录层级、依赖或其他 Goal 关联")],
+  ] as const;
+  return `<dialog class="create-dialog quick-record-dialog" data-quick-record-dialog data-goal-id="${goalId}" aria-labelledby="quick-record-title-${goalId}">
+    <div class="dialog-shell">
+      <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="quick-record-title-${goalId}" data-quick-record-title>${L("快速记录")}</h2><p>${L("所有内容都会绑定到当前 Goal：{name}", { name: item.goal.title })}</p></div></div><button class="icon-button" type="button" data-close-quick-record aria-label="${L("关闭")}">${icon("x")}</button></header>
+      <div class="dialog-body quick-record-body">
+        <div class="quick-record-choices" data-quick-record-choices>
+          <p>${L("你要补充哪类事实？")}</p>
+          <div>${choices.map(([key, iconName, title, description]) => `<button type="button" data-quick-record-type="${key}">${icon(iconName)}<span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small></span>${icon("chevron-right")}</button>`).join("")}</div>
+        </div>
+        <section class="quick-record-panel" data-quick-record-panel="evidence" hidden><button class="quick-record-back" type="button" data-quick-record-back>${icon("chevron-right")}${L("换一种记录")}</button>${renderEvidenceForm(item, "quick")}</section>
+        <section class="quick-record-panel" data-quick-record-panel="risk" hidden><button class="quick-record-back" type="button" data-quick-record-back>${icon("chevron-right")}${L("换一种记录")}</button>${renderQuickRiskForm(item, view)}</section>
+        <section class="quick-record-panel" data-quick-record-panel="impact" hidden><button class="quick-record-back" type="button" data-quick-record-back>${icon("chevron-right")}${L("换一种记录")}</button>${renderQuickImpactForm(item)}</section>
+        <section class="quick-record-panel" data-quick-record-panel="relation" hidden><button class="quick-record-back" type="button" data-quick-record-back>${icon("chevron-right")}${L("换一种记录")}</button>${renderRelationForm(item, view, "quick")}</section>
+      </div>
+    </div>
+  </dialog>`;
+}
+
+function renderGoalFactors(item: WebGoalView, view: GoalBoardWebView): string {
+  const goalId = escapeHtml(item.goal.goal_id);
+  const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered").length;
+  const activeImpacts = item.impacts.filter((impact) => impact.state !== "inactive").length;
+  const tabs = [
+    ["relations", "link", L("Goal 关系"), item.relations.filter((relation) => relation.state !== "inactive").length],
+    ["risks", "risk", L("风险"), activeRisks],
+    ["impacts", "impact", L("影响范围"), activeImpacts],
+    ["rules", "shield", L("工作规则"), null],
+  ] as const;
+  return `<section class="goal-factors" data-goal-section="factors">
+    <header class="goal-factors-heading"><span>${icon("link")}</span><div><h2>${L("关联与约束")}</h2><p>${L("查看会影响这条 Goal 的关系、风险、范围和完成规则；需要时再修改。")}</p></div></header>
+    <nav class="goal-factor-nav" role="tablist" aria-label="${L("关联与约束")}">${tabs.map(([key, iconName, label, count], index) => `<button id="goal-factor-tab-${key}-${goalId}" type="button" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="goal-factor-panel-${key}-${goalId}" tabindex="${index === 0 ? "0" : "-1"}" data-goal-factor-tab="${key}">${icon(iconName)}<span>${label}</span>${count == null ? "" : `<small>${count}</small>`}</button>`).join("")}</nav>
+    <div class="goal-factor-panels">
+      <section id="goal-factor-panel-relations-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-relations-${goalId}" data-goal-factor-panel="relations"><header><h3>${L("Goal 关系")}</h3><p>${L("说明这条 Goal 属于什么、依赖什么，以及会影响哪些其他 Goal。")}</p></header>${renderRelations(item, view)}</section>
+      <section id="goal-factor-panel-risks-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-risks-${goalId}" data-goal-factor-panel="risks" hidden><header><h3>${L("风险")} <span>${activeRisks}</span></h3><p>${L("只记录确实需要观察或处理、并可能改变推进结果的情况。")}</p></header>${renderRiskWorkbench(item, view, true, false)}</section>
+      <section id="goal-factor-panel-impacts-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-impacts-${goalId}" data-goal-factor-panel="impacts" hidden><header><h3>${L("影响范围")} <span>${activeImpacts}</span></h3><p>${L("帮助多人或多个 Goal 判断哪些工作能并行，哪些会互相影响。")}</p></header>${renderImpactWorkbench(item, true, false)}</section>
+      <section id="goal-factor-panel-rules-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-rules-${goalId}" data-goal-factor-panel="rules" hidden><header><h3>${L("工作规则")}</h3><p>${L("说明执行和完成前需要哪些检查；项目默认与当前 Goal 的额外要求会合并生效。")}</p></header>${renderPolicyEditor(item)}</section>
+    </div>
+  </section>`;
+}
+
+function renderGoalTechnicalDetails(item: WebGoalView, view: GoalBoardWebView): string {
   const goal = item.goal;
   const owner = item.active_claim_actor ?? goal.accepted_by ?? L("未指定");
-  const priorityLabel = goal.priority >= 80 ? L("高") : goal.priority >= 40 ? L("中") : L("普通");
+  const state = explainWorkState(item.work_state);
+  return `<section class="goal-technical" data-goal-section="technical">
+    <header><span>${icon("history")}</span><span><strong>${L("完整记录")}</strong><small>${L("只读查看这条 Goal 的原始事实和变更历史；修改请去对应功能区。")}</small></span></header>
+    <div class="goal-technical-body">
+      <details class="goal-record-section" open><summary><span><strong>${L("基础信息")}</strong><small>${L("目标标识、负责人、时间、状态和完整工作边界")}</small></span>${icon("chevron-down")}</summary><div><dl class="technical-meta"><div><dt>Goal ID</dt><dd>${escapeHtml(goal.goal_id)}</dd></div><div><dt>${L("创建时间")}</dt><dd>${formatDate(goal.created_at)}</dd></div><div><dt>${L("更新时间")}</dt><dd>${formatDate(goal.updated_at)}</dd></div><div><dt>${L("记录中的负责人")}</dt><dd>${escapeHtml(owner)}</dd></div><div><dt>${L("优先级")}</dt><dd>${goal.priority}</dd></div><div><dt>${L("当前状态")}</dt><dd><strong>${escapeHtml(state.label)}</strong><small>${escapeHtml(state.meaning)}</small></dd></div></dl><section><h3>${L("完成标准")}</h3>${renderAcceptance(item)}</section><section><h3>${L("完整范围、资料和需求覆盖")}</h3>${renderScope(item)}</section></div></details>
+      <details class="goal-record-section"><summary><span><strong>${L("执行与检查")}</strong><small>${L("领取、推进、完成依据和检查记录")}</small></span>${icon("chevron-down")}</summary><div id="execution-${escapeHtml(goal.goal_id)}"><div class="runtime-grid"><section><h3>${L("领取记录")} <span>${L("谁领取了工作")}</span></h3>${renderClaimCell(item)}</section><section><h3>${L("推进记录")} <span>${L("每次推进")}</span></h3>${renderRunCell(item)}</section><section><h3>${L("完成依据")}</h3>${renderEvidenceCell(item, false)}</section><section><h3>${L("检查记录")}</h3>${renderReviewCell(item)}</section></div></div></details>
+      <details class="goal-record-section"><summary><span><strong>${L("变更历史")}</strong><small>${L("按时间查看发生过什么，以及是谁修改的")}</small></span>${icon("chevron-down")}</summary><div>${renderHistory(item)}${renderFullRecords(item)}</div></details>
+      <details class="goal-record-section"><summary><span><strong>${L("关联与规则记录")}</strong><small>${L("关系、风险、影响范围和生效规则的只读记录")}</small></span>${icon("chevron-down")}</summary><div><section><h3>${L("Goal 关系")}</h3>${renderRelations(item, view, false)}</section><section><h3>${L("风险与影响范围")}</h3>${renderSafety(item, view, false)}</section><section><h3>${L("工作规则")}</h3>${renderPolicyEditor(item, { editGoal: false, editProject: false })}</section></div></details>
+    </div>
+  </section>`;
+}
+
+function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
+  const goal = item.goal;
   const activeGoalAction =
     goal.definition_state === "accepted" && !goal.archived_at && !goal.trashed_at
       ? view.snapshot.board.active_goal_id === goal.goal_id
@@ -2005,66 +3653,66 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
       : "";
   const archiveAction = goal.archived_at
     ? `<button class="document-action" type="button" data-goal-archive="false" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("refresh")}<span>${L("恢复")}</span></button>`
-    : goal.fulfillment_state === "satisfied"
-      ? `<button class="document-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goal.goal_id)}">${icon("archive")}<span>${L("归档")}</span></button>`
-      : "";
+    : "";
   const trashAction = `<button class="document-action document-action--danger" type="button" data-open-goal-trash data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("archive")}<span>${L("移入回收站")}</span></button>`;
-  const moreActions = `<details class="goal-more"><summary aria-label="${L("更多操作")}">${icon("more")}</summary><div>${archiveAction}${trashAction}</div></details>`;
-  return `<article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
+  const moreActions = `<details class="goal-more"><summary aria-label="${L("更多操作")}">${icon("more")}</summary><div>${activeGoalAction}${archiveAction}${trashAction}</div></details>`;
+  const quickRecordAction = !goal.archived_at && !goal.trashed_at
+    ? `<button class="document-action document-action--quick" type="button" data-open-quick-record>${icon("plus")}<span>${L("快速记录")}</span></button>`
+    : "";
+  const goalId = escapeHtml(goal.goal_id);
+  const tabs = [
+    ["overview", "target", L("当前")],
+    ["completion", "clipboard", L("上下文")],
+    ["progress", "activity", L("进展")],
+    ["factors", "link", L("关系")],
+    ["records", "history", L("记录")],
+  ] as const;
+  const tabNavigation = `<nav class="goal-workspace-nav" role="tablist" aria-label="${L("Goal 详情")}">${tabs.map(([key, iconName, label], index) => `<button id="goal-tab-${key}-${goalId}" type="button" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="goal-panel-${key}-${goalId}" tabindex="${index === 0 ? "0" : "-1"}" data-goal-tab="${key}">${icon(iconName)}<span>${label}</span></button>`).join("")}</nav>`;
+  return `<!--
+THESIS: Goal 的关键因素是工作本身，不是后台管理；拒绝把可修改事实和历史账本混在一起。
+OWN-WORLD: 延续连续 Goal 文档、细分割线、紧凑控件和单一蓝色强调。
+STORY: 先理解，再记录，最后查证。
+FIRST VIEWPORT: 五个稳定入口、标题区快速记录、一次一个工作面板。
+FORM: 这是既有 Goal 工作台的结构性延伸，不引入新视觉概念。
+unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+--><article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus(item.status)}${activeGoalAction}${moreActions}</div></div>
-      <dl class="goal-meta"><div>${icon("clock")}<dt>${L("创建于")}</dt><dd>${formatDate(goal.created_at)}</dd></div><div>${icon("history")}<dt>${L("更新于")}</dt><dd>${formatDate(goal.updated_at)}</dd></div><div>${icon("user")}<dt>${L("负责人")}</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("target")}<dt>${L("优先级")}</dt><dd><mark>${priorityLabel} · ${goal.priority}</mark></dd></div>${goal.archived_at ? `<div>${icon("archive")}<dt>${L("归档于")}</dt><dd>${formatDate(goal.archived_at)}</dd></div>` : ""}</dl>
+      <div class="goal-title-kicker">${renderStatus(item.status)}</div>
+      <div class="goal-title-row"><div class="goal-title-copy"><h1>${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${quickRecordAction}${moreActions}</div></div>
     </header>
-    ${renderGoalSituationStrip(item, view)}
-    <section class="document-section">
-      ${sectionHeading("book", "目标是什么", "先说明用户或项目会得到什么，而不是先讲实现名词")}
-      ${renderDraftGaps(goal)}
-      <div class="business-copy"><p class="outcome"><strong>${L("要得到的结果：")}</strong>${escapeHtml(goal.outcome || L("待澄清"))}</p><p><strong>${L("为什么做：")}</strong>${escapeHtml(goal.why || L("待澄清"))}</p><p><strong>${L("事情如何运转：")}</strong>${escapeHtml(goal.business_logic || L("待澄清"))}</p></div>
-    </section>
-    <section class="document-section">
-      ${sectionHeading("clipboard", "怎样才算完成", "把验收、范围和依赖放在一起，先明确工作的边界")}
-      <div class="document-subsection" id="acceptance-${escapeHtml(goal.goal_id)}">
-        ${subsectionHeading("clipboard", "验收标准", "每一条都应该可以明确判断通过或不通过")}
-        ${renderAcceptance(item)}
+    ${tabNavigation}
+    <div class="goal-workspace-panels">
+      <div id="goal-panel-overview-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-overview-${goalId}" data-goal-panel="overview">
+        ${renderGoalFocusOverview(item, view)}
       </div>
-      <div class="document-subsection">
-        ${subsectionHeading("folder", "范围、输入与输出", "这些内容共同构成 Goal Contract 的执行边界")}
-        ${renderScope(item)}
+      <div id="goal-panel-completion-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-completion-${goalId}" data-goal-panel="completion" hidden>
+        <section class="document-section" data-goal-section="purpose" id="purpose-${goalId}">
+          ${sectionHeading("book", "目标说明", "结果、原因和实际运转方式。")}
+          ${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
+          ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}
+        </section>
+        <section class="document-section" data-goal-section="completion" id="completion-${goalId}">
+          ${sectionHeading("clipboard", "完成要求", "完成标准、工作边界、子 Goal 和前置事项。")}
+          <div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
+          ${renderChildProgress(item, view)}
+          <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
+          <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>
+        </section>
       </div>
-      <div class="document-subsection" id="relations-${escapeHtml(goal.goal_id)}">
-        ${subsectionHeading("tree", "和其他 Goal 的关系", "区分它属于哪个目标，以及开始前必须等待什么")}
-        ${renderRelations(item, view)}
+      <div id="goal-panel-progress-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-progress-${goalId}" data-goal-panel="progress" hidden>
+        <section class="document-section" data-goal-section="progress" id="progress-${goalId}">
+          ${sectionHeading("workflow", "进展与阻塞", "执行情况、依据、检查、阻塞和风险。")}
+          ${renderProgressOverview(item, view)}
+        </section>
       </div>
-      ${renderDraftEditor(item)}
-    </section>
-    <section class="document-section runtime-section" data-section="execution" id="execution-${escapeHtml(goal.goal_id)}">
-      ${sectionHeading("workflow", "现在怎么推进", "集中查看阻塞、认领、执行、证据和复核")}
-      <div class="document-subsection">
-        ${subsectionHeading("blocked", "当前阻塞", "这些事实决定当前能否继续领取或完成")}
-        ${renderReasons(item)}
+      <div id="goal-panel-factors-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-factors-${goalId}" data-goal-panel="factors" hidden>
+        ${renderGoalFactors(item, view)}
       </div>
-      <div class="document-subsection">
-        ${subsectionHeading("workflow", "执行与证明", "GoalBoard 记录事实，Runtime 主动选择并推进")}
-        <div class="runtime-grid"><section><h3>Claim <span>${L("认领")}</span></h3>${renderClaimCell(item)}</section><section><h3>Run <span>${L("行动")}</span></h3>${renderRunCell(item)}</section><section><h3>Evidence <span>${L("证据")}</span></h3>${renderEvidenceCell(item)}</section><section><h3>Review <span>${L("复核")}</span></h3>${renderReviewCell(item)}</section></div>
-        <p class="runtime-note">${L("这里不会启动或分配 Runtime；Runtime 通过 MCP 主动读取 Available Goal 并认领。")}</p>
+      <div id="goal-panel-records-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-records-${goalId}" data-goal-panel="records" hidden>
+        ${renderGoalTechnicalDetails(item, view)}
       </div>
-    </section>
-    <section class="document-section">
-      ${sectionHeading("shield", "风险与规则", "把可能出问题的地方和执行约束放在同一处")}
-      <div class="document-subsection">
-        ${subsectionHeading("risk", "风险与影响", "记录触发条件、影响范围、负责人和处理方式")}
-        ${renderSafety(item, view)}
-      </div>
-      <div class="document-subsection" data-section="policy" id="policy-${escapeHtml(goal.goal_id)}">
-        ${subsectionHeading("settings", "Runtime 与 Review Policy", "分别维护项目默认和当前 Goal 的额外规则")}
-        ${renderPolicyEditor(item)}
-      </div>
-    </section>
-    <section class="document-section">
-      ${sectionHeading("history", "历史", "回看发生过什么、用户决策和完整工程记录")}
-      ${renderHistory(item)}
-      ${renderFullRecords(item)}
-    </section>
+    </div>
+    ${quickRecordAction ? renderQuickRecordDialog(item, view) : ""}
   </article>`;
 }
 
@@ -2141,13 +3789,13 @@ function renderCreateDialog(view: GoalBoardWebView): string {
     .join("");
   return `<dialog class="create-dialog" data-create-dialog aria-labelledby="create-dialog-title">
     <form method="dialog" class="dialog-shell" data-create-form>
-      <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="create-dialog-title">${L("新建目标")}</h2><p>${L("先记录需求事实，再由澄清者补全 Contract 与拆分。")}</p></div></div><button class="icon-button" type="button" data-close-create aria-label="${L("关闭")}">${icon("x")}</button></header>
+      <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="create-dialog-title">${L("新建目标")}</h2><p>${L("先记录你的想法，再补全目标说明并拆成可执行工作。")}</p></div></div><button class="icon-button" type="button" data-close-create aria-label="${L("关闭")}">${icon("x")}</button></header>
       <div class="dialog-body">
         <div class="field-row field-row--split"><label><span>Goal ID <small>${L("可选")}</small></span><input name="goal_id" autocomplete="off" placeholder="${L("例如 GOAL-AUTHORING")}"></label><label><span>${L("优先级")}</span><input name="priority" type="number" min="0" max="100" value="50"></label></div>
         <label><span>${L("目标名称")}</span><input name="title" required maxlength="120" placeholder="${L("一句话说明要完成什么")}"></label>
         <label><span>${L("要得到的结果 ")}<small>${L("可稍后补")}</small></span><textarea name="outcome" rows="2" placeholder="${L("完成后，用户或系统获得什么可观察结果")}"></textarea></label>
         <label><span>${L("为什么做 ")}<small>${L("可稍后补")}</small></span><textarea name="why" rows="2" placeholder="${L("这个问题为什么值得现在解决")}"></textarea></label>
-        <label><span>${L("业务逻辑 ")}<small>${L("可稍后补")}</small></span><textarea name="business_logic" rows="3" placeholder="${L("用非技术语言说明事情如何运转、边界在哪里")}"></textarea></label>
+        <label><span>${L("它会怎样运转 ")}<small>${L("可稍后补")}</small></span><textarea name="business_logic" rows="3" placeholder="${L("用简单语言说明实际使用方式和边界")}"></textarea></label>
         <label><span>${L("验收条件 ")}<small>${L("每行一条，可稍后补")}</small></span><textarea name="acceptance_criteria" rows="3" placeholder="${L("例如：可以创建 Goal，并在左侧 Tree 中立即看到")}"></textarea></label>
         <section class="relation-field" aria-labelledby="parent-relation-title">
           <div class="relation-field-heading"><span>${L("目录层级")}</span><div><h3 id="parent-relation-title">${L("它属于哪个更大的 Goal？ ")}<small>${L("可选")}</small></h3><p id="parent-relation-hint">${L("表示“它是这个 Goal 的一部分”，只决定 Tree 中放在哪里，不要求上级 Goal 先完成。")}</p></div></div>
@@ -2179,15 +3827,15 @@ const STYLES = `
     --font: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body { margin: 0; overflow: hidden; background: var(--page); color: var(--ink); font: 14px/1.55 var(--font); }
+  html { width: 100%; height: 100%; }
+  body { width: 100%; height: 100dvh; min-height: 100%; margin: 0; overflow: hidden; background: var(--page); color: var(--ink); font: 14px/1.55 var(--font); }
   button, input, textarea, select { font: inherit; }
   button { color: inherit; }
   button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
   svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   [hidden] { display: none !important; }
   .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
-  .app { min-width: 0; height: 100%; overflow: hidden; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
+  .app { min-width: 0; width: 100%; height: 100dvh; min-height: 100%; overflow: hidden; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
   .topbar { position: relative; min-width: 0; display: flex; align-items: center; border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--rail) 82%, #fff); box-shadow: 0 1px 2px rgba(18, 28, 40, .06); z-index: 10; }
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
@@ -2219,7 +3867,7 @@ const STYLES = `
   .top-action:hover, a.top-action:hover { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action.is-current, a.top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
-  .workspace { position: relative; min-width: 0; min-height: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
+  .workspace { position: relative; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
   .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) 48px; background: color-mix(in srgb, var(--rail) 36%, #fff); border-right: 1px solid var(--line-strong); container-type: inline-size; }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: color-mix(in srgb, var(--rail) 36%, #fff); touch-action: none; }
   .tree-resizer::before, .tui-resizer::before { content: ""; position: absolute; inset: 0 -5px; }
@@ -2297,7 +3945,7 @@ const STYLES = `
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
-  .goal-status--clarification_pending, .goal-status--execution_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
+  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
   .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
   .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }
@@ -2311,7 +3959,7 @@ const STYLES = `
   .tui-resizer { position: relative; z-index: 3; cursor: col-resize; background: var(--rail); touch-action: none; }
   .tui-resizer::after { content: ""; position: absolute; inset: 0 2px 0 auto; width: 1px; background: var(--line-strong); }
   .tui-resizer:hover::after, .tui-resizer:focus-visible::after, .tui-resizer.is-dragging::after { width: 2px; background: var(--blue); }
-  .tui-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 40px minmax(0, 1fr); background: color-mix(in srgb, var(--rail) 70%, #fff); container-type: inline-size; }
+  .tui-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px 40px minmax(0, 1fr); background: color-mix(in srgb, var(--rail) 70%, #fff); container-type: inline-size; }
   .tui-tabs { min-width: 0; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--rail) 70%, #fff); }
   .tui-tab-list { min-width: 0; flex: 1; height: 100%; display: flex; align-items: center; gap: 2px; overflow: auto; scrollbar-width: none; }
   .tui-tab-list::-webkit-scrollbar { display: none; }
@@ -2323,8 +3971,10 @@ const STYLES = `
   .tui-tab-close { width: 22px; height: 22px; flex: 0 0 22px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--faint); display: grid; place-items: center; }
   .tui-tab-close svg { width: 12px; height: 12px; }
   .tui-tab-close:hover { color: var(--red); background: var(--red-soft); }
+  .tui-tab-readonly { flex: 0 0 auto; color: var(--faint); font-size: 12px; font-weight: 650; }
   .tui-add { height: 28px; flex: 0 0 auto; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; transition: background .16s ease, color .16s ease; }
-  .tui-add:hover, .tui-add[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
+  .tui-add:hover:not(:disabled), .tui-add[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
+  .tui-add:disabled { color: var(--faint); cursor: not-allowed; }
   .tui-collapse { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: background .16s ease, color .16s ease; }
   .tui-collapse:hover { color: var(--blue); background: var(--blue-soft); }
   .tui-collapse svg { width: 14px; height: 14px; }
@@ -2337,8 +3987,25 @@ const STYLES = `
   .workspace.is-tui-collapsed .tui-expand svg { width: 16px; height: 16px; }
   .tui-expand-label { display: none; }
   .workspace.is-tui-collapsed .tui-expand-label { display: block; writing-mode: vertical-rl; font-size: 12px; font-weight: 650; letter-spacing: .12em; line-height: 1; }
-  .tui-stage { min-width: 0; min-height: 0; overflow: hidden; padding: 10px 12px 12px; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
-  .tui-chrome { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .tui-stage { min-width: 0; min-height: 0; overflow: hidden; padding: 10px 12px 12px; display: grid; grid-template-areas: "guard" "actions" "terminal"; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; }
+  .tui-parent-guard { grid-area: guard; min-width: 0; max-height: min(42vh, 360px); overflow: auto; padding: 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--amber-soft); display: grid; gap: 10px; }
+  .tui-parent-guard[hidden] { display: none; }
+  .tui-parent-guard-copy { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; }
+  .tui-parent-guard-copy > svg { width: 16px; height: 16px; margin-top: 2px; color: var(--amber); }
+  .tui-parent-guard-copy > div { min-width: 0; display: grid; gap: 3px; }
+  .tui-parent-guard-copy strong { font-size: 14px; }
+  .tui-parent-guard-copy p, .tui-child-choices > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .tui-child-choices { display: grid; gap: 5px; }
+  .tui-child-choice { min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); text-decoration: none; display: flex; align-items: center; gap: 10px; }
+  .tui-child-choice:hover { border-color: var(--amber); background: var(--paper); }
+  .tui-child-choice > span { min-width: 0; flex: 1; display: grid; gap: 2px; }
+  .tui-child-choice strong, .tui-child-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tui-child-choice strong { font-size: 12px; }
+  .tui-child-choice small { color: var(--muted); font-size: 12px; }
+  .tui-child-choice b { flex: 0 0 auto; color: var(--amber); font-size: 12px; display: inline-flex; align-items: center; gap: 3px; }
+  .tui-child-choice b svg { width: 11px; height: 11px; }
+  .tui-pane[data-tui-read-only="true"] .tui-chrome { opacity: .7; }
+  .tui-chrome { grid-area: actions; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .tui-chrome-actions { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .tui-chrome button { min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; color: var(--ink); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .1s ease; }
   .tui-chrome button:hover:not(:disabled) { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
@@ -2352,7 +4019,7 @@ const STYLES = `
   .tui-status[data-tone="live"]::before { background: var(--green); }
   .tui-status[data-tone="busy"]::before { background: var(--blue); animation: pulse 1s infinite; }
   .tui-status[data-tone="error"]::before { background: var(--red); }
-  .tui-terminal { position: relative; min-width: 0; min-height: 140px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ink) 55%, var(--terminal)); border-radius: 6px; background: var(--terminal); }
+  .tui-terminal { grid-area: terminal; position: relative; min-width: 0; min-height: 140px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ink) 55%, var(--terminal)); border-radius: 6px; background: var(--terminal); }
   .tui-terminal .tui-xterm { position: absolute; inset: 10px 12px 12px; opacity: 0; transition: opacity .2s cubic-bezier(.16, 1, .3, 1); }
   .tui-terminal .tui-xterm.is-ready { opacity: 1; }
   .tui-empty { position: absolute; inset: 0; z-index: 1; min-height: 0; padding: 28px 22px; color: color-mix(in srgb, var(--terminal-ink) 72%, var(--terminal)); display: grid; place-content: center; justify-items: center; text-align: center; gap: 6px; }
@@ -2380,8 +4047,8 @@ const STYLES = `
     .tui-add span, .tui-chrome [data-tui-copy] span { display: none; }
     .tui-add, .tui-chrome [data-tui-copy] { width: 28px; padding: 0; justify-content: center; }
   }
-  .goal-document { width: min(100%, 1080px); margin: 0 auto; padding: 30px 38px 80px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
-  .goal-header { padding: 0 0 20px; border-bottom: 1px solid var(--line-strong); }
+  .goal-document { width: min(100%, 1080px); min-height: 100%; margin: 0 auto; padding: 26px 38px 64px; container-type: inline-size; animation: document-in .24s cubic-bezier(.16, 1, .3, 1); }
+  .goal-header { padding: 0 0 16px; }
   .goal-title-row { display: flex; align-items: flex-start; gap: 18px; }
   .goal-title-actions { display: flex; align-items: center; gap: 8px; }
   .goal-title-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
@@ -2393,6 +4060,8 @@ const STYLES = `
   .document-action--quiet { border-color: transparent; background: transparent; color: var(--muted); }
   .document-action--quiet:hover { color: var(--blue-dark); background: var(--blue-soft); }
   .document-action--current { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); cursor: default; }
+  .document-action--quick { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); font-weight: 650; }
+  .document-action--quick:hover { color: #fff; border-color: var(--blue); background: var(--blue); }
   .document-action--danger { color: #a52e2e; }
   .document-action--danger:hover { color: #a52e2e; border-color: #dfbaba; background: var(--red-soft); }
   .document-action:disabled { opacity: .55; cursor: wait; }
@@ -2403,6 +4072,43 @@ const STYLES = `
   .goal-more[open] > summary { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); }
   .goal-more > div { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; min-width: 168px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; box-shadow: 0 8px 28px rgba(26, 38, 52, .12); display: grid; }
   .goal-more .document-action { width: 100%; justify-content: flex-start; border: 0; height: 32px; }
+  .goal-workspace-nav { position: sticky; top: 0; z-index: 6; min-width: 0; margin: 0 -10px; padding: 0 10px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(10px); display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+  .goal-workspace-nav::-webkit-scrollbar { display: none; }
+  .goal-workspace-nav button { position: relative; min-width: 0; min-height: 46px; padding: 0 13px; border: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+  .goal-workspace-nav button::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: transparent; }
+  .goal-workspace-nav button:hover { color: var(--ink); background: color-mix(in srgb, var(--blue-soft) 42%, transparent); }
+  .goal-workspace-nav button[aria-selected="true"] { color: var(--blue-dark); }
+  .goal-workspace-nav button[aria-selected="true"]::after { background: var(--blue); }
+  .goal-workspace-nav button svg { width: 15px; height: 15px; flex: 0 0 auto; }
+  .goal-factors { padding: 20px 0 26px; }
+  .goal-factors-heading { padding: 0 0 16px; border-bottom: 1px solid var(--line-strong); display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 9px; }
+  .goal-factors-heading > span { padding-top: 2px; color: var(--blue); }
+  .goal-factors-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
+  .goal-factors-heading p { max-width: 72ch; margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .goal-factor-nav { margin: 14px 0 0 31px; border: 1px solid var(--line-strong); border-radius: 6px; background: #f3f5f7; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; }
+  .goal-factor-nav button { min-width: 0; min-height: 43px; padding: 7px 9px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+  .goal-factor-nav button:last-child { border-right: 0; }
+  .goal-factor-nav button:hover { color: var(--ink); background: #fff; }
+  .goal-factor-nav button[aria-selected="true"] { color: var(--blue-dark); background: #fff; box-shadow: 0 2px 8px rgba(28, 53, 81, .08); }
+  .goal-factor-nav button svg { width: 14px; height: 14px; }
+  .goal-factor-nav button small { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #e9edf2; color: var(--muted); display: inline-grid; place-items: center; font-size: 10px; font-variant-numeric: tabular-nums; }
+  .goal-factor-nav button[aria-selected="true"] small { color: var(--blue-dark); background: var(--blue-soft); }
+  .goal-factor-panels { margin: 18px 0 0 31px; }
+  .goal-factor-panel > header { margin-bottom: 12px; }
+  .goal-factor-panel > header h3 { margin: 0; font-size: 15px; }
+  .goal-factor-panel > header h3 span { color: var(--muted); font-size: 12px; font-weight: 500; }
+  .goal-factor-panel > header p { max-width: 72ch; margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .factor-write-receipt { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--green), var(--line) 65%); border-radius: 5px; background: var(--green-soft); display: grid; gap: 2px; }
+  .factor-write-receipt strong { color: var(--green); font-size: 12px; }
+  .factor-write-receipt span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .factor-write-receipt:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+  .policy-scope-note { margin: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+  .policy-scope-note > svg { color: var(--blue-dark); }
+  .policy-scope-note > span { min-width: 0; display: grid; }
+  .policy-scope-note small { color: var(--muted); }
+  .policy-scope-note a { color: var(--blue-dark); font-weight: 650; text-decoration: none; }
+  .goal-workspace-panels { min-width: 0; }
+  .goal-workspace-panel { min-width: 0; }
   .goal-situation { margin: 16px 0 0; border: 1px solid color-mix(in srgb, var(--blue), var(--line) 68%); border-radius: 5px; background: color-mix(in srgb, var(--blue-soft) 48%, #fff); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .goal-situation-cell { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); color: inherit; text-decoration: none; display: grid; gap: 2px; }
   .goal-situation-cell:last-child { border-right: 0; }
@@ -2415,6 +4121,96 @@ const STYLES = `
   .goal-situation-cell--blocked strong { color: var(--red); }
   .goal-situation-cell--ready strong { color: var(--green); }
   .goal-situation-cell--muted strong { color: var(--muted); font-weight: 500; }
+  .goal-now { margin: 20px 0 0; padding: 18px 20px; border: 1px solid #bcd4f2; border-radius: 6px; background: color-mix(in srgb, var(--blue-soft) 58%, #fff); scroll-margin-top: 58px; }
+  .goal-now > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .goal-now > header h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+  .goal-now-body { margin-top: 15px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px 28px; }
+  .goal-now-body > div { min-width: 0; display: grid; gap: 4px; }
+  .goal-now-body > div > strong { font-size: 17px; line-height: 1.4; }
+  .goal-now-body p { max-width: 68ch; margin: 0; color: #343b46; }
+  .goal-now-body small { color: var(--muted); }
+  .goal-now-body small b { margin-right: 4px; color: var(--ink); }
+  .goal-primary-action { min-height: 40px; padding: 0 15px; border: 1px solid var(--blue); border-radius: 5px; background: var(--blue); color: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 700; text-decoration: none; cursor: pointer; white-space: nowrap; }
+  .goal-primary-action:hover { border-color: var(--blue-dark); background: var(--blue-dark); color: #fff; }
+  .goal-primary-action:disabled { opacity: .6; cursor: wait; }
+  .goal-now-blockers { margin-top: 14px; padding-top: 12px; border-top: 1px solid #c9dff7; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; }
+  .goal-now-blockers > strong { color: var(--red); font-size: 12px; }
+  .goal-now-blockers ul { margin: 0; padding-left: 18px; }
+  .goal-now-blockers li + li { margin-top: 5px; }
+  .goal-now-blockers small { display: block; color: var(--muted); }
+  .goal-purpose { margin-left: 31px; }
+  .goal-purpose > section { padding: 12px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; }
+  .goal-purpose > section:first-child { border-top: 0; }
+  .goal-purpose h3, .completion-boundaries h3, .supporting-boundaries h3 { margin: 0; font-size: 13px; }
+  .goal-purpose p { max-width: 72ch; margin: 0; color: #303641; white-space: pre-wrap; }
+  .goal-edit-disclosure { margin: 16px 0 0 31px; border-top: 1px solid var(--line); }
+  .goal-edit-disclosure > summary { padding: 13px 0; display: grid; grid-template-columns: 20px minmax(0, 1fr) 16px; align-items: center; gap: 9px; cursor: pointer; list-style: none; }
+  .goal-edit-disclosure > summary::-webkit-details-marker { display: none; }
+  .goal-edit-disclosure > summary > span { display: grid; }
+  .goal-edit-disclosure > summary small { color: var(--muted); font-weight: 400; }
+  .goal-edit-disclosure[open] > summary > svg:last-child, .supporting-boundaries[open] > summary svg { transform: rotate(180deg); }
+  .goal-edit-disclosure .draft-editor-section { margin: 0 0 18px; }
+  .completion-boundaries { display: grid; }
+  .completion-boundaries > section { padding: 11px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; }
+  .completion-boundaries > section:first-child { border-top: 0; }
+  .completion-boundaries .doc-list, .completion-boundaries .empty-row, .supporting-boundaries .doc-list, .supporting-boundaries .empty-row { margin-top: 0; }
+  .supporting-boundaries { border-top: 1px solid var(--line); }
+  .supporting-boundaries > summary { padding: 11px 0; color: var(--blue-dark); display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 650; cursor: pointer; list-style: none; }
+  .supporting-boundaries > summary::-webkit-details-marker { display: none; }
+  .supporting-boundaries > div > section { padding: 10px 0; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; }
+  .child-progress { margin: 18px 0 0 31px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .child-progress > header, .risk-summary > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .child-progress h3, .dependency-summary h3, .progress-overview h3, .risk-summary h3, .rule-summary h3 { margin: 0; font-size: 14px; }
+  .child-progress header p, .risk-summary header p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .child-progress-rule { max-width: 720px; display: grid; gap: 2px; }
+  .child-progress-rule strong { color: var(--ink); font-size: 12px; }
+  .child-progress--needs_confirmation .child-progress-rule strong { color: var(--blue-dark); }
+  .child-progress--conflict .child-progress-rule strong { color: var(--red); }
+  .child-progress > header > strong, .risk-summary > header > strong { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .child-progress ul, .dependency-summary ul, .risk-summary ul { list-style: none; margin: 9px 0 0; padding: 0; }
+  .child-progress li, .dependency-summary li, .risk-summary li { border-top: 1px solid var(--line); }
+  .child-progress a, .dependency-summary a, .risk-summary a { min-height: 48px; padding: 8px 2px; color: inherit; display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .child-progress a:hover strong, .dependency-summary a:hover strong, .risk-summary a:hover strong { color: var(--blue-dark); }
+  .child-progress a > span, .dependency-summary a > span, .risk-summary a > span { min-width: 0; flex: 1; display: grid; }
+  .child-progress a small, .dependency-summary a small, .risk-summary a small { color: var(--muted); }
+  .child-progress a em { color: var(--muted); font-size: 11px; font-style: normal; font-weight: 650; }
+  .dependency-summary .check-box { flex: 0 0 15px; }
+  .progress-overview { margin-left: 31px; display: grid; gap: 18px; }
+  .progress-facts { margin: 0; display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+  .progress-facts > div { min-width: 0; padding: 11px 12px 11px 0; border-bottom: 1px solid var(--line); display: grid; gap: 2px; }
+  .progress-facts > div:nth-child(odd) { padding-right: 20px; border-right: 1px solid var(--line); }
+  .progress-facts > div:nth-child(even) { padding-left: 20px; }
+  .progress-facts dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+  .progress-facts dd { margin: 0; font-weight: 650; }
+  .progress-facts dd small { display: block; color: var(--muted); font-weight: 400; }
+  .progress-blockers, .risk-summary, .rule-summary { padding-top: 2px; }
+  .rule-summary ul { margin: 8px 0 0; padding-left: 19px; }
+  .rule-summary li + li { margin-top: 3px; }
+  .goal-technical { padding: 20px 0 0; }
+  .goal-technical > header { padding: 0 0 16px; border-bottom: 1px solid var(--line-strong); display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 9px; }
+  .goal-technical > header > span:first-child { color: var(--blue); }
+  .goal-technical > header > span:nth-child(2) { display: grid; }
+  .goal-technical > header strong { font-size: 17px; letter-spacing: -.015em; }
+  .goal-technical > header small { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .goal-technical-body { padding: 2px 0 24px 31px; }
+  .goal-record-section { border-bottom: 1px solid var(--line); }
+  .goal-record-section > summary { min-height: 58px; padding: 10px 2px; display: flex; align-items: center; justify-content: space-between; gap: 14px; list-style: none; cursor: pointer; }
+  .goal-record-section > summary::-webkit-details-marker { display: none; }
+  .goal-record-section > summary:hover { color: var(--blue-dark); }
+  .goal-record-section > summary > span { min-width: 0; display: grid; gap: 1px; }
+  .goal-record-section > summary strong { font-size: 14px; }
+  .goal-record-section > summary small { color: var(--muted); font-size: 11px; font-weight: 400; }
+  .goal-record-section > summary > svg { flex: 0 0 auto; color: var(--muted); transition: transform .16s ease; }
+  .goal-record-section[open] > summary > svg { transform: rotate(180deg); }
+  .goal-record-section > div { padding: 5px 0 20px; }
+  .goal-record-section > div > section { padding: 15px 0 0; }
+  .goal-record-section > div > section > h3 { margin: 0 0 10px; font-size: 13px; }
+  .technical-meta { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+  .technical-meta > div { min-width: 0; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 9px; }
+  .technical-meta dt { color: var(--muted); }
+  .technical-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .technical-meta dd strong, .technical-meta dd small { display: block; }
+  .technical-meta dd small { margin-top: 2px; color: var(--muted); font-size: 11px; }
   .archive-empty { min-height: 100%; padding: 72px 28px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
   .archive-empty svg { width: 30px; height: 30px; margin-bottom: 12px; color: var(--faint); }
   .archive-empty h1 { margin: 0 0 5px; color: var(--ink); font-size: 20px; }
@@ -2426,7 +4222,7 @@ const STYLES = `
   .goal-meta dt { font-size: 12px; }
   .goal-meta dd { margin: 0; }
   .goal-meta mark { padding: 1px 5px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); }
-  .document-section { padding: 18px 0 20px; border-bottom: 1px solid var(--line); scroll-margin-top: 12px; }
+  .document-section { padding: 20px 0; border-bottom: 1px solid var(--line); scroll-margin-top: 58px; }
   .section-heading { margin: 0 0 10px; display: flex; align-items: flex-start; gap: 9px; }
   .section-heading > span { width: 22px; height: 22px; margin-top: 1px; display: grid; place-items: center; color: var(--blue); }
   .section-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
@@ -2614,6 +4410,21 @@ const MORE_STYLES = `
   .relation-form > footer { padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .relation-form > footer p { margin: 0; color: var(--muted); font-size: 11px; }
   .relation-form > footer button { flex: 0 0 auto; }
+  .factor-advanced { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; }
+  .factor-advanced > summary { min-height: 47px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; list-style: none; cursor: pointer; }
+  .factor-advanced > summary::-webkit-details-marker { display: none; }
+  .factor-advanced > summary:hover { background: #f4f7fa; }
+  .factor-advanced > summary > span { min-width: 0; display: grid; gap: 1px; }
+  .factor-advanced > summary strong { font-size: 12px; }
+  .factor-advanced > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
+  .factor-advanced > summary > svg { color: var(--muted); transition: transform .16s ease; }
+  .factor-advanced[open] > summary > svg { transform: rotate(180deg); }
+  .factor-advanced-grid { padding: 11px 10px 12px; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 14px; }
+  .factor-advanced-grid > label { min-width: 0; display: grid; gap: 5px; }
+  .factor-advanced-grid > label > span { color: var(--ink); font-size: 11px; font-weight: 650; }
+  .policy-form-wide { grid-column: 1 / -1; }
+  .factor-advanced-grid input:not([type=checkbox]), .factor-advanced-grid textarea, .factor-advanced-grid select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  [aria-invalid="true"] { border-color: var(--red) !important; outline: 2px solid var(--red-soft); outline-offset: 1px; }
   .relation-inactive-history { margin-top: 8px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; }
   .relation-inactive-history > summary { min-height: 44px; grid-template-columns: minmax(0, 1fr) auto; }
   .relation-inactive-history > summary > span { grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 7px; }
@@ -2722,6 +4533,10 @@ const MORE_STYLES = `
   .risk-form footer > span { color: var(--muted); font-size: 11px; }
   .risk-form button, .risk-state-form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; cursor: pointer; }
   .risk-state-preview { min-width: 0; margin: 0; padding: 8px 10px; border-left: 2px solid var(--blue); background: #f5f9ff; color: var(--muted); font-size: 11px; }
+  .risk-decision-link { min-height: 50px; padding: 9px 14px 9px 54px; border-top: 1px solid var(--line); color: var(--blue-dark); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; text-decoration: none; }
+  .risk-decision-link:hover { background: var(--blue-soft); }
+  .risk-decision-link > span { min-width: 0; display: grid; }
+  .risk-decision-link small { color: var(--muted); }
   .risk-goal-picker { border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; }
   .risk-goal-picker > summary { min-height: 45px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .risk-goal-picker > summary > span { min-width: 0; display: grid; }
@@ -2856,6 +4671,8 @@ const MORE_STYLES = `
   .policy-form { padding: 0 15px 15px; display: grid; }
   .policy-scope-notice { margin: 0 -15px; padding: 10px 15px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: flex-start; gap: 8px; color: #4c5663; font-size: 11px; }
   .policy-scope-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
+  .policy-current-reason { margin: 12px 0 0; padding: 9px 10px; border-left: 2px solid var(--line-strong); color: var(--muted); background: #fbfcfd; display: grid; gap: 1px; font-size: 11px; }
+  .policy-current-reason strong { color: #424b57; }
   .policy-form-group { padding: 16px 0 2px; border-bottom: 1px solid var(--line); }
   .policy-form-group > header { margin-bottom: 13px; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 9px; }
   .policy-form-group > header > span { width: 28px; height: 28px; border-radius: 4px; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; }
@@ -2869,6 +4686,8 @@ const MORE_STYLES = `
   .policy-mode-options input { position: absolute; opacity: 0; pointer-events: none; }
   .policy-mode-options label > span { min-height: 58px; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; display: grid; align-content: center; gap: 1px; }
   .policy-mode-options label:hover > span { border-color: #a8c8ee; background: #fbfdff; }
+  .policy-mode-options input:disabled + span { border-color: var(--line); color: var(--muted); background: #f5f6f8; cursor: not-allowed; }
+  .policy-mode-options label:has(input:disabled) { cursor: not-allowed; }
   .policy-mode-options input:checked + span { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px rgba(22, 119, 255, .08); }
   .policy-mode-options input:focus-visible + span { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
   .policy-mode-options strong { font-size: 12px; }
@@ -2883,6 +4702,7 @@ const MORE_STYLES = `
   .policy-toggle-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .policy-toggle { min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; cursor: pointer; }
   .policy-toggle:hover { border-color: #b9cee8; background: #fbfdff; }
+  .policy-toggle:has(input:disabled) { color: var(--muted); background: #f5f6f8; cursor: not-allowed; }
   .policy-toggle > input { position: absolute; opacity: 0; pointer-events: none; }
   .policy-switch { position: relative; width: 30px; height: 18px; border-radius: 9px; background: #b5bcc6; transition: .16s ease; }
   .policy-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(20, 30, 42, .2); transition: .16s ease; }
@@ -2994,11 +4814,40 @@ const MORE_STYLES = `
   .decision-record-heading { min-height: 40px; padding: 8px 13px; border-bottom: 1px solid var(--line); background: #f7f9fb; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .decision-record-heading > small { min-width: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; text-align: right; }
   .decision-kind { display: inline-flex; align-items: center; gap: 6px; color: var(--blue-dark); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+  .decision-new { margin-left: 2px; padding: 2px 6px; border-radius: 9px; color: var(--blue-dark); background: var(--blue-soft); font-size: 10px; font-weight: 700; letter-spacing: 0; }
   .decision-kind--rewire { color: #6b4eb6; }
   .decision-kind--risk { color: var(--amber); }
   .decision-record-body { padding: 12px 14px; }
+  .decision-record-body > h3 { margin: 0; font-size: 17px; line-height: 1.4; }
   .decision-record-body p { margin: 3px 0; color: var(--muted); }
   .decision-record-body small { color: var(--muted); overflow-wrap: anywhere; }
+  .decision-guidance { margin-top: 13px; border: 1px solid var(--line); background: #fbfcfd; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .decision-guidance > section { min-width: 0; padding: 11px 12px; border-right: 1px solid var(--line); }
+  .decision-guidance > section:last-child { border-right: 0; }
+  .decision-guidance h4 { margin: 0 0 4px; color: var(--muted); font-size: 11px; }
+  .decision-guidance p { margin: 0; overflow-wrap: anywhere; }
+  .decision-recommendation strong { display: block; color: var(--muted); font-size: 13px; }
+  .decision-recommendation.has-recommendation { background: var(--green-soft); }
+  .decision-recommendation.has-recommendation strong { color: var(--green); }
+  .decision-recommendation p { margin-top: 3px; font-size: 11px; }
+  .decision-consequences dl { margin: 0; display: grid; gap: 6px; }
+  .decision-consequences dl div { display: grid; grid-template-columns: minmax(72px, auto) minmax(0, 1fr); gap: 8px; }
+  .decision-consequences dt { font-size: 11px; font-weight: 700; }
+  .decision-consequences dd { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .decision-scenario { margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--line-strong); }
+  .decision-scenario h4 { margin: 0 0 7px; font-size: 12px; }
+  .decision-scenario dl { margin: 0; display: grid; gap: 7px; }
+  .decision-scenario dl > div { min-width: 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 9px; align-items: start; }
+  .decision-scenario dt { color: var(--blue-dark); font-size: 11px; font-weight: 700; }
+  .decision-scenario dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+  .decision-record-tech { min-width: 0; color: var(--muted); font-size: 10px; text-align: right; }
+  .decision-record-tech summary { cursor: pointer; }
+  .decision-record-tech small { display: block; margin-top: 3px; overflow-wrap: anywhere; }
+  .decision-details { border-top: 1px solid var(--line); }
+  .decision-details > summary { min-height: 40px; padding: 9px 14px; color: var(--blue-dark); background: #fbfcfd; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
+  .decision-details > summary svg { transition: transform .16s ease; }
+  .decision-details[open] > summary svg { transform: rotate(180deg); }
+  .decision-key-fact { margin-top: 10px !important; padding: 9px 10px; border-left: 2px solid var(--blue); background: var(--blue-soft); color: var(--ink) !important; }
   .rewire-decision .dependency-proposal-list { margin-top: 9px; }
   .contract-proposal > header { padding: 13px 15px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; background: var(--blue-soft); border-bottom: 1px solid var(--line); }
   .contract-proposal > header strong { font-size: 14px; }
@@ -3021,7 +4870,65 @@ const MORE_STYLES = `
   .proposal-appendix .doc-list { margin: 0; }
   .proposal-prerequisite > div { min-width: 0; }
   .proposal-prerequisite p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+  .goal-tree-proposal-summary { margin-top: 11px; padding: 11px 12px; border-left: 2px solid var(--blue); background: var(--blue-soft); display: grid; gap: 2px; }
+  .goal-tree-proposal-summary > small { color: var(--blue-dark); font-size: 10px; font-weight: 700; }
+  .goal-tree-proposal-summary > strong { font-size: 15px; }
+  .goal-tree-proposal-summary > p { margin: 2px 0 0; color: var(--ink); overflow-wrap: anywhere; }
+  .goal-tree-proposal-readiness { margin-top: 11px; padding: 11px 12px; border: 1px solid #efb8b8; background: var(--red-soft); display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
+  .goal-tree-proposal-readiness > div:first-child { color: var(--red); }
+  .goal-tree-proposal-readiness h4 { margin: 0 0 3px; color: var(--red); font-size: 13px; }
+  .goal-tree-proposal-readiness p { margin: 0 0 5px; color: var(--ink); }
+  .goal-tree-proposal-readiness strong { font-size: 12px; }
+  .goal-tree-proposal-changes { padding: 0; }
+  .goal-tree-proposal-changes > summary > span { min-width: 0; display: grid; gap: 1px; }
+  .goal-tree-proposal-changes > summary small { color: var(--muted); font-size: 10px; font-weight: 500; }
+  .goal-tree-proposal-details h4 { margin: 0 0 7px; font-size: 12px; }
+  .goal-tree-proposal-changes > ol { list-style: none; margin: 0; padding: 0 14px; border-top: 1px solid var(--line); }
+  .goal-tree-proposal-changes > .goal-tree-proposal-conflict { margin: 10px 14px 12px; }
+  .goal-tree-proposal-item { min-width: 0; padding: 9px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; }
+  .goal-tree-proposal-item > span { color: var(--green); }
+  .goal-tree-proposal-item.is-conflict > span, .goal-tree-proposal-item.is-invalid > span { color: var(--red); }
+  .goal-tree-proposal-item > div { min-width: 0; display: grid; gap: 1px; }
+  .goal-tree-proposal-item strong, .goal-tree-proposal-item small { overflow-wrap: anywhere; }
+  .goal-tree-proposal-item small { color: var(--muted); }
+  .goal-tree-proposal-item-facts { margin: 6px 0 0; padding-left: 18px; color: var(--ink); font-size: 11px; }
+  .goal-tree-proposal-item-facts li { margin: 3px 0; overflow-wrap: anywhere; }
+  .goal-tree-proposal-item-error { margin-top: 7px; padding: 8px 9px; border: 1px solid #efb8b8; background: var(--red-soft); }
+  .goal-tree-proposal-item-error > strong { color: var(--red); font-size: 11px; }
+  .goal-tree-proposal-item-error > p { margin: 3px 0 0; color: var(--ink); font-size: 11px; }
+  .goal-tree-risk-repair { margin-top: 10px; padding-top: 11px; border-top: 1px solid var(--line); }
+  .goal-tree-risk-repair > h4 { margin: 0; color: var(--ink); font-size: 13px; }
+  .goal-tree-risk-repair > p { margin: 3px 0 9px; color: var(--muted); font-size: 11px; }
+  .goal-tree-risk-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: #fff; }
+  .goal-tree-risk-options label { min-width: 0; padding: 9px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; cursor: pointer; }
+  .goal-tree-risk-options label:nth-child(2n) { border-right: 0; }
+  .goal-tree-risk-options label:nth-last-child(-n+2) { border-bottom: 0; }
+  .goal-tree-risk-options label:has(input:checked) { color: var(--blue-dark); background: var(--blue-soft); }
+  .goal-tree-risk-options input { margin-top: 3px; accent-color: var(--blue); }
+  .goal-tree-risk-options span { min-width: 0; display: grid; }
+  .goal-tree-risk-options strong { font-size: 12px; }
+  .goal-tree-risk-options small { font-size: 10px; line-height: 1.45; }
+  .goal-tree-risk-plan-editor { margin-top: 8px; border-top: 1px solid var(--line); }
+  .goal-tree-risk-plan-editor > summary { min-height: 38px; color: var(--blue-dark); display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+  .goal-tree-risk-plan-editor > summary > span { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; font-size: 11px; font-weight: 650; }
+  .goal-tree-risk-plan-editor > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
+  .goal-tree-risk-plan-editor > summary svg { flex: 0 0 auto; transition: transform .16s ease; }
+  .goal-tree-risk-plan-editor[open] > summary svg { transform: rotate(180deg); }
+  .goal-tree-risk-plan { padding: 2px 0 7px; display: grid; gap: 5px; }
+  .goal-tree-risk-plan > span { color: var(--ink); font-size: 12px; font-weight: 650; }
+  .goal-tree-risk-plan > span small { margin-left: 4px; font-weight: 400; }
+  .goal-tree-risk-plan textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .goal-tree-risk-repair > .form-error { margin: 7px 0 0; }
+  .goal-tree-proposal-conflict { margin: 10px 0 0; padding: 9px 10px; color: var(--red); background: var(--red-soft); }
+  .goal-tree-proposal-details { padding: 0 14px 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; }
+  .goal-tree-proposal-details > section { min-width: 0; padding-top: 11px; }
+  .goal-tree-proposal-details .doc-list { margin: 0; }
+  .goal-tree-proposal-acceptance { grid-column: 1 / -1; }
+  .goal-tree-proposal-acceptance > ol { margin: 0; padding-left: 19px; }
+  .goal-tree-proposal-acceptance li { margin: 5px 0; padding-left: 3px; }
+  .goal-tree-proposal-acceptance li small { display: block; color: var(--muted); }
   .candidate-title { padding: 14px 15px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .decision-record-body .candidate-title { margin: 11px 0 0; padding: 11px 0; border-top: 1px solid var(--line); }
   .candidate-title > div { min-width: 0; }
   .candidate-title small { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
   .candidate-title h3 { margin: 2px 0 3px; font-size: 17px; line-height: 1.35; letter-spacing: -.015em; }
@@ -3053,14 +4960,56 @@ const MORE_STYLES = `
   .risk-goal-links > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 8px 18px; }
   .risk-goal-links .decision-owner-link { min-width: min(100%, 220px); }
   .risk-goal-links .decision-owner-link strong { font-size: 13px; }
+  .risk-decision-fact { margin-top: 11px; padding: 10px 11px; border-left: 2px solid var(--amber); background: var(--amber-soft); }
+  .risk-decision-fact p, .risk-decision-fact small { display: block; margin: 2px 0 0; color: #65542e; }
+  .risk-decision-details { margin: 0; padding: 0 14px; }
+  .risk-decision-details > div { padding: 10px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px; }
+  .risk-decision-details dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+  .risk-decision-details dd { margin: 0; overflow-wrap: anywhere; }
+  .risk-decision-choice { padding: 12px 14px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1fr); align-items: end; gap: 14px; }
+  .risk-decision-choice label { display: grid; gap: 5px; }
+  .risk-decision-choice label > span { font-size: 11px; font-weight: 650; }
+  .risk-decision-choice select { width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; }
+  .risk-decision-choice select[aria-invalid="true"], .decision-reason textarea[aria-invalid="true"] { border-color: var(--red); outline: 2px solid var(--red-soft); outline-offset: 1px; }
+  .risk-decision-choice .risk-state-preview { min-height: 36px; }
+  .risk-decision > footer.decision-actions { justify-content: space-between; align-items: center; }
+  .risk-decision > footer.decision-actions a { color: var(--blue-dark); font-size: 12px; font-weight: 650; text-decoration: none; }
   .decision-link-row { padding: 10px 14px; border-top: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
   .decision-link-row span { color: var(--muted); font-size: 12px; }
   .decision-link-row a { flex: 0 0 auto; color: var(--blue-dark); font-weight: 650; text-decoration: none; }
   .decision-stack > .human-review-list { margin: 0; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+  .decision-stack > .human-review-list > .decision-record-heading { padding: 8px 13px; border-bottom: 1px solid var(--line); }
+  .review-context { padding: 0 14px 13px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+  .review-context h4 { margin: 13px 0 6px; font-size: 12px; }
+  .decision-receipt { margin: 18px 0 2px; padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--green), var(--line) 65%); background: var(--green-soft); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; }
+  .decision-receipt strong, .decision-receipt span { display: block; }
+  .decision-receipt span { color: var(--muted); font-size: 12px; }
+  .decision-receipt a { color: var(--blue-dark); font-weight: 650; text-decoration: none; }
+  .decision-results { margin: 18px 0 2px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; overflow: hidden; }
+  .decision-results > header { padding: 12px 14px; border-bottom: 1px solid var(--line); background: #f7f9fb; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .decision-results > header h2 { margin: 0; font-size: 15px; }
+  .decision-results > header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .decision-results > header > small { flex: 0 0 auto; color: var(--muted); }
+  .decision-result-list { display: grid; }
+  .decision-result { min-width: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto); align-items: start; gap: 11px; }
+  .decision-result:last-child { border-bottom: 0; }
+  .decision-result-icon { width: 27px; height: 27px; border-radius: 50%; color: var(--green); background: var(--green-soft); display: grid; place-items: center; }
+  .decision-result-icon svg { width: 14px; height: 14px; }
+  .decision-result-copy { min-width: 0; }
+  .decision-result-copy > div { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; color: var(--muted); font-size: 10px; }
+  .decision-result-copy > div strong { padding: 1px 5px; border-radius: 3px; color: var(--green); background: var(--green-soft); }
+  .decision-result-copy > div time { margin-left: auto; }
+  .decision-result-copy h3 { margin: 4px 0 3px; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+  .decision-result-copy p { margin: 2px 0; color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
+  .decision-result-copy > small { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; }
+  .decision-result-links { min-width: 0; display: grid; justify-items: end; gap: 4px; }
+  .decision-result-links a { max-width: 100%; color: var(--blue-dark); font-size: 11px; font-weight: 650; text-decoration: none; display: flex; align-items: center; justify-content: flex-end; gap: 3px; text-align: right; overflow-wrap: anywhere; }
+  .decision-result-links a svg { flex: 0 0 auto; width: 12px; height: 12px; }
   .decision-empty { min-height: 410px; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--muted); }
   .decision-empty > svg { width: 30px; height: 30px; color: var(--green); }
   .decision-empty h2 { margin: 12px 0 3px; color: var(--ink); font-size: 19px; }
   .decision-empty p { margin: 0; }
+  .decision-empty a { margin-top: 12px; color: var(--blue-dark); font-weight: 650; text-decoration: none; }
   .mobile-switch { display: none; }
   .create-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 8px; box-shadow: var(--shadow); }
   .create-dialog::backdrop { background: rgba(25, 34, 45, .36); backdrop-filter: blur(2px); }
@@ -3099,6 +5048,32 @@ const MORE_STYLES = `
   .goal-choice strong, .goal-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .form-error { margin: 0; padding: 9px 11px; border-radius: 4px; color: var(--red); background: var(--red-soft); }
   .create-dialog footer { padding: 13px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+  .quick-record-dialog { width: min(760px, calc(100vw - 32px)); }
+  .quick-record-dialog .dialog-shell { grid-template-rows: auto minmax(0, 1fr); }
+  .quick-record-body { align-content: start; }
+  .quick-record-choices > p { margin: 0 0 10px; font-weight: 650; }
+  .quick-record-choices > div { border-top: 1px solid var(--line); }
+  .quick-record-choices button { width: 100%; min-height: 58px; padding: 10px 2px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; display: grid; grid-template-columns: 24px minmax(0, 1fr) 16px; align-items: center; gap: 9px; text-align: left; cursor: pointer; }
+  .quick-record-choices button:hover { color: var(--blue-dark); background: color-mix(in srgb, var(--blue-soft) 48%, transparent); }
+  .quick-record-choices button > svg:first-child { color: var(--blue-dark); }
+  .quick-record-choices button > svg:last-child { color: var(--faint); }
+  .quick-record-choices button > span { min-width: 0; display: grid; }
+  .quick-record-choices button strong { font-size: 13px; }
+  .quick-record-choices button small { color: var(--muted); font-size: 11px; }
+  .quick-record-panel { min-width: 0; }
+  .quick-record-back { margin: 0 0 12px; padding: 4px 0; border: 0; background: transparent; color: var(--blue-dark); display: inline-flex; align-items: center; gap: 5px; font-weight: 650; cursor: pointer; }
+  .quick-record-back svg { width: 14px; height: 14px; transform: rotate(180deg); }
+  .quick-record-form { padding: 0 !important; border-top: 0 !important; }
+  .quick-record-dialog .risk-form footer, .quick-record-dialog .impact-form footer, .quick-record-dialog .relation-form footer { padding: 12px 0 0; }
+  .quick-record-form[data-evidence-form] { display: grid; gap: 12px; }
+  .quick-record-form[data-evidence-form] fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+  .quick-record-form[data-evidence-form] .evidence-criteria > div { margin-top: 6px; border: 1px solid var(--line); border-radius: 5px; display: grid; }
+  .quick-record-form[data-evidence-form] .evidence-criteria label { padding: 8px 9px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; }
+  .quick-record-form[data-evidence-form] .evidence-criteria label:last-child { border-bottom: 0; }
+  .quick-record-form[data-evidence-form] .evidence-criteria label > span { display: grid; }
+  .quick-record-form[data-evidence-form] .evidence-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .quick-record-form[data-evidence-form] footer { padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .quick-record-form[data-evidence-form] footer > span { color: var(--muted); font-size: 11px; }
   .toast { position: fixed; left: 50%; bottom: 24px; z-index: 30; padding: 9px 14px; border-radius: 5px; color: #fff; background: #202632; box-shadow: var(--shadow); transform: translate(-50%, 18px); opacity: 0; pointer-events: none; transition: .16s ease; }
   .toast.is-visible { transform: translate(-50%, 0); opacity: 1; }
   .toast.is-error { background: var(--red); }
@@ -3137,6 +5112,15 @@ const MORE_STYLES = `
 
 const RESPONSIVE_STYLES = `
   @container (max-width: 660px) {
+    .goal-workspace-nav { margin-inline: -4px; padding-inline: 4px; }
+    .goal-workspace-nav button { flex: 1 0 auto; min-height: 42px; padding-inline: 8px; font-size: 12px; }
+    .goal-workspace-nav button svg { display: none; }
+    .goal-factor-nav, .goal-factor-panels { margin-left: 0; }
+    .goal-factor-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .goal-factor-nav button:nth-child(2) { border-right: 0; }
+    .goal-factor-nav button:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .policy-scope-note { grid-template-columns: auto minmax(0, 1fr); }
+    .policy-scope-note a { grid-column: 2; }
     .document-subsection, .draft-editor-section { margin-left: 0; }
     .human-review-list > header { display: grid; gap: 2px; }
     .human-review-form > label, .human-review-form fieldset { grid-template-columns: 1fr; gap: 5px; }
@@ -3146,6 +5130,9 @@ const RESPONSIVE_STYLES = `
     .evidence-form-row { grid-template-columns: 1fr; }
     .evidence-submit footer { align-items: stretch; flex-direction: column; }
     .evidence-submit footer button { align-self: flex-end; }
+    .quick-record-form[data-evidence-form] .evidence-form-row { grid-template-columns: 1fr; }
+    .quick-record-form[data-evidence-form] footer { align-items: stretch; flex-direction: column; }
+    .quick-record-form[data-evidence-form] footer button { align-self: flex-end; }
     .event-ledger details > summary { grid-template-columns: 1fr; gap: 3px; }
     .event-ledger dl div { grid-template-columns: 1fr; gap: 2px; }
     .goal-situation { grid-template-columns: 1fr 1fr; }
@@ -3170,6 +5157,8 @@ const RESPONSIVE_STYLES = `
     .criteria-editor > header button, .draft-contract-form > footer button { align-self: flex-end; }
     .draft-aux-form { padding-left: 0; }
     .relation-direction-control > div, .relation-builder { grid-template-columns: 1fr; }
+    .factor-advanced-grid { grid-template-columns: 1fr; }
+    .policy-form-wide { grid-column: 1; }
     .relation-form > footer { align-items: stretch; flex-direction: column; }
     .relation-form > footer button { align-self: flex-end; }
     .relation-editor-action { display: none; }
@@ -3180,6 +5169,7 @@ const RESPONSIVE_STYLES = `
     .risk-record .risk-state { margin-bottom: 2px; }
     .risk-effect, .risk-readonly { margin-left: 14px; }
     .risk-actions > details > summary, .risk-form, .risk-state-form { padding-left: 14px; }
+    .risk-decision-link { padding-left: 14px; }
     .risk-goal-options { grid-template-columns: 1fr; }
     .risk-form footer, .risk-state-form footer { align-items: stretch; flex-direction: column; }
     .risk-form footer button, .risk-state-form footer button { align-self: flex-end; }
@@ -3194,6 +5184,15 @@ const RESPONSIVE_STYLES = `
     .impact-actions > details > summary, .impact-form, .impact-deactivate form { padding-left: 14px; }
     .impact-form footer { align-items: stretch; flex-direction: column; }
     .impact-form footer button { align-self: flex-end; }
+    .goal-now > header, .goal-now-body { grid-template-columns: 1fr; display: grid; }
+    .goal-now > header { gap: 8px; }
+    .goal-now > header .goal-status { justify-self: start; }
+    .goal-primary-action { justify-self: start; white-space: normal; text-align: left; }
+    .goal-now-blockers, .goal-purpose > section, .completion-boundaries > section, .supporting-boundaries > div > section { grid-template-columns: 1fr; gap: 5px; }
+    .goal-purpose, .goal-edit-disclosure, .child-progress, .progress-overview, .goal-technical-body { margin-left: 0; padding-left: 0; }
+    .progress-facts, .technical-meta { grid-template-columns: 1fr; }
+    .progress-facts > div { padding: 10px 0 !important; border-right: 0 !important; }
+    .technical-meta > div { grid-template-columns: 1fr; gap: 2px; }
   }
   @media (max-width: 1500px) {
     .brand { min-width: 160px; padding-inline: 20px; }
@@ -3301,10 +5300,26 @@ const RESPONSIVE_STYLES = `
     .decision-center-header > strong { text-align: left; }
     .decision-summary { gap: 7px 16px; }
     .decision-record-heading { align-items: flex-start; }
+    .decision-guidance, .review-context, .risk-decision-choice { grid-template-columns: 1fr; }
+    .decision-guidance > section { border-right: 0; border-bottom: 1px solid var(--line); }
+    .decision-guidance > section:last-child { border-bottom: 0; }
+    .decision-scenario dl > div { grid-template-columns: 1fr; gap: 2px; }
+    .risk-decision-details > div { grid-template-columns: 1fr; gap: 3px; }
+    .decision-receipt { grid-template-columns: 1fr; }
+    .decision-result { grid-template-columns: auto minmax(0, 1fr); }
+    .decision-result-links { grid-column: 2; justify-items: start; }
+    .decision-result-links a { justify-content: flex-start; text-align: left; }
     .candidate-title { display: grid; }
     .candidate-title > span { justify-self: start; }
     .candidate-contract { grid-template-columns: 1fr; }
+    .goal-tree-proposal-details { grid-template-columns: 1fr; }
+    .goal-tree-risk-options { grid-template-columns: 1fr; }
+    .goal-tree-risk-options label { border-right: 0; }
+    .goal-tree-risk-options label:nth-last-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .goal-tree-risk-options label:last-child { border-bottom: 0; }
+    .goal-tree-risk-plan textarea { font-size: 16px; }
     .candidate-wide { grid-column: 1; }
+    .goal-tree-proposal-acceptance { grid-column: 1; }
     .decision-reason { grid-template-columns: 1fr; gap: 5px; }
     .decision-reason > span { padding-top: 0; }
     .goal-situation { grid-template-columns: 1fr 1fr; }
@@ -3339,11 +5354,11 @@ const PROJECT_INDEX_STYLES = `
   .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
   .project-index-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
   .project-index-heading p { max-width: 52ch; margin: 7px 0 0; color: var(--muted); }
-  .project-index-desktop-note { max-width: none; margin-top: 14px; padding: 10px 12px; border: 1px solid #bcd4f2; border-radius: 4px; background: var(--blue-soft); color: var(--blue-dark); font-size: 13px; font-weight: 650; }
+  .project-index-desktop-note { max-width: none; margin-top: 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--blue), var(--line) 62%); border-radius: 7px; background: var(--blue-soft); color: var(--blue-dark); font-size: 13px; font-weight: 650; }
   .project-list { list-style: none; margin: 0; padding: 0; }
   .project-list li + li { border-top: 1px solid var(--line); }
   .project-list a { min-height: 74px; padding: 16px 24px 16px 30px; color: inherit; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 18px; text-decoration: none; }
-  .project-list a:hover { background: #f7faff; }
+  .project-list a:hover { background: color-mix(in srgb, var(--blue-soft) 58%, var(--paper)); }
   .project-list a:focus-visible { outline-offset: -3px; }
   .project-list a > span { min-width: 0; display: grid; gap: 2px; }
   .project-list strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
@@ -3354,36 +5369,36 @@ const PROJECT_INDEX_STYLES = `
   .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
   .project-index-empty p { max-width: 48ch; margin: 0; }
   .project-index-start { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 9px; }
-  .project-index-start a { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; display: inline-flex; align-items: center; font-weight: 650; text-decoration: none; }
+  .project-index-start a { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--blue-dark); background: var(--paper); display: inline-flex; align-items: center; font-weight: 650; text-decoration: none; }
   .project-index-start a:first-child { border-color: var(--blue); color: #fff; background: var(--blue); }
-  .project-index-start a:hover { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
-  .project-index-migration { padding: 16px 30px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; background: #fbfcfd; }
+  .project-index-start a:hover { border-color: color-mix(in srgb, var(--blue), var(--line) 58%); background: var(--blue-soft); color: var(--blue-dark); }
+  .project-index-migration { padding: 16px 30px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; background: var(--rail); }
   .project-index-migration > div { min-width: 0; }
   .project-index-migration strong { display: block; font-size: 13px; }
   .project-index-migration small { display: block; margin-top: 2px; color: var(--muted); }
-  .project-index-migrate { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; white-space: nowrap; cursor: pointer; }
-  .project-index-migrate:hover { border-color: #b8d3f5; background: var(--blue-soft); }
-  .project-migration-dialog { width: min(100% - 28px, 580px); padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); box-shadow: var(--shadow); }
+  .project-index-migrate { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--blue-dark); background: var(--paper); font-weight: 650; white-space: nowrap; cursor: pointer; }
+  .project-index-migrate:hover { border-color: color-mix(in srgb, var(--blue), var(--line) 58%); background: var(--blue-soft); }
+  .project-migration-dialog { width: min(100% - 28px, 580px); padding: 0; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); color: var(--ink); box-shadow: var(--shadow); }
   .project-migration-dialog::backdrop { background: rgba(27, 35, 45, .32); }
   .project-migration-form { display: grid; }
   .project-migration-form > header { padding: 22px 24px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
   .project-migration-form h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
   .project-migration-form header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
   .project-migration-form > .project-migration-body { padding: 20px 24px; display: grid; gap: 15px; }
-  .project-migration-form label:not(.project-migration-confirm) { display: grid; gap: 5px; color: #38414d; font-size: 13px; font-weight: 650; }
+  .project-migration-form label:not(.project-migration-confirm) { display: grid; gap: 5px; color: var(--ink-soft); font-size: 13px; font-weight: 650; }
   .project-migration-form label small { color: var(--muted); font-weight: 400; }
-  .project-migration-form input[type=text] { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; color: var(--ink); }
+  .project-migration-form input[type=text] { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--paper); color: var(--ink); }
   .project-migration-form input[type=text]:focus { border-color: var(--blue); outline: 0; box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue), transparent 84%); }
   .project-migration-warning { margin: 0; padding: 10px 11px; color: #654300; border: 1px solid #efd49c; background: var(--amber-soft); font-size: 12px; line-height: 1.55; }
-  .project-migration-confirm { display: flex; align-items: flex-start; gap: 9px; color: #303944; font-size: 13px; line-height: 1.45; cursor: pointer; }
+  .project-migration-confirm { display: flex; align-items: flex-start; gap: 9px; color: var(--ink-soft); font-size: 13px; line-height: 1.45; cursor: pointer; }
   .project-migration-confirm input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }
   .project-migration-error { margin: 0; color: var(--red); font-size: 13px; }
-  .project-migration-form > footer { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 9px; background: #fbfcfd; }
-  .project-migration-form > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer; }
+  .project-migration-form > footer { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 9px; background: var(--rail); }
+  .project-migration-form > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--paper); color: var(--ink); cursor: pointer; }
   .project-migration-form > footer .project-migration-submit { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
   .project-migration-form > footer .project-migration-submit:hover { background: var(--blue-dark); }
   .project-migration-form > footer .project-migration-submit:disabled { opacity: .58; cursor: wait; }
-  .project-index-note { margin: 0; padding: 12px 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: #fbfcfd; }
+  .project-index-note { margin: 0; padding: 12px 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--rail); }
   @media (max-width: 760px) {
     .project-index-page > .topbar { height: 52px; }
     .project-index { min-height: calc(100dvh - 52px); }
@@ -3593,6 +5608,8 @@ const SETTINGS_STYLES = `
   .settings-page .toast { position: fixed; right: 22px; bottom: 22px; z-index: 30; }
   @media (max-width: 760px) {
     .settings-page > .topbar { height: 52px; }
+    .settings-page .top-action { margin-right: 8px; padding-inline: 8px; }
+    .settings-page .top-action span { display: none; }
     .settings-page .project-context small { display: none; }
     .settings-shell { height: calc(100dvh - 52px); grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .settings-navigation { padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--line-strong); flex-direction: row; overflow-x: auto; }
@@ -3620,6 +5637,31 @@ const SETTINGS_STYLES = `
     .runtime-change-list li { grid-template-columns: 1fr; gap: 3px; }
     .launcher-section li > span:first-child { grid-template-columns: 20px 42px minmax(0, 1fr); }
     .inline-settings-form input[type=text], .project-record-tools input { font-size: 16px; }
+  }
+`;
+
+const PROJECT_RULES_SETTINGS_STYLES = `
+  .project-rules-page .settings-document { width: min(100%, 900px); }
+  .project-rules-receipt { margin: 20px 0 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--green), var(--line) 65%); border-radius: 5px; background: var(--green-soft); display: grid; gap: 2px; }
+  .project-rules-receipt strong { color: var(--green); font-size: 12px; }
+  .project-rules-receipt span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .project-rules-receipt:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+  .project-rules-intro { margin: 24px 0 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; }
+  .project-rules-intro h2 { margin: 0; font-size: 15px; }
+  .project-rules-intro p { max-width: 70ch; margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+  .project-rules-intro ol { margin: 14px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+  .project-rules-intro li { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; }
+  .project-rules-intro li > span:first-child { width: 22px; height: 22px; border-radius: 50%; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; font-size: 10px; font-weight: 750; }
+  .project-rules-intro li > span:last-child { min-width: 0; display: grid; }
+  .project-rules-intro li strong { font-size: 12px; }
+  .project-rules-intro li small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .project-rules-page .policy-source { margin-bottom: 18px; }
+  .project-rules-page .policy-source-title small { display: none; }
+  .project-rules-page .settings-footnote { margin-top: 16px; }
+  @media (max-width: 760px) {
+    .project-rules-intro ol { grid-template-columns: 1fr; }
+    .project-rules-page .settings-navigation a:last-child { display: none; }
+    .project-rules-page .policy-source-state { min-width: 0; }
   }
 `;
 
@@ -3942,6 +5984,114 @@ const SETTINGS_CLIENT_SCRIPT = `
   })();
 `;
 
+const PROJECT_RULES_CLIENT_SCRIPT = `
+  (() => {
+    const form = document.querySelector("[data-policy-form]");
+    if (!form) return;
+    const routePrefix = document.body.dataset.routePrefix || "";
+    const receiptKey = "goalboard-project-rules-receipt:" + routePrefix;
+    const receipt = document.querySelector("[data-project-rules-receipt]");
+    const errorBox = form.querySelector("[data-policy-error]");
+    const submit = form.querySelector('button[type="submit"]');
+    try {
+      const savedReceipt = JSON.parse(sessionStorage.getItem(receiptKey) || "null");
+      sessionStorage.removeItem(receiptKey);
+      if (receipt && savedReceipt?.title && savedReceipt?.detail) {
+        receipt.querySelector("[data-project-rules-receipt-title]").textContent = savedReceipt.title;
+        receipt.querySelector("[data-project-rules-receipt-detail]").textContent = savedReceipt.detail;
+        receipt.hidden = false;
+        receipt.focus({ preventScroll: true });
+      }
+    } catch {}
+    const reveal = (field) => {
+      let parent = field.parentElement;
+      while (parent && parent !== form) {
+        if (parent.tagName === "DETAILS") parent.open = true;
+        parent = parent.parentElement;
+      }
+    };
+    const fail = (field, message) => {
+      reveal(field);
+      field.setAttribute("aria-invalid", "true");
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+      field.focus();
+    };
+    form.addEventListener("input", (event) => {
+      event.target?.removeAttribute?.("aria-invalid");
+      errorBox.hidden = true;
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const reason = String(values.get("reason") || "").trim();
+      if (!reason) {
+        fail(form.elements.reason, L("请说明为什么要调整项目默认规则。"));
+        return;
+      }
+      const crossReviewers = Number(values.get("cross_reviewers"));
+      const adversarialReviewers = Number(values.get("adversarial_reviewers"));
+      const leaseSeconds = Number(values.get("max_lease_seconds"));
+      if (!Number.isInteger(crossReviewers) || crossReviewers < 0) {
+        fail(form.elements.cross_reviewers, L("独立复核人数需要是 0 或正整数。"));
+        return;
+      }
+      if (!Number.isInteger(adversarialReviewers) || adversarialReviewers < 0) {
+        fail(form.elements.adversarial_reviewers, L("反例检查人数需要是 0 或正整数。"));
+        return;
+      }
+      if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) {
+        fail(form.elements.max_lease_seconds, L("一次领取时长需要是正整数秒数。"));
+        return;
+      }
+      const capabilities = String(values.get("required_capabilities") || "")
+        .split(/[\\n,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const submitLabel = submit.textContent;
+      submit.disabled = true;
+      submit.textContent = L("正在保存…");
+      errorBox.hidden = true;
+      try {
+        const response = await fetch(routePrefix + "/api/policy-bindings", {
+          method: "POST",
+          headers: goalboardControlHeaders(),
+          body: JSON.stringify({
+            scope: "project_default",
+            reason,
+            policy: {
+              goal_mode: values.get("goal_mode"),
+              self_verification: values.has("self_verification"),
+              cross_reviewers: crossReviewers,
+              adversarial_reviewers: adversarialReviewers,
+              human_approval: values.has("human_approval"),
+              required_capabilities: [...new Set(capabilities)],
+              max_lease_seconds: leaseSeconds,
+            },
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || L("项目默认工作规则保存失败"));
+        const modeLabels = { disabled: L("不要求"), preferred: L("建议使用"), required: L("必须使用") };
+        sessionStorage.setItem(receiptKey, JSON.stringify({
+          title: L("项目工作规则已保存"),
+          detail: L("这个项目的共同规则已更新：按 Goal 工作“{mode}”，执行者自检“{self}”，用户确认“{human}”。之后开始或重新领取的 Goal 会采用这些规则。", {
+            mode: modeLabels[values.get("goal_mode")] || String(values.get("goal_mode") || ""),
+            self: values.has("self_verification") ? L("需要") : L("不需要"),
+            human: values.has("human_approval") ? L("需要") : L("不需要"),
+          }),
+        }));
+        location.reload();
+      } catch (error) {
+        errorBox.textContent = error.message || L("项目默认工作规则保存失败，请检查输入后重试");
+        errorBox.hidden = false;
+        submit.disabled = false;
+        submit.textContent = submitLabel;
+      }
+    });
+  })();
+`;
+
 const CLIENT_SCRIPT = `
   (() => {
     let state = JSON.parse(document.querySelector("#goalboard-data").textContent);
@@ -3989,6 +6139,13 @@ const CLIENT_SCRIPT = `
     let searchBusyUntil = 0;
     let searchComposing = false;
     let deferredRefreshTimer;
+    let navigatorView = "list";
+    let graphFocusOnly = false;
+    let graphZoom = 1;
+    let desktopCompanionActive = document.body.dataset.desktopShell === "true" && matchMedia("(max-width: 760px)").matches;
+    let graphRelationTypes = new Set(["part_of", "depends_on"]);
+    const goalPanelKeys = ["overview", "completion", "progress", "factors", "records"];
+    const goalFactorKeys = ["relations", "risks", "impacts", "rules"];
 
     const updateRelationPreviews = () => {
       if (!form) return;
@@ -4011,6 +6168,17 @@ const CLIENT_SCRIPT = `
 
     const updateRelationFormPreview = (relationForm) => {
       if (!relationForm) return;
+      const intent = relationForm.elements.relation_intent?.value || "other";
+      const intentMap = {
+        needs: ["outgoing", "depends_on"],
+        belongs: ["outgoing", "part_of"],
+        enables: ["incoming", "depends_on"],
+        contains: ["incoming", "part_of"],
+      };
+      if (intentMap[intent]) {
+        relationForm.elements.direction.value = intentMap[intent][0];
+        relationForm.elements.type.value = intentMap[intent][1];
+      }
       const preview = relationForm.querySelector("[data-relation-live-preview]");
       const type = relationForm.elements.type?.selectedOptions?.[0];
       const target = relationForm.elements.target_goal_id?.selectedOptions?.[0];
@@ -4041,6 +6209,26 @@ const CLIENT_SCRIPT = `
       .map((item) => item.trim())
       .filter(Boolean))];
 
+    const requireFormFacts = (form, errorBox) => {
+      const invalid = [...form.querySelectorAll("[required]")].find((control) => {
+        if (control.type === "checkbox" || control.type === "radio") return !control.checked;
+        return !String(control.value || "").trim();
+      });
+      if (!invalid) return false;
+      let disclosure = invalid.closest("details");
+      while (disclosure) {
+        disclosure.open = true;
+        disclosure = disclosure.parentElement?.closest("details");
+      }
+      form.querySelectorAll('[aria-invalid="true"]').forEach((control) => control.removeAttribute("aria-invalid"));
+      invalid.setAttribute("aria-invalid", "true");
+      const label = invalid.closest("label")?.querySelector(":scope > span")?.textContent?.trim() || L("必填信息");
+      errorBox.textContent = L("请先补充：{label}", { label });
+      errorBox.hidden = false;
+      requestAnimationFrame(() => invalid.focus());
+      return true;
+    };
+
     const readRiskPayload = (values) => ({
       goal_ids: values.getAll("goal_ids").map(String),
       description: String(values.get("description") || "").trim(),
@@ -4049,6 +6237,7 @@ const CLIENT_SCRIPT = `
       affected_surfaces: splitLines(values.get("affected_surfaces")),
       trigger: String(values.get("trigger") || "").trim(),
       treatment: values.get("treatment"),
+      treatment_plan: String(values.get("treatment_plan") || "").trim(),
       blocking_mode: values.get("blocking_mode"),
       revisit_condition: String(values.get("revisit_condition") || "").trim(),
       owner: String(values.get("owner") || "").trim(),
@@ -4066,27 +6255,31 @@ const CLIENT_SCRIPT = `
     });
 
     const riskStateEffect = (blockingMode, riskState) => {
+      if (!riskState) return L("选择处理结果后，这里会说明会发生什么。");
       const active = riskState === "open" || riskState === "triggered";
       if (!active) {
         return blockingMode === "invalidate_on_trigger"
-          ? "当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。"
-          : "当前状态不再施加领取或完成门禁。";
+          ? L("当前不再使 Goal 失效；若此前触发，关联 Goal 必须重新验证。")
+          : L("当前状态不再施加领取或完成门禁。");
       }
-      if (blockingMode === "claim") return "当前会阻止所有关联 Goal 被新的 Runtime 领取。";
-      if (blockingMode === "completion") return "当前会阻止所有关联 Goal 被标记为完成。";
+      if (blockingMode === "claim") return L("当前会阻止所有关联 Goal 被新的 Runtime 领取。");
+      if (blockingMode === "completion") return L("当前会阻止所有关联 Goal 被标记为完成。");
       if (blockingMode === "invalidate_on_trigger") {
         return riskState === "triggered"
-          ? "Risk 已触发，所有关联 Goal 立即失效。"
-          : "Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。";
+          ? L("Risk 已触发，所有关联 Goal 立即失效。")
+          : L("Risk 目前开放；一旦标记为已触发，所有关联 Goal 会失效。");
       }
-      return "这是一条持续观察的事实，不直接阻塞领取或完成。";
+      return L("这是一条持续观察的事实，不直接阻塞领取或完成。");
     };
 
     const updateRiskStatePreview = (riskForm) => {
       const preview = riskForm?.querySelector("[data-risk-state-preview]");
       const stateSelect = riskForm?.querySelector("[data-risk-state-select]");
       if (preview && stateSelect) {
-        preview.textContent = riskStateEffect(riskForm.dataset.riskBlocking, stateSelect.value);
+        const effect = riskStateEffect(riskForm.dataset.riskBlocking, stateSelect.value);
+        preview.textContent = stateSelect.value === "open" || stateSelect.value === "triggered"
+          ? L("保存后仍会留在待决定中。{effect}", { effect })
+          : effect;
       }
     };
 
@@ -4162,6 +6355,7 @@ const CLIENT_SCRIPT = `
     };
 
     const goalPageBase = () => route(trashView ? "/trash/goals/" : archiveView ? "/archive/goals/" : "/goals/");
+    const goalPageUrl = (goalId) => goalPageBase() + encodeURIComponent(goalId) + (document.body.dataset.desktopShell === "true" ? "?desktop=1" : "");
 
     const openGoalTrashDialog = (trigger, trashed) => {
       if (!trashDialog || !trashForm) return;
@@ -4266,11 +6460,350 @@ const CLIENT_SCRIPT = `
 
     const setMobileView = (view) => {
       workspace.dataset.mobileView = view;
+      document.querySelector(".topbar")?.setAttribute("data-mobile-surface", view);
       document.querySelectorAll("[data-mobile-target]").forEach((button) => {
         const active = button.dataset.mobileTarget === view;
         button.classList.toggle("is-active", active);
         button.setAttribute("aria-selected", String(active));
       });
+    };
+
+    const graphElement = () => workspace.querySelector("[data-goal-graph]");
+
+    const graphConnectedGoalIds = () => {
+      const connected = new Set(selected ? [selected] : []);
+      const edges = [...workspace.querySelectorAll("[data-graph-edge]")].filter((edge) =>
+        graphRelationTypes.has(edge.dataset.edgeType),
+      );
+      for (const edge of edges) {
+        if (edge.dataset.edgeFrom === selected && edge.dataset.edgeTo) connected.add(edge.dataset.edgeTo);
+        if (edge.dataset.edgeTo === selected && edge.dataset.edgeFrom) connected.add(edge.dataset.edgeFrom);
+      }
+      return connected;
+    };
+
+    const drawGoalGraph = () => {
+      const graph = graphElement();
+      const stage = graph?.querySelector("[data-graph-stage]");
+      if (!graph || graph.hidden || !stage) return;
+      const scale = Number(stage.dataset.graphScale || "1") || 1;
+      const stageRect = stage.getBoundingClientRect();
+      const nodeById = new Map(
+        [...stage.querySelectorAll("[data-graph-node]")]
+          .filter((node) => !node.hidden)
+          .map((node) => [node.dataset.selectGoal, node]),
+      );
+      const radialEdges = [...stage.querySelectorAll("[data-graph-edge]")].filter((edge) => !edge.hasAttribute("hidden"));
+      radialEdges.forEach((edge, visibleEdgeIndex) => {
+        const from = nodeById.get(edge.dataset.edgeFrom);
+        const to = nodeById.get(edge.dataset.edgeTo);
+        const path = edge.querySelector("path");
+        if (!from || !to || !path) return;
+        const fromRect = (from.querySelector(".graph-node-mark") || from).getBoundingClientRect();
+        const toRect = (to.querySelector(".graph-node-mark") || to).getBoundingClientRect();
+        const fromX = (fromRect.left + fromRect.width / 2 - stageRect.left) / scale;
+        const fromY = (fromRect.top + fromRect.height / 2 - stageRect.top) / scale;
+        const toX = (toRect.left + toRect.width / 2 - stageRect.left) / scale;
+        const toY = (toRect.top + toRect.height / 2 - stageRect.top) / scale;
+        if (edge.dataset.edgeType === "part_of") {
+          path.setAttribute("d", "M " + fromX + " " + fromY + " L " + toX + " " + toY);
+          return;
+        }
+        const centerX = stageRect.width / scale / 2;
+        const centerY = stageRect.height / scale / 2;
+        const fromAngle = Number(from.dataset.graphAngle || 0);
+        const toAngle = Number(to.dataset.graphAngle || 0);
+        const delta = ((toAngle - fromAngle + 540) % 360) - 180;
+        const middleAngle = (fromAngle + delta / 2) * Math.PI / 180;
+        const edgeIndex = Number(edge.dataset.edgeIndex || visibleEdgeIndex) || 0;
+        const radiusOffset = (edgeIndex % 3) * 7;
+        const controlX = centerX + Math.cos(middleAngle) * (stageRect.width / scale * .45 + radiusOffset);
+        const controlY = centerY + Math.sin(middleAngle) * (stageRect.height / scale * .42 + radiusOffset);
+        path.setAttribute("d", "M " + fromX + " " + fromY + " Q " + controlX + " " + controlY + " " + toX + " " + toY);
+      });
+      return;
+      const visibleNodeBottom = Math.max(
+        0,
+        ...[...nodeById.values()].map((node) => (node.getBoundingClientRect().bottom - stageRect.top) / scale),
+      );
+      const visibleEdges = [...stage.querySelectorAll("[data-graph-edge]")].filter((edge) => !edge.hasAttribute("hidden"));
+      const partOfGroups = new Map();
+      visibleEdges.filter((edge) => edge.dataset.edgeType === "part_of").forEach((edge) => {
+        const targetId = edge.dataset.edgeTo || "";
+        partOfGroups.set(targetId, [...(partOfGroups.get(targetId) || []), edge]);
+      });
+      partOfGroups.forEach((edges) => edges.sort((left, right) => {
+        const leftNode = nodeById.get(left.dataset.edgeFrom);
+        const rightNode = nodeById.get(right.dataset.edgeFrom);
+        if (!leftNode || !rightNode) return 0;
+        const leftRect = leftNode.getBoundingClientRect();
+        const rightRect = rightNode.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      }));
+      visibleEdges.forEach((edge, visibleEdgeIndex) => {
+        const from = nodeById.get(edge.dataset.edgeFrom);
+        const to = nodeById.get(edge.dataset.edgeTo);
+        const path = edge.querySelector("path");
+        if (!from || !to || !path) return;
+        const fromRect = from.getBoundingClientRect();
+        const toRect = to.getBoundingClientRect();
+        const edgeIndex = Number(edge.dataset.edgeIndex || visibleEdgeIndex) || 0;
+        const routeOffset = ((edgeIndex % 5) - 2) * 6;
+        const fromCenterX = (fromRect.left + fromRect.width / 2 - stageRect.left) / scale;
+        const fromCenterY = (fromRect.top + fromRect.height / 2 - stageRect.top) / scale;
+        const toCenterX = (toRect.left + toRect.width / 2 - stageRect.left) / scale;
+        const toCenterY = (toRect.top + toRect.height / 2 - stageRect.top) / scale;
+        if (edge.dataset.edgeType === "part_of") {
+          const travelsUp = fromCenterY >= toCenterY;
+          const group = partOfGroups.get(edge.dataset.edgeTo || "") || [edge];
+          const groupIndex = Math.max(0, group.indexOf(edge));
+          const sourceRects = group
+            .map((candidate) => nodeById.get(candidate.dataset.edgeFrom)?.getBoundingClientRect())
+            .filter(Boolean);
+          const nearestSourceTop = Math.min(...sourceRects.map((rect) => rect.top));
+          const lowerSourceRow = travelsUp && fromRect.top > nearestSourceTop + fromRect.height * .55;
+          const targetPortInset = Math.min(34, toRect.width * .16);
+          const targetPortRange = Math.max(0, toRect.width - targetPortInset * 2);
+          const endX = (toRect.left + targetPortInset + (group.length === 1 ? targetPortRange / 2 : targetPortRange * groupIndex / (group.length - 1)) - stageRect.left) / scale;
+          const endY = ((travelsUp ? toRect.bottom : toRect.top) - stageRect.top) / scale;
+          const sourceBoundaryY = ((travelsUp ? nearestSourceTop : Math.max(...sourceRects.map((rect) => rect.bottom))) - stageRect.top) / scale;
+          const middleY = endY + (sourceBoundaryY - endY) * .48 + routeOffset;
+          if (lowerSourceRow) {
+            const sameLane = Math.abs(fromCenterX - toCenterX) < 12;
+            const sourceColumn = Number(from.dataset.graphColumn || "0");
+            const exitsLeft = sameLane
+              ? sourceColumn <= 1
+                ? false
+                : sourceColumn >= 5
+                  ? true
+                  : groupIndex % 2 === 0
+              : fromCenterX > toCenterX;
+            const startX = ((exitsLeft ? fromRect.left : fromRect.right) - stageRect.left) / scale;
+            const startY = fromCenterY;
+            const gutterX = startX + (exitsLeft ? -1 : 1) * (22 + groupIndex * 7) + routeOffset;
+            path.setAttribute("d", "M " + startX + " " + startY + " H " + gutterX + " V " + middleY + " H " + endX + " V " + endY);
+          } else {
+            const startX = fromCenterX;
+            const startY = ((travelsUp ? fromRect.top : fromRect.bottom) - stageRect.top) / scale;
+            path.setAttribute("d", "M " + startX + " " + startY + " V " + middleY + " H " + endX + " V " + endY);
+          }
+        } else {
+          const sameLane = Math.abs(fromCenterX - toCenterX) < 12;
+          const sourceColumn = Number(from.dataset.graphColumn || "0");
+          const exitsRight = sameLane ? sourceColumn < 5 : fromCenterX < toCenterX;
+          const direction = exitsRight ? 1 : -1;
+          const startX = ((exitsRight ? fromRect.right : fromRect.left) - stageRect.left) / scale;
+          const startY = fromCenterY;
+          const endX = ((sameLane
+            ? exitsRight ? toRect.right : toRect.left
+            : exitsRight ? toRect.left : toRect.right) - stageRect.left) / scale;
+          const endY = toCenterY;
+          const gutterOffset = 14 + (edgeIndex % 2) * 6;
+          const sourceGutterX = startX + direction * gutterOffset;
+          const targetGutterX = endX + direction * (sameLane ? gutterOffset : -gutterOffset);
+          const busY = visibleNodeBottom + 18 + (edgeIndex % 4) * 8;
+          path.setAttribute("d", "M " + startX + " " + startY + " H " + sourceGutterX + " V " + busY + " H " + targetGutterX + " V " + endY + " H " + endX);
+        }
+      });
+    };
+
+    const updateGraphVisibility = () => {
+      const graph = graphElement();
+      if (!graph) return;
+      graph.dataset.focusMode = graphFocusOnly ? "focused" : "all";
+      const query = String(treeSearch.value || "").trim().toLowerCase();
+      const connected = graphConnectedGoalIds();
+      const visibleNodeIds = new Set();
+      graph.querySelectorAll("[data-graph-node]").forEach((node) => {
+        const matchesQuery = !query || String(node.dataset.goalSearch || "").includes(query);
+        const matchesStatus = selectedStatuses.size === 0 || selectedStatuses.has(node.dataset.goalStatus);
+        const matchesFocus = !graphFocusOnly || connected.has(node.dataset.selectGoal);
+        node.hidden = !(matchesQuery && matchesStatus && matchesFocus);
+        if (!node.hidden) visibleNodeIds.add(node.dataset.selectGoal);
+      });
+      const stage = graph.querySelector("[data-graph-stage]");
+      const graphNodes = [...graph.querySelectorAll("[data-graph-node]")];
+      graphNodes.forEach((node) => {
+        node.style.setProperty("--graph-column", node.dataset.graphColumn || "1");
+        node.style.setProperty("--graph-column-span", node.dataset.graphColumnSpan || "1");
+        node.style.setProperty("--graph-row", node.dataset.graphRow || "1");
+      });
+      const compactVisibleRole = (role, columns, startRow) => {
+        graphNodes
+          .filter((node) => !node.hidden && node.dataset.graphRole === role)
+          .sort((left, right) => Number(left.dataset.graphRow) - Number(right.dataset.graphRow) || Number(left.dataset.graphColumn) - Number(right.dataset.graphColumn))
+          .forEach((node, index) => {
+            node.style.setProperty("--graph-column", String(columns[index % columns.length]));
+            node.style.setProperty("--graph-row", String(startRow + Math.floor(index / columns.length) * 2));
+          });
+      };
+      if (graphFocusOnly) {
+        const roleStart = (role, fallback) => Math.min(
+          ...graphNodes.filter((node) => node.dataset.graphRole === role).map((node) => Number(node.dataset.graphRow) || fallback),
+          fallback,
+        );
+        compactVisibleRole("ancestor", [2, 4], roleStart("ancestor", 1));
+        compactVisibleRole("prerequisite", [1], roleStart("prerequisite", 3));
+        compactVisibleRole("dependent", [5], roleStart("dependent", 3));
+        compactVisibleRole("child", [1, 3, 5], roleStart("child", 7));
+      }
+      const visibleNodes = graphNodes.filter((node) => !node.hidden);
+      const visibleRows = Math.max(8, ...visibleNodes.map((node) => Number(node.style.getPropertyValue("--graph-row")) + 2));
+      const visibleChildren = visibleNodes.filter((node) => node.dataset.graphRole === "child");
+      const visibleOthers = visibleNodes.filter((node) => node.dataset.graphRole === "other");
+      const activeOtherStart = visibleChildren.length
+        ? Math.max(...visibleChildren.map((node) => Number(node.style.getPropertyValue("--graph-row")) + 3))
+        : Number(stage?.style.getPropertyValue("--graph-other-start")) || visibleRows;
+      stage?.style.setProperty("--graph-visible-rows", String(visibleRows));
+      stage?.style.setProperty("--graph-active-other-start", String(activeOtherStart));
+      graph.querySelector(".graph-region--children")?.toggleAttribute("hidden", visibleChildren.length === 0);
+      graph.querySelector(".graph-region--other")?.toggleAttribute("hidden", visibleOthers.length === 0);
+      const pathSources = new Set();
+      const pathTargets = new Set();
+      graph.querySelectorAll("[data-graph-edge]").forEach((edge) => {
+        const hidden = !graphRelationTypes.has(edge.dataset.edgeType) ||
+          !visibleNodeIds.has(edge.dataset.edgeFrom) ||
+          !visibleNodeIds.has(edge.dataset.edgeTo);
+        edge.toggleAttribute("hidden", hidden);
+        const selectedPath = !hidden && (edge.dataset.edgeFrom === selected || edge.dataset.edgeTo === selected);
+        edge.classList.toggle("is-selected-path", selectedPath);
+        if (selectedPath) {
+          if (edge.dataset.edgeFrom) pathSources.add(edge.dataset.edgeFrom);
+          if (edge.dataset.edgeTo) pathTargets.add(edge.dataset.edgeTo);
+        }
+      });
+      graph.querySelectorAll("[data-graph-node]").forEach((node) => {
+        const goalId = node.dataset.selectGoal;
+        node.classList.toggle("is-connected-path", pathSources.has(goalId) || pathTargets.has(goalId));
+        node.classList.toggle("is-path-source", pathSources.has(goalId));
+        node.classList.toggle("is-path-target", pathTargets.has(goalId));
+      });
+      graph.querySelectorAll("[data-graph-relation]").forEach((button) => {
+        const active = graphRelationTypes.has(button.dataset.graphRelation);
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      const focusButton = graph.querySelector("[data-graph-focus]");
+      focusButton?.classList.toggle("is-active", graphFocusOnly);
+      focusButton?.setAttribute("aria-pressed", String(graphFocusOnly));
+      const focusLabel = focusButton?.querySelector("span");
+      if (focusLabel) focusLabel.textContent = graphFocusOnly ? L("直接相关") : L("完整网络");
+      requestAnimationFrame(drawGoalGraph);
+    };
+
+    const setGraphZoom = (value, persist = true) => {
+      const graph = graphElement();
+      const stage = graph?.querySelector("[data-graph-stage]");
+      graphZoom = Math.min(1.25, Math.max(.9, Math.round((Number(value) || 1) * 100) / 100));
+      if (stage) {
+        stage.dataset.graphScale = String(graphZoom);
+        stage.style.zoom = String(graphZoom);
+      }
+      const output = graph?.querySelector("[data-graph-zoom-value]");
+      if (output) output.textContent = Math.round(graphZoom * 100) + "%";
+      graph?.querySelector('[data-graph-zoom="out"]')?.toggleAttribute("disabled", graphZoom <= .9);
+      graph?.querySelector('[data-graph-zoom="in"]')?.toggleAttribute("disabled", graphZoom >= 1.25);
+      requestAnimationFrame(drawGoalGraph);
+      if (persist) queueSave();
+    };
+
+    const setWorkspaceMode = (view, persist = true) => {
+      const graph = graphElement();
+      const nextMode = view === "graph" && graph
+        ? "graph"
+        : view === "runtime" && tuiPane
+          ? "runtime"
+          : "focus";
+      navigatorView = nextMode === "graph" ? "graph" : "list";
+      treePane.dataset.navigatorView = navigatorView;
+      workspace.dataset.navigatorView = navigatorView;
+      workspace.dataset.workspaceMode = nextMode;
+      workspace.classList.toggle("is-graph-view", nextMode === "graph");
+      documentPane.hidden = nextMode !== "focus";
+      if (tuiPane) tuiPane.hidden = nextMode !== "runtime";
+      document.querySelectorAll("button[data-navigator-view]").forEach((button) => {
+        const active = button.dataset.navigatorView === navigatorView;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      document.querySelectorAll("button[data-workbench-view]").forEach((button) => {
+        const active = button.dataset.workbenchView === nextMode;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", String(active));
+        button.setAttribute("tabindex", active ? "0" : "-1");
+      });
+      if (graph) graph.hidden = nextMode !== "graph";
+      if (nextMode === "graph") updateGraphVisibility();
+      if (matchMedia("(max-width: 760px)").matches) setMobileView(nextMode === "runtime" ? "tui" : "document");
+      if (persist) queueSave();
+    };
+
+    const setNavigatorView = (view, persist = true) => {
+      setWorkspaceMode(view === "graph" ? "graph" : "focus", persist);
+    };
+
+    const goalPanelFromHash = () => {
+      const targetId = decodeURIComponent(location.hash.slice(1));
+      if (!targetId) return "";
+      const target = document.getElementById(targetId);
+      return target?.closest?.("[data-goal-panel]")?.dataset.goalPanel || "";
+    };
+
+    const goalFactorFromHash = () => {
+      const targetId = decodeURIComponent(location.hash.slice(1));
+      if (!targetId) return "";
+      const target = document.getElementById(targetId);
+      return target?.closest?.("[data-goal-factor-panel]")?.dataset.goalFactorPanel || "";
+    };
+
+    const setGoalPanel = (panelName, persist = true, updateHash = false, resetScroll = false) => {
+      const article = documentPane.querySelector("[data-goal-view]");
+      if (!article) return false;
+      const panel = goalPanelKeys.includes(panelName) ? panelName : "overview";
+      const activePanel = article.querySelector('[data-goal-panel="' + panel + '"]');
+      if (!activePanel) return false;
+      article.dataset.activePanel = panel;
+      article.querySelectorAll("[data-goal-tab]").forEach((button) => {
+        const active = button.dataset.goalTab === panel;
+        button.setAttribute("aria-selected", String(active));
+        button.setAttribute("tabindex", active ? "0" : "-1");
+      });
+      article.querySelectorAll("[data-goal-panel]").forEach((candidate) => {
+        candidate.hidden = candidate !== activePanel;
+      });
+      if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
+      if (resetScroll) article.querySelector(".goal-workspace-nav")?.scrollIntoView({ block: "start" });
+      if (persist) queueSave();
+      return true;
+    };
+
+    const setGoalFactor = (factorName, persist = true, updateHash = false) => {
+      const article = documentPane.querySelector("[data-goal-view]");
+      if (!article) return false;
+      const factor = goalFactorKeys.includes(factorName) ? factorName : "relations";
+      const activePanel = article.querySelector('[data-goal-factor-panel="' + factor + '"]');
+      if (!activePanel) return false;
+      article.dataset.activeFactor = factor;
+      article.querySelectorAll("[data-goal-factor-tab]").forEach((button) => {
+        const active = button.dataset.goalFactorTab === factor;
+        button.setAttribute("aria-selected", String(active));
+        button.setAttribute("tabindex", active ? "0" : "-1");
+      });
+      article.querySelectorAll("[data-goal-factor-panel]").forEach((candidate) => {
+        candidate.hidden = candidate !== activePanel;
+      });
+      if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
+      if (persist) queueSave();
+      return true;
+    };
+
+    const resetQuickRecordDialog = (quickDialog) => {
+      if (!quickDialog) return;
+      const choices = quickDialog.querySelector("[data-quick-record-choices]");
+      if (choices) choices.hidden = false;
+      quickDialog.querySelectorAll("[data-quick-record-panel]").forEach((panel) => { panel.hidden = true; });
+      const title = quickDialog.querySelector("[data-quick-record-title]");
+      if (title) title.textContent = L("快速记录");
     };
 
     const setTuiWidth = (value, persist = true) => {
@@ -4297,13 +6830,20 @@ const CLIENT_SCRIPT = `
       disclosures: [...document.querySelectorAll("[data-persist-open][open]")].map((item) => item.dataset.persistOpen),
       treeTop: treeScroll.scrollTop,
       documentTop: documentPane.scrollTop,
-      treeWidth: treePane.getBoundingClientRect().width,
+      treeWidth: parseFloat(workspace.style.getPropertyValue("--tree-width")) || treePane.getBoundingClientRect().width,
       tuiWidth: workspace.classList.contains("is-tui-collapsed")
         ? parseFloat(workspace.style.getPropertyValue("--tui-width")) || undefined
         : tuiPane?.getBoundingClientRect().width,
       query: treeSearch.value,
       statuses: [...selectedStatuses],
       mobileView: workspace.dataset.mobileView || "tree",
+      navigatorView,
+      workspaceMode: workspace.dataset.workspaceMode || "focus",
+      graphFocusOnly,
+      graphZoom,
+      graphRelationTypes: [...graphRelationTypes],
+      goalPanel: documentPane.querySelector('[data-goal-tab][aria-selected="true"]')?.dataset.goalTab || "overview",
+      goalFactor: documentPane.querySelector('[data-goal-factor-tab][aria-selected="true"]')?.dataset.goalFactorTab || "relations",
     });
 
     const applyUiState = (ui) => {
@@ -4321,10 +6861,25 @@ const CLIENT_SCRIPT = `
       });
       treeSearch.value = ui?.query || "";
       setSelectedStatuses(ui?.statuses || []);
+      graphFocusOnly = ui?.graphFocusOnly === true;
+      graphZoom = Number(ui?.graphZoom) || graphZoom;
+      const savedGraphTypes = Array.isArray(ui?.graphRelationTypes)
+        ? ui.graphRelationTypes.filter((type) => type === "part_of" || type === "depends_on")
+        : ["part_of", "depends_on"];
+      graphRelationTypes = new Set(savedGraphTypes.length ? savedGraphTypes : ["part_of", "depends_on"]);
       filterTree(ui?.query || "");
+      setWorkspaceMode(ui?.workspaceMode || (ui?.navigatorView === "graph" ? "graph" : "focus"), false);
+      setGraphZoom(graphZoom, false);
+      setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
+      setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
       documentPane.scrollTop = ui?.selected === selected ? Number(ui?.documentTop || 0) : 0;
-      setMobileView(ui?.mobileView || "tree");
+      const restoredMobileView = desktopCompanionActive && selected ? "document" : ui?.mobileView || "tree";
+      if (matchMedia("(max-width: 760px)").matches) {
+        if (restoredMobileView === "tui") setWorkspaceMode("runtime", false);
+        if (restoredMobileView === "document") setWorkspaceMode("focus", false);
+      }
+      setMobileView(restoredMobileView);
     };
 
     const saveUiState = () => {
@@ -4352,13 +6907,26 @@ const CLIENT_SCRIPT = `
       if (!item) return false;
       selected = goalId;
       document.querySelector("[data-tui-pane]")?.setAttribute("data-goal-id", goalId);
-      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: { goalId } }));
+      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: {
+        goalId,
+        goalTitle: item.goal.title,
+        statusLabel: item.status_label,
+        statusMeaning: item.status_meaning,
+        parentReadOnly: Boolean(item.is_compound_parent),
+        children: item.children || [],
+      } }));
       document.querySelectorAll(".tree-node[data-select-goal]").forEach((button) => {
         const active = button.dataset.selectGoal === goalId;
         button.classList.toggle("is-selected", active);
         button.setAttribute("aria-pressed", String(active));
         if (active) expandAncestors(button);
       });
+      treeScroll.querySelectorAll(".graph-node[data-select-goal]").forEach((button) => {
+        const active = button.dataset.selectGoal === goalId;
+        button.classList.toggle("is-selected", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      if (navigatorView === "graph") updateGraphVisibility();
       document.title = item.goal.title + " · GoalBoard";
       if (resetScroll) documentPane.scrollTop = 0;
       return true;
@@ -4369,10 +6937,13 @@ const CLIENT_SCRIPT = `
       template.innerHTML = String(html || "").trim();
       const nextView = template.content.querySelector("[data-goal-view]");
       if (!nextView) throw new Error("Goal 正文响应不完整");
-      documentPane.replaceChildren(nextView);
+      const paneHeader = documentPane.querySelector(":scope > .desktop-pane-header");
+      documentPane.replaceChildren(...(paneHeader ? [paneHeader, nextView] : [nextView]));
       updateAllRelationFormPreviews();
       document.querySelectorAll("[data-risk-state-form]").forEach(updateRiskStatePreview);
       document.querySelectorAll(".risk-goal-picker").forEach(updateRiskGoalCount);
+      setGoalPanel(goalPanelFromHash() || "overview", false);
+      setGoalFactor(goalFactorFromHash() || "relations", false);
     };
 
     const loadGoalDocument = async (goalId) => {
@@ -4407,7 +6978,7 @@ const CLIENT_SCRIPT = `
       }
       const currentView = documentPane.querySelector("[data-goal-view]");
       if (goalId === selected && currentView?.dataset.goalView === goalId) {
-        if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
+        if (matchMedia("(max-width: 760px)").matches) setWorkspaceMode("focus", false);
         return;
       }
       const fallbackGoalId = currentView?.dataset.goalView || selected;
@@ -4419,9 +6990,9 @@ const CLIENT_SCRIPT = `
         return;
       }
       if (updateHistory) {
-        history.pushState({ goalId }, "", goalPageBase() + encodeURIComponent(goalId));
+        history.pushState({ goalId }, "", goalPageUrl(goalId));
       }
-      if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
+      if (matchMedia("(max-width: 760px)").matches) setWorkspaceMode("focus", false);
       saveUiState();
     };
 
@@ -4434,10 +7005,10 @@ const CLIENT_SCRIPT = `
       const selectedCount = selectedStatuses.size;
       const summary = treeFilter?.querySelector("[data-tree-filter-summary]");
       const clear = treeFilter?.querySelector("[data-clear-status-filter]");
-      if (summary) summary.textContent = selectedCount ? "已选择 " + selectedCount + " 种状态" : "显示全部状态";
+      if (summary) summary.textContent = selectedCount ? L("已选择 {count} 种状态", { count: selectedCount }) : L("显示全部状态");
       if (clear) clear.disabled = selectedCount === 0;
       treeFilterTrigger?.classList.toggle("is-active", selectedCount > 0);
-      treeFilterTrigger?.setAttribute("aria-label", selectedCount ? "筛选目标，已选择 " + selectedCount + " 种状态" : "筛选目标");
+      treeFilterTrigger?.setAttribute("aria-label", selectedCount ? L("筛选目标，已选择 {count} 种状态", { count: selectedCount }) : L("筛选目标"));
     }
 
     function setTreeFilterOpen(open, focusFirst = false) {
@@ -4482,6 +7053,7 @@ const CLIENT_SCRIPT = `
           : L("显示 {shown} / {total} 个{suffix}目标", { shown: matched.length, total: items.length, suffix: suffixText });
       }
       if (empty) empty.hidden = matched.length > 0 || items.length === 0;
+      updateGraphVisibility();
     }
 
     const searchInteractionActive = () => searchComposing || Date.now() < searchBusyUntil;
@@ -4605,11 +7177,111 @@ const CLIENT_SCRIPT = `
       }
     };
 
-    const submitDecisionForm = async (decisionForm, endpoint, decision, successMessage) => {
+    const decisionReceiptContext = (decisionForm) => {
+      const ownerLink = decisionForm.closest(".decision-goal-group")?.querySelector("a.decision-owner-link");
+      return {
+        goalTitle: ownerLink?.querySelector("strong")?.textContent?.trim() || "",
+        goalHref: ownerLink?.getAttribute("href") || "",
+      };
+    };
+
+    const showDecisionReceipt = (message, context) => {
+      const center = document.querySelector("[data-decision-center]");
+      if (!center) {
+        showToast(message);
+        return;
+      }
+      center.querySelector("[data-decision-receipt]")?.remove();
+      const receipt = document.createElement("aside");
+      receipt.className = "decision-receipt";
+      receipt.dataset.decisionReceipt = "true";
+      receipt.setAttribute("role", "status");
+      receipt.setAttribute("tabindex", "-1");
+      const copy = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = L("已记录你的决定");
+      const detail = document.createElement("span");
+      detail.textContent = message + " " + (center.querySelector(".decision-record") ? L("下一步：继续处理下面的待决定事项。") : L("下一步：返回 Goal 查看结果。"));
+      copy.append(title, detail);
+      receipt.append(copy);
+      if (context?.goalHref) {
+        const link = document.createElement("a");
+        link.href = context.goalHref;
+        link.textContent = context.goalTitle ? L("返回「{title}」", { title: context.goalTitle }) : L("返回 Goal");
+        receipt.append(link);
+      }
+      center.querySelector(".decision-center-header")?.after(receipt);
+      receipt.focus({ preventScroll: true });
+    };
+
+    const showFactorReceipt = (factor, titleText, detailText) => {
+      setGoalPanel("factors", false);
+      setGoalFactor(factor, false, true);
+      documentPane.querySelector("[data-factor-write-receipt]")?.remove();
+      const panel = documentPane.querySelector('[data-goal-factor-panel="' + factor + '"]');
+      if (!panel) {
+        showToast(titleText);
+        return;
+      }
+      const receipt = document.createElement("aside");
+      receipt.className = "factor-write-receipt";
+      receipt.dataset.factorWriteReceipt = "true";
+      receipt.setAttribute("role", "status");
+      receipt.setAttribute("tabindex", "-1");
+      const title = document.createElement("strong");
+      title.textContent = titleText;
+      const detail = document.createElement("span");
+      detail.textContent = detailText;
+      receipt.append(title, detail);
+      panel.querySelector(":scope > header")?.after(receipt);
+      receipt.focus({ preventScroll: true });
+    };
+
+    const requireDecisionText = (decisionForm, errorBox, fieldName, message) => {
+      const field = decisionForm.querySelector('[name="' + fieldName + '"]');
+      if (String(field?.value || "").trim()) {
+        field?.removeAttribute("aria-invalid");
+        return false;
+      }
+      errorBox.textContent = L(message);
+      errorBox.hidden = false;
+      field?.setAttribute("aria-invalid", "true");
+      field?.focus();
+      const clearError = () => {
+        if (!String(field?.value || "").trim()) return;
+        field.removeAttribute("aria-invalid");
+        errorBox.hidden = true;
+        field.removeEventListener("input", clearError);
+        field.removeEventListener("change", clearError);
+      };
+      field?.addEventListener("input", clearError);
+      field?.addEventListener("change", clearError);
+      return true;
+    };
+
+    const humanDecisionError = (message, fallback) => String(message || fallback)
+      .replaceAll("Contract Proposal", "目标说明")
+      .replaceAll("Contract", "目标说明")
+      .replaceAll("Candidate Goal", "新发现的工作")
+      .replaceAll("Candidate", "新发现的工作")
+      .replaceAll("Goal Spine", "Goal Tree")
+      .replaceAll("Rewire", "Goal 关系调整")
+      .replaceAll("Review", "结果确认")
+      .replaceAll("Risk", "风险")
+      .replaceAll("Impact", "影响范围")
+      .replaceAll("Policy", "工作规则")
+      .replaceAll("Runtime", "执行工具");
+
+    const submitDecisionForm = async (decisionForm, submitter, endpoint, decision, successMessage) => {
       const buttons = [...decisionForm.querySelectorAll('button[type="submit"]')];
       const errorBox = decisionForm.querySelector("[data-decision-error]");
       const reason = String(new FormData(decisionForm).get("reason") || "").trim();
+      const receiptContext = decisionReceiptContext(decisionForm);
+      if (requireDecisionText(decisionForm, errorBox, "reason", "请填写决定理由或修改意见")) return;
+      const buttonStates = buttons.map((button) => button.disabled);
+      const submitLabel = submitter?.textContent;
       buttons.forEach((button) => { button.disabled = true; });
+      if (submitter) submitter.textContent = L("正在保存…");
       errorBox.hidden = true;
       try {
         const response = await fetch(route(endpoint), {
@@ -4620,11 +7292,12 @@ const CLIENT_SCRIPT = `
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "决定提交失败");
         await refreshBoard(true);
-        showToast(successMessage);
+        showDecisionReceipt(typeof successMessage === "function" ? successMessage(result) : successMessage, receiptContext);
       } catch (error) {
-        errorBox.textContent = error.message || "决定提交失败，请检查输入";
+        errorBox.textContent = humanDecisionError(error.message, "决定提交失败，请检查输入后重试");
         errorBox.hidden = false;
-        buttons.forEach((button) => { button.disabled = false; });
+        buttons.forEach((button, index) => { button.disabled = buttonStates[index]; });
+        if (submitter) submitter.textContent = submitLabel;
       }
     };
 
@@ -4667,6 +7340,12 @@ const CLIENT_SCRIPT = `
     document.addEventListener("change", (event) => {
       const changed = event.target instanceof Element ? event.target : null;
       if (!changed) return;
+      const changedFactorForm = changed.closest("[data-relation-form], [data-risk-create-form], [data-risk-edit-form], [data-impact-create-form], [data-impact-edit-form], [data-policy-form]");
+      if (changedFactorForm) {
+        changed.removeAttribute("aria-invalid");
+        const factorError = changedFactorForm.querySelector("[data-relation-error], [data-risk-error], [data-impact-error], [data-policy-error]");
+        if (factorError) factorError.hidden = true;
+      }
       const statusFilter = changed.closest("[data-status-filter]");
       if (statusFilter) {
         if (statusFilter.checked) selectedStatuses.add(statusFilter.value);
@@ -4677,14 +7356,32 @@ const CLIENT_SCRIPT = `
         return;
       }
       const relationForm = changed.closest("[data-relation-form]");
-      if (relationForm) updateRelationFormPreview(relationForm);
+      if (relationForm) {
+        if ((changed.name === "direction" || changed.name === "type") && relationForm.elements.relation_intent) {
+          relationForm.elements.relation_intent.value = "other";
+        } else if (changed.name === "relation_intent" && changed.value === "other") {
+          relationForm.elements.direction.value = "";
+          relationForm.elements.type.value = "";
+          const advanced = relationForm.querySelector("[data-progressive-fields]");
+          if (advanced) advanced.open = true;
+        }
+        updateRelationFormPreview(relationForm);
+      }
       const riskStateForm = changed.closest("[data-risk-state-form]");
       if (riskStateForm) updateRiskStatePreview(riskStateForm);
       const riskGoalPicker = changed.closest(".risk-goal-picker");
       if (riskGoalPicker) updateRiskGoalCount(riskGoalPicker);
     });
     document.addEventListener("input", (event) => {
-      const filter = event.target.closest?.("[data-risk-goal-filter]");
+      const changed = event.target instanceof Element ? event.target : null;
+      if (!changed) return;
+      const changedFactorForm = changed.closest("[data-relation-form], [data-risk-create-form], [data-risk-edit-form], [data-impact-create-form], [data-impact-edit-form], [data-policy-form]");
+      if (changedFactorForm) {
+        changed.removeAttribute("aria-invalid");
+        const factorError = changedFactorForm.querySelector("[data-relation-error], [data-risk-error], [data-impact-error], [data-policy-error]");
+        if (factorError) factorError.hidden = true;
+      }
+      const filter = changed.closest?.("[data-risk-goal-filter]");
       if (!filter) return;
       const query = String(filter.value || "").trim().toLocaleLowerCase();
       filter.closest(".risk-goal-picker")?.querySelectorAll("[data-risk-goal-option]").forEach((option) => {
@@ -4734,10 +7431,6 @@ const CLIENT_SCRIPT = `
       };
       tuiResizer.addEventListener("pointerup", finishTuiResize);
       tuiResizer.addEventListener("pointercancel", finishTuiResize);
-      tuiResizer.addEventListener("dblclick", (event) => {
-        event.preventDefault();
-        document.dispatchEvent(new CustomEvent("goalboard:tui-collapse"));
-      });
       tuiResizer.addEventListener("keydown", (event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         event.preventDefault();
@@ -4774,6 +7467,49 @@ const CLIENT_SCRIPT = `
         const collapsed = item.classList.toggle("is-collapsed");
         treeToggle.setAttribute("aria-expanded", String(!collapsed));
         saveUiState();
+        return;
+      }
+      const navigatorViewButton = target.closest("button[data-navigator-view]");
+      if (navigatorViewButton) {
+        setNavigatorView(navigatorViewButton.dataset.navigatorView);
+        return;
+      }
+      const workbenchViewButton = target.closest("button[data-workbench-view]");
+      if (workbenchViewButton) {
+        setWorkspaceMode(workbenchViewButton.dataset.workbenchView);
+        return;
+      }
+      const graphRelationButton = target.closest("[data-graph-relation]");
+      if (graphRelationButton) {
+        const type = graphRelationButton.dataset.graphRelation;
+        if (graphRelationTypes.has(type)) graphRelationTypes.delete(type);
+        else graphRelationTypes.add(type);
+        updateGraphVisibility();
+        queueSave();
+        return;
+      }
+      if (target.closest("[data-graph-focus]")) {
+        graphFocusOnly = !graphFocusOnly;
+        updateGraphVisibility();
+        queueSave();
+        return;
+      }
+      if (target.closest("[data-companion-runtime-open]")) {
+        setMobileView("tui");
+        queueSave();
+        return;
+      }
+      const graphZoomButton = target.closest("[data-graph-zoom]");
+      if (graphZoomButton) {
+        const action = graphZoomButton.dataset.graphZoom;
+        if (action === "fit") {
+          const graph = graphElement();
+          const viewport = graph?.querySelector("[data-graph-viewport]");
+          const stage = graph?.querySelector("[data-graph-stage]");
+          setGraphZoom(viewport && stage ? (viewport.clientWidth - 16) / stage.offsetWidth : 1);
+        } else {
+          setGraphZoom(action === "in" ? graphZoom + .1 : graphZoom - .1);
+        }
         return;
       }
       const goalLink = target.closest("[data-select-goal]");
@@ -4819,9 +7555,98 @@ const CLIENT_SCRIPT = `
       }
       const mobileTarget = target.closest("[data-mobile-target]");
       if (mobileTarget) {
-        setMobileView(mobileTarget.dataset.mobileTarget);
+        const mobileView = mobileTarget.dataset.mobileTarget;
+        if (mobileView === "document") setWorkspaceMode("focus", false);
+        if (mobileView === "tui") setWorkspaceMode("runtime", false);
+        setMobileView(mobileView);
         saveUiState();
         return;
+      }
+      const goalTab = target.closest("[data-goal-tab]");
+      if (goalTab) {
+        setGoalPanel(goalTab.dataset.goalTab, true, true, false);
+        return;
+      }
+      const factorTab = target.closest("[data-goal-factor-tab]");
+      if (factorTab) {
+        setGoalFactor(factorTab.dataset.goalFactorTab, true, true);
+        return;
+      }
+      const openQuickRecord = target.closest("[data-open-quick-record]");
+      if (openQuickRecord) {
+        const article = openQuickRecord.closest("[data-goal-view]");
+        const quickDialog = article?.querySelector("[data-quick-record-dialog]");
+        if (!quickDialog) return;
+        quickDialog._opener = openQuickRecord;
+        resetQuickRecordDialog(quickDialog);
+        quickDialog.showModal();
+        requestAnimationFrame(() => quickDialog.querySelector("[data-quick-record-type]")?.focus());
+        return;
+      }
+      const closeQuickRecord = target.closest("[data-close-quick-record]");
+      if (closeQuickRecord) {
+        const quickDialog = closeQuickRecord.closest("[data-quick-record-dialog]");
+        quickDialog?.close();
+        resetQuickRecordDialog(quickDialog);
+        quickDialog?._opener?.focus();
+        return;
+      }
+      const quickRecordType = target.closest("[data-quick-record-type]");
+      if (quickRecordType) {
+        const quickDialog = quickRecordType.closest("[data-quick-record-dialog]");
+        const choices = quickDialog?.querySelector("[data-quick-record-choices]");
+        const panel = quickDialog?.querySelector('[data-quick-record-panel="' + quickRecordType.dataset.quickRecordType + '"]');
+        if (!quickDialog || !panel) return;
+        if (choices) choices.hidden = true;
+        quickDialog.querySelectorAll("[data-quick-record-panel]").forEach((candidate) => { candidate.hidden = candidate !== panel; });
+        const title = quickDialog.querySelector("[data-quick-record-title]");
+        if (title) title.textContent = quickRecordType.querySelector("strong")?.textContent || L("快速记录");
+        requestAnimationFrame(() => panel.querySelector("input:not([type=hidden]), textarea, select")?.focus());
+        return;
+      }
+      const quickRecordBack = target.closest("[data-quick-record-back]");
+      if (quickRecordBack) {
+        const quickDialog = quickRecordBack.closest("[data-quick-record-dialog]");
+        resetQuickRecordDialog(quickDialog);
+        requestAnimationFrame(() => quickDialog?.querySelector("[data-quick-record-type]")?.focus());
+        return;
+      }
+      if (target.closest("[data-open-goal-edit]")) {
+        setGoalPanel("completion", true, true, true);
+        const editor = document.querySelector(".goal-edit-disclosure");
+        if (editor) {
+          editor.open = true;
+          editor.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+          requestAnimationFrame(() => editor.querySelector("input, textarea, select")?.focus());
+        }
+        return;
+      }
+      if (target.closest("[data-open-goal-tui]")) {
+        setMobileView("tui");
+        saveUiState();
+        const addTerminal = document.querySelector("[data-tui-add]");
+        if (addTerminal) addTerminal.click();
+        return;
+      }
+      const sectionLink = target.closest('a[href^="#"]');
+      if (sectionLink) {
+        const targetId = sectionLink.getAttribute("href")?.slice(1);
+        const targetElement = targetId ? document.getElementById(targetId) : null;
+        if (targetElement) {
+          event.preventDefault();
+          const targetPanel = targetElement.closest("[data-goal-panel]")?.dataset.goalPanel;
+          if (targetPanel) setGoalPanel(targetPanel, true);
+          const targetFactor = targetElement.closest("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
+          if (targetFactor) setGoalFactor(targetFactor, true);
+          let disclosure = targetElement.closest("details");
+          while (disclosure) {
+            disclosure.open = true;
+            disclosure = disclosure.parentElement?.closest("details");
+          }
+          history.replaceState(null, "", "#" + targetId);
+          requestAnimationFrame(() => targetElement.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+          return;
+        }
       }
       const copy = target.closest("[data-copy-value]");
       if (copy) {
@@ -4937,15 +7762,117 @@ const CLIENT_SCRIPT = `
         await submitGoalTrashForm();
         return;
       }
+      const goalTreeDecisionForm = submittedForm.closest?.("[data-goal-tree-decision-form]");
+      if (goalTreeDecisionForm) {
+        event.preventDefault();
+        const decision = event.submitter?.value;
+        const buttons = [...goalTreeDecisionForm.querySelectorAll('button[type="submit"]')];
+        const errorBox = goalTreeDecisionForm.querySelector("[data-decision-error]");
+        const values = new FormData(goalTreeDecisionForm);
+        const reason = String(values.get("reason") || "").trim();
+        const itemIds = values.getAll("item_id").map((value) => String(value));
+        const receiptContext = decisionReceiptContext(goalTreeDecisionForm);
+        const hasSystemIssues = goalTreeDecisionForm.dataset.hasSystemIssues === "true";
+        if (decision === "repair-risks") {
+          const repairs = [];
+          let firstMissing = null;
+          for (const repairGroup of goalTreeDecisionForm.querySelectorAll("[data-risk-proposal-repair]")) {
+            const selected = repairGroup.querySelector('input[type="radio"]:checked');
+            const localError = repairGroup.querySelector("[data-risk-repair-error]");
+            if (!selected) {
+              localError.textContent = L("请选择这条风险的处理方式");
+              localError.hidden = false;
+              firstMissing ||= repairGroup.querySelector('input[type="radio"]');
+              continue;
+            }
+            localError.hidden = true;
+            repairs.push({
+              item_id: repairGroup.dataset.riskItemId,
+              treatment: selected.value,
+              treatment_plan: String(repairGroup.querySelector("[data-risk-treatment-plan]")?.value || "").trim(),
+            });
+          }
+          if (firstMissing) {
+            firstMissing.focus();
+            return;
+          }
+          if (!repairs.length) {
+            errorBox.textContent = L("这份方案已经变化，暂时不能提交。请刷新后重试。");
+            errorBox.hidden = false;
+            return;
+          }
+          const submitLabel = event.submitter?.textContent;
+          const buttonStates = buttons.map((button) => button.disabled);
+          buttons.forEach((button) => { button.disabled = true; });
+          if (event.submitter) event.submitter.textContent = L("正在保存…");
+          errorBox.hidden = true;
+          try {
+            const response = await fetch(route("/api/goal-tree-proposals/" + encodeURIComponent(goalTreeDecisionForm.dataset.goalTreeProposalId) + "/decision"), {
+              method: "POST",
+              headers: goalboardControlHeaders(),
+              body: JSON.stringify({ risk_repairs: repairs }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || L("风险处理保存失败"));
+            await refreshBoard(true);
+            showDecisionReceipt(L("风险处理已保存。方案的其他内容没有改变，仍需补全的问题会继续显示。"), receiptContext);
+          } catch (error) {
+            errorBox.textContent = humanDecisionError(error.message, L("风险处理保存失败，请重试"));
+            errorBox.hidden = false;
+            buttons.forEach((button, index) => { button.disabled = buttonStates[index]; });
+            if (event.submitter) event.submitter.textContent = submitLabel;
+          }
+          return;
+        }
+        if ((decision === "confirm" || (decision === "reject" && !hasSystemIssues)) &&
+            requireDecisionText(goalTreeDecisionForm, errorBox, "reason", "请填写决定理由或修改意见")) return;
+        if (!itemIds.length) {
+          errorBox.textContent = L("这份方案已经变化，暂时不能提交。请让 Runtime 按最新状态重新整理。");
+          errorBox.hidden = false;
+          return;
+        }
+        const submitLabel = event.submitter?.textContent;
+        const buttonStates = buttons.map((button) => button.disabled);
+        buttons.forEach((button) => { button.disabled = true; });
+        if (event.submitter) event.submitter.textContent = L("正在保存…");
+        errorBox.hidden = true;
+        try {
+          const response = await fetch(route("/api/goal-tree-proposals/" + encodeURIComponent(goalTreeDecisionForm.dataset.goalTreeProposalId) + "/decision"), {
+            method: "POST",
+            headers: goalboardControlHeaders(),
+            body: JSON.stringify({
+              decisions: itemIds.map((itemId) => ({ item_id: itemId, decision, reason })),
+              reason,
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || L("方案决定提交失败"));
+          if (Array.isArray(result.conflict_item_ids) && result.conflict_item_ids.length) {
+            throw new Error(L("GoalBoard 已经发生变化。请让 Runtime 更新方案后再决定。"));
+          }
+          await refreshBoard(true);
+          showDecisionReceipt(
+            decision === "confirm" ? L("这份 Goal 方案已经采用，相关 Goal 和关系已更新。") : L("这份 Goal 方案已退回，当前 Goal Tree 保持不变。"),
+            receiptContext,
+          );
+        } catch (error) {
+          errorBox.textContent = humanDecisionError(error.message, L("方案决定提交失败，请重试"));
+          errorBox.hidden = false;
+          buttons.forEach((button, index) => { button.disabled = buttonStates[index]; });
+          if (event.submitter) event.submitter.textContent = submitLabel;
+        }
+        return;
+      }
       const contractDecisionForm = submittedForm.closest?.("[data-contract-decision-form]");
       if (contractDecisionForm) {
         event.preventDefault();
         const decision = event.submitter?.value;
         await submitDecisionForm(
           contractDecisionForm,
+          event.submitter,
           "/api/contract-proposals/" + encodeURIComponent(contractDecisionForm.dataset.contractProposalId) + "/decision",
           decision,
-          decision === "approved" ? "Contract 已确认，Goal 现在可进入执行" : "提案已退回，Draft 保持不变",
+          decision === "approved" ? L("目标说明已确认，现在可以进入执行。") : L("目标说明已退回，草稿保持不变。"),
         );
         return;
       }
@@ -4956,9 +7883,10 @@ const CLIENT_SCRIPT = `
         const decision = event.submitter?.value;
         await submitDecisionForm(
           candidateDecisionForm,
+          event.submitter,
           "/api/candidates/" + encodeURIComponent(candidateDecisionForm.dataset.candidateId) + "/decision",
           decision,
-          decision === "approved" ? "Candidate 已纳入 Goal Tree，等待单独确认 Rewire" : "Candidate 已退回并保留你的意见",
+          decision === "approved" ? L("新工作已加入 Goal Tree；需要调整关系时会继续出现在这里。") : L("这项新工作暂未加入，你的意见已保留。"),
         );
         return;
       }
@@ -4969,9 +7897,24 @@ const CLIENT_SCRIPT = `
         const decision = event.submitter?.value;
         await submitDecisionForm(
           rewireDecisionForm,
+          event.submitter,
           "/api/rewires/" + encodeURIComponent(rewireDecisionForm.dataset.rewireId) + "/decision",
           decision,
-          decision === "confirmed" ? "关系调整已确认" : "关系调整已拒绝，已有 Goal 保持不变",
+          decision === "confirmed"
+            ? (result) => {
+                const impact = result?.rewire?.impact || {};
+                const added = Array.isArray(impact.added_relation_ids) ? impact.added_relation_ids.length : 0;
+                const removed = Array.isArray(impact.deactivated_relation_ids) ? impact.deactivated_relation_ids.length : 0;
+                const risks = Array.isArray(impact.added_risk_ids) ? impact.added_risk_ids.length : 0;
+                const changes = [];
+                if (added) changes.push(L("新增 {count} 条关系", { count: added }));
+                if (removed) changes.push(L("解除 {count} 条关系", { count: removed }));
+                if (risks) changes.push(L("新增 {count} 项风险", { count: risks }));
+                return changes.length
+                  ? L("已{changes}。", { changes: changes.join("、") })
+                  : L("决定已记录，但这次没有新增或解除 Goal 关系，也没有新增风险。");
+              }
+            : L("这次调整未采用，现有 Goal 关系没有改变。"),
         );
         return;
       }
@@ -4981,8 +7924,12 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = relationForm.querySelector('button[type="submit"]');
         const errorBox = relationForm.querySelector("[data-relation-error]");
+        if (requireFormFacts(relationForm, errorBox)) return;
         const values = new FormData(relationForm);
+        const relationSummary = relationForm.querySelector("[data-relation-live-preview] strong")?.textContent?.trim() || L("当前 Goal 的关系");
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(relationForm.dataset.goalId) + "/relations"), {
@@ -4998,11 +7945,16 @@ const CLIENT_SCRIPT = `
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "关系建立失败");
           await refreshBoard(true);
-          showToast("Goal 关系已建立");
+          showFactorReceipt(
+            "relations",
+            L("关系已建立"),
+            L("已建立：{relation}。准确方向和建立原因已进入完整记录。", { relation: relationSummary }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "关系建立失败，请检查方向和原因";
+          errorBox.textContent = humanDecisionError(error.message, L("关系建立失败，请检查目标、方向和原因"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5012,7 +7964,9 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = relationDeactivateForm.querySelector('button[type="submit"]');
         const errorBox = relationDeactivateForm.querySelector("[data-relation-deactivate-error]");
+        if (requireDecisionText(relationDeactivateForm, errorBox, "reason", "请填写解除原因。说明这条关系为什么不再成立。")) return;
         const reason = String(new FormData(relationDeactivateForm).get("reason") || "").trim();
+        const relatedGoal = relationDeactivateForm.closest(".relation-record")?.querySelector(".relation-copy strong")?.textContent?.trim() || L("另一个 Goal");
         submit.disabled = true;
         errorBox.hidden = true;
         try {
@@ -5024,9 +7978,13 @@ const CLIENT_SCRIPT = `
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "关系解除失败");
           await refreshBoard(true);
-          showToast("Goal 关系已解除，历史记录仍保留");
+          showFactorReceipt(
+            "relations",
+            L("关系已解除"),
+            L("与「{goal}」的关系已停止生效；原方向和解除原因仍保留在完整记录中。", { goal: relatedGoal }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "关系解除失败，请检查原因";
+          errorBox.textContent = humanDecisionError(error.message, L("关系解除失败，请检查解除原因后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
         }
@@ -5080,7 +8038,7 @@ const CLIENT_SCRIPT = `
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Draft 保存失败");
           await refreshBoard(true);
-          showToast("Draft Contract 已保存");
+          showToast(L("草稿修改已保存"));
         } catch (error) {
           errorBox.textContent = error.message || "Draft 保存失败，请检查输入";
           errorBox.hidden = false;
@@ -5094,8 +8052,19 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = riskCreateForm.querySelector('button[type="submit"]');
         const errorBox = riskCreateForm.querySelector("[data-risk-error]");
+        if (requireFormFacts(riskCreateForm, errorBox)) return;
         const values = new FormData(riskCreateForm);
+        if (!values.getAll("goal_ids").length) {
+          const picker = riskCreateForm.querySelector(".risk-goal-picker");
+          if (picker) picker.open = true;
+          errorBox.textContent = L("请至少选择一条受影响的 Goal");
+          errorBox.hidden = false;
+          picker?.querySelector('input[name="goal_ids"]')?.focus();
+          return;
+        }
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(riskCreateForm.dataset.goalId) + "/risks"), {
@@ -5104,13 +8073,19 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify(readRiskPayload(values)),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Risk 登记失败");
+          if (!response.ok) throw new Error(result.error || L("风险记录失败"));
           await refreshBoard(true);
-          showToast("Risk 已登记");
+          const description = result?.risk?.description || String(values.get("description") || "").trim();
+          showFactorReceipt(
+            "risks",
+            L("风险已记录"),
+            L("已记录风险「{description}」。它现在保持待处理；需要确认处理结果时，请到待决定。", { description }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "Risk 登记失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("风险记录失败，请检查输入后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5120,8 +8095,19 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = riskEditForm.querySelector('button[type="submit"]');
         const errorBox = riskEditForm.querySelector("[data-risk-error]");
+        if (requireFormFacts(riskEditForm, errorBox)) return;
         const values = new FormData(riskEditForm);
+        if (!values.getAll("goal_ids").length) {
+          const picker = riskEditForm.querySelector(".risk-goal-picker");
+          if (picker) picker.open = true;
+          errorBox.textContent = L("请至少选择一条受影响的 Goal");
+          errorBox.hidden = false;
+          picker?.querySelector('input[name="goal_ids"]')?.focus();
+          return;
+        }
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/risks/" + encodeURIComponent(riskEditForm.dataset.riskId) + "/update"), {
@@ -5130,13 +8116,19 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify(readRiskPayload(values)),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Risk 更新失败");
+          if (!response.ok) throw new Error(result.error || L("风险更新失败"));
           await refreshBoard(true);
-          showToast("Risk 事实已更新");
+          const description = result?.risk?.description || String(values.get("description") || "").trim();
+          showFactorReceipt(
+            "risks",
+            L("风险信息已更新"),
+            L("已更新风险「{description}」。这次修改没有改变它的处理结果。", { description }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "Risk 更新失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("风险更新失败，请检查输入后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5146,8 +8138,13 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = riskStateForm.querySelector('button[type="submit"]');
         const errorBox = riskStateForm.querySelector("[data-risk-error]");
+        const receiptContext = decisionReceiptContext(riskStateForm);
+        if (requireDecisionText(riskStateForm, errorBox, "state", "请选择风险处理结果，再保存。")) return;
+        if (requireDecisionText(riskStateForm, errorBox, "reason", "请填写决定理由。说明你为什么这样选择，以及依据是什么。")) return;
         const values = new FormData(riskStateForm);
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/risks/" + encodeURIComponent(riskStateForm.dataset.riskId) + "/state"), {
@@ -5161,11 +8158,20 @@ const CLIENT_SCRIPT = `
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Risk 状态更新失败");
           await refreshBoard(true);
-          showToast("Risk 状态已记录");
+          const resultState = result?.risk?.state;
+          const resultMessages = {
+            open: L("风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。"),
+            triggered: L("风险已标记为发生，仍会留在待决定中，并继续按当前规则影响关联 Goal。"),
+            resolved: L("风险已标记为解决，不再阻止关联 Goal。"),
+            accepted: L("风险已接受，不再阻止关联 Goal。"),
+            expired: L("风险已过期，不再继续跟踪或阻止关联 Goal。"),
+          };
+          showDecisionReceipt(resultMessages[resultState] || L("风险处理方式已记录。"), receiptContext);
         } catch (error) {
-          errorBox.textContent = error.message || "Risk 状态更新失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, "风险决定保存失败，请检查输入后重试");
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5175,8 +8181,11 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = impactCreateForm.querySelector('button[type="submit"]');
         const errorBox = impactCreateForm.querySelector("[data-impact-error]");
+        if (requireFormFacts(impactCreateForm, errorBox)) return;
         const values = new FormData(impactCreateForm);
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(impactCreateForm.dataset.goalId) + "/impacts"), {
@@ -5185,13 +8194,19 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify(readImpactPayload(values)),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Impact 登记失败");
+          if (!response.ok) throw new Error(result.error || L("影响范围记录失败"));
           await refreshBoard(true);
-          showToast("Impact 已登记");
+          const surface = result?.impact?.surface || result?.surface || String(values.get("surface") || "").trim();
+          showFactorReceipt(
+            "impacts",
+            L("影响范围已记录"),
+            L("已记录「{surface}」。它已绑定当前 Goal，并按保存的确认状态参与工作冲突判断。", { surface }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "Impact 登记失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("影响范围记录失败，请检查输入后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5201,8 +8216,11 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = impactEditForm.querySelector('button[type="submit"]');
         const errorBox = impactEditForm.querySelector("[data-impact-error]");
+        if (requireFormFacts(impactEditForm, errorBox)) return;
         const values = new FormData(impactEditForm);
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/impacts/" + encodeURIComponent(impactEditForm.dataset.impactId) + "/update"), {
@@ -5211,13 +8229,19 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify(readImpactPayload(values)),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Impact 更新失败");
+          if (!response.ok) throw new Error(result.error || L("影响范围更新失败"));
           await refreshBoard(true);
-          showToast("Impact 已更新");
+          const surface = result?.impact?.surface || result?.surface || String(values.get("surface") || "").trim();
+          showFactorReceipt(
+            "impacts",
+            L("影响范围已更新"),
+            L("已更新「{surface}」。旧值和修改说明已进入完整记录。", { surface }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "Impact 更新失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("影响范围更新失败，请检查输入后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5227,7 +8251,9 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = impactDeactivateForm.querySelector('button[type="submit"]');
         const errorBox = impactDeactivateForm.querySelector("[data-impact-error]");
+        if (requireDecisionText(impactDeactivateForm, errorBox, "reason", "请填写停用原因。说明这条影响范围为什么不再有效。")) return;
         const values = new FormData(impactDeactivateForm);
+        const surface = impactDeactivateForm.closest(".impact-record")?.querySelector("h4")?.textContent?.trim() || L("这条影响范围");
         submit.disabled = true;
         errorBox.hidden = true;
         try {
@@ -5239,9 +8265,13 @@ const CLIENT_SCRIPT = `
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Impact 停用失败");
           await refreshBoard(true);
-          showToast("Impact 已停用并保留在历史中");
+          showFactorReceipt(
+            "impacts",
+            L("影响范围已停用"),
+            L("「{surface}」不再参与工作冲突判断；原记录和停用原因仍会保留。", { surface }),
+          );
         } catch (error) {
-          errorBox.textContent = error.message || "Impact 停用失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("影响范围停用失败，请检查停用原因后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
         }
@@ -5260,7 +8290,9 @@ const CLIENT_SCRIPT = `
           errorBox.hidden = false;
           return;
         }
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(route("/api/goals/" + encodeURIComponent(evidenceForm.dataset.goalId) + "/evidence"), {
@@ -5275,13 +8307,14 @@ const CLIENT_SCRIPT = `
             }),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Evidence 提交失败");
+          if (!response.ok) throw new Error(result.error || L("完成依据记录失败"));
           await refreshBoard(true);
-          showToast("人工 Evidence 已记录");
+          showToast(L("完成依据已记录，并已绑定到当前 Goal"));
         } catch (error) {
-          errorBox.textContent = error.message || "Evidence 提交失败，请检查输入";
+          errorBox.textContent = error.message || L("完成依据记录失败，请检查输入后重试");
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5291,8 +8324,29 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         const submit = policyForm.querySelector('button[type="submit"]');
         const errorBox = policyForm.querySelector("[data-policy-error]");
+        if (requireFormFacts(policyForm, errorBox)) return;
+        const minimumViolation = [...policyForm.querySelectorAll("[data-policy-min]")].find((field) => Number(field.value) < Number(field.dataset.policyMin));
+        const maximumViolation = [...policyForm.querySelectorAll("[data-policy-max]")].find((field) => Number(field.value) > Number(field.dataset.policyMax));
+        const policyLimitViolation = minimumViolation || maximumViolation;
+        if (policyLimitViolation) {
+          let disclosure = policyLimitViolation.closest("details");
+          while (disclosure) {
+            disclosure.open = true;
+            disclosure = disclosure.parentElement?.closest("details");
+          }
+          const label = policyLimitViolation.closest("label")?.querySelector("strong")?.textContent?.trim() || L("这项规则");
+          errorBox.textContent = minimumViolation
+            ? L("{label}不能低于项目共同规则要求的 {value}。", { label, value: minimumViolation.dataset.policyMin })
+            : L("{label}不能超过项目共同规则允许的 {value} 秒。", { label, value: maximumViolation.dataset.policyMax });
+          errorBox.hidden = false;
+          policyLimitViolation.setAttribute("aria-invalid", "true");
+          policyLimitViolation.focus();
+          return;
+        }
         const values = new FormData(policyForm);
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         const capabilities = String(values.get("required_capabilities") || "")
           .split(/[\\n,，]/)
@@ -5318,13 +8372,32 @@ const CLIENT_SCRIPT = `
             }),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Policy 保存失败");
+          if (!response.ok) throw new Error(result.error || L("工作规则保存失败"));
           await refreshBoard(true);
-          showToast(values.get("scope") === "goal" ? "当前 Goal 规则已保存" : "项目默认规则已保存");
+          if (values.get("scope") === "goal") {
+            const policy = result?.resolved_policy || {
+              goal_mode: values.get("goal_mode"),
+              self_verification: values.has("self_verification"),
+              human_approval: values.has("human_approval"),
+            };
+            const modeLabels = { disabled: L("不要求"), preferred: L("建议使用"), required: L("必须使用") };
+            showFactorReceipt(
+              "rules",
+              L("工作规则已保存"),
+              L("最终生效：按 Goal 工作“{mode}”，推进者自检“{self}”，用户确认“{human}”。", {
+                mode: modeLabels[policy.goal_mode] || String(policy.goal_mode || ""),
+                self: policy.self_verification ? L("需要") : L("不需要"),
+                human: policy.human_approval ? L("需要") : L("不需要"),
+              }),
+            );
+          } else {
+            showToast(L("项目默认工作规则已保存"));
+          }
         } catch (error) {
-          errorBox.textContent = error.message || "Policy 保存失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, L("工作规则保存失败，请检查输入后重试"));
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
         return;
       }
@@ -5335,12 +8408,17 @@ const CLIENT_SCRIPT = `
         const submit = reviewForm.querySelector('button[type="submit"]');
         const errorBox = reviewForm.querySelector("[data-review-error]");
         const values = new FormData(reviewForm);
+        if (requireDecisionText(reviewForm, errorBox, "verdict", "请先选择结论。")) return;
+        if (requireDecisionText(reviewForm, errorBox, "reasoning", "请填写判断理由。说明结果为什么达到或没有达到完成标准。")) return;
         const extraRefs = String(values.get("evidence_refs_extra") || "")
           .split("\\n")
           .map((item) => item.trim())
           .filter(Boolean);
         const evidenceRefs = [...new Set([...values.getAll("evidence_refs").map(String), ...extraRefs])];
+        const receiptContext = decisionReceiptContext(reviewForm);
+        const submitLabel = submit.textContent;
         submit.disabled = true;
+        submit.textContent = L("正在保存…");
         errorBox.hidden = true;
         try {
           const response = await fetch(
@@ -5358,13 +8436,20 @@ const CLIENT_SCRIPT = `
             },
           );
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Review 提交失败");
+          if (!response.ok) throw new Error(result.error || "结果确认保存失败");
           await refreshBoard(true);
-          showToast("用户 Review 已记录");
+          const resultMessages = {
+            pass: L("结果已确认通过；Goal 是否完成仍由全部完成条件共同决定。"),
+            needs_changes: L("结果已退回修改；你的理由和依据已保留。"),
+            fail: L("结果已确认未通过；你的理由和依据已保留。"),
+            inconclusive: L("结果暂未判断；请补充与完成标准对应的依据。"),
+          };
+          showDecisionReceipt(resultMessages[result?.review?.verdict] || L("结果确认已记录。"), receiptContext);
         } catch (error) {
-          errorBox.textContent = error.message || "Review 提交失败，请检查输入";
+          errorBox.textContent = humanDecisionError(error.message, "结果确认保存失败，请检查输入后重试");
           errorBox.hidden = false;
           submit.disabled = false;
+          submit.textContent = submitLabel;
         }
       }
     });
@@ -5411,8 +8496,47 @@ const CLIENT_SCRIPT = `
       );
       if (match) void selectGoal(decodeURIComponent(match[1]), false);
     });
+    addEventListener("hashchange", () => {
+      const targetId = decodeURIComponent(location.hash.slice(1));
+      const panel = goalPanelFromHash();
+      if (panel) setGoalPanel(panel, true);
+      const factor = goalFactorFromHash();
+      if (factor) setGoalFactor(factor, true);
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
+    });
     addEventListener("pagehide", saveUiState);
     addEventListener("keydown", (event) => {
+      const currentTab = event.target?.closest?.("[data-goal-tab]");
+      if (currentTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        const tabs = [...currentTab.closest('[role="tablist"]').querySelectorAll("[data-goal-tab]")];
+        const currentIndex = tabs.indexOf(currentTab);
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? tabs.length - 1
+            : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        setGoalPanel(nextTab.dataset.goalTab, true, true, false);
+        nextTab.focus();
+        return;
+      }
+      const currentFactorTab = event.target?.closest?.("[data-goal-factor-tab]");
+      if (currentFactorTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        const tabs = [...currentFactorTab.closest('[role="tablist"]').querySelectorAll("[data-goal-factor-tab]")];
+        const currentIndex = tabs.indexOf(currentFactorTab);
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? tabs.length - 1
+            : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        setGoalFactor(nextTab.dataset.goalFactorTab, true, true);
+        nextTab.focus();
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         globalSearch?.focus();
@@ -5421,6 +8545,14 @@ const CLIENT_SCRIPT = `
         event.preventDefault();
         setTreeFilterOpen(false);
         treeFilterTrigger?.focus();
+        return;
+      }
+      const quickDialog = document.querySelector("[data-quick-record-dialog][open]");
+      if (event.key === "Escape" && quickDialog) {
+        event.preventDefault();
+        quickDialog.close();
+        resetQuickRecordDialog(quickDialog);
+        quickDialog._opener?.focus();
         return;
       }
       if (event.key === "Escape" && dialog.open) {
@@ -5432,17 +8564,39 @@ const CLIENT_SCRIPT = `
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refreshBoard();
     });
-    addEventListener("resize", () => setTreeWidth(treePane.getBoundingClientRect().width, false));
+    addEventListener("resize", () => {
+      const nextCompanionActive = document.body.dataset.desktopShell === "true" && matchMedia("(max-width: 760px)").matches;
+      if (nextCompanionActive && !desktopCompanionActive && selected) setMobileView("document");
+      desktopCompanionActive = nextCompanionActive;
+      setTreeWidth(treePane.getBoundingClientRect().width, false);
+      requestAnimationFrame(drawGoalGraph);
+    });
 
     setTreeWidth(treePane.getBoundingClientRect().width, false);
     if (tuiPane) setTuiWidth(tuiPane.getBoundingClientRect().width, false);
+    let restoredUi = false;
     try {
       const stored = JSON.parse(sessionStorage.getItem(storageKey) || "null");
-      if (stored) applyUiState(stored);
+      if (stored) {
+        applyUiState(stored);
+        restoredUi = true;
+      }
     } catch {}
+    if (!restoredUi) {
+      setWorkspaceMode("focus", false);
+      setGoalPanel(goalPanelFromHash() || "overview", false);
+    }
     if (selected && tuiPane) {
       tuiPane.setAttribute("data-goal-id", selected);
-      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: { goalId: selected } }));
+      const selectedItem = visibleGoals().find((entry) => entry.goal.goal_id === selected);
+      document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: {
+        goalId: selected,
+        goalTitle: selectedItem?.goal.title || selected,
+        statusLabel: selectedItem?.status_label || "",
+        statusMeaning: selectedItem?.status_meaning || "",
+        parentReadOnly: Boolean(selectedItem?.is_compound_parent),
+        children: selectedItem?.children || [],
+      } }));
     }
     updateRelationPreviews();
     updateAllRelationFormPreviews();
@@ -5469,6 +8623,20 @@ function renderProjectMigrationDialog(): string {
 </dialog>`;
 }
 
+function renderThemeSwitch(): string {
+  const copy = currentLocale() === "en"
+    ? { appearance: "Appearance", light: "Light", dark: "Dark", system: "Follow system" }
+    : { appearance: "外观", light: "浅色", dark: "深色", system: "跟随系统" };
+  return `<details class="theme-picker">
+    <summary class="top-action" aria-label="${copy.appearance}">${icon("system")}<span>${copy.appearance}</span>${icon("chevron-down", "theme-caret")}</summary>
+    <div class="theme-menu" aria-label="${copy.appearance}">
+      <button type="button" data-theme-option="light" aria-pressed="false">${icon("sun")}<span>${copy.light}</span>${icon("check", "theme-check")}</button>
+      <button type="button" data-theme-option="dark" aria-pressed="false">${icon("moon")}<span>${copy.dark}</span>${icon("check", "theme-check")}</button>
+      <button type="button" data-theme-option="system" aria-pressed="true">${icon("system")}<span>${copy.system}</span>${icon("check", "theme-check")}</button>
+    </div>
+  </details>`;
+}
+
 export function renderGoalBoardProjectIndex(
   projects: readonly WebProjectNavigation[],
   controlToken = "",
@@ -5487,15 +8655,17 @@ export function renderGoalBoardProjectIndex(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${controlTokenMeta(controlToken)}
   <title>${L("选择项目 · GoalBoard")}</title>
-  <style>${STYLES}${PROJECT_INDEX_STYLES}${LOCALE_SWITCH_STYLES}</style>
+  <script>${THEME_BOOTSTRAP_SCRIPT}</script>
+  <style>${STYLES}${PROJECT_INDEX_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style>
 </head>
 <body class="project-index-page"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar">
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}>
     <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
-    <div class="project-context"><strong>${L("项目列表")}</strong><small>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
-    <div class="top-spacer"></div>
+    <div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目列表")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
+    <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
     ${renderLocaleSwitch("/")}
+    ${renderThemeSwitch()}
     <a class="top-action" href="${href("/settings/runtimes")}">${icon("settings")}<span>${L("设置")}</span></a>
   </header>
   <main class="project-index">
@@ -5513,7 +8683,7 @@ export function renderGoalBoardProjectIndex(
     </section>
   </main>
   ${renderProjectMigrationDialog()}
-  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -5546,9 +8716,11 @@ function renderRuntimeSettings(view: GoalBoardSettingsView): string {
     </article>`;
   }).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">${L("Runtime 接入")}</h1><p>${L("先看清要改什么，再决定是否接入。GoalBoard 不会在安装时自动修改 Runtime 用户配置。")}</p></header>
+    <header class="settings-heading"><h1 id="settings-title">${L("AI 与执行工具")}</h1><p>${L("不接入也能正常使用 Goal Tree、待决定和记录。只有想让 AI 工具直接读取或推进 Goal 时才需要连接；每次修改前都会先展示变化并由你确认。")}</p></header>
     <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>${L("没有可探测的 Runtime")}</h2><p>${L("GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。")}</p></div>`}</div>
     <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。")}</p>
+    ${renderConnectionSettings(view)}
+    ${renderWorkspaceSettings(view)}
   </section>`;
 }
 
@@ -5563,7 +8735,7 @@ function renderConnectionSettings(view: GoalBoardSettingsView): string {
       <div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("切换项目")}</span>${icon("chevron-down")}</summary>${switchForm}</details><details><summary>${icon("blocked")}<span>${L("解绑")}</span>${icon("chevron-down")}</summary><form class="connection-action-form connection-action-form--danger" data-connection-unbind="${escapeHtml(connection.binding_id)}"><p class="settings-footnote">${L("只停止这个 Session 使用 GoalBoard；不会删除“{name}”或其他 Session 关联。", { name: connection.project_name })}</p><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解绑这个 Session")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("确认解绑")}</button></form></details></div>
     </article>`;
   }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">${L("已关联的 Runtime Session")}</h2><p>${L("这里只显示你已经在对应 Runtime 对话里确认过的 Session。新 Session 会先询问你要不要关联，不会自动出现在这里。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有已确认的 Session 关联")}</h3><p>${L("在 Runtime 中使用 GoalBoard Skill 后，当前 Session 会先询问你要连接哪个项目。")}</p></div>`}</div></section>`;
+  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">${L("已关联的 AI 会话")}</h2><p>${L("这里只显示你已经在对应 AI 工具里确认过的会话。新会话会先询问要连接哪个项目，不会自动出现在这里。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有已确认的会话关联")}</h3><p>${L("在 AI 工具中使用 GoalBoard 后，当前会话会先询问你要连接哪个项目。")}</p></div>`}</div></section>`;
 }
 
 function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
@@ -5583,7 +8755,7 @@ function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
     const projects = memberships.map((membership) => `<li><span><strong>${escapeHtml(membership.project_name)}</strong>${membership.is_default ? `<span class="settings-state settings-state--success">${L("默认")}</span>` : ""}</span><form data-workspace-unlink="${escapeHtml(workspaceId)}" data-workspace-project="${escapeHtml(membership.project_id)}"><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解除关联")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("解除")}</button></form></li>`).join("");
     return `<article class="settings-record connection-record" data-workspace-row="${escapeHtml(workspaceId)}"><header><div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h3>${escapeHtml(workspaceName)}</h3><p>${defaultMembership ? `${L("新 Session 默认进入 ")}<strong>${escapeHtml(defaultMembership.project_name)}</strong>` : L("已关联多个项目，进入新 Session 时需要选择")}</p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${memberships.length}${L("个项目")}</span></div></header><ul class="workspace-project-list">${projects}</ul><div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("更改默认项目")}</span>${icon("chevron-down")}</summary>${defaultForm}</details></div></article>`;
   }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">${L("项目目录关联")}</h2><p>${L("一个目录可以关联多个 GoalBoard 项目，并指定新 Session 自动进入的默认项目。这里不展示完整目录路径。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有目录关联")}</h3><p>${L("在某个项目目录的 Runtime 对话中首次选择 GoalBoard 项目后，这里会出现关联。")}</p></div>`}</div></section>`;
+  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">${L("工作目录关联")}</h2><p>${L("一个工作目录可以关联多个 GoalBoard 项目，并为新会话指定默认项目。这里不会展示完整目录路径。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有工作目录关联")}</h3><p>${L("在某个工作目录的 AI 工具中首次选择 GoalBoard 项目后，这里会出现关联。")}</p></div>`}</div></section>`;
 }
 
 function renderProjectSettings(view: GoalBoardSettingsView): string {
@@ -5591,23 +8763,21 @@ function renderProjectSettings(view: GoalBoardSettingsView): string {
   const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
     <header>
       <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? L("演示数据 · 可随时重建，不属于用户项目") : project.source === "migrated" ? L("用户数据 · 由已有 GoalBoard 数据迁入") : L("用户数据 · 在 GoalBoard 中创建")}</p></div></div>
-      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
+      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/rules">${L("工作规则")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
     </header>
     <div class="project-record-tools">
       <details><summary>${icon("settings")}<span>${L("改名")}</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>${L("项目名称")}<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("保存名称")}</button></form></details>
-      <details><summary>${icon("database")}<span>${L("DB 信息")}</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>${L("项目 ID")}</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>${L("数据库")}</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
+      <details><summary>${icon("database")}<span>${L("存储信息")}</span>${icon("chevron-down")}</summary><dl class="project-db-details"><div><dt>${L("项目 ID")}</dt><dd>${escapeHtml(project.project_id)}</dd></div><div><dt>${L("数据文件")}</dt><dd>${escapeHtml(project.database_path)}</dd></div></dl></details>
       ${project.data_class === "regenerable_demo" ? `<details><summary>${icon("refresh")}<span>${L("重建或删除 demo")}</span>${icon("chevron-down")}</summary><div class="connection-action-form connection-action-form--danger"><p class="settings-footnote">${L("重建会清除你在 demo 中做的改动；删除只移除这个可重建项目，不影响用户项目。")}</p><p class="settings-form-error" data-demo-error role="alert" hidden></p><div class="service-action-row"><button type="button" data-demo-action="reset">${L("重建 demo")}</button><button type="button" data-demo-action="remove">${L("删除 demo")}</button></div></div></details>` : ""}
     </div>
   </article>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">${L("项目")}</h1><p>${L("每个项目有独立 DB；项目名称用于识别，DB 路径只是辅助信息。网页项目选择不会改变 Runtime Session 绑定。")}</p></header>
+    <header class="settings-heading"><h1 id="settings-title">${L("项目")}</h1><p>${L("每个项目单独保存自己的 Goal 和记录。网页里切换项目只会改变当前查看的内容，不会改变其他对话或工具正在使用的项目。")}</p></header>
     <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">${L("创建项目")}</h2><p>${L("创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。")}</p></div><form class="inline-settings-form" data-project-create><label>${L("项目名称")}<input name="display_name" required maxlength="160" placeholder="${L("例如：新产品发布")}"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认创建这个项目")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("创建并打开")}</button></form></section>
     <section class="settings-action-section" aria-labelledby="demo-project-title"><div><h2 id="demo-project-title">${L("产品示例")}</h2><p>${demo ? L("示例项目已单独标记为可重建数据，可以放心重置或删除。") : L("创建一份明确标记为可重建的示例数据；普通卸载会清理它，但保留用户项目。")}</p></div>${demo ? `<a class="settings-button" href="/projects/${encodeURIComponent(demo.project_id)}/">${L("打开示例")}</a>` : `<button type="button" data-demo-action="create">${L("创建示例项目")}</button>`}<p class="settings-form-error" data-demo-error role="alert" hidden></p></section>
-    <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>${L("还没有项目")}</h2><p>${L("在上方创建第一个项目，或从下方迁入一份已有 GoalBoard DB。")}</p></div>`}</div>
-    ${renderWorkspaceSettings(view)}
-    ${renderConnectionSettings(view)}
-    <section class="settings-import-row"><div><h2>${L("导入已有 GoalBoard DB")}</h2><p>${L("明确选择并确认后，来源 DB 会移入 GoalBoard 的项目目录。")}</p></div><button type="button" data-open-project-migration>${L("选择 DB 并预览迁移")}</button></section>
-    <p class="settings-footnote">${L("普通用户项目不会被 demo 操作或普通卸载删除；永久清除用户数据需要在 CLI 里单独确认精确目录和项目数量。")}</p>
+    <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>${L("还没有项目")}</h2><p>${L("在上方创建第一个项目，或从下方导入一份已有 GoalBoard 数据。")}</p></div>`}</div>
+    <section class="settings-import-row"><div><h2>${L("导入已有 GoalBoard 数据")}</h2><p>${L("选择并确认数据文件后，GoalBoard 会把它作为一个独立项目保存。")}</p></div><button type="button" data-open-project-migration>${L("选择数据文件并预览")}</button></section>
+    <p class="settings-footnote">${L("普通用户项目不会被示例操作或普通卸载删除；永久清除用户数据需要单独确认精确数据目录和项目数量。")}</p>
   </section>`;
 }
 
@@ -5651,7 +8821,23 @@ function renderRuntimePlanDialog(): string {
   </dialog>`;
 }
 
-function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, boolean> = {}): string {
+function renderTuiPane(
+  selected: WebGoalView | undefined,
+  view: GoalBoardWebView,
+  cliAvailability: Record<string, boolean> = {},
+): string {
+  const selectedGoalId = selected?.goal.goal_id ?? "";
+  const explanation = selected ? explainWorkState(selected.status) : null;
+  const compoundParent = selected?.goal.decomposition_state === "closed_compound";
+  const compoundParentComplete = compoundParent && selected?.goal.fulfillment_state === "satisfied";
+  const children = selected ? sortGoals(partOfChildViews(selected.goal.goal_id, view)) : [];
+  const childChoices = children.map((child) => {
+    const childExplanation = explainWorkState(child.status);
+    return `<a class="tui-child-choice" href="/goals/${encodeURIComponent(child.goal.goal_id)}">
+      <span><strong>${escapeHtml(child.goal.title)}</strong><small>${escapeHtml(childExplanation.label)} · ${escapeHtml(childExplanation.nextAction)}</small></span>
+      <b>${L("打开这个子 Goal")}${icon("chevron-right")}</b>
+    </a>`;
+  }).join("");
   const runtimeKinds: Array<[string, string]> = [
     ["claude-code", "Claude Code"],
     ["codex", "Codex"],
@@ -5671,13 +8857,27 @@ function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, b
     : "";
   return `
       <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度，双击收起")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
-      <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" aria-label="${L("终端面板")}">
+      <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" data-tui-parent-read-only="${compoundParent}"${compoundParent ? ' data-tui-read-only="true"' : ""} aria-label="${L("终端面板")}">
+        <div class="tui-owner" data-tui-owner>
+          <strong data-tui-owner-title>${escapeHtml(selected?.goal.title ?? L("还没有选择 Goal"))}</strong>
+          <small data-tui-owner-status title="${escapeHtml(explanation?.meaning ?? "")}">${escapeHtml(explanation?.label ?? "")}</small>
+          <span><i aria-hidden="true"></i><b>${L("绑定到 Goal")}</b></span>
+        </div>
         <div class="tui-tabs">
+          <span class="tui-mode-label">${L("终端")}</span>
           <div class="tui-tab-list" data-tui-tabs></div>
-          <button class="tui-add" type="button" data-tui-add aria-expanded="false" aria-controls="tui-open-menu" aria-haspopup="true" aria-label="${L("添加终端")}">${icon("plus")}<span>${L("添加终端")}</span></button>
-          <button class="tui-collapse" type="button" data-tui-collapse aria-label="${L("收起终端")}" title="${L("收起终端")}">${icon("panel")}</button>
+          <button class="tui-add" type="button" data-tui-add aria-expanded="false" aria-controls="tui-open-menu" aria-haspopup="true" aria-label="${L("添加终端")}"${compoundParent ? ` disabled title="${escapeHtml(L("请进入一个具体的子 Goal"))}"` : ""}>${icon("plus")}<span>${L("添加终端")}</span></button>
         </div>
         <div class="tui-stage">
+          <section class="tui-parent-guard" data-tui-parent-guard${compoundParent ? "" : " hidden"}>
+            <div class="tui-parent-guard-copy">
+              ${icon("tree")}
+              <div><strong>${L("这个上层 Goal 不直接使用终端")}</strong><p>${compoundParentComplete
+                ? L("这项工作已经由子 Goal 完成，不需要再为上层 Goal 打开终端。要查看或继续具体工作，请进入对应的子 Goal。")
+                : L("它会在子 Goal 全部完成后自动完成。请选择具体的子 Goal，再从那里打开终端。")}</p></div>
+            </div>
+            <div class="tui-child-choices" data-tui-child-choices>${childChoices || `<p>${L("还没有可推进的子 Goal，请先检查 Goal 的拆分。")}</p>`}</div>
+          </section>
           <div class="tui-chrome">
             <div class="tui-chrome-actions">
               <button class="tui-advance" type="button" data-tui-advance disabled>${icon("play")}<span>${L("推进这个 Goal")}</span></button>
@@ -5690,8 +8890,8 @@ function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, b
           <div class="tui-terminal" data-tui-terminal>
             <div class="tui-empty" data-tui-empty>
               <span class="tui-empty-mark" aria-hidden="true">${icon("terminal")}</span>
-              <p><strong>${L("还没有终端")}</strong></p>
-              <p>${L("点右上角「添加终端」，在这个 Goal 上打开常用 Runtime 或自定义命令。")}</p>
+              <p><strong>${compoundParent ? L("这个上层 Goal 不直接使用终端") : L("还没有终端")}</strong></p>
+              <p>${compoundParent ? L("请从上方进入一个具体的子 Goal。") : L("点右上角「添加终端」，在这个 Goal 上打开常用 Runtime 或自定义命令。")}</p>
             </div>
           </div>
         </div>
@@ -5711,11 +8911,48 @@ function renderTuiPane(selectedGoalId: string, cliAvailability: Record<string, b
           </div>
         </form>
       </aside>
-      <button class="tui-expand" type="button" data-tui-expand hidden aria-label="${L("展开终端")}" title="${L("展开终端")}">${icon("terminal")}<span class="tui-expand-label">${L("终端")}</span></button>`;
+      `;
 }
 
-export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = ""): string {
-  const title = view.section === "runtimes" ? L("Runtime 接入") : view.section === "projects" ? L("项目") : L("诊断");
+export function renderGoalBoardProjectSettings(
+  view: GoalBoardWebView,
+  controlToken = "",
+  desktopShell = false,
+): string {
+  const projectName = view.project?.display_name ?? L("当前项目");
+  const routePrefix = view.route_prefix;
+  const pagePath = `${routePrefix}/settings/rules`;
+  const projectBinding = view.policy_bindings
+    .filter((binding) => binding.scope === "project_default" && binding.goal_id == null && binding.state === "active")
+    .at(-1);
+  const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
+  return `<!doctype html>
+<html lang="${htmlLang()}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
+<body class="settings-page project-rules-page" data-route-prefix="${escapeHtml(routePrefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
+  ${renderIconSprite()}
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${routePrefix || "/"}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(pagePath || "/settings/rules")}${renderThemeSwitch()}<a class="top-action" href="${routePrefix || "/"}">${icon("tree")}<span>${L("Goal Tree")}</span></a></header>
+  <main class="settings-shell">
+    <nav class="settings-navigation" aria-label="${L("项目设置")}">
+      <a href="${pagePath}" aria-current="page">${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("项目的共同最低要求")}</small></span></a>
+      <a href="${routePrefix || "/"}">${icon("tree")}<span><strong>${L("Goal Tree")}</strong><small>${L("返回目标与工作")}</small></span></a>
+      <a href="/settings/projects">${icon("folder")}<span><strong>${L("所有项目")}</strong><small>${L("创建、导入与规则")}</small></span></a>
+    </nav>
+    <div class="settings-content"><section class="settings-document" aria-labelledby="project-rules-title">
+      <header class="settings-heading"><h1 id="project-rules-title">${L("项目工作规则")}</h1><p>${L("设置这个项目里所有 Goal 共同遵守的最低要求。单个 Goal 可以增加要求，但不能降低这里的规则。")}</p></header>
+      <aside class="project-rules-receipt" data-project-rules-receipt role="status" tabindex="-1" hidden><strong data-project-rules-receipt-title></strong><span data-project-rules-receipt-detail></span></aside>
+      <section class="project-rules-intro" aria-labelledby="project-rules-how-title"><h2 id="project-rules-how-title">${L("这些规则什么时候生效")}</h2><p>${L("它们只约束之后开始或重新领取的工作，不会改写 Goal 内容，也不会自动启动任何执行工具。")}</p><ol><li><span>1</span><span><strong>${L("项目先定共同底线")}</strong><small>${L("例如必须自检，或完成前需要你确认")}</small></span></li><li><span>2</span><span><strong>${L("Goal 可以增加要求")}</strong><small>${L("涉及特殊风险时，可再要求额外检查")}</small></span></li><li><span>3</span><span><strong>${L("合并后执行")}</strong><small>${L("最终按两边更严格的要求工作")}</small></span></li></ol></section>
+      ${renderPolicyForm(null, "project_default", projectPolicy, projectBinding, view.project?.project_id ?? "current-project", true)}
+      <p class="settings-footnote">${L("每次保存都会替换当前项目默认规则，但旧版本和修改原因会继续保留在事件记录中。")}</p>
+    </section></div>
+  </main>
+  <div class="toast" data-settings-toast role="status" aria-live="polite"></div>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_RULES_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
+</body></html>`;
+}
+
+export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = "", desktopShell = false): string {
+  const title = view.section === "runtimes" ? L("AI 与执行工具") : view.section === "projects" ? L("项目") : L("诊断");
   const content = view.section === "runtimes"
     ? renderRuntimeSettings(view)
     : view.section === "projects"
@@ -5723,18 +8960,18 @@ export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToke
       : renderDiagnosticsSettings(view);
   return `<!doctype html>
 <html lang="${htmlLang()}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}</style></head>
-<body class="settings-page" data-settings-section="${view.section}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
+<body class="settings-page" data-settings-section="${view.section}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"><a class="brand" href="/" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"><strong>${L("设置")}</strong><small>${L("Runtime、项目与诊断")}</small></div><div class="top-spacer"></div>${renderLocaleSwitch(`/settings/${view.section}`)}<a class="top-action" href="/">${icon("folder")}<span>${L("项目列表")}</span></a></header>
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="/" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目、AI 与执行工具、诊断")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(`/settings/${view.section}`)}${renderThemeSwitch()}<a class="top-action" href="/">${icon("folder")}<span>${L("项目列表")}</span></a></header>
   <main class="settings-shell">
-    <nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}"><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>${L("Runtime 接入")}</strong><small>${L("MCP 与 Skill")}</small></span></a><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>${L("项目")}</strong><small>${L("创建、导入与改名")}</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装与启动入口")}</small></span></a></nav>
+    <nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}"><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>${L("项目")}</strong><small>${L("创建、导入与规则")}</small></span></a><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("可选连接与会话")}</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装与服务")}</small></span></a></nav>
     <div class="settings-content">${content}</div>
   </main>
   ${renderRuntimePlanDialog()}
   ${renderProjectMigrationDialog()}
   <div class="toast" data-settings-toast role="status" aria-live="polite"></div>
-  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${SETTINGS_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_INDEX_CLIENT_SCRIPT}${SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
 </body></html>`;
 }
 
@@ -5744,7 +8981,7 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
     : html;
   const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
-    .replaceAll('href="__SETTINGS__"', 'href="/settings/runtimes"');
+    .replaceAll('href="__SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/rules` : "/settings/projects"}"`);
   return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
 }
 
@@ -5758,9 +8995,10 @@ export function renderGoalBoardWeb(
   desktopShell = false,
   cliAvailability: Record<string, boolean> = {},
 ): string {
+  const desktopDragRegion = desktopShell ? " data-tauri-drag-region" : "";
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
-  const collectionTitle = trashView ? L("回收站") : archiveView ? L("已归档") : "Goal Tree";
+  const collectionTitle = trashView ? L("回收站") : archiveView ? L("已归档") : L("Goal Tree");
   const collectionSuffix = trashView ? L("回收站") : archiveView ? L("归档") : "";
   const selected = decisionView
     ? undefined
@@ -5822,14 +9060,19 @@ export function renderGoalBoardWeb(
           ? `${view.route_prefix}/`
           : "/";
   const pendingCount = pendingDecisionCount(view);
-  const projectContext = `<div class="project-bar"><div class="project-context"><strong>${L("项目：")}</strong><span>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}</div><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></div>`;
+  const projectContext = `<div class="project-bar"${desktopDragRegion}><div class="project-context"${desktopDragRegion}><strong${desktopDragRegion}>${L("项目：")}</strong><span${desktopDragRegion}>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}</div><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>${view.demo ? `<small class="project-demo"${desktopDragRegion}>${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state${desktopDragRegion}>${L("已同步")}</span></div>`;
   const showTui = !decisionView && !archiveView && !trashView;
+  const compactNavigation = {
+    tree: L("目标"),
+    focus: decisionView ? L("决定") : L("聚焦"),
+    runtime: L("运行"),
+  };
   const html = `<!--
-THESIS: GoalBoard 是人和 Runtime 共享的 Goal 真相源；它不分发任务，只让目标、依赖和完成证据持续可见。
-OWN-WORLD: 使用参考图的高密度桌面工作台语言：顶部全局栏、左侧 IDE Goal Tree、右侧连续文档。
-STORY: 从 Tree 选择 Goal，按“目标 → 完成标准 → 当前推进 → 风险规则 → 历史”阅读同一份连续事实。
-FIRST VIEWPORT: 首屏必须同时看见 Goal Tree、当前 Goal 标题和用人话写出的目标说明。
-FORM: Reference-led desktop Goal workbench, pinned screenshot authority, Operate mode.
+THESIS: 选中的 Goal 贯穿 Navigator、Focus 与 Runtime；GoalBoard 是跨 Runtime 的长期任务真相源，不是 Dashboard，也不是 Agent Orchestration。
+OWN-WORLD: Quiet Intent Workspace 使用石墨与冷白纸面、矿物蓝、系统字体、Lucide 图标、1px 接缝和小圆角，拒绝渐变、玻璃与装饰性卡片。
+STORY: 选择 Goal，理解当前事实，处理下一步，在同一 Goal 上运行；与 Harness 并排时仍保持这条连续路径。
+FIRST VIEWPORT: 宽屏同时呈现三栏；窄屏以 Goals / Focus / Runtime 切换同一组真实内容。
+FORM: Approved A+B workbench direction with the focused relation language from C; List and Graph are two readings of the same Goal facts.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <!doctype html>
@@ -5839,37 +9082,47 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${controlTokenMeta(controlToken)}
   <title>${escapeHtml(title)}</title>
-  <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
+  <script>${THEME_BOOTSTRAP_SCRIPT}</script>
+  <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
 </head>
 <body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
   <div class="app">
-    <header class="topbar">
-      <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
+    <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}>
+      <div class="brand"${desktopDragRegion}>${icon("brand")}<strong${desktopDragRegion}>GoalBoard</strong></div>
       ${projectContext}
-      <div class="top-spacer"></div>
+      <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
       ${renderLocaleSwitch(localeNextPath)}
+      ${renderThemeSwitch()}
       <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="${L("打开 GoalBoard 设置")}">${icon("settings")}<span>${L("设置")}</span></a>
     </header>
-    <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">Goal Tree</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${decisionView ? L("决定中心") : L("Goal 正文")}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${L("终端")}</button>` : ""}</nav>
-    <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree">
+    <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
+    <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree" data-workspace-mode="focus">
       <aside class="tree-pane" id="goal-tree-pane">
+        <header class="desktop-pane-header desktop-pane-header--navigator"><strong data-navigator-heading>${L("目标导航")}</strong></header>
         ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
-        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}">${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div>
+        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
         <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
       </aside>
       <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
+      <header class="workbench-header desktop-pane-header">
+        ${showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}">
+          <button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button>
+        </nav>` : `<strong>${decisionView ? L("决定中心") : L("目标聚焦")}</strong>`}
+      </header>
       <section class="document-pane" id="goal-document-pane" data-document-pane>
         ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
       </section>
-      ${showTui ? renderTuiPane(selectedId, cliAvailability) : ""}
+      ${!archiveView && !trashView ? renderGoalGraph(view, selectedId, visibleGoals) : ""}
+      ${showTui ? renderTuiPane(selected, view, cliAvailability) : ""}
     </main>
   </div>
   ${renderCreateDialog(view)}
   ${renderGoalTrashDialog()}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
-  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
   ${showTui ? '<script src="/desktop/pty-client.js"></script>' : ""}
 </body>
 </html>`;

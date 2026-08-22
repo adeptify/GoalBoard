@@ -221,7 +221,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；Runtime 自主选择，不派发唯一下一份。",
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前，Runtime 仍自主选择，不派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {

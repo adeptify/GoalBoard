@@ -235,6 +235,7 @@ export class SqliteGoalBoardStore {
           affected_surfaces_json TEXT NOT NULL DEFAULT '[]',
           trigger TEXT NOT NULL,
           treatment TEXT NOT NULL,
+          treatment_plan TEXT NOT NULL DEFAULT '',
           blocking_mode TEXT NOT NULL CHECK (blocking_mode IN ('none', 'claim', 'completion', 'invalidate_on_trigger')),
           revisit_condition TEXT NOT NULL,
           owner TEXT NOT NULL,
@@ -569,6 +570,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (14, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (15, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -625,6 +629,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 14")
       .get();
     if (!runtimeDialogueAuthorityApplied) this.migrateRuntimeDialogueAuthority();
+    const riskTreatmentPlanApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 15")
+      .get();
+    if (!riskTreatmentPlanApplied) this.migrateRiskTreatmentPlan();
   }
 
   private migrateClarifierRoles(): void {
@@ -1260,6 +1268,18 @@ export class SqliteGoalBoardStore {
     }
   }
 
+  private migrateRiskTreatmentPlan(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(risks)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "treatment_plan")) {
+        this.db.exec("ALTER TABLE risks ADD COLUMN treatment_plan TEXT NOT NULL DEFAULT ''");
+      }
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (15, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
   eventCursor(boardId: string): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS cursor FROM events WHERE board_id = ?")
@@ -1575,6 +1595,7 @@ function mapRisk(row: Row): RiskRecord {
     affected_surfaces: parseJson<string[]>(row.affected_surfaces_json, []),
     trigger: text(row.trigger),
     treatment: text(row.treatment) as RiskRecord["treatment"],
+    treatment_plan: text(row.treatment_plan),
     blocking_mode: text(row.blocking_mode) as RiskRecord["blocking_mode"],
     revisit_condition: text(row.revisit_condition),
     owner: text(row.owner),

@@ -2,148 +2,127 @@
 
 [中文](README.md) | **English**
 
-## A shared Goal ledger and execution workbench for multiple Runtimes
+## Keep long-running Goals clear, decomposed, and verifiable across Sessions and Runtimes
 
-GoalBoard keeps a project's Goal Tree, dependencies, execution progress, completion evidence, and user decisions in one place.
+### Why long-running work loses direction
 
-Different Runtimes can read and update the same project state. GoalBoard can sit beside an existing Harness, or open a Runtime TUI next to a specific Goal so that the Goal, Session, and execution context remain connected.
+- Work gradually drifts from the original Goal and the mismatch is found only near delivery.
+- Switching Runtimes or opening a new Session means explaining the target, progress, and unfinished work again.
+- Once a complex Goal branches into several execution paths, dependencies, ownership, and blockers become difficult to see.
+- “Done” remains a conclusion in a conversation instead of a result backed by evidence.
+- People have to wait for a Runtime summary instead of seeing what is happening, why it stopped, and what remains.
 
-![A desktop Runtime beside GoalBoard: execution stays in the Runtime while the active Goal and project state remain visible](docs/screenshots/goalboard-runtime-en.png)
+### The core idea
 
-## Core capabilities
+GoalBoard is a Goal ledger across Sessions and Runtimes, and a local execution workbench. It keeps outcomes, decomposition, dependencies, decisions, progress, and completion evidence in one traceable source of truth; the Runtime can change without losing the Goal. People confirm accepted Goals and changes, while Runtimes choose executable work and write claims, progress, and evidence back to the same project.
 
-### One ledger across Runtimes
+### One source of truth, three work surfaces
 
-**Keep every Runtime working from the same project facts.**
+**Focus:** select a Goal to see its outcome, next action, completion requirements, and blockers.
 
-- The Goal Tree, dependencies, risks, and completion criteria are stored together.
-- Claims, runs, evidence, and reviews are written back to the same project.
-- User decisions and Goal changes remain available as a durable record.
+![GoalBoard Desktop: focus on one Goal beside the Goal Navigator](docs/screenshots/showcase/desktop-workstation-dark.jpg)
 
-Codex, Claude Code, OpenCode, Pi Agent, Grok Build, and other connected Runtimes do not need to maintain separate plans.
+**Graph:** read project-level parent and dependency networks; circles mark sources and arrows point to targets.
 
-### Goal management for long-running work
+![Goal Graph: project-level parent and dependency network](docs/screenshots/showcase/goal-graph-dark.jpg)
 
-**Keep accepted Goals stable during execution while allowing the project to evolve through explicit changes.**
+**Runtime:** open a terminal from a concrete Goal so the Session stays bound to that Goal.
 
-- Each Goal records its expected outcome, execution boundary, dependencies, and completion criteria.
-- A Runtime cannot silently rewrite an accepted Goal; newly discovered work is proposed as a Candidate Goal.
-- Decomposition, dependency, and scope changes explain their reason and impact, then take effect only after user confirmation.
+![Goal-bound Runtime: execute the current Goal inside the same desktop workstation](docs/screenshots/showcase/desktop-runtime-dark.jpg)
 
-Users can see what changed, why it changed, and whether the current work still serves the original Goal.
+### A Goal layer, not Agent Orchestration
 
-### Selection and constraints for executable work
+GoalBoard does not schedule a team of agents, and it does not replace Codex, Claude Code, or another Harness.
 
-**Let Runtimes make progress while respecting the agreed order and boundaries.**
+| | Responsibility |
+| --- | --- |
+| **GoalBoard** | Define the intended result, decomposition, dependencies, current state, and the evidence required for completion. |
+| **Agent Orchestration** | Decide which agents participate and how they divide, coordinate, and execute the work. |
 
-- GoalBoard derives which work is available from Goal state, dependencies, and risks.
-- Runtimes read, select, and claim executable Goals themselves; GoalBoard does not dispatch work.
-- A Goal cannot start or complete while a prerequisite or blocking risk remains unresolved.
+They work together: define a complex Goal, its child Goals, and dependencies in GoalBoard; then choose the right Runtime or agent team to execute it. Every entry point continues to write progress and evidence back to the same Goal facts.
 
-Claims are written back to the project so that other Runtimes can avoid work already in progress.
+## The loop from Goal to completion
 
-### Progress and completion that can be checked
+1. **Define** the outcome, boundaries, and completion criteria so execution cannot quietly change the question.
+2. **Decompose** work in a Goal Tree, then use Graph to understand complex dependencies and blocker propagation.
+3. **Select** available work. A Runtime chooses and claims a Goal; unmet prerequisites prevent an early start.
+4. **Execute** in an existing Harness, or open a Runtime TUI bound to a concrete Goal.
+5. **Verify** progress, evidence, and review against the Goal. “Done” is more than a conversation summary.
+6. **Evolve** through explicit proposals. New work, dependency changes, and risks enter the accepted Goal Tree only after the user confirms their reason and impact.
 
-**See the state of the project directly instead of relying on a Runtime's temporary summary.**
+The loop keeps long-running work stable without making it rigid: a Runtime cannot silently rewrite an accepted Goal, and facts discovered during execution still have a defined path into the project.
 
-- The Goal Tree distinguishes pending, active, blocked, awaiting-decision, and completed work.
-- The Goal document explains the current action, blocking reason, and unmet conditions.
-- Completion is tied to concrete evidence and review results.
+## Three ways to work
 
-Users can see what is happening, why work has stopped, and what remains before a Goal is complete.
+| Mode | Best for |
+| --- | --- |
+| **Desktop workstation** | Use GoalBoard as the main workspace, with Goals, relationships, and Runtime in one window; global controls live in the native TitleBar. |
+| **Beside a Harness** | Dock the narrow Desktop app next to Codex or another desktop Harness; the conversation executes while GoalBoard keeps the same Goal, next action, blockers, and criteria visible. |
+| **Web workbench** | Use the same local project in a browser without installing a desktop GUI. Web and Desktop share the same data. |
 
-![Decision Center: questions, reasons, and recorded outcomes](docs/screenshots/goalboard-decisions-en.png)
+![Codex beside GoalBoard Desktop: the same Goal is visible in the Harness conversation and companion workbench](docs/screenshots/showcase/codex-companion-privacy.png)
 
-### Multiple ways to work
+The narrow window is not a squeezed three-pane layout. Switch between `Goals`, `Focus`, and `Runtime` while keeping GoalBoard docked beside the Harness.
 
-**Use GoalBoard with an existing workflow, or make it the primary workbench.**
+<p align="center">
+  <img src="docs/screenshots/showcase/companion-goals-dark.jpg" width="31%" alt="GoalBoard Desktop narrow Goals view">
+  <img src="docs/screenshots/showcase/companion-focus-dark.jpg" width="31%" alt="GoalBoard Desktop narrow Focus view">
+  <img src="docs/screenshots/showcase/companion-runtime-dark.jpg" width="31%" alt="GoalBoard Desktop narrow Runtime view">
+</p>
 
-- **Beside a Harness:** keep working in a familiar desktop app or terminal while checking Goals, progress, and evidence in GoalBoard.
-- **In the browser workbench:** view the Goal Tree, Goal document, and Runtime TUI on one page.
-- **In the macOS Desktop app:** open the same local workbench and enter the execution context from a specific Goal.
+A Runtime with a CLI or TUI can start directly from an executable leaf Goal. The terminal remains owned by the Goal from which it was opened; a compound parent organizes outcomes and directs execution to a concrete child instead of opening a terminal itself.
 
-The browser and Desktop app use the same project data. A GUI-only Harness can run beside GoalBoard; a Runtime with a CLI or TUI can also run directly inside it.
+![GoalBoard Web: Goal Tree and Goal Focus in the browser](docs/screenshots/showcase/web-workspace-light.jpg)
 
-### A Runtime TUI bound to its Goal
+Built-in launch recipes cover Codex, Claude Code, OpenCode, Pi Agent, and Grok Build, with custom commands supported as well. Other desktop Harnesses can read and update the same project through GoalBoard's MCP server and shared Skill.
 
-**Keep the Session, execution context, and active Goal explicitly connected.**
+## Try it in 3 minutes
 
-- Open Codex, Claude Code, OpenCode, Pi Agent, Grok Build, or a custom command from an executable Goal.
-- The terminal continues to show its owner Goal; navigating elsewhere does not rebind it.
-- A compound parent does not open an execution terminal and instead directs the user to a concrete child Goal.
-
-![GoalBoard three-pane workbench: Goal Tree, Goal document, and Runtime TUI](docs/screenshots/goalboard-tui-en.png)
-
-A terminal remains owned by the Goal from which it was opened, reducing context drift during long-running work.
-
-### Goal changes confirmed by the user
-
-**Let Runtimes propose changes while the user retains authority over the accepted Goal.**
-
-- A Runtime can submit a new Goal, dependency adjustment, risk, or review result.
-- The Decision Center explains the question, its basis, and the effect of each option.
-- A change enters the accepted Goal Tree only after user confirmation.
-
-The project can incorporate facts discovered during execution without changing direction outside the user's view.
-
-## Product boundaries
-
-- The authoritative project state is stored in local SQLite.
-- GoalBoard does not bundle a model or require replacing an existing Harness.
-- Runtimes connect through MCP and a shared Skill.
-- Opening a page does not bind a Session, launch a Runtime, or claim work.
-- Runtime integration, terminal launch, and Goal changes require explicit action or confirmation.
-- The macOS Desktop app is currently a source-run Preview.
-
-## 3-minute experience
-
-You need Node.js 20+, pnpm, and macOS (the persistent Web service currently uses LaunchAgent; other platforms can still run Web in the foreground).
+You need Node.js 20+, pnpm, and macOS (the persistent Web service currently uses LaunchAgent; other platforms can run Web in the foreground).
 
 ```bash
 git clone https://github.com/adeptify/goalboard.git
 cd goalboard
 pnpm install --frozen-lockfile
 
-# The only local install entry point: builds first, then installs into ~/.goalboard
+# Build and install into ~/.goalboard
 pnpm install:local
 
-# macOS: after explicit confirmation, keep Web running even after the terminal
-# or Runtime Session closes
+# macOS: install the persistent Web service
 "$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard" --confirm
 
 # Create a rebuildable demo kept separate from user data
 "$HOME/.goalboard/bin/goalboard" demo create --confirm
 ```
 
-Open `http://127.0.0.1:4173`:
+Open `http://127.0.0.1:4173` and enter the demo project. In “Settings → Runtime,” preview and confirm an integration, then **open a new Runtime Session**:
 
-1. Enter the demo project and inspect the Goal Tree, pending decisions, and completion evidence.
-2. In "Settings → Runtime," choose the Runtime to connect, review the planned changes, and confirm the integration.
-3. **Open a new Runtime Session** and ask it to use GoalBoard. Runtimes read MCP and Skill manifests only at Session startup, so tools installed just now will not appear in the current conversation.
+> Use GoalBoard to connect to the demo project, choose one currently executable Goal, and tell me its outcome, next action, and completion requirements.
 
-To start from your own project, say this in the new Session:
+Runtimes read MCP and Skill manifests at Session startup, so a newly connected Runtime needs a new Session.
 
-> Use GoalBoard to create a project and organize the current idea into a Goal Tree that I can confirm incrementally.
-
-Only proposals confirmed by the user enter the accepted Goal Tree.
-
-## macOS Desktop Preview
-
-After the local installation, run the Desktop app from source:
+### macOS Desktop Preview
 
 ```bash
 pnpm desktop
 ```
 
-The Desktop app uses the same local service and project data. A signed, notarized installer for general users is not available yet.
+Desktop uses the same local service and project data. It is currently available as a source-run Preview; a signed and notarized installer for general users is not available yet.
+
+## Product boundaries
+
+- The authoritative project state is stored in local SQLite; GoalBoard does not bundle a model.
+- Opening a page does not bind a Session, start a Runtime, or claim work.
+- Runtime integration, terminal launch, and accepted Goal changes require explicit action or confirmation.
+- GoalBoard manages Goal facts and the execution loop; it does not replace a Harness or Agent Orchestration.
 
 ## Further reading
 
-- [Install & Maintenance](docs/installation.en.md): updating, demo data, persistent/temporary startup, safe uninstall, next steps
-- [Runtime Protocol](docs/runtime.en.md): core concepts, Goal Contract, Runtime workflow
-- [MCP Integration](docs/mcp.en.md): work-entry binding, context tools, permission boundaries
-- [CLI & Development](docs/cli-and-development.en.md): CLI, one-time V3 import, project structure, development verification
-- [Runtime Skill](skills/goal-advance/SKILL.md): the full protocol for Runtimes
+- [Install & Maintenance](docs/installation.en.md)
+- [Runtime Protocol](docs/runtime.en.md)
+- [MCP Integration](docs/mcp.en.md)
+- [CLI & Development](docs/cli-and-development.en.md)
+- [Runtime Skill](skills/goal-advance/SKILL.md)
 
 ## License
 

@@ -38,6 +38,60 @@ export function seedDemoBoard(databasePath: string): void {
         ],
       },
       {
+        goal_id: "PLATFORM",
+        title: "让项目事实成为不同 Runtime 的共同底座",
+        outcome: "不同 AI、会话和工具读取同一份 Goal、关系、决定、进度与完成依据",
+        why: "长程任务最容易在切换对话和 Runtime 后失去共同上下文",
+        business_logic: "GoalBoard 保存项目事实；Runtime 只负责读取可做项、执行工作并提交结果，不在各自会话里维护另一套项目记忆。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_compound" as const,
+        priority: 96,
+        acceptance_criteria: [
+          {
+            criterion_id: "PLATFORM-C1",
+            statement: "不同 Runtime 读取到一致的 Goal 状态与完成依据",
+            decision_method: "automated_check" as const,
+            pass_condition: "跨入口一致性测试通过",
+          },
+        ],
+      },
+      {
+        goal_id: "WORKSPACE",
+        title: "让人能在同一工作台看清并推进 Goal",
+        outcome: "用户在一个窗口里查看 Goal Tree、Focus、Graph 和 Goal-bound Runtime",
+        why: "频繁切换页面、终端和 AI 对话会打断判断，也让 Goal 与执行 Session 脱节",
+        business_logic: "桌面端把 Goal 导航、当前工作和 Runtime 组合成连续工作面；网页保留同一份项目事实与独立访问方式。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_compound" as const,
+        priority: 94,
+        acceptance_criteria: [
+          {
+            criterion_id: "WORKSPACE-C1",
+            statement: "用户不切窗口即可从 Goal 进入对应 Runtime",
+            decision_method: "inspection" as const,
+            pass_condition: "桌面主工作流可完成并保持 Goal 绑定",
+          },
+        ],
+      },
+      {
+        goal_id: "ADOPTION",
+        title: "让第一次接入从安装走到真实推进",
+        outcome: "新用户从 README、安装和首次打开一路走到推进第一条 Goal",
+        why: "只把程序装上不等于用户已经理解产品，更不等于完成第一次有效使用",
+        business_logic: "公开文档先解释适用场景，再引导安装、连接 Runtime、选择项目并推进一条可执行 Goal。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_compound" as const,
+        priority: 92,
+        acceptance_criteria: [
+          {
+            criterion_id: "ADOPTION-C1",
+            statement: "首次用户能独立完成一次从安装到推进的闭环",
+            decision_method: "inspection" as const,
+            pass_condition: "首次使用走查无阻断步骤",
+          },
+        ],
+      },
+      {
         goal_id: "CORE",
         title: "让每项工作都有可信的完成依据",
         outcome: "用户能看到一项工作何时开始、做出了什么，以及为什么可以算完成",
@@ -92,6 +146,42 @@ export function seedDemoBoard(databasePath: string): void {
         ],
       },
       {
+        goal_id: "GRAPH",
+        title: "让复杂 Goal 关系仍然一眼可读",
+        outcome: "父子层级、前置依赖和当前焦点在复杂网络中仍有清楚的方向与落点",
+        why: "列表适合顺序浏览，但复杂 Goal 的多层结构和跨分支依赖会在列表里变得难以判断",
+        business_logic: "用户在 List 与 Graph 之间切换；Graph 只读取真实父子和依赖关系，以节点、分区和有向连线呈现。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_leaf" as const,
+        priority: 76,
+        acceptance_criteria: [
+          {
+            criterion_id: "GRAPH-C1",
+            statement: "复杂网络中的关系方向和阻塞节点可以直接辨认",
+            decision_method: "inspection" as const,
+            pass_condition: "12 Goal 演示网络在桌面宽度下可读",
+          },
+        ],
+      },
+      {
+        goal_id: "DESKTOP",
+        title: "把 GoalBoard 作为不切窗口的主工作站",
+        outcome: "用户在桌面端同时看到 Goal、下一步、完成要求和强绑定的 Runtime",
+        why: "工作在 AI 对话里推进、状态在另一个页面查看，会增加切换成本并削弱人的掌控感",
+        business_logic: "桌面端复用网页事实和 Runtime 能力，将全局控制放进 TitleBar，并为 List、Focus 与 Runtime 保留连续三栏。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_leaf" as const,
+        priority: 74,
+        acceptance_criteria: [
+          {
+            criterion_id: "DESKTOP-C1",
+            statement: "桌面端三栏在宽屏下形成完整工作闭环",
+            decision_method: "inspection" as const,
+            pass_condition: "Goal 选择、Focus 与 Runtime 归属保持同步",
+          },
+        ],
+      },
+      {
         goal_id: "RELEASE",
         title: "让新用户安装后知道下一步怎么开始",
         outcome: "用户完成安装后知道如何启动页面、连接正在使用的 Runtime，以及为什么需要新开会话",
@@ -106,6 +196,42 @@ export function seedDemoBoard(databasePath: string): void {
             statement: "安装、接入和重启提示可以按公开步骤重复完成",
             decision_method: "automated_check" as const,
             pass_condition: "全新安装端到端验证通过",
+          },
+        ],
+      },
+      {
+        goal_id: "ONBOARDING",
+        title: "让用户第一次打开就完成有效操作",
+        outcome: "用户首次进入后能选择项目、找到可做 Goal，并理解 Runtime 为什么绑定到它",
+        why: "展示很多功能不等于用户知道第一步做什么，首屏需要直接引向一次有效推进",
+        business_logic: "首次体验使用一份明确标记的 Mock 项目，沿着可做 Goal、下一步与 Runtime 归属完成一轮引导。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_leaf" as const,
+        priority: 58,
+        acceptance_criteria: [
+          {
+            criterion_id: "ONBOARDING-C1",
+            statement: "首次用户无需外部讲解即可推进第一条 Goal",
+            decision_method: "inspection" as const,
+            pass_condition: "首次体验测试完成一条可执行 Goal",
+          },
+        ],
+      },
+      {
+        goal_id: "DOCS",
+        title: "让用户从 README 进入正确的使用方式",
+        outcome: "用户先理解长程任务为何会跑偏，再看到 GoalBoard 的闭环、桌面端和 Runtime 伴随方式",
+        why: "功能清单无法建立需求感，也无法解释 GoalBoard 与 Agent Orchestration 的边界",
+        business_logic: "README 用痛点、核心思路和完整演示组织内容；截图来自 Mock 项目的真实网页与桌面页面。",
+        definition_state: "accepted" as const,
+        decomposition_state: "closed_leaf" as const,
+        priority: 56,
+        acceptance_criteria: [
+          {
+            criterion_id: "DOCS-C1",
+            statement: "README 清楚表达痛点、边界、闭环与多种使用方式",
+            decision_method: "inspection" as const,
+            pass_condition: "目标用户能准确复述产品独特机制",
           },
         ],
       },
@@ -134,10 +260,26 @@ export function seedDemoBoard(databasePath: string): void {
         idempotency_key: `demo-goal-${goal.goal_id}`,
       });
     }
-    for (const child of ["CORE", "INTERFACES", "WEB", "RELEASE"]) {
+    for (const child of ["PLATFORM", "WORKSPACE", "ADOPTION"]) {
       coordinator.addRelation(
         DEMO_BOARD_ID,
         { from_goal_id: child, to_goal_id: "V1", type: "part_of", reason: "共同组成第一次完整的 GoalBoard 使用体验" },
+        { actor_id: "demo-user", idempotency_key: `demo-part-${child}` },
+      );
+    }
+    for (const [child, parent] of [
+      ["CORE", "PLATFORM"],
+      ["INTERFACES", "PLATFORM"],
+      ["WEB", "WORKSPACE"],
+      ["GRAPH", "WORKSPACE"],
+      ["DESKTOP", "WORKSPACE"],
+      ["RELEASE", "ADOPTION"],
+      ["ONBOARDING", "ADOPTION"],
+      ["DOCS", "ADOPTION"],
+    ] as const) {
+      coordinator.addRelation(
+        DEMO_BOARD_ID,
+        { from_goal_id: child, to_goal_id: parent, type: "part_of", reason: "在 Mock 项目中形成可追溯的产品目标层级" },
         { actor_id: "demo-user", idempotency_key: `demo-part-${child}` },
       );
     }
@@ -151,6 +293,18 @@ export function seedDemoBoard(databasePath: string): void {
       { from_goal_id: "WEB", to_goal_id: "INTERFACES", type: "depends_on", reason: "页面显示必须和不同 Runtime 看到的项目进度一致" },
       { actor_id: "demo-user", idempotency_key: "demo-dependency-web" },
     );
+    for (const [from, to, reason] of [
+      ["GRAPH", "INTERFACES", "关系图必须读取不同 Runtime 共享的同一份 Goal 关系事实"],
+      ["DESKTOP", "CORE", "桌面工作站必须先建立可靠的 Goal 状态与完成依据"],
+      ["ONBOARDING", "RELEASE", "首次体验需要建立在可重复的安装与接入路径上"],
+      ["DOCS", "ONBOARDING", "README 的演示必须来自已经走通的首次体验"],
+    ] as const) {
+      coordinator.addRelation(
+        DEMO_BOARD_ID,
+        { from_goal_id: from, to_goal_id: to, type: "depends_on", reason },
+        { actor_id: "demo-user", idempotency_key: `demo-dependency-${from.toLowerCase()}` },
+      );
+    }
 
     coordinator.addRisk(
       DEMO_BOARD_ID,

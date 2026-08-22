@@ -172,6 +172,51 @@ When a question benefits from choices, choices are user-facing guidance only. Th
 
 Use one `goalboard_v1_goal_tree_propose` for the complete proposed change set. Each item needs source references, a reason, confidence, and its affected objects. The tree can include a compound parent, a family of children, and children split more finely again. When the user is confirming that a parent’s decomposition is complete, the same proposal must include that parent’s Goal/Contract update to `definition_state="accepted"` and `decomposition_state="closed_compound"`; confirming only child Goals and `part_of` relations intentionally preserves a Draft parent for further clarification. Split on independently deliverable and reviewable business outcomes, not on code files or a fixed hierarchy depth.
 
+Before closing any complex parent, recover the original user outcome and perform a result-chain pass. Every new proposal accounts for `final_outcome`, `operating_flow`, `core_capabilities`, `foundation_infrastructure`, and `quality_continuous_delivery`. Then add the closest task-specific areas: game adds gameplay, game systems/content, player journey, interaction/UI, and audiovisual; App adds core function, end-to-end journey, interaction/UI, and content/information; AI/data adds data sources/quality, evaluation, runtime/cost, and safety/governance; content/research adds source provenance, method/production, review/approval, and publication/distribution; operations adds roles, permissions, tools/workflow, exceptions, and measurement. `other` still requires the universal chain. For each required area, use exactly one coverage entry:
+
+```text
+decomposition_review: {
+  status: complete | paused,
+  task_context: game | app | ai_data | content_research | operations | other,
+  coverage: [{
+    area,
+    disposition: goal | owned | not_applicable,
+    goal_ids: [...],
+    reason
+  }],
+  open_goal_ids: [...],
+  next_step
+}
+```
+
+`goal` or `owned` points to one or more descendants that actually deliver that area. `not_applicable` requires a concrete reason. The same child may own multiple areas; the checklist does not require mechanical one-item-per-Goal splitting. If core capabilities and foundations have different owners, add `core_goal depends_on foundation_goal` and explain which foundation output the core work consumes and why the reverse direction is wrong. Historical `product_context=game|app|other` remains readable, but new proposals use `task_context`.
+
+For a completed tree, every universal and task-specific area appears once, `open_goal_ids` is empty, every descendant is already `closed_leaf` or `closed_compound`, and the parent may use `closed_compound`. For a staged pause, keep the parent `abstract` or `frontier_open`, list the open Goals, and record the next clarification action. Do not call any plan complete merely because its most-discussed domain content is detailed while operating flow, foundations, quality, or delivery remains implicit. Footballnia is one game regression example, not the rule's boundary.
+
+Every proposed `accepted / closed_leaf` Goal also includes an explicit readiness decision:
+
+```text
+leaf_readiness: {
+  verdict: ready | split_required,
+  primary_deliverable,
+  output_coverage: [{ promised_output, role: primary | supporting | independent, reason }],
+  split_candidates: [{
+    work_item,
+    separately_deliverable,
+    separately_acceptable,
+    independently_reworkable,
+    decision: keep | split,
+    reason
+  }],
+  rationale,
+  unresolved_decisions: [...],
+  independent_deliverables: [...],
+  acceptance_criterion_ids: [...]
+}
+```
+
+Exactly one promised output is the `primary_deliverable`. Coverage must match the promised outputs exactly, and every acceptance criterion must have an ID, required evidence, and appear in `acceptance_criterion_ids`. A supporting output belongs to the same acceptance; an independently valuable output belongs in another Goal. If a candidate is separately deliverable, separately acceptable, or independently reworkable, count those three signals. Two or more true signals require `decision=split` and `verdict=split_required`. A `ready` leaf has no unresolved decisions, independent deliverables, or split candidates left, and has non-empty scope, non-goals, required inputs, and promised outputs. GoalBoard checks this both when the proposal enters the decision queue and again when the user decides it; an invalid pseudo-leaf is explained and returned for splitting rather than shown as adoptable.
+
 Read and check the proposal before asking for a decision. Explain it in plain language in the current conversation. Then call `goalboard_v1_goal_tree_decide` with:
 
 ```text
@@ -193,7 +238,7 @@ GoalBoard has one derived work state, not a second “clarification complete” 
 
 | Condition | State and Runtime response |
 |---|---|
-| Draft or open decomposition | `clarification_pending` / `clarifying`: continue the current dialogue. |
+| Draft or open decomposition | `clarification_pending` / `clarifying`: continue the current dialogue. When all active children are complete, Available sets `requires_parent_confirmation=true`, lists this parent before ordinary work, and the Runtime asks whether the current decomposition covers the whole parent before closing it or adding missing children. |
 | Confirmed compound Goal with active children | `waiting_children`: do not execute the parent; select an eligible child from Available. |
 | Confirmed executable leaf | `execution_pending` / `executing`: implement and validate the Contract. |
 | Completed work awaiting permitted Review | `review_pending` / `reviewing`: review only with the allowed Runtime role. |
@@ -201,6 +246,10 @@ GoalBoard has one derived work state, not a second “clarification complete” 
 | Any `*_blocked` state | Read `explain`, report the concrete cause, and choose other work or wait for the right user decision. |
 
 The Web UI renders this same derived state. In particular, a confirmed parent with child Goals must show “已澄清，等待子 Goal”, not “待澄清”.
+
+## Unexpected result and corrective work
+
+An observed mismatch, broken flow, incorrect output, or other task-specific failure is part of the Goal lifecycle when it can invalidate completion. Read the affected Contract and existing Tree before creating anything. Keep the Goal incomplete and attach failed/inconclusive Evidence when a criterion was checked; report an active Run as blocked only when work truly cannot continue. Reuse an existing Goal that already owns the correction. Otherwise submit a Candidate or Goal Tree Proposal for independently deliverable corrective work and an accurate `part_of` or `depends_on` relation. A failure that already happened is not recorded merely as a future Risk. Accepted Contracts and completed history are not silently rewritten.
 
 ## Work completion and recovery
 

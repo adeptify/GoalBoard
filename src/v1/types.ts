@@ -145,6 +145,7 @@ export interface RiskRecord {
   affected_surfaces: string[];
   trigger: string;
   treatment: "accept" | "mitigate" | "avoid" | "defer";
+  treatment_plan: string;
   blocking_mode: RiskBlockingMode;
   revisit_condition: string;
   owner: string;
@@ -161,6 +162,52 @@ export interface GoalPolicy {
   adversarial_reviewers: number;
   human_approval: boolean;
   max_lease_seconds: number;
+}
+
+export type TaskContext = "game" | "app" | "ai_data" | "content_research" | "operations" | "other";
+export type LegacyProductContext = "game" | "app" | "other";
+
+export interface DecompositionReview {
+  status: "complete" | "paused";
+  /** New proposals use this task-neutral context. */
+  task_context?: TaskContext;
+  /** Compatibility input for proposals created before task_context existed. */
+  product_context?: LegacyProductContext;
+  coverage: Array<{
+    area: string;
+    disposition: "goal" | "owned" | "not_applicable";
+    goal_ids: string[];
+    reason: string;
+  }>;
+  open_goal_ids: string[];
+  next_step: string;
+}
+
+/**
+ * Runtime-supplied evidence that a proposed executable leaf contains one
+ * independently verifiable result. It remains proposal history rather than a
+ * second canonical Goal state.
+ */
+export interface LeafReadiness {
+  verdict: "ready" | "split_required";
+  primary_deliverable: string;
+  output_coverage: Array<{
+    promised_output: string;
+    role: "primary" | "supporting" | "independent";
+    reason: string;
+  }>;
+  split_candidates: Array<{
+    work_item: string;
+    separately_deliverable: boolean;
+    separately_acceptable: boolean;
+    independently_reworkable: boolean;
+    decision: "keep" | "split";
+    reason: string;
+  }>;
+  rationale: string;
+  unresolved_decisions: string[];
+  independent_deliverables: string[];
+  acceptance_criterion_ids: string[];
 }
 
 export interface ClaimRecord {
@@ -295,6 +342,7 @@ export interface ContractProposalRisk {
   affected_surfaces: string[];
   trigger: string;
   treatment: RiskRecord["treatment"];
+  treatment_plan?: string;
   blocking_mode: RiskBlockingMode;
   revisit_condition: string;
   owner: string;
@@ -633,6 +681,8 @@ export interface AvailableGoal extends ReadyGoal {
   work_state: GoalWorkState;
   next_action: GoalWorkAction;
   review_obligation_id: string | null;
+  /** True when an open parent must return to the user before unrelated work is chosen. */
+  requires_parent_confirmation: boolean;
 }
 
 export interface BoardSnapshot {
@@ -695,6 +745,10 @@ export interface CreateGoalInput {
   constraints?: string[];
   required_inputs?: string[];
   promised_outputs?: string[];
+  /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
+  leaf_readiness?: LeafReadiness;
+  /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
+  decomposition_review?: DecompositionReview;
   definition_state?: DefinitionState;
   decomposition_state?: DecompositionState;
   priority?: number;

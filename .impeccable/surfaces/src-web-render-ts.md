@@ -5,57 +5,29 @@ primary_target: "src/web/render.ts"
 related_targets: ["src/web/server.ts"]
 ---
 
-Scope and mode: GoalBoard local Web application, Operate mode.
+Scope and mode: GoalBoard local Web and macOS desktop workbench, Operate mode. This slice establishes the shared visual foundation; it does not redesign domain behavior.
 
-Audience and job: AI Runtime developers and product leads need to understand the
-active Goal, its hierarchy and dependencies, inspect blockers and proof, and know
-what can happen next without learning a visual metaphor.
+Audience and job: developers and product leads use GoalBoard either as a full desktop workstation or as a narrow companion beside Codex, Claude Code, or another Harness. They must locate the active Goal, understand its next action, and keep a Goal-bound Runtime visible without relearning the layout at each width.
 
-Chosen direction: IDE Goal Tree. The user selected composition B at
-`.impeccable/mocks/goal-tree-comp-b.png` and explicitly asked to inherit the
-design language of Flyleaf Desktop Workstation at
-the Flyleaf desktop-workstation prototype used during the design pass.
-Use its graphite utility rail, calm gray-white panes, hairline separators,
-compact workbench typography, indigo selection, and flat editor-like controls.
-Do not copy Flyleaf product features or its old Goal Spine dots.
+Chosen direction: Quiet Intent Workspace. The approved composition combines `.impeccable/mocks/goalboard-desktop-workstation-a.png` as the wide desktop thesis and `.impeccable/mocks/goalboard-harness-companion-b.png` as its compact responsive form. `.impeccable/mocks/goalboard-graph-workstation-c.png` supplies visual grammar only for the later Goal Graph Goal.
 
-First viewport: a narrow global rail, a persistent IDE-style Goal Tree navigator,
-and one large selected-Goal workspace. The tree is the primary navigation. Each
-node directly names its Goal, ID and state; nesting and thin branch connectors
-show `part_of`; an inline “依赖 → …” row shows `depends_on`. The workspace opens
-with the selected Goal title, a four-cell situation strip (next step, blocker,
-acceptance gap, pending decisions), and one continuous five-chapter document in
-the same order: what the Goal is, what completion means, how work is progressing,
-risks and rules, then history. Related facts use quieter subsections instead of
-becoming peer-level panels or one large execution-details disclosure. Required
-user decisions stay visible in the situation strip and route to `/decisions`.
+Memorable moment: one selected Goal forms a continuous line across Navigator, Focus, and Runtime; beside a Harness, the same Goal remains visible in a narrow native-feeling window.
 
-Memorable moment: choosing a tree node changes the workbench like opening a file
-in an IDE, keeping the whole Goal hierarchy visible while proof updates in place.
-
-Proof/content: canonical SQLite snapshot only. Demo content remains labeled
-“示例数据”. No invented counts, dates, Runtime names or capabilities.
-
-Constraints: no railway, track, signal-box or traffic-light metaphor; no generic
-dashboard card wall; state is written in words and never color-only; keyboard,
-focus, responsive mobile reflow and reduced-motion support remain intact; no
-Runtime dispatch controls.
+Visual system: restrained graphite and cool paper surfaces, mineral blue for the current path and available action, semantic color only for state, native system typography, Lucide icons, 1px seams, 6–8px radii, and soft window-level elevation only. Light, Dark, and Follow System are first-class themes.
 
 Implementation inventory:
 
 | Visible ingredient | Implementation |
 | --- | --- |
-| Graphite global rail | semantic anchor navigation plus inline SVG sprite |
-| Persistent Goal Tree | recursively nested semantic lists from active `part_of` relations |
-| Tree branch connectors | CSS hairlines following the nested DOM topology |
-| Dependency facts | inline text rows from active `depends_on` relations |
-| Direct node state | icon plus Chinese state word from derived Web status |
-| Selected Goal workspace | semantic HTML updated in place from canonical snapshot |
-| Situation strip | four cells from status, blockers, passed criteria, and pending decisions |
-| Five-chapter document | existing Goal facts regrouped without a new field or state |
-| Quiet subsections | acceptance, Contract, relations, work facts, safety, and Policy retain full controls |
-| Claim / Run / Evidence / Review | compact fact matrix, not dashboard metrics |
-| Candidate and Rewire | human-owned decision section in the selected workspace |
-| Mobile | horizontal utility bar, bounded tree navigator, single-column workspace |
+| Wide three-pane workstation | Existing semantic workspace grid, retuned tokens and pane proportions |
+| Narrow Harness companion | Existing mobile view switch, restyled as Goals / Focus / Runtime |
+| Light, Dark, System | Local presentation preference plus `prefers-color-scheme`; no domain persistence |
+| Goal Navigator | Existing Goal Tree content and actions, compact visual treatment only in this slice |
+| Goal Focus | Existing Goal document panels, hierarchy and surface treatment only in this slice |
+| Runtime Dock | Existing Goal-bound TUI, retained as the darkest working surface |
+| State communication | Existing icon and readable label, compact tag treatment; never color-only |
+| Desktop identity | Native window context remains outside the Web content; app shell uses matte seams and dense chrome |
 
-Unresolved decisions: none for this delivery slice.
+Constraints: no feature, data, API, permission, state-machine, Goal lifecycle, or Runtime/TUI changes; no Graph implementation in this slice; no gradients, glass, dashboard cards, decorative glow, or copied Linear/Notion layouts; preserve keyboard, focus, responsive behavior and reduced motion.
+
+Unresolved decisions: none before the first implementation pass. User review of the real rendered slice decides whether to continue the visual direction into the remaining UI Goals.

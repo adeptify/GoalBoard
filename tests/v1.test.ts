@@ -10,7 +10,11 @@ import {
   GoalBoardV1Error,
   SqliteGoalBoardStore,
   importV3Board,
+  type DecompositionReview,
+  type LegacyProductContext,
+  type LeafReadiness,
   type LegacyV3ImportInput,
+  type TaskContext,
 } from "../src/index.js";
 import { runV1Cli } from "../src/v1/cli.js";
 import { main as runPublicCli } from "../src/cli/main.js";
@@ -118,19 +122,33 @@ function treeGoalPayload(input: {
   title: string;
   definition_state: "draft" | "accepted";
   decomposition_state: "abstract" | "frontier_open" | "closed_leaf" | "closed_compound";
+  decomposition_review?: DecompositionReview;
 }) {
+  const output = `${input.title} 有可检查的结果`;
+  const criterionId = `${input.goal_id}-criterion`;
+  const isAcceptedLeaf = input.definition_state === "accepted" && input.decomposition_state === "closed_leaf";
   return {
     goal_id: input.goal_id,
     title: input.title,
-    outcome: `${input.title} 有可检查的结果`,
+    outcome: output,
     why: "让用户能把目标拆开并持续推进。",
     business_logic: "先确认一项最小闭环的价值和边界，再根据子 Goal 的状态推进整体结果。",
+    ...(isAcceptedLeaf
+      ? {
+          in_scope: [output],
+          out_of_scope: ["不包含可以独立交付和验收的其他结果"],
+          required_inputs: ["已经确认的目标边界"],
+          promised_outputs: [output],
+          leaf_readiness: readyLeafReadiness(output, [criterionId]),
+        }
+      : {}),
     definition_state: input.definition_state,
     decomposition_state: input.decomposition_state,
+    ...(input.decomposition_review == null ? {} : { decomposition_review: input.decomposition_review }),
     acceptance_criteria: input.definition_state === "accepted"
       ? [
           {
-            criterion_id: `${input.goal_id}-criterion`,
+            criterion_id: criterionId,
             statement: `${input.title} 的结果可以检查`,
             decision_method: "inspection",
             pass_condition: "用户或 Runtime 可以清楚说明结果已经达成",
@@ -138,6 +156,144 @@ function treeGoalPayload(input: {
           },
         ]
       : [],
+  };
+}
+
+function readyLeafReadiness(
+  primaryDeliverable: string,
+  criterionIds: string[],
+  supportingOutputs: string[] = [],
+): LeafReadiness {
+  return {
+    verdict: "ready",
+    primary_deliverable: primaryDeliverable,
+    output_coverage: [
+      {
+        promised_output: primaryDeliverable,
+        role: "primary",
+        reason: "这是这条 Goal 唯一需要独立交付和验收的结果。",
+      },
+      ...supportingOutputs.map((output) => ({
+        promised_output: output,
+        role: "supporting" as const,
+        reason: "这是主要结果同一次验收所需的配套产物，不能单独成立。",
+      })),
+    ],
+    split_candidates: [],
+    rationale: "这条 Goal 只有一个主要结果，其余输出只为同一次验收服务。",
+    unresolved_decisions: [],
+    independent_deliverables: [],
+    acceptance_criterion_ids: criterionIds,
+  };
+}
+
+const decompositionAreas: Record<LegacyProductContext, string[]> = {
+  game: [
+    "core_gameplay",
+    "game_systems_content",
+    "player_journey",
+    "interaction_ui",
+    "audiovisual",
+    "technology_data",
+    "quality",
+    "delivery_release",
+  ],
+  app: [
+    "core_function",
+    "user_journey",
+    "interaction_ui",
+    "content_information",
+    "technology_data",
+    "quality",
+    "delivery_release",
+  ],
+  other: ["user_outcome", "operating_flow", "supporting_foundation", "quality_and_delivery"],
+};
+
+function completeDecompositionReview(
+  ownerGoalId: string,
+  productContext: LegacyProductContext = "other",
+): DecompositionReview {
+  return {
+    status: "complete",
+    product_context: productContext,
+    coverage: decompositionAreas[productContext].map((area) => ({
+      area,
+      disposition: "owned",
+      goal_ids: [ownerGoalId],
+      reason: `由 ${ownerGoalId} 交付并提供可检查结果。`,
+    })),
+    open_goal_ids: [],
+    next_step: "拆解已经完整，等待子 Goal 逐项完成。",
+  };
+}
+
+function pausedDecompositionReview(
+  openGoalId: string,
+  productContext: LegacyProductContext = "other",
+): DecompositionReview {
+  return {
+    status: "paused",
+    product_context: productContext,
+    coverage: decompositionAreas[productContext].map((area) => ({
+      area,
+      disposition: "owned",
+      goal_ids: [openGoalId],
+      reason: `先由 ${openGoalId} 继续澄清这一部分。`,
+    })),
+    open_goal_ids: [openGoalId],
+    next_step: `继续澄清 ${openGoalId}，直到可以形成独立执行和验收的 Goal。`,
+  };
+}
+
+const universalTaskAreas = [
+  "final_outcome",
+  "operating_flow",
+  "core_capabilities",
+  "foundation_infrastructure",
+  "quality_continuous_delivery",
+];
+
+const taskSpecificAreas: Record<TaskContext, string[]> = {
+  game: ["core_gameplay", "game_systems_content", "player_journey", "interaction_ui", "audiovisual"],
+  app: ["core_function", "user_journey", "interaction_ui", "content_information"],
+  ai_data: ["ai_data_sources_quality", "ai_evaluation", "ai_runtime_cost", "ai_safety_governance"],
+  content_research: ["source_provenance", "research_content_method", "review_approval", "publication_distribution"],
+  operations: ["roles_responsibilities", "permissions", "tools_workflow", "exception_handling", "measurement"],
+  other: [],
+};
+
+function completeTaskDecompositionReview(
+  taskContext: TaskContext,
+  defaultOwnerGoalId: string,
+  areaOwners: Record<string, string[]> = {},
+): DecompositionReview {
+  return {
+    status: "complete",
+    task_context: taskContext,
+    coverage: [...universalTaskAreas, ...taskSpecificAreas[taskContext]].map((area) => ({
+      area,
+      disposition: "owned",
+      goal_ids: areaOwners[area] ?? [defaultOwnerGoalId],
+      reason: `由 ${(areaOwners[area] ?? [defaultOwnerGoalId]).join("、")} 承担，并产出这一路径可检查的结果。`,
+    })),
+    open_goal_ids: [],
+    next_step: "拆解完整后，按依赖顺序推进这些结果。",
+  };
+}
+
+function completeDecompositionReviewWithoutOwnedGoals(): DecompositionReview {
+  return {
+    status: "complete",
+    product_context: "other",
+    coverage: decompositionAreas.other.map((area) => ({
+      area,
+      disposition: "not_applicable",
+      goal_ids: [],
+      reason: "这个测试只验证复合 Goal 必须存在实际子 Goal。",
+    })),
+    open_goal_ids: [],
+    next_step: "没有可继续执行的子 Goal。",
   };
 }
 
@@ -179,6 +335,7 @@ function createAcceptedCompoundParent(
 
 function acceptedCompoundClosurePayload(
   goal: NonNullable<ReturnType<SqliteGoalBoardStore["getGoal"]>>,
+  ownerGoalId?: string,
   overrides: Record<string, unknown> = {},
 ) {
   return {
@@ -194,6 +351,7 @@ function acceptedCompoundClosurePayload(
     promised_outputs: goal.promised_outputs,
     definition_state: "accepted",
     decomposition_state: "closed_compound",
+    ...(ownerGoalId == null ? {} : { decomposition_review: completeDecompositionReview(ownerGoalId) }),
     priority: goal.priority,
     acceptance_criteria: goal.acceptance_criteria.map(({ goal_id: _goalId, ...criterion }) => criterion),
     ...overrides,
@@ -208,6 +366,7 @@ function contractFieldSources(runId: string) {
     "business_logic",
     "in_scope",
     "out_of_scope",
+    "required_inputs",
     "promised_outputs",
     "priority",
     "acceptance_criteria",
@@ -277,6 +436,8 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
     DROP TABLE goal_trash_relation_records;
     DROP TABLE goal_trash_records;
     DELETE FROM schema_migrations WHERE migration_id = 11;
+    ALTER TABLE risks DROP COLUMN treatment_plan;
+    DELETE FROM schema_migrations WHERE migration_id = 15;
   `);
   store.close();
 
@@ -345,6 +506,13 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 14")
       .get(),
   );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 15")
+      .get(),
+  );
+  const riskColumns = reopened.db.pragma("table_info(risks)") as Array<{ name: string }>;
+  assert.ok(riskColumns.some((column) => column.name === "treatment_plan"));
   assert.ok(
     reopened.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_trash_records'")
@@ -1725,7 +1893,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
     in_scope: ["Draft 创建", "Contract 确认", "第一次领取"],
     out_of_scope: ["自动启动 Runtime"],
     constraints: [],
-    required_inputs: [],
+    required_inputs: ["已经确认的新用户首次使用路径"],
     promised_outputs: ["accepted Goal"],
     definition_state: "accepted" as const,
     decomposition_state: "closed_leaf" as const,
@@ -1739,6 +1907,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
         required_evidence: ["test"],
       },
     ],
+    leaf_readiness: readyLeafReadiness("accepted Goal", ["rough-draft-first-claim"]),
   };
   const reviewPolicy = {
     goal_mode: "required" as const,
@@ -2285,7 +2454,12 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
         item_id: "item-new-child",
         kind: "goal",
         operation: "create",
-        payload: { goal_id: "first-use-guide", title: "在当前 Runtime 中完成首次引导" },
+        payload: treeGoalPayload({
+          goal_id: "first-use-guide",
+          title: "在当前 Runtime 中完成首次引导",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
         object_type: "goal",
         object_id: "first-use-guide",
       }),
@@ -2293,7 +2467,11 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
         item_id: "item-root-contract",
         kind: "contract",
         operation: "update",
-        payload: { goal_id: "tree-root", decomposition_state: "closed_compound" },
+        payload: {
+          goal_id: "tree-root",
+          decomposition_state: "closed_compound",
+          decomposition_review: completeDecompositionReview("first-use-guide"),
+        },
         object_type: "goal",
         object_id: "tree-root",
       }),
@@ -2317,7 +2495,18 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
         item_id: "item-risk",
         kind: "risk",
         operation: "create",
-        payload: { risk_id: "first-use-copy-risk", description: "引导文案仍可能不清楚" },
+        payload: {
+          risk_id: "first-use-copy-risk",
+          goal_ids: ["first-use-guide"],
+          description: "引导文案仍可能不清楚",
+          probability: "medium",
+          impact: "medium",
+          trigger: "首次使用者看完引导后仍不知道下一步",
+          treatment: "mitigate",
+          blocking_mode: "none",
+          revisit_condition: "首次使用测试后复查",
+          owner: "runtime-clarifier",
+        },
         object_type: "risk",
         object_id: "first-use-copy-risk",
       }),
@@ -2404,7 +2593,12 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
         supersedes_item_id: "item-root-contract",
         kind: "contract",
         operation: "update",
-        payload: { goal_id: "tree-root", decomposition_state: "closed_compound", title: "另一个 Runtime 已更新的 Draft 标题" },
+        payload: treeGoalPayload({
+          goal_id: "tree-root",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+          title: "另一个 Runtime 已更新的 Draft 标题",
+        }),
         object_type: "goal",
         object_id: "tree-root",
       }),
@@ -2438,6 +2632,612 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
   recoveredStore.close();
 });
 
+test("Goal Tree proposal rejects an invalid Risk before it enters the decision queue", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-risk-validation",
+    rough_idea: "补充一条需要用户确认的风险。",
+    goal_id: "risk-validation-root",
+    idempotency_key: "risk-validation-dialogue-start",
+  });
+  const proposalCountBefore = store.snapshot("board-1").goal_tree_proposals.length;
+  const riskCountBefore = store.snapshot("board-1").risks.length;
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-validation",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "risk-validation-root",
+      summary: "建议记录一条发布风险。",
+      items: [goalTreeProposalItem({
+        item_id: "invalid-risk-item",
+        kind: "risk",
+        operation: "create",
+        payload: {
+          risk_id: "invalid-risk",
+          goal_ids: ["risk-validation-root"],
+          description: "发布后可能出现性能下降",
+          probability: "medium",
+          impact: "high",
+          trigger: "首屏加载时间超过 3 秒",
+          treatment: "先上线观察，出现问题后再优化",
+          blocking_mode: "none",
+          revisit_condition: "发布一周后复查",
+          owner: "runtime-risk-validation",
+        },
+        object_type: "risk",
+        object_id: "invalid-risk",
+      })],
+      idempotency_key: "invalid-risk-proposal-submit",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.risk_treatment_invalid");
+      assert.match(error.message, /发布后可能出现性能下降/);
+      assert.match(error.message, /处理方式/);
+      return true;
+    },
+  );
+
+  const snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.goal_tree_proposals.length, proposalCountBefore);
+  assert.equal(snapshot.risks.length, riskCountBefore);
+  store.close();
+});
+
+test("Goal Tree proposals require one primary result and split work that passes two independence signals", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-leaf-planner",
+    rough_idea: "把一个过大的工作拆成真正可以独立执行的 Goal。",
+    goal_id: "leaf-readiness-root",
+    idempotency_key: "leaf-readiness-dialogue",
+  });
+  const base = treeGoalPayload({
+    goal_id: "leaf-readiness-child",
+    title: "交付一份可确认的交互方案",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+  });
+  const { leaf_readiness: _readiness, ...withoutReadiness } = base;
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-leaf-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "leaf-readiness-root",
+      summary: "错误示例：只填写普通字段，没有说明为什么已经足够细。",
+      items: [goalTreeProposalItem({
+        item_id: "leaf-without-readiness",
+        kind: "goal",
+        operation: "create",
+        payload: withoutReadiness,
+        object_type: "goal",
+        object_id: "leaf-readiness-child",
+      })],
+      idempotency_key: "leaf-without-readiness-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.leaf_readiness_required");
+      assert.match(error.message, /唯一要交付什么/);
+      return true;
+    },
+  );
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-leaf-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "leaf-readiness-root",
+      summary: "错误示例：拆分信号使用文字而不是明确的是或否。",
+      items: [goalTreeProposalItem({
+        item_id: "leaf-with-malformed-signals",
+        kind: "goal",
+        operation: "create",
+        payload: {
+          ...base,
+          leaf_readiness: {
+            ...base.leaf_readiness,
+            split_candidates: [{
+              work_item: "接入全部页面",
+              separately_deliverable: "true",
+              separately_acceptable: true,
+              independently_reworkable: false,
+              decision: "split",
+              reason: "这项工作应该独立拆分。",
+            }],
+          },
+        },
+        object_type: "goal",
+        object_id: "leaf-readiness-child",
+      })],
+      idempotency_key: "leaf-with-malformed-signals-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.leaf_readiness_invalid");
+      return true;
+    },
+  );
+
+  const primary = String(base.promised_outputs[0]);
+  const integrationOutput = "把交互方案接入全部页面";
+  const pseudoLeaf = {
+    ...base,
+    promised_outputs: [primary, integrationOutput],
+    leaf_readiness: {
+      ...readyLeafReadiness(primary, ["leaf-readiness-child-criterion"], [integrationOutput]),
+      split_candidates: [
+        {
+          work_item: integrationOutput,
+          separately_deliverable: true,
+          separately_acceptable: true,
+          independently_reworkable: false,
+          decision: "keep" as const,
+          reason: "Runtime 想把接入工作继续留在同一条 Goal。",
+        },
+      ],
+    },
+  };
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-leaf-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "leaf-readiness-root",
+      summary: "错误示例：交互方案和页面接入可以分别交付和验收，却仍塞在同一叶子。",
+      items: [goalTreeProposalItem({
+        item_id: "pseudo-leaf-two-results",
+        kind: "goal",
+        operation: "create",
+        payload: pseudoLeaf,
+        object_type: "goal",
+        object_id: "leaf-readiness-child",
+      })],
+      idempotency_key: "pseudo-leaf-two-results-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.leaf_split_signal_ignored");
+      assert.match(error.message, /把交互方案接入全部页面/);
+      assert.match(error.message, /必须成为独立 Goal/);
+      return true;
+    },
+  );
+
+  const validLeaf = {
+    ...base,
+    leaf_readiness: {
+      ...base.leaf_readiness,
+      split_candidates: [
+        {
+          work_item: "整理同一方案的说明文字",
+          separately_deliverable: false,
+          separately_acceptable: false,
+          independently_reworkable: true,
+          decision: "keep" as const,
+          reason: "说明文字和交互方案必须一起验收，不能单独形成用户结果。",
+        },
+      ],
+    },
+  };
+  const accepted = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-leaf-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "leaf-readiness-root",
+    summary: "合格示例：一个主要结果，配套工作只服务同一次验收。",
+    items: [goalTreeProposalItem({
+      item_id: "ready-single-result-leaf",
+      kind: "goal",
+      operation: "create",
+      payload: validLeaf,
+      object_type: "goal",
+      object_id: "leaf-readiness-child",
+    })],
+    idempotency_key: "ready-single-result-leaf-proposal",
+  });
+  assert.equal(accepted.proposal.state, "pending");
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 1);
+  store.close();
+});
+
+test("Goal Tree proposals cannot call a game plan complete while product paths or executable descendants are missing", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-game-planner",
+    rough_idea: "设计一款完整的足球经营游戏，而不是只确认足球资料内容。",
+    goal_id: "footballnia-game",
+    idempotency_key: "footballnia-game-dialogue",
+  });
+  const proposalCountBefore = store.snapshot("board-1").goal_tree_proposals.length;
+  const incompleteReview: DecompositionReview = {
+    ...completeDecompositionReview("footballnia-football-content", "game"),
+    coverage: completeDecompositionReview("footballnia-football-content", "game").coverage.filter(
+      (entry) => entry.area === "game_systems_content",
+    ),
+  };
+  const proposalItems = (review: DecompositionReview, childState: "closed_leaf" | "abstract") => [
+    goalTreeProposalItem({
+      item_id: `footballnia-parent-${childState}`,
+      kind: "contract",
+      operation: "update",
+      payload: treeGoalPayload({
+        goal_id: "footballnia-game",
+        title: "交付可完整游玩的 Footballnia",
+        definition_state: "accepted",
+        decomposition_state: "closed_compound",
+        decomposition_review: review,
+      }),
+      object_type: "goal",
+      object_id: "footballnia-game",
+    }),
+    goalTreeProposalItem({
+      item_id: `footballnia-child-${childState}`,
+      kind: "goal",
+      operation: "create",
+      payload: treeGoalPayload({
+        goal_id: "footballnia-football-content",
+        title: "完成 Footballnia 的足球内容",
+        definition_state: childState === "closed_leaf" ? "accepted" : "draft",
+        decomposition_state: childState,
+      }),
+      object_type: "goal",
+      object_id: "footballnia-football-content",
+    }),
+    goalTreeProposalItem({
+      item_id: `footballnia-relation-${childState}`,
+      kind: "relation",
+      operation: "create",
+      payload: {
+        from_goal_id: "footballnia-football-content",
+        to_goal_id: "footballnia-game",
+        type: "part_of",
+        reason: "足球内容由游戏整体消费，但不能替代玩法、交互、视听、质量和发布路径。",
+      },
+      object_type: "relation",
+      object_id: `relation:new:footballnia-football-content:footballnia-game:part_of:${childState}`,
+    }),
+  ];
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-game-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "footballnia-game",
+      summary: "错误示例：只确认足球内容就把整款游戏标记为拆解完成。",
+      items: proposalItems(incompleteReview, "closed_leaf"),
+      idempotency_key: "footballnia-incomplete-path-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.product_path_incomplete");
+      assert.match(error.message, /核心玩法/);
+      assert.match(error.message, /交互与 UI/);
+      assert.match(error.message, /质量/);
+      assert.match(error.message, /交付与发布/);
+      return true;
+    },
+  );
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-game-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "footballnia-game",
+      summary: "错误示例：产品路径写全了，但承担它们的 Goal 仍然没有拆完。",
+      items: proposalItems(completeDecompositionReview("footballnia-football-content", "game"), "abstract"),
+      idempotency_key: "footballnia-open-descendant-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.open_descendants");
+      assert.match(error.message, /footballnia-football-content/);
+      return true;
+    },
+  );
+
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, proposalCountBefore);
+  store.close();
+});
+
+test("Goal Tree proposals cover complete game and App paths without forcing one Goal per checklist item", () => {
+  const { store, coordinator } = fixture();
+  const submitCompleteProduct = (
+    rootGoalId: string,
+    childGoalId: string,
+    productContext: "game" | "app",
+    review: DecompositionReview,
+  ) => {
+    const dialogue = coordinator.startDraftDialogue({
+      board_id: "board-1",
+      actor_id: "runtime-product-planner",
+      rough_idea: productContext === "game" ? "做一款完整可玩的足球游戏。" : "做一个可以端到端完成任务的 App。",
+      goal_id: rootGoalId,
+      idempotency_key: `${rootGoalId}-dialogue`,
+    });
+    return coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-product-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: rootGoalId,
+      summary: `完整说明 ${productContext} 产品成立所需的路径及各自归属。`,
+      items: [
+        goalTreeProposalItem({
+          item_id: `${rootGoalId}-contract`,
+          kind: "contract",
+          operation: "update",
+          payload: treeGoalPayload({
+            goal_id: rootGoalId,
+            title: productContext === "game" ? "交付完整可玩的足球游戏" : "交付端到端可用的 App",
+            definition_state: "accepted",
+            decomposition_state: "closed_compound",
+            decomposition_review: review,
+          }),
+          object_type: "goal",
+          object_id: rootGoalId,
+        }),
+        goalTreeProposalItem({
+          item_id: `${childGoalId}-goal`,
+          kind: "goal",
+          operation: "create",
+          payload: treeGoalPayload({
+            goal_id: childGoalId,
+            title: `完成 ${rootGoalId} 的完整产品闭环`,
+            definition_state: "accepted",
+            decomposition_state: "closed_leaf",
+          }),
+          object_type: "goal",
+          object_id: childGoalId,
+        }),
+        goalTreeProposalItem({
+          item_id: `${childGoalId}-part-of`,
+          kind: "relation",
+          operation: "create",
+          payload: {
+            from_goal_id: childGoalId,
+            to_goal_id: rootGoalId,
+            type: "part_of",
+            reason: `父 Goal 消费 ${childGoalId} 的产品闭环结果，因此子 Goal 属于父 Goal。`,
+          },
+          object_type: "relation",
+          object_id: `relation:new:${childGoalId}:${rootGoalId}:part_of`,
+        }),
+      ],
+      idempotency_key: `${rootGoalId}-proposal`,
+    }).proposal;
+  };
+
+  const gameReview = completeDecompositionReview("complete-game-slice", "game");
+  const gameProposal = submitCompleteProduct("complete-game", "complete-game-slice", "game", gameReview);
+  assert.equal(gameProposal.state, "pending");
+  assert.deepEqual(
+    gameReview.coverage.map((entry) => entry.area),
+    decompositionAreas.game,
+  );
+
+  const appReview = completeDecompositionReview("complete-app-slice", "app");
+  appReview.coverage = appReview.coverage.map((entry) => entry.area === "content_information"
+    ? {
+        ...entry,
+        disposition: "not_applicable" as const,
+        goal_ids: [],
+        reason: "这个工具不生产独立内容，信息只用于完成用户任务。",
+      }
+    : entry);
+  const appProposal = submitCompleteProduct("complete-app", "complete-app-slice", "app", appReview);
+  assert.equal(appProposal.state, "pending");
+  assert.equal(new Set(appReview.coverage.flatMap((entry) => entry.goal_ids)).size, 1);
+  assert.equal(appReview.coverage.find((entry) => entry.area === "content_information")?.disposition, "not_applicable");
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 2);
+  store.close();
+});
+
+test("new task decomposition checks the shared result chain before each task-specific checklist", () => {
+  const { store, coordinator } = fixture();
+  const submitTask = (taskContext: TaskContext, review: DecompositionReview, suffix = "complete") => {
+    const rootGoalId = `${taskContext}-${suffix}-root`;
+    const childGoalId = `${taskContext}-${suffix}-owner`;
+    const dialogue = coordinator.startDraftDialogue({
+      board_id: "board-1",
+      actor_id: "runtime-task-planner",
+      rough_idea: `把 ${taskContext} 任务从最终结果拆到支撑基础和持续交付。`,
+      goal_id: rootGoalId,
+      idempotency_key: `${rootGoalId}-dialogue`,
+    });
+    return coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-task-planner",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: rootGoalId,
+      summary: `完整说明 ${taskContext} 的通用结果链和场景专属路径。`,
+      items: [
+        goalTreeProposalItem({
+          item_id: `${rootGoalId}-contract`,
+          kind: "contract",
+          operation: "update",
+          payload: treeGoalPayload({
+            goal_id: rootGoalId,
+            title: `交付完整的 ${taskContext} 结果`,
+            definition_state: "accepted",
+            decomposition_state: "closed_compound",
+            decomposition_review: review,
+          }),
+          object_type: "goal",
+          object_id: rootGoalId,
+        }),
+        goalTreeProposalItem({
+          item_id: `${childGoalId}-goal`,
+          kind: "goal",
+          operation: "create",
+          payload: treeGoalPayload({
+            goal_id: childGoalId,
+            title: `承担 ${taskContext} 的完整闭环`,
+            definition_state: "accepted",
+            decomposition_state: "closed_leaf",
+          }),
+          object_type: "goal",
+          object_id: childGoalId,
+        }),
+        goalTreeProposalItem({
+          item_id: `${childGoalId}-part-of`,
+          kind: "relation",
+          operation: "create",
+          payload: { from_goal_id: childGoalId, to_goal_id: rootGoalId, type: "part_of" },
+          object_type: "relation",
+          object_id: `relation:new:${childGoalId}:${rootGoalId}:part_of`,
+        }),
+      ],
+      idempotency_key: `${rootGoalId}-proposal`,
+    }).proposal;
+  };
+
+  const incompleteOwner = "operations-incomplete-owner";
+  const incompleteReview = completeTaskDecompositionReview("operations", incompleteOwner);
+  incompleteReview.coverage = incompleteReview.coverage.filter(
+    (entry) => entry.area !== "foundation_infrastructure",
+  );
+  assert.throws(
+    () => submitTask("operations", incompleteReview, "incomplete"),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.product_path_incomplete");
+      assert.match(error.message, /基础能力与基建/);
+      return true;
+    },
+  );
+
+  for (const taskContext of ["game", "app", "ai_data", "content_research", "operations"] as TaskContext[]) {
+    const ownerGoalId = `${taskContext}-complete-owner`;
+    const review = completeTaskDecompositionReview(taskContext, ownerGoalId);
+    if (taskContext === "content_research") {
+      review.coverage = review.coverage.map((entry) => entry.area === "publication_distribution"
+        ? {
+            ...entry,
+            disposition: "not_applicable" as const,
+            goal_ids: [],
+            reason: "这项内部研究只交付给当前团队，不对外发布或分发。",
+          }
+        : entry);
+    }
+    const proposal = submitTask(
+      taskContext,
+      review,
+    );
+    assert.equal(proposal.state, "pending");
+    if (taskContext === "content_research") {
+      assert.equal(review.coverage.find((entry) => entry.area === "publication_distribution")?.disposition, "not_applicable");
+    }
+  }
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 5);
+  store.close();
+});
+
+test("separate foundation Goals need an explicit dependency from core work to foundation output", () => {
+  const { store, coordinator } = fixture();
+  const rootGoalId = "foundation-path-root";
+  const coreGoalId = "foundation-path-core";
+  const foundationGoalId = "foundation-path-infrastructure";
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-task-planner",
+    rough_idea: "把核心工作和支撑它的基础能力拆清，并连对依赖方向。",
+    goal_id: rootGoalId,
+    idempotency_key: "foundation-path-dialogue",
+  });
+  const review = completeTaskDecompositionReview("other", coreGoalId, {
+    foundation_infrastructure: [foundationGoalId],
+  });
+  const baseItems = [
+    goalTreeProposalItem({
+      item_id: "foundation-path-contract",
+      kind: "contract",
+      operation: "update",
+      payload: treeGoalPayload({
+        goal_id: rootGoalId,
+        title: "交付由明确基础能力支撑的完整结果",
+        definition_state: "accepted",
+        decomposition_state: "closed_compound",
+        decomposition_review: review,
+      }),
+      object_type: "goal",
+      object_id: rootGoalId,
+    }),
+    ...[coreGoalId, foundationGoalId].flatMap((goalId) => [
+      goalTreeProposalItem({
+        item_id: `${goalId}-goal`,
+        kind: "goal",
+        operation: "create",
+        payload: treeGoalPayload({
+          goal_id: goalId,
+          title: goalId === coreGoalId ? "完成用户直接需要的核心工作" : "提供核心工作需要的基础能力",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
+        object_type: "goal",
+        object_id: goalId,
+      }),
+      goalTreeProposalItem({
+        item_id: `${goalId}-part-of`,
+        kind: "relation",
+        operation: "create",
+        payload: { from_goal_id: goalId, to_goal_id: rootGoalId, type: "part_of" },
+        object_type: "relation",
+        object_id: `relation:new:${goalId}:${rootGoalId}:part_of`,
+      }),
+    ]),
+  ];
+  const submit = (items: typeof baseItems, idempotencyKey: string) => coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-task-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: rootGoalId,
+    summary: "说明核心工作、基础能力和两者的消费方向。",
+    items,
+    idempotency_key: idempotencyKey,
+  }).proposal;
+
+  assert.throws(
+    () => submit(baseItems, "foundation-path-without-dependency"),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.foundation_dependency_required");
+      assert.match(error.message, /没有连清核心能力 Goal/);
+      assert.match(error.message, /foundation-path-core/);
+      assert.match(error.message, /foundation-path-infrastructure/);
+      return true;
+    },
+  );
+  const proposal = submit([
+    ...baseItems,
+    goalTreeProposalItem({
+      item_id: "foundation-path-dependency",
+      kind: "dependency",
+      operation: "create",
+      payload: {
+        from_goal_id: coreGoalId,
+        to_goal_id: foundationGoalId,
+        type: "depends_on",
+        reason: "核心工作消费基础能力提供的结果，反方向没有对应输入。",
+      },
+      object_type: "relation",
+      object_id: `relation:new:${coreGoalId}:${foundationGoalId}:depends_on`,
+    }),
+  ], "foundation-path-with-dependency");
+  assert.equal(proposal.state, "pending");
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 1);
+  store.close();
+});
+
 test("trusted partial Goal Tree decisions materialize a hierarchy and derive parent, leaf, and draft states", () => {
   const { store, coordinator } = fixture();
   const dialogue = coordinator.startDraftDialogue({
@@ -2462,7 +3262,8 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
           goal_id: "tree-decision-parent",
           title: "Runtime 中确认的复合父 Goal",
           definition_state: "accepted",
-          decomposition_state: "closed_compound",
+          decomposition_state: "frontier_open",
+          decomposition_review: pausedDecompositionReview("tree-decision-draft-child"),
         }),
         object_type: "goal",
         object_id: "tree-decision-parent",
@@ -2616,7 +3417,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.equal(treeClarificationCloseCount(), 1);
   assert.equal(
     coordinator.readGoalContract("board-1", "tree-decision-parent").work_state.work_state,
-    "waiting_children",
+    "clarifying",
   );
   assert.equal(
     coordinator.readGoalContract("board-1", "tree-decision-leaf").work_state.work_state,
@@ -2709,7 +3510,7 @@ test("a user can close an accepted parent without changing its Contract", () => 
         item_id: "accepted-parent-close",
         kind: "contract",
         operation: "update",
-        payload: acceptedCompoundClosurePayload(before),
+        payload: acceptedCompoundClosurePayload(before, "accepted-closure-child"),
         object_type: "goal",
         object_id: "accepted-closure-parent",
       }),
@@ -2813,7 +3614,10 @@ test("closing an accepted parent reconciles completed children and compound ance
         item_id: "accepted-complete-parent-close",
         kind: "contract",
         operation: "update",
-        payload: acceptedCompoundClosurePayload(store.getGoal("accepted-closure-complete-parent")!),
+        payload: acceptedCompoundClosurePayload(
+          store.getGoal("accepted-closure-complete-parent")!,
+          "accepted-closure-complete-child",
+        ),
         object_type: "goal",
         object_id: "accepted-closure-complete-parent",
       }),
@@ -2959,6 +3763,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
           title: "确认已经完成子树的 Draft 父 Goal",
           definition_state: "accepted",
           decomposition_state: "closed_compound",
+          decomposition_review: completeDecompositionReview("newly-accepted-compound-child"),
         }),
         object_type: "goal",
         object_id: "newly-accepted-compound-parent",
@@ -3118,16 +3923,31 @@ test("accepted compound closure rejects missing children, invalid transitions, a
   };
 
   createAcceptedCompoundParent(coordinator, "accepted-closure-no-child");
-  const noChild = submitAndConfirm(
-    "accepted-closure-no-child",
-    "accepted-close-no-child",
-    acceptedCompoundClosurePayload(store.getGoal("accepted-closure-no-child")!),
+  const proposalCountBeforeMissingChild = store.snapshot("board-1").goal_tree_proposals.length;
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-clarifier",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "accepted-closure-no-child",
+      summary: "验证没有任何实际子 Goal 时不能把父 Goal 标记为拆解完成。",
+      items: [goalTreeProposalItem({
+        item_id: "accepted-close-no-child",
+        kind: "contract",
+        operation: "update",
+        payload: acceptedCompoundClosurePayload(store.getGoal("accepted-closure-no-child")!, undefined, {
+          decomposition_review: completeDecompositionReviewWithoutOwnedGoals(),
+        }),
+        object_type: "goal",
+        object_id: "accepted-closure-no-child",
+      })],
+      idempotency_key: "accepted-closure-rejection-proposal-accepted-closure-no-child",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.compound_children_required",
   );
-  assert.deepEqual(noChild.conflict_item_ids, ["accepted-close-no-child"]);
-  assert.equal(
-    (noChild.proposal.items[0]?.conflict as { code?: string } | null)?.code,
-    "goal.accepted_compound_closure_children_required",
-  );
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, proposalCountBeforeMissingChild);
   assert.equal(store.getGoal("accepted-closure-no-child")?.decomposition_state, "abstract");
 
   createAcceptedCompoundParent(coordinator, "accepted-closure-invalid-transition");
@@ -3145,8 +3965,12 @@ test("accepted compound closure rejects missing children, invalid transitions, a
   const invalidTransition = submitAndConfirm(
     "accepted-closure-invalid-transition",
     "accepted-close-invalid-transition",
-    acceptedCompoundClosurePayload(store.getGoal("accepted-closure-invalid-transition")!, {
+    acceptedCompoundClosurePayload(store.getGoal("accepted-closure-invalid-transition")!, undefined, {
       decomposition_state: "closed_leaf",
+      leaf_readiness: readyLeafReadiness(
+        "父 Goal 的单一工作状态",
+        ["accepted-closure-invalid-transition-children"],
+      ),
     }),
   );
   assert.deepEqual(invalidTransition.conflict_item_ids, ["accepted-close-invalid-transition"]);
@@ -3171,7 +3995,7 @@ test("accepted compound closure rejects missing children, invalid transitions, a
   const mutated = submitAndConfirm(
     "accepted-closure-mutated-contract",
     "accepted-close-mutated-contract",
-    acceptedCompoundClosurePayload(store.getGoal("accepted-closure-mutated-contract")!, {
+    acceptedCompoundClosurePayload(store.getGoal("accepted-closure-mutated-contract")!, "accepted-closure-mutated-contract-child", {
       title: "不允许改写的已接受父 Goal 标题",
     }),
   );
@@ -3213,7 +4037,7 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
         goal_id: "decision-conflict-root",
         title: "原始待确认 Contract",
         definition_state: "accepted",
-        decomposition_state: "closed_compound",
+        decomposition_state: "abstract",
       }),
       object_type: "goal",
       object_id: "decision-conflict-root",
@@ -3441,9 +4265,9 @@ test("the unified Goal Tree read view maps legacy Contract Proposals, Candidates
     why: "升级新模型时不能丢失旧用户决定和来源",
     business_logic: "保留旧 Contract Proposal 的原始内容，并将它映射为统一提案的一条 Contract item。",
     in_scope: ["历史映射"],
-    out_of_scope: [],
+    out_of_scope: ["不改写旧 Contract Proposal 的原始记录"],
     constraints: [],
-    required_inputs: [],
+    required_inputs: ["已有的历史 Contract Proposal"],
     promised_outputs: ["统一读取结果"],
     definition_state: "accepted" as const,
     decomposition_state: "closed_leaf" as const,
@@ -3454,8 +4278,10 @@ test("the unified Goal Tree read view maps legacy Contract Proposals, Candidates
         statement: "统一视图返回历史 Contract Proposal 内容",
         decision_method: "inspection" as const,
         pass_condition: "字段、来源和状态均与旧记录一致",
+        required_evidence: ["统一 Goal Tree 读取结果"],
       },
     ],
+    leaf_readiness: readyLeafReadiness("统一读取结果", ["legacy-contract-view"]),
   };
   const legacyContract = coordinator.submitContractProposal({
     board_id: "board-1",
@@ -4966,6 +5792,71 @@ test("unified Available lets the Runtime choose across clarification, execution,
   store.close();
 });
 
+test("Available brings an unfinished parent back to the user after its current children finish", () => {
+  const { store, coordinator } = fixture();
+  coordinator.createGoal(
+    "board-1",
+    {
+      goal_id: "open-parent",
+      title: "确认完整产品是否已经覆盖",
+      outcome: "用户确认当前子 Goal 是否足以完成整个产品目标",
+      why: "不能把做完当前子项误当成整个目标已经拆完整",
+      business_logic: "当前子 Goal 完成后，Runtime 回到父 Goal，和用户确认收口或补充遗漏工作。",
+      definition_state: "draft",
+      decomposition_state: "frontier_open",
+      priority: 1,
+      acceptance_criteria: [{
+        criterion_id: "open-parent-covered",
+        statement: "父目标的关键路径都有明确归属",
+        decision_method: "human_decision",
+        pass_condition: "用户确认现有拆分完整，或补齐遗漏子 Goal",
+      }],
+    },
+    { actor_id: "user-1", idempotency_key: "open-parent-create" },
+  );
+  createLeaf(coordinator, "finished-current-child", 5);
+  coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "finished-current-child",
+      to_goal_id: "open-parent",
+      type: "part_of",
+      reason: "这是当前已经确认并完成的一部分",
+    },
+    { actor_id: "user-1", idempotency_key: "open-parent-current-child" },
+  );
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("finished-current-child");
+  createLeaf(coordinator, "unrelated-high-priority-leaf", 100);
+
+  const available = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-a",
+  }).available;
+  assert.deepEqual(available.map((item) => item.goal.goal_id), [
+    "open-parent",
+    "unrelated-high-priority-leaf",
+  ]);
+  assert.equal(available[0]?.requires_parent_confirmation, true);
+  assert.equal(available[0]?.role, "clarifier");
+  assert.equal(available[0]?.next_action, "clarify");
+  assert.match(available[0]?.why_now ?? "", /先和用户确认是否已经覆盖整个父目标/);
+  assert.equal(available[1]?.requires_parent_confirmation, false);
+
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "open-parent",
+    actor_id: "runtime-a",
+    role: "clarifier",
+    idempotency_key: "open-parent-confirmation-select",
+  });
+  assert.equal(selected.allowed, true);
+  assert.equal(selected.work_state?.work_state, "clarifying");
+  assert.equal(selected.run?.role, "clarifier");
+  store.close();
+});
+
 test("Runtime selection atomically creates a Claim and Run, and compound parents complete from children", () => {
   const { store, coordinator } = fixture();
   coordinator.createGoal(
@@ -5324,6 +6215,17 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     state: "completed",
     idempotency_key: "phase-review-execution-completed",
   });
+  const reviewHandoff = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "review-phase",
+  });
+  assert.equal(reviewHandoff.work_state, "review_blocked");
+  assert.match(reviewHandoff.reasons[0]?.message ?? "", /结果已提交，正在进入检查/);
+  assert.match(reviewHandoff.reasons[0]?.remediation ?? "", /无需重新提交/);
+  assert.doesNotMatch(
+    `${reviewHandoff.reasons[0]?.message} ${reviewHandoff.reasons[0]?.remediation}`,
+    /Claim|Run|Runtime/,
+  );
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: reviewExecution.claim!.claim_id,
