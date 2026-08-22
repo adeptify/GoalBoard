@@ -2,98 +2,37 @@
 
 **中文** | [English](README.en.md)
 
-## 面向多 Runtime 协作的 Goal 账本与执行工作台
+> 你随口说的想法，会变成 AI 一直记得、不会跑偏、做没做完都看得见的目标。
 
-GoalBoard 统一管理项目的 Goal Tree、依赖关系、执行进展、完成依据和用户决定。
+你是不是也这样过：昨天跟 AI 聊好的方案，今天新开一个对话，它全忘了，背景又得从头讲一遍；聊着聊着需求被悄悄改掉，等你发现已经做歪了；几个子任务谁先谁后全靠 AI 心情，前置没做完后面的就白干；它说“做完了”，你心里却完全没底；Codex 干一半换 Claude Code，两边进度对不上；想法还一团模糊，它就急着开干，回头还得返工；好不容易对齐了输入输出，它又满嘴黑话，你根本看不懂它干了啥；活卡住了不知道在等什么，一堆该你拍板的事也埋没在聊天记录里。
 
-不同 Runtime 可以读取和更新同一份项目状态。用户既可以将 GoalBoard 与现有 Harness 并排使用，也可以在具体 Goal 旁直接打开 Runtime TUI，让 Goal、Session 和执行现场保持关联。
+所以我们推出 **GoalBoard**——一个**不侵入**的、提供**丰富 MCP** 的、**不包含自身 AI 功能**的，人和 AI 之间的**目标对账本**：
 
-![Codex 与 GoalBoard 同屏：Codex 读取当前 Goal，GoalBoard 对照 Goal Tree、进展和下一步](docs/screenshots/codex-goalboard-side-by-side.png)
+- **不侵入**：不启动你的 AI，也不把任务硬塞给谁；能做的事摆在列表里，AI 自己挑着做；
+- **丰富 MCP**：设置页可自动适配 Codex、Claude Code、OpenCode、Pi Agent、Grok Build；其他 MCP Runtime 也能连上同一套协议。换对话、换 AI，目标都在；
+- **没有自己的 AI**：不捆绑任何模型，你的 AI 才是主角；
+- **目标对账本**：目标、拆分、进度、完成标准都记在账上——谁在干、做到哪、卡在哪、还差什么、什么在等你决定，打开就清楚，不用靠聊天记录去猜。
 
-## 核心能力
+## 功能亮点
 
-### 跨 Runtime 的共同账本
+- **跨对话、跨 AI，目标不丢**：目标和进度存在项目里，新会话说一句「继续用 GoalBoard」就找回；多个 Runtime 共用同一份对账本。
+- **目标不会悄悄跑偏**：目标说好了不随便改；AI 想加东西得先问你，你点头才作数。
+- **先后顺序定得清清楚楚**：前置没做完，后面的活 AI 想领也领不走。
+- **不用你拆任务派活**：能做的目标摆在列表里，AI 自己看、自己挑、自己开工，干完回来交差。
+- **做没做完，看得见**：每个目标都说好「做到什么样算完」，AI 拿结果来对，对得上才算数。
+- **卡住和待办都写在账上**：卡在哪、等什么、哪些决定等你拍板，一目了然，不会漏。
+- **三栏工作台，边看边干**：Goal 详情页左边目标树、中间正文、右边本机终端，可直接在**当前 Goal** 上打开 Codex、Claude Code、OpenCode、Pi Agent、Grok Build 或自定义命令。
+- **界面中英双语**：默认中文，可一键切换英文；Goal 标题和正文保持原文。
 
-**让不同 Runtime 始终依据同一份项目事实工作。**
+## 界面速览
 
-- Goal Tree、依赖、风险和完成标准统一保存；
-- Runtime 的领取、执行、依据和复核写回同一项目；
-- 用户决定与目标变化保留完整记录。
+![项目列表（中文）](docs/screenshots/projects-zh.png)
 
-Codex、Claude Code、OpenCode、Pi Agent、Grok Build，以及其他接入 GoalBoard 的 Runtime，不必各自维护独立计划。
+![Goal 三栏工作台：目标树、正文与本机终端（中文）](docs/screenshots/goalboard-tui-zh.png)
 
-### 面向长程任务的 Goal 管理
+![决定中心：等你拍板的事都集中在这里（中文）](docs/screenshots/goalboard-decisions-zh.png)
 
-**让已确认的 Goal 在持续执行中保持稳定，同时允许项目有记录地演进。**
-
-- 每个 Goal 明确记录预期结果、执行边界、依赖关系和完成标准；
-- 已确认的 Goal 不被 Runtime 静默改写，新需求先作为候选 Goal 提出；
-- 拆分、依赖和范围变化说明原因与影响，经用户确认后才生效。
-
-用户可以判断 Goal 发生了什么变化、为什么变化，以及当前工作是否仍围绕原目标推进。
-
-### 可执行工作的选择与约束
-
-**让 Runtime 自主推进，同时遵守已经确认的顺序和边界。**
-
-- GoalBoard 根据 Goal 状态、依赖和风险判断哪些工作可以开始；
-- Runtime 自主读取、选择并领取可执行 Goal，GoalBoard 不主动派单；
-- 前置条件尚未满足或风险仍在阻塞时，相关 Goal 不能提前执行或完成。
-
-领取状态会写回项目，其他 Runtime 可以据此避开已经有人处理的工作。
-
-### 可核对的进展与完成
-
-**让用户直接掌握项目进展，而不是依赖 Runtime 的临时总结。**
-
-- Goal Tree 区分待执行、执行中、受阻、等待决定和已完成；
-- Goal 页面说明当前行动、阻塞原因和未满足条件；
-- 完成状态对应具体依据和复核结果。
-
-用户可以随时判断正在做什么、为什么停住，以及距离完成还缺什么。
-
-![决定中心：需要用户确认的问题、原因与处理结果](docs/screenshots/goalboard-decisions-zh.png)
-
-### 多种使用方式
-
-**让 GoalBoard 适应现有工作习惯，也可以成为主要工作台。**
-
-- **与 Harness 并排使用**：继续在常用桌面端或终端中工作，同时查看 GoalBoard 中的目标、进展和完成依据；
-- **使用浏览器工作台**：在同一页面中查看 Goal Tree、Goal 正文和 Runtime TUI；
-- **使用 macOS Desktop**：打开同一套本地工作台，从具体 Goal 进入执行现场。
-
-浏览器和 Desktop 使用相同的项目数据。只有桌面 GUI、没有 CLI/TUI 的 Harness 可以与 GoalBoard 并排使用；具有 CLI/TUI 的 Runtime 还可以直接运行在 GoalBoard 内。
-
-### 与 Goal 绑定的 Runtime TUI
-
-**让 Session、执行现场和正在推进的 Goal 保持明确关联。**
-
-- 从可执行 Goal 打开 Codex、Claude Code、OpenCode、Pi Agent、Grok Build 或自定义命令；
-- 终端持续显示所属 Goal，切换页面不会改变已有终端的归属；
-- 复合父 Goal 不直接启动执行终端，而是引导进入具体子 Goal。
-
-![GoalBoard 三栏工作台：Goal Tree、Goal 正文与 Runtime TUI](docs/screenshots/goalboard-tui-zh.png)
-
-终端从哪个 Goal 打开，就持续属于哪个 Goal，避免执行上下文在长程任务中逐渐偏离。
-
-### 由用户确认的目标变化
-
-**让 Runtime 可以提出变化，同时由用户保留正式目标的决定权。**
-
-- Runtime 可以提交新 Goal、依赖调整、风险和复核结果；
-- 决定中心说明当前问题、提出原因和不同选择的影响；
-- 用户确认后，变化才会进入正式 Goal Tree。
-
-项目可以吸收执行过程中发现的新信息，但不会在用户不知情的情况下改变方向。
-
-## 产品边界
-
-- 项目的权威状态保存在本地 SQLite；
-- GoalBoard 不捆绑模型，也不要求替换现有 Harness；
-- Runtime 通过 MCP 和共享 Skill 接入；
-- 打开页面不会自动绑定 Session、启动 Runtime 或领取工作；
-- Runtime 接入、终端启动和目标变化都需要明确操作或确认；
-- macOS Desktop 当前为源码可运行的 Preview。
+英文界面截图见 [English README](README.en.md)。
 
 ## 3 分钟体验
 
@@ -116,25 +55,15 @@ pnpm install:local
 
 打开 `http://127.0.0.1:4173`：
 
-1. 进入示例项目，查看 Goal Tree、待决定事项和完成依据；
-2. 在“设置 → Runtime”中选择需要接入的 Runtime，先看改动预览，再确认接入；
-3. **新开一个 Runtime Session**，要求它使用 GoalBoard 继续工作。Runtime 只在 Session 启动时读取 MCP 和 Skill，因此当前对话不会自动出现刚安装的工具。
+1. 进入示例项目，查看 Goal Tree、待决定事项和完成证据。
+2. 在“设置 → Runtime”中选择 Codex 或 Claude Code，先看改动预览，再确认接入。
+3. **新开一个 Runtime Session**，说“继续用 GoalBoard”。Runtime 只在 Session 启动时读取 MCP 和 Skill，所以当前对话不会凭空出现刚安装的工具。
 
-想从自己的项目开始时，可以在新 Session 中说：
+想从自己的想法开始时，新 Session 接入后直接说：
 
-> 使用 GoalBoard 新建一个项目，并把当前想法整理成可以逐步确认的 Goal Tree。
+> 用 GoalBoard 新建一个项目，帮我把“让朋友第一次安装就能顺利用起来”澄清成 Goal Tree。
 
-只有用户确认的提案才会进入正式 Goal Tree。
-
-## macOS Desktop Preview
-
-完成本地安装后，可以从源码启动 Desktop：
-
-```bash
-pnpm desktop
-```
-
-Desktop 复用同一套本地服务和项目数据。目前尚未提供正式签名、公证和面向普通用户的安装包。
+GoalBoard 会在当前对话里继续问关键问题；只有你确认的提案才会进入正式 Goal Tree。
 
 ## 更多文档
 

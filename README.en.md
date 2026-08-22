@@ -2,98 +2,37 @@
 
 [中文](README.md) | **English**
 
-## A shared Goal ledger and execution workbench for multiple Runtimes
+> A goal ledger shared by humans and AI: the goal, the progress, and what "done" means are visible to both sides.
 
-GoalBoard keeps a project's Goal Tree, dependencies, execution progress, completion evidence, and user decisions in one place.
+Have you been here before: the plan you worked out with AI yesterday is gone when you open a new conversation, and you have to explain the whole context again; requirements quietly drift while you talk, and by the time you notice, the work has already gone sideways; subtasks run in whatever order the AI feels like, so later work starts before earlier work is done and gets thrown away; the AI says "it's done" and you have no real way to know; you switch from Codex to Claude Code halfway and the two sides can't see each other's progress; the idea is still fuzzy but the AI rushes ahead, so you end up redoing it; you finally align on inputs and outputs, then the AI answers in jargon you can't follow; work stalls and you don't know what it's waiting for, while a pile of decisions that need you are buried in chat history.
 
-Different Runtimes can read and update the same project state. GoalBoard can sit beside an existing Harness, or open a Runtime TUI next to a specific Goal so that the Goal, Session, and execution context remain connected.
+So we built **GoalBoard** — a **non-intrusive** goal ledger shared between humans and AI, with **rich MCP integration** and **no AI of its own**:
 
-![Codex beside GoalBoard: Codex reads the active Goal while GoalBoard keeps the Goal Tree, progress, and next step visible](docs/screenshots/codex-goalboard-side-by-side.png)
+- **Non-intrusive**: it doesn't launch your AI or force tasks onto anyone; work that can be done sits in a list and the AI picks it up itself;
+- **Rich MCP**: the settings page auto-adapts to Codex, Claude Code, OpenCode, Pi Agent, and Grok Build; other MCP runtimes can speak the same protocol. Switch conversations or switch AIs and the goal is still there;
+- **No AI of its own**: it isn't tied to any model — your AI stays the main actor;
+- **A goal ledger**: goals, breakdowns, progress, and completion criteria are all on the books — who's working, where things stand, what's blocked, what's missing, and what's waiting for your decision are visible at a glance, so you never have to guess from chat history.
 
-## Core capabilities
+## Feature highlights
 
-### One ledger across Runtimes
+- **Goals survive conversations and AIs**: goals and progress live in the project; say "continue with GoalBoard" in a new conversation and it picks them back up. Multiple runtimes share the same ledger.
+- **Goals don't quietly drift**: what's agreed stays agreed; when the AI wants to add something, it has to ask you first.
+- **Order is set in stone**: until an upstream item is done, the AI can't even claim the next one.
+- **No task breakdown or dispatch needed**: work that can be done sits in a list; the AI looks, picks, and starts, then reports back.
+- **Done is visible**: every goal agrees on "what counts as done" up front, and the AI has to match results against it — "it's done" isn't enough.
+- **Blockers and pending decisions are on the books**: what's blocked, what it's waiting for, and what decisions need you are all visible — nothing gets lost.
+- **Three-pane workbench**: a Goal page shows the Goal Tree on the left, the continuous document in the middle, and a local terminal on the right — open Codex, Claude Code, OpenCode, Pi Agent, Grok Build, or a custom command **on the current Goal**.
+- **Bilingual UI**: defaults to Chinese, switches to English in one click; Goal titles and body text stay in their original language.
 
-**Keep every Runtime working from the same project facts.**
+## UI overview
 
-- The Goal Tree, dependencies, risks, and completion criteria are stored together.
-- Claims, runs, evidence, and reviews are written back to the same project.
-- User decisions and Goal changes remain available as a durable record.
+![Project list (English)](docs/screenshots/projects-en.png)
 
-Codex, Claude Code, OpenCode, Pi Agent, Grok Build, and other connected Runtimes do not need to maintain separate plans.
+![Goal workbench: Goal Tree, document, and local terminal (English)](docs/screenshots/goalboard-tui-en.png)
 
-### Goal management for long-running work
+![Decision Center: everything waiting for you (English)](docs/screenshots/goalboard-decisions-en.png)
 
-**Keep accepted Goals stable during execution while allowing the project to evolve through explicit changes.**
-
-- Each Goal records its expected outcome, execution boundary, dependencies, and completion criteria.
-- A Runtime cannot silently rewrite an accepted Goal; newly discovered work is proposed as a Candidate Goal.
-- Decomposition, dependency, and scope changes explain their reason and impact, then take effect only after user confirmation.
-
-Users can see what changed, why it changed, and whether the current work still serves the original Goal.
-
-### Selection and constraints for executable work
-
-**Let Runtimes make progress while respecting the agreed order and boundaries.**
-
-- GoalBoard derives which work is available from Goal state, dependencies, and risks.
-- Runtimes read, select, and claim executable Goals themselves; GoalBoard does not dispatch work.
-- A Goal cannot start or complete while a prerequisite or blocking risk remains unresolved.
-
-Claims are written back to the project so that other Runtimes can avoid work already in progress.
-
-### Progress and completion that can be checked
-
-**See the state of the project directly instead of relying on a Runtime's temporary summary.**
-
-- The Goal Tree distinguishes pending, active, blocked, awaiting-decision, and completed work.
-- The Goal document explains the current action, blocking reason, and unmet conditions.
-- Completion is tied to concrete evidence and review results.
-
-Users can see what is happening, why work has stopped, and what remains before a Goal is complete.
-
-![Decision Center: questions, reasons, and recorded outcomes](docs/screenshots/goalboard-decisions-en.png)
-
-### Multiple ways to work
-
-**Use GoalBoard with an existing workflow, or make it the primary workbench.**
-
-- **Beside a Harness:** keep working in a familiar desktop app or terminal while checking Goals, progress, and evidence in GoalBoard.
-- **In the browser workbench:** view the Goal Tree, Goal document, and Runtime TUI on one page.
-- **In the macOS Desktop app:** open the same local workbench and enter the execution context from a specific Goal.
-
-The browser and Desktop app use the same project data. A GUI-only Harness can run beside GoalBoard; a Runtime with a CLI or TUI can also run directly inside it.
-
-### A Runtime TUI bound to its Goal
-
-**Keep the Session, execution context, and active Goal explicitly connected.**
-
-- Open Codex, Claude Code, OpenCode, Pi Agent, Grok Build, or a custom command from an executable Goal.
-- The terminal continues to show its owner Goal; navigating elsewhere does not rebind it.
-- A compound parent does not open an execution terminal and instead directs the user to a concrete child Goal.
-
-![GoalBoard three-pane workbench: Goal Tree, Goal document, and Runtime TUI](docs/screenshots/goalboard-tui-en.png)
-
-A terminal remains owned by the Goal from which it was opened, reducing context drift during long-running work.
-
-### Goal changes confirmed by the user
-
-**Let Runtimes propose changes while the user retains authority over the accepted Goal.**
-
-- A Runtime can submit a new Goal, dependency adjustment, risk, or review result.
-- The Decision Center explains the question, its basis, and the effect of each option.
-- A change enters the accepted Goal Tree only after user confirmation.
-
-The project can incorporate facts discovered during execution without changing direction outside the user's view.
-
-## Product boundaries
-
-- The authoritative project state is stored in local SQLite.
-- GoalBoard does not bundle a model or require replacing an existing Harness.
-- Runtimes connect through MCP and a shared Skill.
-- Opening a page does not bind a Session, launch a Runtime, or claim work.
-- Runtime integration, terminal launch, and Goal changes require explicit action or confirmation.
-- The macOS Desktop app is currently a source-run Preview.
+Chinese UI screenshots live in the [Chinese README](README.md).
 
 ## 3-minute experience
 
@@ -117,25 +56,15 @@ pnpm install:local
 
 Open `http://127.0.0.1:4173`:
 
-1. Enter the demo project and inspect the Goal Tree, pending decisions, and completion evidence.
-2. In "Settings → Runtime," choose the Runtime to connect, review the planned changes, and confirm the integration.
-3. **Open a new Runtime Session** and ask it to use GoalBoard. Runtimes read MCP and Skill manifests only at Session startup, so tools installed just now will not appear in the current conversation.
+1. Enter the demo project and look at the Goal Tree, pending decisions, and completion evidence.
+2. In "Settings → Runtime", pick Codex or Claude Code, review the change preview, and confirm the integration.
+3. **Open a new Runtime Session** and say "continue with GoalBoard." Runtimes read MCP and Skill manifests only at Session startup, so tools installed just now won't appear in the current conversation.
 
-To start from your own project, say this in the new Session:
+To start from your own idea, say this in the new Session:
 
-> Use GoalBoard to create a project and organize the current idea into a Goal Tree that I can confirm incrementally.
+> Use GoalBoard to create a new project and clarify "make sure a friend can install and use it smoothly on the first try" into a Goal Tree.
 
-Only proposals confirmed by the user enter the accepted Goal Tree.
-
-## macOS Desktop Preview
-
-After the local installation, run the Desktop app from source:
-
-```bash
-pnpm desktop
-```
-
-The Desktop app uses the same local service and project data. A signed, notarized installer for general users is not available yet.
+GoalBoard keeps asking the key questions in the current conversation; only proposals you confirm enter the official Goal Tree.
 
 ## Further reading
 

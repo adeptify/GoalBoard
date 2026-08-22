@@ -213,9 +213,8 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
 
     const packedReadme = await readFile(join(packageDirectory, "README.md"), "utf8");
     assert.match(packedReadme, /README\.en\.md/);
-    assert.match(packedReadme, /docs\/screenshots\/codex-goalboard-side-by-side\.png/);
     assert.match(packedReadme, /docs\/screenshots\/goalboard-tui-zh\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/goalboard-decisions-zh\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/projects-zh\.png/);
     assert.match(packedReadme, /pnpm install:local/);
     assert.match(packedReadme, /service install/);
     assert.match(packedReadme, /http:\/\/127\.0\.0\.1:4173/);
