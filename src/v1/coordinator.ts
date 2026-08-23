@@ -4,6 +4,7 @@ import { SqliteGoalBoardStore, mapSqliteClaim, sqliteJson } from "./store.js";
 import {
   DEFAULT_GOAL_POLICY,
   type AvailableGoal,
+  type BoardSnapshot,
   type ClaimDecision,
   type ClaimRecord,
   type ClaimRunDecision,
@@ -230,6 +231,7 @@ interface EvaluationInput {
   goalModeAttestation: boolean;
   strengthenPolicy?: Partial<GoalPolicy>;
   now: string;
+  snapshot?: BoardSnapshot;
 }
 
 interface Evaluation {
@@ -2307,6 +2309,27 @@ export class GoalBoardCoordinator {
     const goal = snapshot.goals.find((item) => item.goal_id === input.goal_id);
     if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${input.goal_id}`);
     return this.deriveGoalWorkState(input.board_id, goal, snapshot, this.clock().toISOString());
+  }
+
+  /**
+   * Read every canonical Goal work state from one Board snapshot. Web surfaces
+   * need the whole navigator, so repeating `getGoalWorkState` would otherwise
+   * reload the same Board once per Goal.
+   */
+  getGoalWorkStates(input: { board_id: string }): GoalWorkStateView[] {
+    this.requireBoard(input.board_id);
+    const snapshot = this.store.snapshot(input.board_id);
+    const now = this.clock().toISOString();
+    return snapshot.goals.map((goal) =>
+      this.deriveGoalWorkState(input.board_id, goal, snapshot, now),
+    );
+  }
+
+  /** Read the canonical effective policy without running a full readiness evaluation. */
+  getResolvedGoalPolicy(input: { board_id: string; goal_id: string }): GoalPolicy {
+    this.requireBoard(input.board_id);
+    this.requireGoalOnBoard(input.board_id, input.goal_id);
+    return this.resolvePolicy(input.board_id, input.goal_id);
   }
 
   explainGoal(input: ReadyQuery & { goal_id: string }): ExplainGoalResult {
@@ -7842,7 +7865,7 @@ export class GoalBoardCoordinator {
       goal.acceptance_criteria.length === 0;
     if (needsClarification) {
       if (activeRun?.role === "clarifier") return this.workStateFromRun(base, activeRun);
-      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "clarifier", now);
+      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "clarifier", now, snapshot);
       return {
         ...base,
         work_state: reasons.length > 0 ? "clarification_blocked" : "clarification_pending",
@@ -7884,7 +7907,7 @@ export class GoalBoardCoordinator {
     if (activeRun) return this.workStateFromRun(base, activeRun);
 
     if (goal.validity_state === "needs_revalidation") {
-      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "revalidator", now);
+      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "revalidator", now, snapshot);
       return {
         ...base,
         work_state: reasons.length > 0 ? "revalidation_blocked" : "revalidation_pending",
@@ -7898,7 +7921,7 @@ export class GoalBoardCoordinator {
         .map((obligation) => this.reviewActionFor(obligation))
         .find((candidate): candidate is AvailableAction => candidate !== null);
       const reasons = action
-        ? this.workStatePhaseReasons(boardId, goal.goal_id, action.role, now)
+        ? this.workStatePhaseReasons(boardId, goal.goal_id, action.role, now, snapshot)
         : [
             reason(
               "review.user_approval_required",
@@ -7915,7 +7938,7 @@ export class GoalBoardCoordinator {
       };
     }
 
-    const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "executor", now);
+    const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "executor", now, snapshot);
     return {
       ...base,
       work_state: reasons.length > 0 ? "execution_blocked" : "execution_pending",
@@ -8071,6 +8094,7 @@ export class GoalBoardCoordinator {
     goalId: string,
     role: ClaimRole,
     now: string,
+    snapshot?: BoardSnapshot,
   ): DecisionReason[] {
     const policy = this.resolvePolicy(boardId, goalId);
     return this.evaluate({
@@ -8081,6 +8105,7 @@ export class GoalBoardCoordinator {
       capabilities: policy.required_capabilities,
       goalModeAttestation: true,
       now,
+      snapshot,
     }).reasons.filter((item) => !item.code.startsWith("claim."));
   }
 
@@ -8320,9 +8345,11 @@ export class GoalBoardCoordinator {
   }
 
   private evaluate(input: EvaluationInput): Evaluation {
-    const goal = this.store.getGoal(input.goalId);
+    const goal = input.snapshot
+      ? input.snapshot.goals.find((item) => item.goal_id === input.goalId) ?? null
+      : this.store.getGoal(input.goalId);
     const policy = this.resolvePolicy(input.boardId, input.goalId, input.strengthenPolicy);
-    const surfaces = this.goalImpacts(input.boardId, input.goalId);
+    const surfaces = this.goalImpacts(input.boardId, input.goalId, input.snapshot);
     const reasons: DecisionReason[] = [];
     if (!goal || goal.board_id !== input.boardId) {
       reasons.push(reason("goal.not_found", "goal", input.goalId, "找不到这个 Goal"));
@@ -8704,10 +8731,14 @@ export class GoalBoardCoordinator {
     return false;
   }
 
-  private goalImpacts(boardId: string, goalId: string): ImpactBindingRecord[] {
-    return this.store
-      .snapshot(boardId)
-      .impacts.filter((impact) => impact.goal_id === goalId && impact.state !== "inactive");
+  private goalImpacts(
+    boardId: string,
+    goalId: string,
+    snapshot?: BoardSnapshot,
+  ): ImpactBindingRecord[] {
+    return (snapshot ?? this.store.snapshot(boardId)).impacts.filter(
+      (impact) => impact.goal_id === goalId && impact.state !== "inactive",
+    );
   }
 
   private dependencySummary(boardId: string, goalId: string): string[] {

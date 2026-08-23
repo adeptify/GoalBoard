@@ -382,6 +382,51 @@ function contractFieldSources(runId: string) {
   }));
 }
 
+test("batch Goal work states match canonical single-Goal reads", () => {
+  const { store, coordinator } = fixture();
+  try {
+    createLeaf(coordinator, "foundation");
+    createLeaf(coordinator, "delivery");
+    coordinator.addRelation(
+      "board-1",
+      {
+        from_goal_id: "delivery",
+        to_goal_id: "foundation",
+        type: "depends_on",
+        state: "active",
+        reason: "交付依赖底层能力",
+      },
+      { actor_id: "user-1", idempotency_key: "batch-state-dependency" },
+    );
+    coordinator.createGoal(
+      "board-1",
+      {
+        goal_id: "rough-idea",
+        title: "继续澄清需求",
+        outcome: "",
+        why: "",
+        business_logic: "",
+        definition_state: "draft",
+        decomposition_state: "abstract",
+        acceptance_criteria: [],
+      },
+      { actor_id: "user-1", idempotency_key: "batch-state-draft" },
+    );
+
+    const batch = new Map(
+      coordinator.getGoalWorkStates({ board_id: "board-1" }).map((state) => [state.goal_id, state]),
+    );
+    for (const goal of store.listGoals("board-1")) {
+      assert.deepEqual(
+        batch.get(goal.goal_id),
+        coordinator.getGoalWorkState({ board_id: "board-1", goal_id: goal.goal_id }),
+      );
+    }
+  } finally {
+    store.close();
+  }
+});
+
 test("public CLI exposes install, service, demo, uninstall, and GoalBoard V1 plus explicit V3 import", async () => {
   const logs: string[] = [];
   const errors: string[] = [];
