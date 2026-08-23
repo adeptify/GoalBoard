@@ -705,6 +705,12 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /setInterval\(refreshBoard, 4000\)/);
   assert.match(html, /fetch\(route\("\/api\/board\/cursor"\)/);
   assert.match(html, /\/document\?view=" \+ documentCollection/);
+  assert.match(html, /const setGoalDocumentBusy = \(busy\) =>/);
+  assert.match(html, /documentPane\.setAttribute\("aria-busy", "true"\)/);
+  assert.match(html, /dataset\.goalDocumentLoading = "true"/);
+  assert.match(html, /setGoalDocumentBusy\(true\)[\s\S]*fetch\(/);
+  assert.match(html, /\.document-pane\[aria-busy="true"\] > \[data-goal-view\]/);
+  assert.match(html, /body\[data-navigation-pending="true"\]::before/);
   assert.match(html, /searchComposing = true/);
   assert.match(html, /noteSearchActivity\(\)/);
   assert.doesNotMatch(html, /fetch\(route\("\/api\/board"\)/);
@@ -1184,6 +1190,17 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assertInlineScriptsCompile(projectRulesPage);
     assert.match(projectRulesPage, /项目工作规则/);
     assert.match(projectRulesPage, /所有 Goal 共同遵守的最低要求/);
+    const projectRulesNavigation = projectRulesPage.slice(
+      projectRulesPage.indexOf('<nav class="settings-navigation'),
+      projectRulesPage.indexOf('<div class="settings-content">'),
+    );
+    assert.match(projectRulesNavigation, /返回所有项目/);
+    assert.match(projectRulesNavigation, /项目设置/);
+    assert.match(projectRulesNavigation, /产品 Alpha/);
+    assert.match(projectRulesNavigation, /工作规则/);
+    assert.match(projectRulesNavigation, /工作规划/);
+    assert.doesNotMatch(projectRulesNavigation, /全局设置|AI 与执行工具|诊断/);
+    assert.doesNotMatch(projectRulesNavigation, />Goal Tree</);
     assert.match(projectRulesPage, /data-route-prefix="\/projects\//);
     assert.match(projectRulesPage, /name="scope" value="project_default"/);
     assert.doesNotMatch(projectRulesPage, /name="goal_id"/);
@@ -1193,6 +1210,13 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectRulesPage, /data-project-rules-receipt/);
     assert.match(projectRulesPage, /goalboard-project-rules-receipt:/);
     assert.match(projectRulesPage, /之后开始或重新领取的 Goal 会采用这些规则/);
+    assert.match(projectRulesPage, /\.policy-source \{[^}]*background: var\(--paper\)/);
+    assert.match(projectRulesPage, /\.policy-source > summary \{[^}]*background: color-mix\(in srgb, var\(--rail\)/);
+    assert.match(projectRulesPage, /\.project-rules-intro \{[^}]*background: var\(--rail\)/);
+    assert.match(projectRulesPage, /\.project-rules-intro li \{[^}]*background: var\(--paper\)/);
+    assert.match(projectRulesPage, /\.policy-mode-options label:hover > span \{[^}]*var\(--blue-soft\)/);
+    assert.match(projectRulesPage, /\.policy-mode-options input:disabled \+ span \{[^}]*background: var\(--rail\)/);
+    assert.match(projectRulesPage, /\.policy-input input, \.policy-reason textarea \{[^}]*color: var\(--ink\); background: var\(--paper\)/);
 
     const savedProjectRules = await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/api/policy-bindings`,
@@ -1220,6 +1244,161 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     )).text();
     assert.match(savedProjectRulesPage, /已设置项目基线/);
     assert.match(savedProjectRulesPage, /验证项目设置页使用同一规则写入入口/);
+
+    const workPlanningPage = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/settings/planning`,
+    )).text();
+    assertInlineScriptsCompile(workPlanningPage);
+    assert.match(workPlanningPage, /工作规划/);
+    assert.match(workPlanningPage, /浏览完整方法库/);
+    assert.match(workPlanningPage, /产品 Alpha/);
+    assert.match(workPlanningPage, /当前规划组合/);
+    assert.match(workPlanningPage, /尚未建立项目规划组合/);
+    assert.match(workPlanningPage, /添加规划方法/);
+    assert.match(workPlanningPage, /data-adopt-planning-method="domain-software-development"/);
+    assert.match(workPlanningPage, /加入组合/);
+    const workPlanningNavigation = workPlanningPage.slice(
+      workPlanningPage.indexOf('<nav class="settings-navigation'),
+      workPlanningPage.indexOf('<div class="settings-content">'),
+    );
+    assert.match(workPlanningNavigation, /返回所有项目/);
+    assert.match(workPlanningNavigation, /产品 Alpha/);
+    assert.match(workPlanningNavigation, /工作规则/);
+    assert.match(workPlanningNavigation, /工作规划/);
+    assert.doesNotMatch(workPlanningNavigation, /全局设置|AI 与执行工具|诊断/);
+    assert.doesNotMatch(workPlanningPage, /class="planning-layout"|class="planning-editor"/);
+
+    const appliedPlanningMethod = await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/settings/planning-methods/apply`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method_id: "domain-software-development" }),
+      },
+    );
+    assert.equal(appliedPlanningMethod.status, 200, await appliedPlanningMethod.clone().text());
+    const appliedMethodResult = await appliedPlanningMethod.json() as { method: { method_id: string; scope: string } };
+    assert.equal(appliedMethodResult.method.method_id, "domain-software-development");
+    assert.equal(appliedMethodResult.method.scope, "project");
+    const appliedWorkTypeMethod = await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/settings/planning-methods/apply`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method_id: "work-build-change" }),
+      },
+    );
+    assert.equal(appliedWorkTypeMethod.status, 200, await appliedWorkTypeMethod.clone().text());
+    const workPlanningAfterApply = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/settings/planning`,
+    )).text();
+    assert.match(workPlanningAfterApply, /2 套方法共同生效/);
+    assert.match(workPlanningAfterApply, /构建与改变/);
+    assert.match(workPlanningAfterApply, /软件开发/);
+    assert.doesNotMatch(workPlanningAfterApply, /data-adopt-planning-method="domain-software-development"/);
+    assert.doesNotMatch(workPlanningAfterApply, /data-adopt-planning-method="work-build-change"/);
+
+    const projectPlanningDetail = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/settings/planning/domain-software-development`,
+    )).text();
+    const projectPlanningDetailNavigation = projectPlanningDetail.slice(
+      projectPlanningDetail.indexOf('<nav class="settings-navigation'),
+      projectPlanningDetail.indexOf('<div class="settings-content">'),
+    );
+    assert.match(projectPlanningDetailNavigation, /返回所有项目/);
+    assert.match(projectPlanningDetailNavigation, /产品 Alpha/);
+    assert.match(projectPlanningDetailNavigation, /工作规则/);
+    assert.match(projectPlanningDetailNavigation, /工作规划/);
+    assert.doesNotMatch(projectPlanningDetailNavigation, /全局设置|AI 与执行工具|诊断/);
+
+    const planningLibrary = await (await webFetch(
+      `${origin}/settings/planning?project=${fixture.alpha.project_id}`,
+    )).text();
+    assertInlineScriptsCompile(planningLibrary);
+    assert.match(planningLibrary, /规划方法库/);
+    assert.match(planningLibrary, /class="planning-card"/);
+    assert.match(planningLibrary, /陌生领域方法包生成/);
+    assert.match(planningLibrary, /软件开发/);
+    assert.match(planningLibrary, /data-planning-filter="work_type"/);
+    assert.doesNotMatch(planningLibrary, /class="planning-layout"|class="planning-editor"|<form class="planning-edit-form"/);
+    const planningNavigation = planningLibrary.slice(
+      planningLibrary.indexOf('<nav class="settings-navigation"'),
+      planningLibrary.indexOf('<div class="settings-content">'),
+    );
+    assert.match(planningNavigation, /全局设置/);
+    assert.match(planningNavigation, /项目设置/);
+    assert.doesNotMatch(planningNavigation, /当前项目|产品 Alpha/);
+    assert.doesNotMatch(planningNavigation, />Goal Tree</);
+
+    const planningDetail = await (await webFetch(
+      `${origin}/settings/planning/domain-software-development?project=${fixture.alpha.project_id}`,
+    )).text();
+    assert.match(planningDetail, /规划路径/);
+    assert.match(planningDetail, /拆分时必须回答/);
+    assert.match(planningDetail, /依赖判断/);
+    assert.match(planningDetail, /创建我的版本/);
+    assert.doesNotMatch(planningDetail, /<form class="planning-edit-form"/);
+
+    const planningEditor = await (await webFetch(
+      `${origin}/settings/planning/domain-software-development/edit?project=${fixture.alpha.project_id}`,
+    )).text();
+    assertInlineScriptsCompile(planningEditor);
+    assert.match(planningEditor, /<form class="planning-edit-form"[^>]*data-planning-edit-form/);
+    assert.match(planningEditor, /保存到我的方法库/);
+    assert.match(planningEditor, /data-coverage-row/);
+    assert.match(planningEditor, /data-dependency-row/);
+    assert.doesNotMatch(planningEditor, /name="scope"|只用于当前项目|consumer depends_on provider/);
+
+    const contextualSettingsPage = await (await webFetch(
+      `${origin}/settings/projects?project=${fixture.alpha.project_id}`,
+    )).text();
+    assert.match(contextualSettingsPage, /项目设置/);
+    assert.match(contextualSettingsPage, /产品 Alpha/);
+    assert.match(contextualSettingsPage, /产品 Beta/);
+    assert.doesNotMatch(contextualSettingsPage, /当前项目/);
+    assert.match(contextualSettingsPage, new RegExp(`/projects/${fixture.alpha.project_id}/settings/rules`));
+    assert.match(contextualSettingsPage, new RegExp(`/projects/${fixture.alpha.project_id}/settings/planning`));
+    assert.doesNotMatch(contextualSettingsPage, new RegExp(`/settings/(planning|runtimes)\\?project=${fixture.alpha.project_id}`));
+    const method = {
+      method_id: "domain-web-test",
+      kind: "custom",
+      name: "Web 测试方法",
+      summary: "验证用户可以输入并保存新的方法。",
+      applies_to: ["Web test"],
+      domain_tags: ["test"],
+      steps: ["定义结果", "检查证据"],
+      required_coverage: [{ area: "test_result", label: "测试结果", question: "如何证明结果？" }],
+      dependency_rules: [{ rule_id: "proof-first", statement: "结论依赖证据。", direction_hint: "conclusion depends_on evidence" }],
+      evidence_requirements: ["测试记录"],
+      completion_checks: ["结果可复核"],
+      failure_modes: ["只看过程不看结果"],
+      source_refs: ["web-test"],
+      confidence: 0.8,
+      enabled: true,
+    };
+    const projectMethodResponse = await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/settings/planning-methods`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "project", method }) },
+    );
+    assert.equal(projectMethodResponse.status, 200, await projectMethodResponse.clone().text());
+    const personalMethodResponse = await webFetch(
+      `${origin}/api/settings/planning-methods`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "personal", method: { ...method, method_id: "domain-web-personal", name: "个人 Web 方法" } }) },
+    );
+    assert.equal(personalMethodResponse.status, 200, await personalMethodResponse.clone().text());
+    const planningMethods = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/settings/planning-methods`,
+    )).json() as {
+      methods: Array<{ method_id: string; scope: string }>;
+      composition: { method_pack_ids: string[]; required_coverage: unknown[] };
+    };
+    assert.equal(planningMethods.methods.find((item) => item.method_id === "domain-web-test")?.scope, "project");
+    assert.equal(planningMethods.methods.find((item) => item.method_id === "domain-web-personal")?.scope, "personal");
+    assert.deepEqual(
+      planningMethods.composition.method_pack_ids,
+      ["work-build-change", "domain-software-development", "domain-web-test"],
+    );
+    assert.ok(planningMethods.composition.required_coverage.length > 5);
 
     const diagnosticsPage = await (await webFetch(`${origin}/settings/diagnostics`)).text();
     assert.match(diagnosticsPage, /安装完整/);

@@ -63,6 +63,24 @@ import {
   goalTreeProposalDecompositionIssues,
   readDecompositionReview,
 } from "./goal-decomposition-validation.js";
+import {
+  composePlanningMethodPacks,
+  normalizePlanningMethodPack,
+  resolvePlanningMethodPacks,
+  type PlanningMethodComposition,
+  type PlanningMethodPack,
+  type PlanningMethodPackInput,
+} from "../planning/method-packs.js";
+import {
+  analyzeGoalChangeImpact,
+  planningMetrics,
+  projectPlanningRelations,
+  validatePlanningGraph,
+  validatePlanningProposalGraph,
+  type GoalChangeImpact,
+  type PlanningGraphIssue,
+  type PlanningMetric,
+} from "../planning/goal-graph.js";
 
 type Row = Record<string, unknown>;
 
@@ -134,6 +152,7 @@ export interface GoalTreeProposalListResult {
 export interface GoalTreeProposalCheckResult {
   proposal: GoalTreeProposalRecord;
   conflict_item_ids: string[];
+  planning_issues: PlanningGraphIssue[];
   observed_event_cursor: number;
 }
 
@@ -616,6 +635,7 @@ export class GoalBoardCoordinator {
   constructor(
     readonly store: SqliteGoalBoardStore,
     private readonly clock: () => Date = () => new Date(),
+    private readonly personalPlanningMethodPacks: readonly PlanningMethodPack[] = [],
   ) {}
 
   initializeBoard(input: {
@@ -953,14 +973,25 @@ export class GoalBoardCoordinator {
         throw new GoalBoardV1Error("relation.self_reference", "Goal 不能关联到自身");
       }
       if (
-        input.type === "part_of" &&
         (input.state ?? "active") === "active" &&
-        this.wouldCreatePartOfCycle(boardId, input.from_goal_id, input.to_goal_id)
+        ["part_of", "depends_on"].includes(input.type)
       ) {
-        throw new GoalBoardV1Error(
-          "relation.part_of_cycle",
-          "这条父子关系会形成循环，请调整 Goal 的拆分方向",
-        );
+        const projectedId = "projected:new-relation";
+        const snapshot = this.store.snapshot(boardId);
+        const issues = validatePlanningGraph(
+          snapshot.goals,
+          projectPlanningRelations(snapshot.relations, [{
+            action: "add",
+            relation_id: projectedId,
+            from_goal_id: input.from_goal_id,
+            to_goal_id: input.to_goal_id,
+            type: input.type,
+            reason: input.reason,
+          }]),
+        ).filter((issue) => issue.relation_ids.includes(projectedId));
+        if (issues.length) {
+          throw new GoalBoardV1Error(issues[0]!.code, issues[0]!.message);
+        }
       }
       const relationReason = input.reason.trim();
       if (!relationReason) {
@@ -2106,6 +2137,68 @@ export class GoalBoardCoordinator {
     return this.store.listTrashedGoals(boardId);
   }
 
+  effectivePlanningMethods(boardId: string): PlanningMethodPack[] {
+    this.requireBoard(boardId);
+    return resolvePlanningMethodPacks(
+      this.personalPlanningMethodPacks,
+      this.store.listPlanningMethodPacks(boardId),
+    );
+  }
+
+  projectPlanningComposition(boardId: string): PlanningMethodComposition {
+    return composePlanningMethodPacks(
+      this.effectivePlanningMethods(boardId)
+        .filter((method) => method.scope === "project" && method.enabled),
+    );
+  }
+
+  saveProjectPlanningMethod(input: {
+    board_id: string;
+    method: PlanningMethodPackInput;
+    actor_id: string;
+    user_confirmed: boolean;
+  }): { method: PlanningMethodPack; observed_event_cursor: number } {
+    this.requireBoard(input.board_id);
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardV1Error(
+        "planning.user_confirmation_required",
+        "项目方法会改变后续 Goal 的拆分和依赖判断，必须由用户确认",
+      );
+    }
+    const current = this.store.listPlanningMethodPacks(input.board_id)
+      .find((pack) => pack.method_id === input.method.method_id) ?? null;
+    const at = this.clock().toISOString();
+    const method = normalizePlanningMethodPack(input.method, "project", current, at);
+    return this.store.immediate(() => {
+      this.store.putPlanningMethodPack(input.board_id, method);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: "planning.method_saved",
+        objectType: "planning_method",
+        objectId: method.method_id,
+        reason: `更新项目规划方法：${method.name}`,
+        payload: { method_id: method.method_id, version: method.version, enabled: method.enabled },
+        at,
+      });
+      return { method, observed_event_cursor: cursor };
+    });
+  }
+
+  analyzePlanningChange(input: { board_id: string; changed_goal_ids: string[] }): GoalChangeImpact {
+    this.requireBoard(input.board_id);
+    const snapshot = this.store.snapshot(input.board_id);
+    for (const goalId of input.changed_goal_ids) this.requireGoalOnBoard(input.board_id, goalId);
+    return analyzeGoalChangeImpact(snapshot.goals, snapshot.relations, input.changed_goal_ids);
+  }
+
+  validatePlanningGraph(boardId: string): { issues: PlanningGraphIssue[]; observed_event_cursor: number } {
+    this.requireBoard(boardId);
+    const snapshot = this.store.snapshot(boardId);
+    return { issues: validatePlanningGraph(snapshot.goals, snapshot.relations), observed_event_cursor: snapshot.cursor };
+  }
+
   queryReady(input: ReadyQuery): ReadyQueryResult {
     this.requireBoard(input.board_id);
     const now = this.clock().toISOString();
@@ -2153,6 +2246,7 @@ export class GoalBoardCoordinator {
     this.requireBoard(input.board_id);
     const now = this.clock().toISOString();
     const snapshot = this.store.snapshot(input.board_id);
+    const metrics = planningMetrics(snapshot.goals, snapshot.relations);
     const available: AvailableGoal[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
@@ -2185,12 +2279,21 @@ export class GoalBoardCoordinator {
           risk_summary: this.riskSummary(goal.goal_id),
           resolved_policy: evaluation.policy,
           relevant_surfaces: evaluation.surfaces,
+          planning: {
+            topological_level: metrics.get(goal.goal_id)?.topological_level ?? 0,
+            unlock_count: metrics.get(goal.goal_id)?.unlock_count ?? 0,
+            longest_downstream_chain: metrics.get(goal.goal_id)?.longest_downstream_chain ?? 0,
+            rationale: this.planningRationale(goal, metrics.get(goal.goal_id)),
+          },
         });
       }
     }
     available.sort(
       (left, right) =>
         Number(right.requires_parent_confirmation) - Number(left.requires_parent_confirmation) ||
+        right.planning.unlock_count - left.planning.unlock_count ||
+        right.planning.longest_downstream_chain - left.planning.longest_downstream_chain ||
+        left.planning.topological_level - right.planning.topological_level ||
         right.priority_hint - left.priority_hint ||
         left.goal.goal_id.localeCompare(right.goal.goal_id) ||
         left.role.localeCompare(right.role),
@@ -2741,6 +2844,8 @@ export class GoalBoardCoordinator {
       const decompositionIssue = goalTreeProposalDecompositionIssues(
         items,
         this.store.snapshot(input.board_id),
+        this.effectivePlanningMethods(input.board_id),
+        this.projectPlanningComposition(input.board_id).method_pack_ids,
       )[0];
       if (decompositionIssue) {
         throw new GoalBoardV1Error(
@@ -2967,12 +3072,16 @@ export class GoalBoardCoordinator {
         reason: conflictItemIds.length > 0
           ? "当前 Runtime 检查到部分 Goal Tree 提案条目的基准已过期"
           : "当前 Runtime 检查到 Goal Tree 提案的各条目基准仍有效",
-        payload: { conflict_item_ids: conflictItemIds },
+        payload: {
+          conflict_item_ids: conflictItemIds,
+          planning_issue_codes: this.goalTreePlanningIssues(input.board_id, proposal.items).map((issue) => issue.code),
+        },
         at: now,
       });
       const outcome: GoalTreeProposalCheckResult = {
         proposal: this.readNativeGoalTreeProposal(input.board_id, proposalId),
         conflict_item_ids: conflictItemIds,
+        planning_issues: this.goalTreePlanningIssues(input.board_id, proposal.items),
         observed_event_cursor: cursor,
       };
       this.remember(
@@ -3105,12 +3214,29 @@ export class GoalBoardCoordinator {
           .filter((decision) => decision.decision === "confirm")
           .map((decision) => itemsById.get(decision.item_id)!),
         this.store.snapshot(input.board_id),
+        this.effectivePlanningMethods(input.board_id),
+        this.projectPlanningComposition(input.board_id).method_pack_ids,
       )[0];
       if (decompositionIssue) {
         throw new GoalBoardV1Error(
           decompositionIssue.code,
           `${decompositionIssue.message}${decompositionIssue.recovery}当前 Goal Tree 没有改变。`,
         );
+      }
+
+      const planningIssues = this.goalTreePlanningIssues(
+        input.board_id,
+        decisions
+          .filter((decision) => decision.decision === "confirm")
+          .map((decision) => itemsById.get(decision.item_id)!),
+      );
+      const planningConflicts = new Map<string, PlanningGraphIssue>();
+      for (const issue of planningIssues) {
+        for (const item of itemsById.values()) {
+          if (issue.relation_ids.some((relationId) => relationId.startsWith(`proposal:${item.item_id}:`))) {
+            planningConflicts.set(item.item_id, issue);
+          }
+        }
       }
 
       const now = this.clock().toISOString();
@@ -3141,6 +3267,31 @@ export class GoalBoardCoordinator {
           continue;
         }
         if (decision.decision === "revise") continue;
+        const planningConflict = planningConflicts.get(item.item_id);
+        if (planningConflict) {
+          this.recordGoalTreeProposalItemDecision({
+            board_id: input.board_id,
+            proposal_id: proposal.proposal_id,
+            item,
+            item_state: "conflict",
+            decision: "conflict",
+            authority,
+            runtime_actor_id: runtimeActorId,
+            reason: decision.reason,
+            conflict: {
+              code: planningConflict.code,
+              message: planningConflict.message,
+              goal_ids: planningConflict.goal_ids,
+              relation_ids: planningConflict.relation_ids,
+              path: planningConflict.path,
+            },
+            materialized_objects: [],
+            revision_proposal_id: null,
+            at: now,
+          });
+          conflictItemIds.push(item.item_id);
+          continue;
+        }
         const conflicts = this.goalTreeProposalItemConflicts(input.board_id, item);
         if (conflicts.length > 0) {
           this.recordGoalTreeProposalItemDecision({
@@ -5391,6 +5542,33 @@ export class GoalBoardCoordinator {
         "invalidates",
         "migrates_from",
       ]);
+      const snapshotBeforeRewire = this.store.snapshot(input.board_id);
+      const projectedChanges = relations.flatMap((relation, index) => {
+        const fromGoalId = String(relation.from_goal_id ?? formalGoalId).replace("$new_goal", formalGoalId);
+        const toGoalId = String(relation.to_goal_id ?? "").replace("$new_goal", formalGoalId);
+        const type = String(relation.type ?? "part_of") as GoalRelationRecord["type"];
+        if (!fromGoalId || !toGoalId || !validTypes.has(type)) return [];
+        const action = String(relation.action ?? "add") === "deactivate" ? "deactivate" as const : "add" as const;
+        return [{
+          action,
+          relation_id: action === "add" ? `rewire:${input.rewire_id}:${index}` : null,
+          from_goal_id: fromGoalId,
+          to_goal_id: toGoalId,
+          type,
+          reason: String(relation.reason ?? input.reason),
+        }];
+      });
+      const baselinePlanningIssues = new Set(
+        validatePlanningGraph(snapshotBeforeRewire.goals, snapshotBeforeRewire.relations)
+          .map((issue) => `${issue.code}:${issue.path.join("\u0000")}`),
+      );
+      const projectedPlanningIssue = validatePlanningGraph(
+        snapshotBeforeRewire.goals,
+        projectPlanningRelations(snapshotBeforeRewire.relations, projectedChanges),
+      ).find((issue) => !baselinePlanningIssues.has(`${issue.code}:${issue.path.join("\u0000")}`));
+      if (projectedPlanningIssue) {
+        throw new GoalBoardV1Error(projectedPlanningIssue.code, projectedPlanningIssue.message);
+      }
       for (const relation of relations) {
         const fromGoalId = String(relation.from_goal_id ?? formalGoalId).replace("$new_goal", formalGoalId);
         const toGoalId = String(relation.to_goal_id ?? "").replace("$new_goal", formalGoalId);
@@ -5924,30 +6102,19 @@ export class GoalBoardCoordinator {
     });
   }
 
-  /**
-   * `part_of` points from child to parent. Adding `from -> to` is unsafe only
-   * when `to` already reaches `from` through active parent links.
-   */
   private wouldCreatePartOfCycle(boardId: string, fromGoalId: string, toGoalId: string): boolean {
-    if (fromGoalId === toGoalId) return true;
-    const row = this.store.db
-      .prepare(`
-        WITH RECURSIVE ancestors(goal_id) AS (
-          SELECT to_goal_id
-          FROM goal_relations
-          WHERE board_id = ? AND from_goal_id = ?
-            AND type = 'part_of' AND state = 'active'
-          UNION
-          SELECT relation.to_goal_id
-          FROM goal_relations relation
-          JOIN ancestors ancestor ON ancestor.goal_id = relation.from_goal_id
-          WHERE relation.board_id = ?
-            AND relation.type = 'part_of' AND relation.state = 'active'
-        )
-        SELECT 1 FROM ancestors WHERE goal_id = ? LIMIT 1
-      `)
-      .get(boardId, toGoalId, boardId, fromGoalId) as Row | undefined;
-    return Boolean(row);
+    const snapshot = this.store.snapshot(boardId);
+    const projectedId = "projected:part-of-cycle-check";
+    return validatePlanningGraph(
+      snapshot.goals,
+      projectPlanningRelations(snapshot.relations, [{
+        action: "add",
+        relation_id: projectedId,
+        from_goal_id: fromGoalId,
+        to_goal_id: toGoalId,
+        type: "part_of",
+      }]),
+    ).some((issue) => issue.code === "planning.part_of_cycle" && issue.relation_ids.includes(projectedId));
   }
 
   private recordGoalTreeProposalItemDecision(input: {
@@ -6297,6 +6464,19 @@ export class GoalBoardCoordinator {
       throw new GoalBoardV1Error("goal_tree_proposal.relations_required", "关系条目至少需要一条关系");
     }
     return values.map((value) => this.goalTreePayloadRecord(value, "关系"));
+  }
+
+  private goalTreePlanningIssues(
+    boardId: string,
+    items: readonly Pick<GoalTreeProposalItemRecord, "item_id" | "kind" | "operation" | "payload">[],
+  ): PlanningGraphIssue[] {
+    const snapshot = this.store.snapshot(boardId);
+    const existing = new Set(
+      validatePlanningGraph(snapshot.goals, snapshot.relations)
+        .map((issue) => `${issue.code}:${issue.path.join("\u0000")}`),
+    );
+    return validatePlanningProposalGraph(snapshot.goals, snapshot.relations, items)
+      .filter((issue) => !existing.has(`${issue.code}:${issue.path.join("\u0000")}`));
   }
 
   private normalizeGoalTreeRelation(
@@ -7956,6 +8136,18 @@ export class GoalBoardCoordinator {
       case "execute":
         return "Goal 已澄清为最小闭环，当前 Runtime 可以选择并开始执行";
     }
+  }
+
+  private planningRationale(goal: GoalRecord, metric: PlanningMetric | undefined): string {
+    const unlocks = metric?.unlock_count ?? 0;
+    const chain = metric?.longest_downstream_chain ?? 0;
+    if (unlocks > 0) {
+      return `完成后可解锁 ${unlocks} 个尚未完成的下游 Goal；最长后续链路 ${chain} 层`;
+    }
+    if ((metric?.topological_level ?? 0) === 0) {
+      return "当前没有未完成的前置产出阻挡，可以独立推进";
+    }
+    return `当前位于依赖图第 ${metric?.topological_level ?? 0} 层，前置产出已经满足`;
   }
 
   /**

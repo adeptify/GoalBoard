@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import {
   GoalBoardProjectCatalog,
   GoalBoardProjectCatalogError,
+  readPersonalPlanningMethodPacks,
   type GoalBoardRuntimeContextResolution,
   type RuntimeProjectSuggestionClue,
   type RuntimeWorkContext,
@@ -86,6 +87,45 @@ const GOAL_TREE_ITEM_DECISION = {
     revised_item: GOAL_TREE_ITEM,
   },
   required: ["item_id", "decision"],
+};
+const PLANNING_METHOD_PACK = {
+  type: "object",
+  properties: {
+    method_id: V1_STRING,
+    kind: { type: "string", enum: ["meta", "work_type", "domain", "custom"] },
+    name: V1_STRING,
+    summary: V1_STRING,
+    applies_to: V1_STRING_ARRAY,
+    domain_tags: V1_STRING_ARRAY,
+    steps: V1_STRING_ARRAY,
+    required_coverage: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { area: V1_STRING, label: V1_STRING, question: V1_STRING },
+        required: ["area", "label", "question"],
+      },
+    },
+    dependency_rules: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { rule_id: V1_STRING, statement: V1_STRING, direction_hint: V1_STRING },
+        required: ["rule_id", "statement", "direction_hint"],
+      },
+    },
+    evidence_requirements: V1_STRING_ARRAY,
+    completion_checks: V1_STRING_ARRAY,
+    failure_modes: V1_STRING_ARRAY,
+    source_refs: V1_STRING_ARRAY,
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    enabled: { type: "boolean" },
+  },
+  required: [
+    "method_id", "kind", "name", "summary", "applies_to", "domain_tags", "steps",
+    "required_coverage", "dependency_rules", "evidence_requirements", "completion_checks",
+    "failure_modes", "source_refs", "confidence", "enabled",
+  ],
 };
 
 export type GoalBoardMcpAudience = "runtime" | "management";
@@ -231,6 +271,47 @@ const V1_TOOLS: McpToolDefinition[] = [
         goal_mode_attestation: { type: "boolean" },
       },
       required: ["board_id", "actor_id"],
+    },
+  },
+  {
+    name: "goalboard_v1_planning_methods",
+    description: "读取当前项目的完整方法库和多方法规划组合。项目组合是必须使用的下限，不是方法选择的上限；Runtime 还要检查当前任务，并补充所有确实相关的方法，不得按方法类型、列表顺序或固定数量预设选择。项目覆盖个人，个人覆盖内置冷启方法。",
+    inputSchema: {
+      type: "object",
+      properties: V1_COMMON,
+      required: ["board_id"],
+    },
+  },
+  {
+    name: "goalboard_v1_planning_method_save",
+    description: "在用户明确确认后保存一条项目级规划方法或覆盖；它会影响此项目后续拆分与依赖判断。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        method: PLANNING_METHOD_PACK,
+        actor_id: V1_STRING,
+        user_confirmed: { type: "boolean" },
+      },
+      required: ["board_id", "method", "actor_id", "user_confirmed"],
+    },
+  },
+  {
+    name: "goalboard_v1_planning_analyze_change",
+    description: "用户提出新要求时，只读计算受影响的上层 Goal、下游依赖、可复用工作和重新审查顺序；不会自动改树。",
+    inputSchema: {
+      type: "object",
+      properties: { ...V1_COMMON, changed_goal_ids: V1_STRING_ARRAY },
+      required: ["board_id", "changed_goal_ids"],
+    },
+  },
+  {
+    name: "goalboard_v1_planning_graph_check",
+    description: "只读检查整张 Goal 图的缺失引用、重复关系、父子循环、依赖循环和组合执行循环。",
+    inputSchema: {
+      type: "object",
+      properties: V1_COMMON,
+      required: ["board_id"],
     },
   },
   {
@@ -941,6 +1022,10 @@ const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_contract",
   "goalboard_v1_ready",
   "goalboard_v1_available",
+  "goalboard_v1_planning_methods",
+  "goalboard_v1_planning_method_save",
+  "goalboard_v1_planning_analyze_change",
+  "goalboard_v1_planning_graph_check",
   "goalboard_v1_explain",
   "goalboard_v1_claim",
   "goalboard_v1_select_goal",
@@ -1448,7 +1533,11 @@ export class GoalBoardServer {
       throw new GoalBoardV1Error("store.not_found", `GoalBoard 数据库不存在: ${databasePath}`);
     }
     const store = new SqliteGoalBoardStore(databasePath);
-    const coordinator = new GoalBoardCoordinator(store);
+    const coordinator = new GoalBoardCoordinator(
+      store,
+      () => new Date(),
+      readPersonalPlanningMethodPacks(this.runtimeContextHost?.homeDirectory),
+    );
     try {
       let result: unknown;
       switch (name) {
@@ -1514,6 +1603,29 @@ export class GoalBoardServer {
             capabilities: (arguments_.capabilities as string[]) ?? [],
             goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
           });
+          break;
+        case "goalboard_v1_planning_methods":
+          result = {
+            methods: coordinator.effectivePlanningMethods(String(arguments_.board_id)),
+            composition: coordinator.projectPlanningComposition(String(arguments_.board_id)),
+          };
+          break;
+        case "goalboard_v1_planning_method_save":
+          result = coordinator.saveProjectPlanningMethod({
+            board_id: String(arguments_.board_id),
+            method: arguments_.method as Parameters<GoalBoardCoordinator["saveProjectPlanningMethod"]>[0]["method"],
+            actor_id: String(arguments_.actor_id),
+            user_confirmed: arguments_.user_confirmed === true,
+          });
+          break;
+        case "goalboard_v1_planning_analyze_change":
+          result = coordinator.analyzePlanningChange({
+            board_id: String(arguments_.board_id),
+            changed_goal_ids: (arguments_.changed_goal_ids as string[]) ?? [],
+          });
+          break;
+        case "goalboard_v1_planning_graph_check":
+          result = coordinator.validatePlanningGraph(String(arguments_.board_id));
           break;
         case "goalboard_v1_explain":
           result = coordinator.explainGoal({

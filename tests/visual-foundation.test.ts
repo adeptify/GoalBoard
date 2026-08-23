@@ -15,6 +15,9 @@ test("visual foundation keeps Light, Dark, and System as local presentation choi
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /data-theme-option/);
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /localStorage\.setItem/);
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /addEventListener\?\.\("change"/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /dataset\.navigationPending = "true"/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /a\[aria-busy="true"\]/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-navigation-pending="true"/);
 });
 
 test("visual foundation defines one wide workbench and one narrow companion", () => {
@@ -50,6 +53,7 @@ test("visual foundation makes the default Goal view an action-led Focus", () => 
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-focus-criteria/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-now-blockers--clear/);
   assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-theme="dark"\] \.goal-factor-nav/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-theme="dark"\] \.risk-state-preview/);
 });
 
 test("visual foundation gives Goal Graph a radial clustered workspace", () => {

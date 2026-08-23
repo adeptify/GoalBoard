@@ -8,6 +8,12 @@ import type {
   LeafReadiness,
   TaskContext,
 } from "./types.js";
+import {
+  BUILTIN_PLANNING_METHOD_PACKS,
+  mergedCoverageRules,
+  methodPacksForReview,
+  type PlanningMethodPack,
+} from "../planning/method-packs.js";
 
 type ProposalItem = Pick<
   GoalTreeProposalItemInput | GoalTreeProposalItemRecord,
@@ -153,7 +159,7 @@ export interface GoalDecompositionValidationIssue {
     | "open_frontier";
   message: string;
   recovery: string;
-  missing_areas?: ProductPathArea[];
+  missing_areas?: string[];
   missing_fields?: string[];
   affected_outputs?: string[];
   affected_work_items?: string[];
@@ -199,6 +205,7 @@ export function readDecompositionReview(value: unknown): DecompositionReview | n
     : [];
   return {
     status: String(raw.status ?? "") as DecompositionReview["status"],
+    method_pack_ids: strings(raw.method_pack_ids),
     ...(raw.task_context == null
       ? {}
       : { task_context: String(raw.task_context) as TaskContext }),
@@ -644,6 +651,8 @@ function issue(
 export function goalTreeProposalDecompositionIssues(
   items: ProposalItem[],
   context: GoalDecompositionValidationContext,
+  availableMethods: readonly PlanningMethodPack[] = BUILTIN_PLANNING_METHOD_PACKS,
+  requiredMethodPackIds: readonly string[] = [],
 ): GoalDecompositionValidationIssue[] {
   const issues: GoalDecompositionValidationIssue[] = [];
   const { states, children } = proposedGraph(items, context);
@@ -696,9 +705,42 @@ export function goalTreeProposalDecompositionIssues(
       continue;
     }
 
-    const requiredAreas = taskContext == null
-      ? PRODUCT_PATH_AREAS[legacyContext!]
-      : [...UNIVERSAL_RESULT_CHAIN_AREAS, ...TASK_CONTEXT_AREAS[taskContext]];
+    const reviewMethodIds = [...new Set(review.method_pack_ids ?? [])];
+    const missingProjectMethods = [...new Set(requiredMethodPackIds)]
+      .filter((methodId) => !reviewMethodIds.includes(methodId));
+    if (missingProjectMethods.length) {
+      const methodNames = new Map(availableMethods.map((method) => [method.method_id, method.name]));
+      issues.push(issue(
+        item,
+        goalId,
+        "decomposition_review",
+        "goal_tree_proposal.project_planning_composition_incomplete",
+        `Goal「${String(goal.title ?? goalId)}」的拆分没有完整使用当前项目规划组合：${missingProjectMethods.map((methodId) => methodNames.get(methodId) ?? methodId).join("、")}。`,
+        "请让 Runtime 重新读取项目规划组合，并把全部组合方法加入 method_pack_ids 后重新检查拆分。",
+      ));
+    }
+    const selectedMethods = methodPacksForReview(
+      availableMethods,
+      reviewMethodIds,
+      taskContext ?? legacyContext,
+    );
+    if (selectedMethods.missing_ids.length) {
+      issues.push(issue(
+        item,
+        goalId,
+        "decomposition_review",
+        "goal_tree_proposal.method_pack_missing",
+        `Goal「${String(goal.title ?? goalId)}」引用了不可用的规划方法：${selectedMethods.missing_ids.join("、")}。`,
+        "请重新选择当前项目可用的方法，或先在规划方法设置中补充它。",
+      ));
+    }
+    const selectedCoverage = mergedCoverageRules(selectedMethods.packs);
+    const selectedLabels = new Map(selectedCoverage.map((entry) => [entry.area, entry.label]));
+    const requiredAreas = review.method_pack_ids?.length
+      ? selectedCoverage.map((entry) => entry.area)
+      : taskContext == null
+        ? PRODUCT_PATH_AREAS[legacyContext!]
+        : [...UNIVERSAL_RESULT_CHAIN_AREAS, ...TASK_CONTEXT_AREAS[taskContext]];
     const areaCounts = new Map<string, number>();
     for (const entry of review.coverage) areaCounts.set(entry.area, (areaCounts.get(entry.area) ?? 0) + 1);
     const missingAreas = requiredAreas.filter((area) => areaCounts.get(area) !== 1);
@@ -708,7 +750,7 @@ export function goalTreeProposalDecompositionIssues(
         goalId,
         "coverage",
         "goal_tree_proposal.product_path_incomplete",
-        `Goal「${String(goal.title ?? goalId)}」还没有逐项说明：${missingAreas.map((area) => PRODUCT_PATH_AREA_LABELS[area]).join("、")}。`,
+        `Goal「${String(goal.title ?? goalId)}」还没有逐项说明：${missingAreas.map((area) => selectedLabels.get(area) ?? PRODUCT_PATH_AREA_LABELS[area as ProductPathArea] ?? area).join("、")}。`,
         "请为每一项指定承担它的 Goal，或说明为什么不适用。",
         { missing_areas: missingAreas },
       ));
@@ -722,7 +764,7 @@ export function goalTreeProposalDecompositionIssues(
           goalId,
           "coverage",
           "goal_tree_proposal.product_path_entry_invalid",
-          `Goal「${String(goal.title ?? goalId)}」的“${PRODUCT_PATH_AREA_LABELS[entry.area as ProductPathArea] ?? entry.area ?? "未命名路径"}”没有写清归属或不适用理由。`,
+          `Goal「${String(goal.title ?? goalId)}」的“${selectedLabels.get(entry.area) ?? PRODUCT_PATH_AREA_LABELS[entry.area as ProductPathArea] ?? entry.area ?? "未命名路径"}”没有写清归属或不适用理由。`,
           "请明确由哪个 Goal 承担，或写明为什么不适用。",
         ));
         continue;
@@ -733,7 +775,7 @@ export function goalTreeProposalDecompositionIssues(
           goalId,
           "coverage",
           "goal_tree_proposal.product_path_owner_required",
-          `Goal「${String(goal.title ?? goalId)}」的“${PRODUCT_PATH_AREA_LABELS[entry.area as ProductPathArea] ?? entry.area}”没有对应 Goal。`,
+          `Goal「${String(goal.title ?? goalId)}」的“${selectedLabels.get(entry.area) ?? PRODUCT_PATH_AREA_LABELS[entry.area as ProductPathArea] ?? entry.area}”没有对应 Goal。`,
           "请指定一个已经存在或本次新增的子 Goal。",
         ));
       }

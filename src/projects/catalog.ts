@@ -4,12 +4,13 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import type { PlanningMethodPack } from "../planning/method-packs.js";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { BoardSnapshot } from "../v1/types.js";
 
-const CATALOG_SCHEMA_VERSION = 8;
+const CATALOG_SCHEMA_VERSION = 9;
 const CATALOG_OWNER = "goalboard-project-catalog-v1";
 
 export interface GoalBoardProjectRecord {
@@ -388,6 +389,43 @@ export class GoalBoardProjectCatalog {
     return (this.db
       .prepare("SELECT * FROM projects ORDER BY display_name COLLATE NOCASE, created_at, project_id")
       .all() as Array<Record<string, unknown>>).map(mapProject);
+  }
+
+  listPersonalPlanningMethodPacks(): PlanningMethodPack[] {
+    return (this.db
+      .prepare("SELECT pack_json FROM personal_planning_method_packs ORDER BY method_id")
+      .all() as Array<{ pack_json?: unknown }>)
+      .map((row) => parsePlanningMethodPack(row.pack_json))
+      .filter((pack): pack is PlanningMethodPack => pack != null);
+  }
+
+  putPersonalPlanningMethodPack(pack: PlanningMethodPack): void {
+    if (pack.scope !== "personal") {
+      throw new Error("个人方法库只能保存 scope=personal 的方法包");
+    }
+    this.db
+      .prepare(`
+        INSERT INTO personal_planning_method_packs (
+          method_id, version, enabled, pack_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(method_id) DO UPDATE SET
+          version = excluded.version,
+          enabled = excluded.enabled,
+          pack_json = excluded.pack_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        pack.method_id,
+        pack.version,
+        pack.enabled ? 1 : 0,
+        JSON.stringify(pack),
+        pack.created_at,
+        pack.updated_at,
+      );
+  }
+
+  deletePersonalPlanningMethodPack(methodId: string): boolean {
+    return this.db.prepare("DELETE FROM personal_planning_method_packs WHERE method_id = ?").run(methodId).changes > 0;
   }
 
   getProject(projectId: string): GoalBoardProjectRecord {
@@ -1963,6 +2001,7 @@ function initializeCatalog(db: Database.Database): void {
   createWorkspaceProjectMembershipTables(db);
   createProjectDeletionTable(db);
   createDesktopPanelTables(db);
+  createPersonalPlanningMethodPackTable(db);
   db.prepare("INSERT INTO catalog_meta (key, value) VALUES (?, ?)").run("owner", CATALOG_OWNER);
   db.prepare("INSERT INTO catalog_meta (key, value) VALUES (?, ?)").run("schema_version", String(CATALOG_SCHEMA_VERSION));
 }
@@ -2043,6 +2082,11 @@ function migrateCatalog(db: Database.Database, databasePath: string): void {
       db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("8");
       current = 8;
     }
+    if (current === 8) {
+      createPersonalPlanningMethodPackTable(db);
+      db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("9");
+      current = 9;
+    }
     if (current !== CATALOG_SCHEMA_VERSION) {
       throw new GoalBoardProjectCatalogError(
         "catalog.unsupported_schema",
@@ -2050,6 +2094,56 @@ function migrateCatalog(db: Database.Database, databasePath: string): void {
       );
     }
   })();
+}
+
+function createPersonalPlanningMethodPackTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS personal_planning_method_packs (
+      method_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      pack_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
+function parsePlanningMethodPack(value: unknown): PlanningMethodPack | null {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    return JSON.parse(value) as PlanningMethodPack;
+  } catch {
+    return null;
+  }
+}
+
+export function readPersonalPlanningMethodPacks(homeDirectory?: string): PlanningMethodPack[] {
+  const databasePath = path.join(
+    path.resolve(homeDirectory ?? path.join(os.homedir(), ".goalboard")),
+    "projects",
+    "catalog.db",
+  );
+  if (!realpathExists(databasePath)) return [];
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'personal_planning_method_packs'").get();
+    if (!table) return [];
+    return (db.prepare("SELECT pack_json FROM personal_planning_method_packs ORDER BY method_id").all() as Array<{ pack_json?: unknown }>)
+      .map((row) => parsePlanningMethodPack(row.pack_json))
+      .filter((pack): pack is PlanningMethodPack => pack != null);
+  } finally {
+    db.close();
+  }
+}
+
+function realpathExists(filePath: string): boolean {
+  try {
+    realpathSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
