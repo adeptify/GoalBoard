@@ -29,7 +29,6 @@ import {
   Fingerprint,
   Folder,
   GitBranch,
-  GitCommitHorizontal,
   History,
   Info,
   Layers3,

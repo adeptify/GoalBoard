@@ -3,10 +3,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import {
-  GoalBoardProjectCatalog,
-  type GoalBoardProjectRecord,
-} from "../projects/catalog.js";
+import type { GoalBoardProjectRecord } from "../projects/catalog.js";
+import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 import {
   RuntimeIntegrationService,
   SUPPORTED_RUNTIME_IDS,
@@ -259,8 +257,7 @@ export class GoalBoardUninstallService {
         await this.writeReceipt(receipt);
       }
       if (prepared.demoProjectIds.length > 0) {
-        const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: this.homeDirectory });
-        try {
+        await withGoalBoardProjectCatalog({ homeDirectory: this.homeDirectory }, async (catalog) => {
           for (const projectId of prepared.demoProjectIds) {
             await catalog.removeDemoProject({
               project_id: projectId,
@@ -269,9 +266,7 @@ export class GoalBoardUninstallService {
               idempotency_key: `${plan.plan_id}:${projectId}`,
             });
           }
-        } finally {
-          catalog.close();
-        }
+        });
         receipt.completed_steps.push("regenerable-demo-data");
         await this.writeReceipt(receipt);
       }

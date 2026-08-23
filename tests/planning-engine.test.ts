@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   BUILTIN_PLANNING_METHOD_PACKS,
   composePlanningMethodPacks,
+  hydratePlanningMethodPack,
   normalizePlanningMethodPack,
   resolvePlanningMethodPacks,
   type PlanningMethodPackInput,
@@ -79,6 +80,9 @@ test("planning methods resolve project over personal over cold-start built-ins",
     assert.ok(pack.required_coverage.length > 0);
     assert.ok(pack.dependency_rules.length > 0);
     assert.ok(pack.completion_checks.length > 0);
+    assert.match(pack.instructions, /depends_on/);
+    assert.match(pack.instructions, /用户提出新要求时/);
+    assert.match(pack.instructions, /没有循环/);
   }
   const builtIn = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
   const personal = normalizePlanningMethodPack({ ...builtIn, name: "个人软件开发方法" }, "personal", null, "2026-08-22T01:00:00.000Z");
@@ -91,6 +95,85 @@ test("planning methods resolve project over personal over cold-start built-ins",
   assert.ok(resolved.some((pack) => pack.method_id === "meta-domain-pack-builder"));
 });
 
+test("every built-in method evaluates domain hard dependencies and cross-topic recall", () => {
+  const universalRuleIds = new Set([
+    "output-consumption",
+    "decision-before-commitment",
+    "proof-before-close",
+    "hierarchy-is-not-dependency",
+  ]);
+  for (const pack of BUILTIN_PLANNING_METHOD_PACKS) {
+    assert.ok(
+      pack.dependency_rules.some((rule) => !universalRuleIds.has(rule.rule_id)),
+      `${pack.method_id} needs at least one method-specific dependency rule`,
+    );
+    assert.match(pack.instructions, /规则适用时，它就是不能跳过的硬依赖/);
+    assert.match(pack.instructions, /与其他主题一起规划/);
+    assert.match(pack.instructions, /召回相应主题的方法/);
+    assert.match(pack.instructions, /一般相关.*保持并行/);
+  }
+});
+
+test("planning packs expose provider-consumer rules for representative cross-topic work", () => {
+  const scenarios = [
+    {
+      label: "product decisions provide inputs for technical design",
+      methodId: "domain-software-development",
+      ruleId: "technical-design-after-product-plan",
+      direction: "technical design depends_on confirmed product plan",
+    },
+    {
+      label: "data and evaluation provide the baseline for AI capability",
+      methodId: "domain-ai-data-product",
+      ruleId: "ai-after-eval-baseline",
+      direction: "runtime capability depends_on data and evaluation",
+    },
+    {
+      label: "research sources provide evidence for content",
+      methodId: "domain-research-content",
+      ruleId: "draft-after-sources",
+      direction: "draft depends_on sources and method",
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const pack = BUILTIN_PLANNING_METHOD_PACKS.find((item) => item.method_id === scenario.methodId);
+    const rule = pack?.dependency_rules.find((item) => item.rule_id === scenario.ruleId);
+    assert.ok(rule, scenario.label);
+    assert.equal(rule.direction_hint, scenario.direction);
+  }
+
+  for (const pack of BUILTIN_PLANNING_METHOD_PACKS) {
+    const parallelRule = pack.dependency_rules.find((rule) => rule.rule_id === "hierarchy-is-not-dependency");
+    assert.ok(parallelRule, `${pack.method_id} must reject hierarchy-only dependencies`);
+    assert.match(parallelRule.direction_hint, /keep independent goals parallel/);
+  }
+});
+
+test("legacy method packs receive current dependency guidance without a data migration", () => {
+  const software = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
+  const legacy = {
+    ...software,
+    scope: "project" as const,
+    version: 1,
+    steps: ["确定用户行为和系统边界", "实现功能"],
+    dependency_rules: [{
+      rule_id: "legacy-contract",
+      statement: "消费者实现依赖提供者契约。",
+      direction_hint: "consumer depends_on provider contract",
+    }],
+    instructions: undefined,
+  } as unknown as typeof software;
+
+  const hydrated = hydratePlanningMethodPack(legacy);
+  assert.equal(hydrated.steps, legacy.steps);
+  assert.match(hydrated.instructions, /技术方案设计/);
+  assert.match(hydrated.instructions, /技术基础能力建设/);
+  assert.match(hydrated.instructions, /产品功能实现/);
+  assert.match(hydrated.instructions, /consumer depends_on provider contract/);
+  assert.match(hydrated.instructions, /召回相应主题的方法/);
+});
+
 test("project planning composition keeps method paths separate and merges their checks", () => {
   const workType = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "work-build-change")!;
   const software = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
@@ -100,6 +183,8 @@ test("project planning composition keeps method paths separate and merges their 
   assert.deepEqual(composition.method_paths.map((path) => path.method_id), composition.method_pack_ids);
   assert.equal(composition.method_paths[0]?.steps.length, workType.steps.length);
   assert.equal(composition.method_paths[1]?.steps.length, software.steps.length);
+  assert.equal(composition.method_paths[0]?.instructions, workType.instructions);
+  assert.match(composition.method_paths[1]?.instructions ?? "", /技术方案设计/);
   assert.equal(
     composition.dependency_rules.filter((rule) => rule.direction_hint === "consumer depends_on provider").length,
     1,

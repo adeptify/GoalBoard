@@ -17,7 +17,6 @@ import {
   type ClarificationAssumption,
   type ClarificationFact,
   type ClarificationSessionRecord,
-  type ClarificationTurnRecord,
   type CreateGoalInput,
   type DecisionReason,
   type DraftDialogueResumeInput,
@@ -2283,7 +2282,7 @@ export class GoalBoardCoordinator {
             topological_level: metrics.get(goal.goal_id)?.topological_level ?? 0,
             unlock_count: metrics.get(goal.goal_id)?.unlock_count ?? 0,
             longest_downstream_chain: metrics.get(goal.goal_id)?.longest_downstream_chain ?? 0,
-            rationale: this.planningRationale(goal, metrics.get(goal.goal_id)),
+            rationale: this.planningRationale(metrics.get(goal.goal_id)),
           },
         });
       }
@@ -8138,7 +8137,7 @@ export class GoalBoardCoordinator {
     }
   }
 
-  private planningRationale(goal: GoalRecord, metric: PlanningMetric | undefined): string {
+  private planningRationale(metric: PlanningMetric | undefined): string {
     const unlocks = metric?.unlock_count ?? 0;
     const chain = metric?.longest_downstream_chain ?? 0;
     if (unlocks > 0) {

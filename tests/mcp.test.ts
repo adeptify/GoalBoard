@@ -37,6 +37,7 @@ describe("mcp server", () => {
         result: {
           tools: Array<{
             name: string;
+            description: string;
             inputSchema: {
               properties?: Record<string, { properties?: Record<string, unknown>; required?: string[] }>;
               required?: string[];
@@ -64,6 +65,9 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
     assert.ok(names.includes("goalboard_v1_planning_methods"));
+    const planningMethodsTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_methods");
+    assert.match(planningMethodsTool?.description ?? "", /methods\[\].*instructions/);
+    assert.match(planningMethodsTool?.description ?? "", /提供者产出与消费者用途/);
     assert.ok(names.includes("goalboard_v1_planning_method_save"));
     assert.ok(names.includes("goalboard_v1_planning_analyze_change"));
     assert.ok(names.includes("goalboard_v1_planning_graph_check"));
@@ -187,182 +191,58 @@ describe("mcp server", () => {
     }
   });
 
-  it("Runtime Skill gives the current Runtime one project-aware MCP flow and preserves authority boundaries", () => {
-    const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
-    const protocol = fs.readFileSync(
-      path.join(ROOT, "skills/goal-advance/references/protocol.md"),
-      "utf8",
+  it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const metadata = fs.readFileSync(path.join(skillRoot, "agents/openai.yaml"), "utf8");
+    const references = Object.fromEntries(
+      ["protocol", "project-connection", "planning", "execution", "service-start"].map((name) => [
+        name,
+        fs.readFileSync(path.join(skillRoot, "references", `${name}.md`), "utf8"),
+      ]),
     );
-    const serviceStart = fs.readFileSync(
-      path.join(ROOT, "skills/goal-advance/references/service-start.md"),
-      "utf8",
-    );
-    assert.match(skill, /one public GoalBoard entry for the Runtime currently talking with the user/);
-    assert.match(skill, /For every Goal lifecycle operation, use only the host-provided `goalboard_v1_\*` Runtime MCP tools/);
-    assert.match(skill, /“启动 GoalBoard” or “打开 GoalBoard”/);
-    assert.match(skill, /Only use the foreground `goalboard-web` launcher when the user explicitly says “临时打开 GoalBoard”/);
-    assert.match(skill, /Starting Web does not select a project or authorize any Goal change/);
-    assert.match(skill, /does not open another Runtime, dispatch a separate Session/);
-    assert.match(skill, /edit the user's project files/);
-    assert.match(skill, /Never infer a project from Git, a directory, a repository name/);
-    assert.match(skill, /`goalboard_v1_context_resolve`/);
-    assert.match(skill, /`goalboard_v1_context_list_projects`/);
-    assert.match(skill, /`goalboard_v1_context_reject_suggestion`/);
-    assert.match(skill, /`goalboard_v1_context_bind`/);
-    assert.match(skill, /`goalboard_v1_context_unbind`/);
-    assert.match(skill, /`goalboard_v1_context_create_and_bind`/);
-    assert.match(skill, /`goalboard_v1_project_delete`/);
-    assert.doesNotMatch(skill, /goalboard_v1_postinstall_project_selection/);
-    assert.match(skill, /rebind_confirmed=true/);
-    assert.match(skill, /result is `suggested`/);
-    assert.match(skill, /Silence, a timeout, an ambiguous answer, or “not now” is not confirmation/);
-    assert.match(skill, /new rough idea/);
-    assert.match(skill, /Continue a specified Draft/);
-    assert.match(skill, /reuses the existing Draft rather than creating a second Goal/);
-    assert.match(skill, /“继续推进” or “领一件能做的”/);
-    assert.match(skill, /GoalBoard does not return a unique next task/);
-    assert.match(skill, /`available → select_goal`/);
-    assert.match(skill, /`requires_parent_confirmation=true`/);
-    assert.match(skill, /whether they cover the whole parent/);
-    assert.match(skill, /Do not silently close the parent or skip to unrelated work/);
-    assert.match(skill, /Put unexpected results back into the Goal lifecycle/);
-    assert.match(skill, /do not submit passing Evidence or call `complete`/);
-    assert.match(skill, /An observed failure is not a Risk substitute/);
-    assert.match(skill, /Candidate or Goal Tree Proposal for a corrective Goal/);
-    assert.match(skill, /goalboard_v1_draft_dialogue_start/);
-    assert.match(skill, /goalboard_v1_draft_dialogue_turn/);
-    assert.match(skill, /goalboard_v1_draft_dialogue_resume/);
-    assert.match(skill, /goalboard_v1_goal_tree_propose/);
-    assert.match(skill, /goalboard_v1_goal_tree_check/);
-    assert.match(skill, /Web is optional/);
-    assert.match(skill, /never invent a user identity, Session ID/);
-    assert.match(skill, /does not mean a different Runtime or a different Session must take over/);
-    assert.match(skill, /child Goal may itself have finer child Goals/);
-    assert.match(skill, /return to the user's original outcome/);
-    assert.match(skill, /A game also covers gameplay/);
-    assert.match(skill, /An App covers its core function/);
-    assert.match(skill, /One well-scoped child may own several areas/);
-    assert.match(skill, /inspect the current task's intended outcome/);
-    assert.match(skill, /not from template order, method kind, or a target count/);
-    assert.match(skill, /entire project composition as a required floor/);
-    assert.match(skill, /Omitting a materially relevant method makes the Goal setup incomplete/);
-    assert.doesNotMatch(skill, /smallest useful set/);
-    assert.match(skill, /never present a staged pause as a finished tree/);
-    assert.match(skill, /`waiting_children` \(UI: “已澄清，等待子 Goal”\)/);
-    assert.match(skill, /`execution_pending` \(“待执行”\)/);
-    assert.match(skill, /`clarification_pending` \(“待澄清”\)/);
-    assert.match(skill, /second mutable “clarification complete” field/);
-    assert.match(skill, /goalboard_v1_revalidate/);
-    assert.match(skill, /goalboard_v1_goal_trash/);
-    assert.match(skill, /goalboard_v1_goal_trash_list/);
-    assert.match(skill, /goalboard_v1_goal_restore/);
-    assert.match(skill, /Goal 删除是可恢复的“移入回收站”/);
-    assert.match(skill, /cannot substitute for a required human approval/);
-    assert.match(protocol, /Project connection: explicit and user-led/);
-    assert.match(protocol, /context_reject_suggestion\(project_id, actor_id, user_confirmed=true\)/);
-    assert.match(protocol, /host-owned clues changed candidate order, but GoalBoard returns no project connection/);
-    assert.match(protocol, /Project lifecycle in the current conversation/);
-    assert.match(protocol, /context_unbind\(actor_id, user_confirmed=true\)/);
-    assert.match(protocol, /project_delete\(project_id, actor_id, delete_confirmed=true, idempotency_key\)/);
-    assert.match(protocol, /valid Claims and unfinished Runs/);
-    assert.match(protocol, /context_create_and_bind/);
-    assert.match(protocol, /does not write SQLite, call the management CLI, alter project files, or alter Runtime configuration/);
-    assert.match(protocol, /reuses the Draft, atomically creates its first clarifier Claim\/Run/);
-    assert.match(protocol, /current Runtime chooses one returned item/);
-    assert.match(protocol, /A successful result always includes its Claim and started Run/);
-    assert.match(protocol, /The tree can include a compound parent, a family of children, and children split more finely again/);
-    assert.match(protocol, /recover the original user outcome/);
-    assert.match(protocol, /decomposition_review/);
-    assert.match(protocol, /`composition\.method_pack_ids`/);
-    assert.match(protocol, /use every method in that project composition/);
-    assert.match(protocol, /without preferring a method kind, library order, or fixed count/);
-    assert.match(protocol, /the Goal setup is incomplete/);
-    assert.doesNotMatch(protocol, /select one work-type plus the closest domain method/);
-    assert.match(protocol, /Do not call any plan complete/);
-    assert.match(protocol, /GoalBoard has one derived work state, not a second “clarification complete” flag/);
-    assert.match(protocol, /a confirmed parent with child Goals must show “已澄清，等待子 Goal”, not “待澄清”/);
-    assert.match(protocol, /auditable local provenance, not a cryptographic trust boundary/);
-    assert.match(protocol, /Recoverable Goal deletion in the current conversation/);
-    assert.match(protocol, /setGoalTrashed\(trashed=true\)/);
-    assert.match(protocol, /user_confirmed=true/);
-    assert.match(protocol, /pending_relation_ids/);
-    assert.match(protocol, /do not create another Board, change configuration, swap databases, or use a CLI fallback/);
-    assert.match(serviceStart, /service status --home "\$HOME\/\.goalboard" --json/);
-    assert.match(serviceStart, /关闭终端后页面仍会运行，登录后会自动启动/);
-    assert.match(serviceStart, /`stopped`.*`service start --confirm`/s);
-    assert.match(serviceStart, /`unhealthy`.*`service restart --confirm`/s);
-    assert.match(serviceStart, /`needs_repair`.*explicit confirmation/s);
-    assert.match(serviceStart, /`unsupported`.*no GoalBoard system-level persistent-service integration/s);
-    assert.match(serviceStart, /Do not add `nohup`, `&`, `disown`/);
-    assert.match(serviceStart, /Goal lifecycle remains available only through host-provided `goalboard_v1_\*` MCP tools/);
+
+    assert.ok(skill.split("\n").length <= 180);
+    assert.match(skill, /clarify and plan Goal Trees with relevant professional methods/);
+    assert.match(metadata, /组合规划方法、建立依赖并持续推进 Goal/);
+    assert.match(metadata, /Use \$goal-advance to connect this conversation to GoalBoard, clarify and plan the Goal/);
+    assert.match(skill, /## The GoalBoard loop/);
+    assert.match(skill, /## Planning loop — the core reasoning/);
+    for (const name of ["protocol", "project-connection", "planning", "execution", "service-start"]) {
+      assert.match(skill, new RegExp(`references/${name}\\.md`));
+    }
     assert.doesNotMatch(skill, /GOALBOARD_DATABASE/);
-    assert.doesNotMatch(protocol, /GOALBOARD_DATABASE/);
-    assert.doesNotMatch(serviceStart, /GOALBOARD_DATABASE/);
+    assert.match(references.protocol, /Goal lifecycle uses only host-provided `goalboard_v1_\*` Runtime MCP tools/);
+    assert.match(references.protocol, /Confirmation for selecting a project does not authorize/);
+    assert.match(references.protocol, /available → select_goal/);
+    assert.match(references["project-connection"], /Silence, timeout/);
+    assert.match(references["project-connection"], /Recoverable Goal trash/);
+    assert.match(references.planning, /Stop only when no required provider theme/);
+    assert.match(references.planning, /consumer_goal depends_on provider_goal/);
+    assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
+    assert.match(references.execution, /An observed mismatch is Goal information/);
+    assert.match(references["service-start"], /service status --home "\$HOME\/\.goalboard" --json/);
+    for (const content of Object.values(references)) assert.doesNotMatch(content, /GOALBOARD_DATABASE/);
   });
 
-  it("Runtime Skill defines natural, resumable, and structured forward conversations", () => {
-    const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
-    const protocol = fs.readFileSync(
-      path.join(ROOT, "skills/goal-advance/references/protocol.md"),
-      "utf8",
-    );
-    assert.ok(skill.split("\n").length <= 500);
-    assert.match(skill, /Reply in the user's current language/);
-    assert.match(skill, /what you currently understand from the user's words/);
-    assert.match(skill, /why the remaining uncertainty matters/);
-    assert.match(skill, /Ask only one question at a time/);
-    assert.match(skill, /never walk the user through a Contract field checklist/);
-    assert.match(skill, /two or three genuinely different options/);
-    assert.match(skill, /Write persistent Goal content for the people who will read it later/);
-    assert.match(skill, /check every parent, child, and leaf Goal/);
-    assert.match(skill, /`business_logic` explains in plain language how the user experience or business process works/);
-    assert.match(skill, /Do not use a database, MCP method, Session Resolver, Claim, Run, adapter, class, or internal module name as a substitute/);
-    assert.match(skill, /实现 MCP Session Context Resolver/);
-    assert.match(skill, /让新用户安装后能在当前对话完成 GoalBoard 配置/);
-    assert.match(skill, /A technically precise but user-incomprehensible title or `business_logic` is not proposal-ready/);
-    assert.match(skill, /If those business fields still read like implementation shorthand/);
-    assert.match(skill, /When reporting progress, lead with the business result, current stage, next owner\/action, and any blocker/);
-    assert.match(skill, /Treat a correction as new authority/);
-    assert.match(skill, /\*\*已确认\*\*/);
-    assert.match(skill, /\*\*项目事实\*\*/);
-    assert.match(skill, /\*\*仍是我的假设\*\*/);
-    assert.match(skill, /\*\*我的建议\*\*/);
-    assert.match(skill, /must remain distinct in both the visible summary and the MCP payload/);
-    assert.match(skill, /persist every material answer with `goalboard_v1_draft_dialogue_turn`/);
-    assert.match(skill, /它只是候选，还没有关联/);
-    assert.match(skill, /上次已确认 \/ 仍待确认 \/ 现在只需要决定的一件事/);
-    assert.match(skill, /After selecting from Available, state which Goal you chose, why it fits/);
-    assert.match(skill, /user-visible summary must show/);
-    assert.match(skill, /what work state each affected Goal will have after confirmation/);
-    assert.match(skill, /confirm the whole named proposal, reject it, or revise specific named items/);
-    assert.match(skill, /Before proposing any `accepted \/ closed_leaf` Goal/);
-    assert.match(skill, /one `primary_deliverable`/);
-    assert.match(skill, /separately deliverable, separately acceptable, and independently reworkable/);
-    assert.match(skill, /at least two signals are true, split it into another Goal/);
-    assert.match(skill, /same five-part result chain for every task/);
-    assert.match(skill, /AI or data work covers data sources and quality, evaluation, runtime\/cost, and safety\/governance/);
-    assert.match(skill, /Content or research covers source provenance/);
-    assert.match(skill, /Operations covers roles, permissions, tools\/workflow, exceptions, and measurement/);
-    assert.match(skill, /add a dependency from the core Goal to the foundation Goal/);
-    assert.match(skill, /`task_context=game\|app\|ai_data\|content_research\|operations\|other`/);
-    assert.match(protocol, /Persist first, then continue the conversation/);
-    assert.match(protocol, /Available sets `requires_parent_confirmation=true`/);
-    assert.match(protocol, /Unexpected result and corrective work/);
-    assert.match(protocol, /The first clarification checkpoint must produce readable values for the existing Goal fields/);
-    assert.match(protocol, /Before `goal_tree_propose`, scan every proposed parent, child, and leaf Goal for readability/);
-    assert.match(protocol, /lead with the Goal's business problem\/value, expected result, current derived `work_state`, next owner\/action, and blockers or dependencies/);
-    assert.match(protocol, /Do not ask a new question and postpone persistence/);
-    assert.match(protocol, /If the call fails, say that the progress was not saved and stop/);
-    assert.match(protocol, /The immediately preceding proposal message must be decision-complete/);
-    assert.match(protocol, /A vague “可以”“继续” is whole confirmation only when/);
-    assert.match(protocol, /Every proposed `accepted \/ closed_leaf` Goal also includes an explicit readiness decision/);
-    assert.match(protocol, /output_coverage/);
-    assert.match(protocol, /split_candidates/);
-    assert.match(protocol, /Two or more true signals require `decision=split`/);
-    assert.match(protocol, /Every new proposal still accounts for `final_outcome`, `operating_flow`, `core_capabilities`, `foundation_infrastructure`, and `quality_continuous_delivery`/);
-    assert.match(protocol, /task_context: game \| app \| ai_data \| content_research \| operations \| other/);
-    assert.match(protocol, /Historical `product_context=game\|app\|other` remains readable/);
-    assert.match(protocol, /Footballnia is one game regression example, not the rule's boundary/);
+  it("Runtime Skill preserves readable planning, decisions, execution, and correction", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const planning = fs.readFileSync(path.join(skillRoot, "references/planning.md"), "utf8");
+    const execution = fs.readFileSync(path.join(skillRoot, "references/execution.md"), "utf8");
+
+    assert.match(skill, /Ask one question at a time/);
+    assert.match(skill, /`business_logic` explains who does what/);
+    assert.match(skill, /Treat a user correction as new authority/);
+    assert.match(planning, /Persist before asking the next question/);
+    assert.match(planning, /selected planning themes and why they apply/);
+    assert.match(planning, /Exactly one output is primary/);
+    assert.match(planning, /confirm the whole named Proposal, reject it, or revise named items/);
+    assert.match(planning, /replan the affected subgraph/);
+    assert.match(execution, /Work only inside the selected accepted leaf Contract/);
+    assert.match(execution, /evidence_submit mapped to acceptance criterion IDs/);
+    assert.match(execution, /A required human approval cannot be replaced by a Runtime review/);
+    assert.match(execution, /Do not continue unrelated work while a completion-blocking problem lacks a visible owner/);
   });
 
   it("unknown method", async () => {
@@ -476,7 +356,7 @@ describe("mcp server", () => {
       const result = JSON.parse(response.result.content[0]?.text ?? "{}") as {
         composition: {
           method_pack_ids: string[];
-          method_paths: Array<{ method_id: string; steps: string[] }>;
+          method_paths: Array<{ method_id: string; steps: string[]; instructions: string }>;
           required_coverage: unknown[];
           completion_checks: string[];
         };
@@ -486,6 +366,7 @@ describe("mcp server", () => {
         result.composition.method_paths.map((path) => path.method_id),
         result.composition.method_pack_ids,
       );
+      assert.ok(result.composition.method_paths.every((path) => path.instructions.includes("depends_on")));
       assert.equal(result.composition.required_coverage.length, 2);
       assert.equal(result.composition.completion_checks.length, 2);
     } finally {

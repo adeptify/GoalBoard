@@ -1333,6 +1333,9 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     const planningDetail = await (await webFetch(
       `${origin}/settings/planning/domain-software-development?project=${fixture.alpha.project_id}`,
     )).text();
+    assert.match(planningDetail, /Runtime 方法说明/);
+    assert.match(planningDetail, /技术方案设计/);
+    assert.match(planningDetail, /技术基础能力建设/);
     assert.match(planningDetail, /规划路径/);
     assert.match(planningDetail, /拆分时必须回答/);
     assert.match(planningDetail, /依赖判断/);
@@ -1345,9 +1348,11 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assertInlineScriptsCompile(planningEditor);
     assert.match(planningEditor, /<form class="planning-edit-form"[^>]*data-planning-edit-form/);
     assert.match(planningEditor, /保存到我的方法库/);
+    assert.match(planningEditor, /name="instructions"/);
+    assert.match(planningEditor, /Runtime 方法正文/);
     assert.match(planningEditor, /data-coverage-row/);
     assert.match(planningEditor, /data-dependency-row/);
-    assert.doesNotMatch(planningEditor, /name="scope"|只用于当前项目|consumer depends_on provider/);
+    assert.doesNotMatch(planningEditor, /name="scope"|只用于当前项目/);
 
     const contextualSettingsPage = await (await webFetch(
       `${origin}/settings/projects?project=${fixture.alpha.project_id}`,
@@ -1364,6 +1369,7 @@ test("Web settings use shared Runtime and project services for confirmed setup f
       kind: "custom",
       name: "Web 测试方法",
       summary: "验证用户可以输入并保存新的方法。",
+      instructions: "# Web 测试方法\n\n先定义结果，再让结论依赖可复核证据。",
       applies_to: ["Web test"],
       domain_tags: ["test"],
       steps: ["定义结果", "检查证据"],
@@ -1389,10 +1395,14 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     const planningMethods = await (await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/api/settings/planning-methods`,
     )).json() as {
-      methods: Array<{ method_id: string; scope: string }>;
+      methods: Array<{ method_id: string; scope: string; instructions: string }>;
       composition: { method_pack_ids: string[]; required_coverage: unknown[] };
     };
     assert.equal(planningMethods.methods.find((item) => item.method_id === "domain-web-test")?.scope, "project");
+    assert.equal(
+      planningMethods.methods.find((item) => item.method_id === "domain-web-test")?.instructions,
+      method.instructions,
+    );
     assert.equal(planningMethods.methods.find((item) => item.method_id === "domain-web-personal")?.scope, "personal");
     assert.deepEqual(
       planningMethods.composition.method_pack_ids,
