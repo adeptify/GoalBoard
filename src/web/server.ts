@@ -39,7 +39,10 @@ import {
 } from "../install/web-service.js";
 import {
   renderGoalDocumentFragment,
+  renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
+  renderGoalBoardWorkbenchClientScript,
+  renderGoalBoardWorkbenchStylesheet,
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
   renderGoalBoardProjectSettings,
@@ -626,7 +629,36 @@ function desktopPanelSpawn(
   };
 }
 
-const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'";
+const PAGE_CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'";
+
+function serveWorkbenchAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+): boolean {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  const asset = pathname === "/assets/goalboard-workbench.css"
+    ? { body: renderGoalBoardWorkbenchStylesheet(), contentType: "text/css; charset=utf-8" }
+    : pathname === "/assets/goalboard-workbench.js"
+      ? { body: renderGoalBoardWorkbenchClientScript(), contentType: "text/javascript; charset=utf-8" }
+      : null;
+  if (!asset) return false;
+  const etag = `"${createHash("sha256").update(asset.body).digest("base64url")}"`;
+  const headers = {
+    "content-type": asset.contentType,
+    "cache-control": "private, max-age=0, must-revalidate",
+    etag,
+    "x-content-type-options": "nosniff",
+  };
+  if (request.headers["if-none-match"] === etag) {
+    response.writeHead(304, headers);
+    response.end();
+    return true;
+  }
+  response.writeHead(200, headers);
+  response.end(request.method === "HEAD" ? undefined : asset.body);
+  return true;
+}
 
 function loopbackWebOrigin(server: http.Server): string {
   const address = server.address();
@@ -1156,6 +1188,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
       const locale = resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
       await runWithLocale(locale, async () => {
         if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
+        if (serveWorkbenchAsset(request, response, url.pathname)) return;
         if (!pty.host) throw new Error("终端宿主尚未就绪");
         await handleGoalBoardWebRequest(
           request,
@@ -1801,7 +1834,7 @@ async function handleGoalBoardWebRequest(
           );
           if (handled) return;
         }
-        const goalFragmentMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/(document|records)$/);
+        const goalFragmentMatch = url.pathname.match(/^\/api\/goals\/([^/]+)\/(document|records|record-events)$/);
         if (request.method === "GET" && goalFragmentMatch) {
           let goalId: string;
           try {
@@ -1815,10 +1848,23 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "Goal 正文集合无效" });
             return;
           }
+          const fragmentKind = goalFragmentMatch[2];
+          const offsetText = url.searchParams.get("offset") ?? "0";
+          if (fragmentKind === "record-events" && !/^(0|[1-9]\d*)$/.test(offsetText)) {
+            sendJson(response, 400, { error: "Goal 事件偏移量无效" });
+            return;
+          }
+          const eventOffset = Number(offsetText);
+          if (fragmentKind === "record-events" && !Number.isSafeInteger(eventOffset)) {
+            sendJson(response, 400, { error: "Goal 事件偏移量无效" });
+            return;
+          }
           const view = readWebView();
-          const fragment = goalFragmentMatch[2] === "records"
+          const fragment = fragmentKind === "records"
             ? renderGoalRecordsFragment(view, goalId, collection)
-            : renderGoalDocumentFragment(view, goalId, collection);
+            : fragmentKind === "record-events"
+              ? renderGoalRecordEventsFragment(view, goalId, collection, eventOffset)
+              : renderGoalDocumentFragment(view, goalId, collection);
           if (!fragment) {
             sendJson(response, 404, { error: `找不到这个 Goal: ${goalId}` });
             return;
