@@ -53,6 +53,21 @@ export const VISUAL_FOUNDATION_CLIENT_SCRIPT = `
   window.addEventListener("storage", (event) => {
     if (event.key === key) applyTheme(readPreference());
   });
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const anchor = target?.closest("a[href]");
+    if (!anchor || anchor.hasAttribute("download") || anchor.getAttribute("target")) return;
+    const destination = new URL(anchor.href, location.href);
+    if (destination.origin !== location.origin) return;
+    if (destination.pathname === location.pathname && destination.search === location.search && destination.hash) return;
+    document.body.dataset.navigationPending = "true";
+    anchor.setAttribute("aria-busy", "true");
+  }, true);
+  window.addEventListener("pageshow", () => {
+    delete document.body.dataset.navigationPending;
+    document.querySelectorAll('a[aria-busy="true"]').forEach((anchor) => anchor.removeAttribute("aria-busy"));
+  });
   applyTheme(readPreference());
 })();`;
 
@@ -120,6 +135,26 @@ export const VISUAL_FOUNDATION_STYLES = `
     color: var(--ink);
     font: 13px/1.5 var(--font);
     letter-spacing: -.003em;
+  }
+
+  body[data-navigation-pending="true"] { cursor: progress; }
+  body[data-navigation-pending="true"]::before {
+    content: "";
+    position: fixed;
+    z-index: 1000;
+    top: 0;
+    left: 0;
+    width: 38%;
+    height: 2px;
+    background: var(--blue);
+    transform-origin: left center;
+    animation: goalboard-navigation-progress .7s ease-in-out infinite alternate;
+    pointer-events: none;
+  }
+  body[data-navigation-pending="true"] a[aria-busy="true"] { color: var(--blue-dark); }
+  @keyframes goalboard-navigation-progress {
+    from { transform: scaleX(.45); opacity: .72; }
+    to { transform: translateX(160%) scaleX(1.1); opacity: 1; }
   }
 
   svg { stroke-width: 1.7; }
@@ -879,6 +914,38 @@ export const VISUAL_FOUNDATION_STYLES = `
   .tree-resizer, .tui-resizer { background: var(--page); }
   .tree-resizer::after, .tui-resizer::after { background: var(--line); }
   .document-pane { background: var(--paper); }
+  .document-pane[aria-busy="true"] > [data-goal-view] {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .12s ease;
+  }
+  .goal-document-loading {
+    position: sticky;
+    z-index: 9;
+    top: 12px;
+    width: fit-content;
+    min-height: 32px;
+    margin: 12px auto -44px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--paper);
+    color: var(--ink-soft);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--page) 76%, transparent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 620;
+  }
+  .goal-document-loading::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--blue);
+    animation: pulse 1s ease-in-out infinite;
+  }
   .goal-document { width: min(100%, 940px); padding: 22px 32px 56px; }
   .goal-header { padding-bottom: 13px; }
   .goal-title-row h1 { font-size: clamp(21px, 2vw, 27px); line-height: 1.18; letter-spacing: -.035em; }
@@ -1086,11 +1153,11 @@ export const VISUAL_FOUNDATION_STYLES = `
   html[data-resolved-theme="dark"] .tui-tabs,
   html[data-resolved-theme="dark"] .tui-owner,
   html[data-resolved-theme="dark"] .settings-navigation,
-  html[data-resolved-theme="dark"] .settings-document,
   html[data-resolved-theme="dark"] .project-index-panel { background: var(--rail); }
   html[data-resolved-theme="dark"] .document-pane,
   html[data-resolved-theme="dark"] .goal-document,
   html[data-resolved-theme="dark"] .goal-workspace-nav,
+  html[data-resolved-theme="dark"] .settings-document,
   html[data-resolved-theme="dark"] .theme-menu,
   html[data-resolved-theme="dark"] .dialog-shell { background: var(--paper); color: var(--ink); }
   html[data-resolved-theme="dark"] .locale-switch { background: var(--paper); }
@@ -1155,10 +1222,22 @@ export const VISUAL_FOUNDATION_STYLES = `
   html[data-resolved-theme="dark"] .risk-decision > footer.decision-actions a { color: var(--blue-dark); }
   html[data-resolved-theme="dark"] .risk-decision-fact p,
   html[data-resolved-theme="dark"] .risk-decision-fact small { color: var(--ink-soft); }
+  html[data-resolved-theme="dark"] .risk-state-preview {
+    border-color: var(--blue);
+    background: color-mix(in srgb, var(--blue-soft) 58%, var(--paper));
+    color: var(--ink-soft);
+  }
   html[data-resolved-theme="dark"] .decision-actions button:disabled {
     border-color: var(--line) !important;
     background: var(--page) !important;
     color: var(--faint) !important;
+  }
+  html[data-resolved-theme="dark"] .button-primary,
+  html[data-resolved-theme="dark"] .button-primary:hover,
+  html[data-resolved-theme="dark"] .planning-form footer button[type="submit"],
+  html[data-resolved-theme="dark"] .runtime-plan-shell > footer .runtime-plan-apply,
+  html[data-resolved-theme="dark"] .project-migration-form > footer .project-migration-submit {
+    color: var(--page) !important;
   }
   html[data-resolved-theme="dark"] .navigator-view-switch,
   html[data-resolved-theme="dark"] .graph-toolbar,
@@ -1189,6 +1268,12 @@ export const VISUAL_FOUNDATION_STYLES = `
 
   @media (max-width: 1120px) {
     .topbar .project-demo, .topbar .sync-state, .topbar .project-context > strong { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body[data-navigation-pending="true"]::before,
+    .goal-document-loading::before { animation: none; }
+    .document-pane[aria-busy="true"] > [data-goal-view] { transition: none; }
   }
 
   @media (min-width: 761px) and (max-width: 1180px) {

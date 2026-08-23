@@ -22,6 +22,10 @@ import type {
   RunRecord,
 } from "../v1/types.js";
 import { DEFAULT_GOAL_POLICY } from "../v1/types.js";
+import {
+  composePlanningMethodPacks,
+  type PlanningMethodPack,
+} from "../planning/method-packs.js";
 import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
 import type { GoalBoardWebServiceDetection } from "../install/web-service.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
@@ -216,6 +220,7 @@ export interface WebInstallationDiagnostics {
 
 export interface GoalBoardSettingsView {
   section: WebSettingsSection;
+  context_project?: WebProjectNavigation | null;
   runtimes: RuntimeIntegrationDetection[];
   projects: WebSettingsProject[];
   connections: WebSettingsConnection[];
@@ -2220,6 +2225,9 @@ function goalTreeProposalItemCopy(
     const reviewFacts = review == null
       ? []
       : [
+          ...((review.method_pack_ids ?? []).length
+            ? [L("规划方法：{methods}", { methods: review.method_pack_ids!.join("、") })]
+            : []),
           ...(review.task_context == null
             ? []
             : [L("任务类型：{context}", { context: L(TASK_CONTEXT_LABELS[review.task_context]) })]),
@@ -2463,7 +2471,9 @@ function goalTreeDecompositionIssueCopy(
       return {
         message: L("Goal「{goal}」还没有交代：{areas}。", {
           goal,
-          areas: (issue.missing_areas ?? []).map((area) => L(PRODUCT_PATH_AREA_LABELS[area])).join("、"),
+          areas: (issue.missing_areas ?? [])
+            .map((area) => L(PRODUCT_PATH_AREA_LABELS[area as ProductPathArea] ?? area))
+            .join("、"),
         }),
         recovery: L("请让 Runtime 指定负责的 Goal，或说明为什么不适用。"),
       };
@@ -4644,19 +4654,19 @@ const MORE_STYLES = `
   .policy-effective dd { min-width: 0; margin: 0; display: grid; overflow-wrap: anywhere; }
   .policy-effective dd strong { font-size: 13px; }
   .policy-effective dd small { color: var(--muted); font-size: 11px; }
-  .policy-inheritance { min-width: 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 5px; background: #f8f9fb; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; }
+  .policy-inheritance { min-width: 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 5px; background: var(--rail); display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; }
   .policy-inheritance > span { min-width: 0; display: grid; }
   .policy-inheritance small { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
   .policy-inheritance strong { overflow-wrap: anywhere; font-size: 12px; }
   .policy-inheritance > svg { color: var(--faint); }
-  .policy-source { min-width: 0; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: #fff; }
-  .policy-source--goal { border-color: #b9d2f1; }
-  .policy-source > summary { min-height: 76px; padding: 13px 15px; display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; list-style: none; background: #f8f9fb; }
-  .policy-source--goal > summary { background: #f4f8fe; }
+  .policy-source { min-width: 0; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--paper); }
+  .policy-source--goal { border-color: color-mix(in srgb, var(--blue), var(--line-strong) 58%); }
+  .policy-source > summary { min-height: 76px; padding: 13px 15px; display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; list-style: none; background: color-mix(in srgb, var(--rail) 76%, var(--paper)); }
+  .policy-source--goal > summary { background: color-mix(in srgb, var(--blue-soft) 68%, var(--paper)); }
   .policy-source > summary::-webkit-details-marker { display: none; }
   .policy-source-title { min-width: 0; display: flex; align-items: flex-start; gap: 11px; }
   .policy-scope-index { flex: 0 0 auto; width: 29px; height: 29px; border: 1px solid var(--line-strong); border-radius: 4px; display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 750; }
-  .policy-source--goal .policy-scope-index { color: var(--blue-dark); border-color: #b7d0ef; background: #fff; }
+  .policy-source--goal .policy-scope-index { color: var(--blue-dark); border-color: color-mix(in srgb, var(--blue), var(--line-strong) 58%); background: var(--paper); }
   .policy-source-title > span:last-child { min-width: 0; display: grid; }
   .policy-source-title small { color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .09em; }
   .policy-source-title strong { font-size: 15px; }
@@ -4664,15 +4674,15 @@ const MORE_STYLES = `
   .policy-source-state { min-width: 190px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; text-align: right; }
   .policy-source-state strong, .policy-source-state small { min-width: 0; overflow-wrap: anywhere; }
   .policy-source-state strong { color: var(--blue-dark); font-size: 11px; }
-  .policy-source--project .policy-source-state strong { color: #505965; }
+  .policy-source--project .policy-source-state strong { color: var(--ink-soft); }
   .policy-source-state small { grid-column: 1; color: var(--muted); font-size: 9px; }
   .policy-source-state svg { grid-column: 2; grid-row: 1 / 3; color: var(--muted); transition: transform .16s ease; }
   .policy-source[open] .policy-source-state svg { transform: rotate(180deg); }
   .policy-form { padding: 0 15px 15px; display: grid; }
-  .policy-scope-notice { margin: 0 -15px; padding: 10px 15px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fbfcfd; display: flex; align-items: flex-start; gap: 8px; color: #4c5663; font-size: 11px; }
+  .policy-scope-notice { margin: 0 -15px; padding: 10px 15px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--rail); display: flex; align-items: flex-start; gap: 8px; color: var(--ink-soft); font-size: 11px; }
   .policy-scope-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
-  .policy-current-reason { margin: 12px 0 0; padding: 9px 10px; border-left: 2px solid var(--line-strong); color: var(--muted); background: #fbfcfd; display: grid; gap: 1px; font-size: 11px; }
-  .policy-current-reason strong { color: #424b57; }
+  .policy-current-reason { margin: 12px 0 0; padding: 9px 10px; border-left: 2px solid var(--line-strong); color: var(--muted); background: var(--rail); display: grid; gap: 1px; font-size: 11px; }
+  .policy-current-reason strong { color: var(--ink-soft); }
   .policy-form-group { padding: 16px 0 2px; border-bottom: 1px solid var(--line); }
   .policy-form-group > header { margin-bottom: 13px; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 9px; }
   .policy-form-group > header > span { width: 28px; height: 28px; border-radius: 4px; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; }
@@ -4684,9 +4694,9 @@ const MORE_STYLES = `
   .policy-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .policy-mode-options label { min-width: 0; position: relative; cursor: pointer; }
   .policy-mode-options input { position: absolute; opacity: 0; pointer-events: none; }
-  .policy-mode-options label > span { min-height: 58px; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; display: grid; align-content: center; gap: 1px; }
-  .policy-mode-options label:hover > span { border-color: #a8c8ee; background: #fbfdff; }
-  .policy-mode-options input:disabled + span { border-color: var(--line); color: var(--muted); background: #f5f6f8; cursor: not-allowed; }
+  .policy-mode-options label > span { min-height: 58px; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--paper); display: grid; align-content: center; gap: 1px; }
+  .policy-mode-options label:hover > span { border-color: color-mix(in srgb, var(--blue), var(--line-strong) 48%); background: color-mix(in srgb, var(--blue-soft) 44%, var(--paper)); }
+  .policy-mode-options input:disabled + span { border-color: var(--line); color: var(--faint); background: var(--rail); cursor: not-allowed; }
   .policy-mode-options label:has(input:disabled) { cursor: not-allowed; }
   .policy-mode-options input:checked + span { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px rgba(22, 119, 255, .08); }
   .policy-mode-options input:focus-visible + span { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
@@ -4696,16 +4706,16 @@ const MORE_STYLES = `
   .policy-input { min-width: 0; display: grid; gap: 6px; }
   .policy-input > span:first-child { display: grid; }
   .policy-input small { color: var(--muted); font-size: 10px; }
-  .policy-input input, .policy-reason textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
+  .policy-input input, .policy-reason textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); resize: vertical; }
   .policy-with-unit { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
   .policy-with-unit > span { color: var(--muted); }
   .policy-toggle-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .policy-toggle { min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; cursor: pointer; }
-  .policy-toggle:hover { border-color: #b9cee8; background: #fbfdff; }
-  .policy-toggle:has(input:disabled) { color: var(--muted); background: #f5f6f8; cursor: not-allowed; }
+  .policy-toggle:hover { border-color: color-mix(in srgb, var(--blue), var(--line-strong) 56%); background: color-mix(in srgb, var(--blue-soft) 38%, var(--paper)); }
+  .policy-toggle:has(input:disabled) { color: var(--faint); background: var(--rail); cursor: not-allowed; }
   .policy-toggle > input { position: absolute; opacity: 0; pointer-events: none; }
-  .policy-switch { position: relative; width: 30px; height: 18px; border-radius: 9px; background: #b5bcc6; transition: .16s ease; }
-  .policy-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(20, 30, 42, .2); transition: .16s ease; }
+  .policy-switch { position: relative; width: 30px; height: 18px; border-radius: 9px; background: var(--faint); transition: .16s ease; }
+  .policy-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--paper); box-shadow: 0 1px 2px rgba(20, 30, 42, .2); transition: .16s ease; }
   .policy-toggle input:checked + .policy-switch { background: var(--blue); }
   .policy-toggle input:checked + .policy-switch::after { transform: translateX(12px); }
   .policy-toggle input:focus-visible + .policy-switch { outline: 2px solid color-mix(in srgb, var(--blue), transparent 30%); outline-offset: 2px; }
@@ -4718,7 +4728,7 @@ const MORE_STYLES = `
   .policy-counter strong { font-size: 12px; }
   .policy-counter small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
   .policy-counter-input { display: grid; grid-template-columns: 56px auto; align-items: center; gap: 5px; color: var(--muted); }
-  .policy-counter-input input { width: 56px; min-width: 0; padding: 7px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; text-align: center; }
+  .policy-counter-input input { width: 56px; min-width: 0; padding: 7px 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); text-align: center; }
   .policy-form-group--reason { border-bottom: 0; }
   .policy-reason { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: start; gap: 10px; }
   .policy-reason > span { padding-top: 7px; font-weight: 650; }
@@ -5484,15 +5494,23 @@ const SETTINGS_STYLES = `
   body.settings-page { min-height: 100%; overflow: hidden; background: var(--page); }
   .settings-page > .topbar { height: 58px; }
   .settings-page .brand { color: inherit; text-decoration: none; }
-  .settings-shell { height: calc(100dvh - 58px); min-width: 0; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
-  .settings-navigation { min-height: 0; padding: 18px 10px; border-right: 1px solid var(--line-strong); background: #fbfcfd; display: flex; flex-direction: column; gap: 3px; }
-  .settings-navigation a { min-height: 50px; padding: 7px 10px; border-radius: 5px; color: #343b46; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 9px; text-decoration: none; }
-  .settings-navigation a:hover { background: #f0f3f7; }
-  .settings-navigation a[aria-current=page] { color: var(--blue-dark); background: var(--blue-soft); }
+  .settings-shell { height: calc(100dvh - 58px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+  .settings-navigation { min-height: 0; overflow-y: auto; padding: 18px 10px; border-right: 1px solid var(--line-strong); background: var(--rail); display: flex; flex-direction: column; gap: 3px; }
+  .settings-nav-group { min-width: 0; display: grid; gap: 3px; }
+  .settings-nav-group + .settings-nav-group { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .settings-nav-label { min-width: 0; padding: 0 10px 5px; display: grid; gap: 2px; color: var(--faint); }
+  .settings-nav-label > span { font-size: 10px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .settings-nav-label > small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .settings-navigation a { min-height: 50px; padding: 7px 10px; border-radius: 5px; color: var(--ink-soft); display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 9px; text-decoration: none; }
+  .settings-navigation a:hover { background: color-mix(in srgb, var(--blue-soft) 46%, var(--rail)); }
+  .settings-navigation a[aria-current=page] { color: var(--blue-dark); background: color-mix(in srgb, var(--blue-soft) 76%, var(--rail)); box-shadow: inset 2px 0 0 var(--blue); }
   .settings-navigation a > svg { font-size: 17px; }
   .settings-navigation a > span { min-width: 0; display: grid; }
   .settings-navigation strong { font-size: 13px; }
   .settings-navigation small { color: var(--muted); font-size: 11px; }
+  .project-settings-back { min-height: 38px !important; margin-bottom: 12px; color: var(--muted) !important; }
+  .project-settings-back svg { transform: rotate(180deg); }
+  .project-settings-navigation .settings-nav-label { padding-top: 4px; }
   .settings-content { min-width: 0; min-height: 0; overflow: auto; background: var(--paper); }
   .settings-document { width: min(100%, 980px); min-height: 100%; padding: 38px 42px 80px; }
   .settings-heading { max-width: 72ch; padding-bottom: 25px; border-bottom: 1px solid var(--line-strong); }
@@ -5503,24 +5521,24 @@ const SETTINGS_STYLES = `
   .settings-record:last-child { border-bottom: 0; }
   .settings-record > header { min-height: 92px; padding: 19px 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
   .settings-record-title { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
-  .settings-record-title .record-icon { width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; color: var(--blue-dark); background: #fbfcfd; }
+  .settings-record-title .record-icon { width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; color: var(--blue-dark); background: var(--rail); }
   .settings-record-title h2, .settings-record-title h3 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
   .settings-record-title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
   .settings-record-action { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; }
-  .settings-record-action button, .settings-button, .settings-action-section button, .settings-import-row button, .project-record-tools form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-  .settings-record-action button:hover, .settings-button:hover, .settings-action-section button:hover, .settings-import-row button:hover, .project-record-tools form button:hover { border-color: #b8d3f5; background: var(--blue-soft); }
-  .settings-record-action button:disabled { color: var(--faint); background: #f5f6f8; cursor: not-allowed; }
+  .settings-record-action button, .settings-button, .settings-action-section button, .settings-import-row button, .project-record-tools form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: var(--paper); font-weight: 650; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .settings-record-action button:hover, .settings-button:hover, .settings-action-section button:hover, .settings-import-row button:hover, .project-record-tools form button:hover { border-color: color-mix(in srgb, var(--blue) 44%, var(--line-strong)); background: var(--blue-soft); }
+  .settings-record-action button:disabled { color: var(--faint); background: var(--rail); cursor: not-allowed; }
   .settings-state { display: inline-flex; align-items: center; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .settings-state--success { color: var(--green); }
-  .settings-state--warning { color: #8a5100; }
+  .settings-state--warning { color: var(--amber); }
   .settings-state--danger { color: var(--red); }
   .settings-state--neutral { color: var(--muted); }
   .settings-paths { margin: 0; padding: 0 0 18px 46px; display: grid; gap: 5px; }
   .settings-paths > div { min-width: 0; display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 9px; }
   .settings-paths dt, .project-db-details dt, .diagnostics-summary dt, .runtime-plan-meta dt { color: var(--muted); font-size: 11px; font-weight: 650; }
-  .settings-paths dd, .project-db-details dd, .diagnostics-summary dd, .runtime-plan-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #3b4350; font-size: 12px; }
+  .settings-paths dd, .project-db-details dd, .diagnostics-summary dd, .runtime-plan-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--ink-soft); font-size: 12px; }
   .settings-footnote { max-width: 72ch; margin: 20px 0 0; color: var(--muted); font-size: 12px; }
-  .settings-footnote code { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; color: #3d4552; background: #fbfcfd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .settings-footnote code { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--ink-soft); background: var(--rail); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .settings-empty { padding: 34px 0 38px; color: var(--muted); }
   .settings-empty h2 { margin: 0; color: var(--ink); font-size: 16px; }
   .settings-empty p { margin: 5px 0 0; }
@@ -5528,8 +5546,8 @@ const SETTINGS_STYLES = `
   .settings-action-section h2, .settings-import-row h2, .launcher-section h2, .diagnostics-summary h2 { margin: 0; font-size: 16px; }
   .settings-action-section > div > p, .settings-import-row > div > p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
   .inline-settings-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
-  .inline-settings-form > label:first-child { min-width: 0; display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
-  .inline-settings-form input[type=text], .project-record-tools input { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: #fff; }
+  .inline-settings-form > label:first-child { min-width: 0; display: grid; gap: 5px; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
+  .inline-settings-form input[type=text], .project-record-tools input { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); }
   .inline-settings-form .inline-confirm { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
   .inline-settings-form .settings-form-error { grid-column: 1 / -1; }
   .settings-form-error { margin: 0; color: var(--red); font-size: 12px; }
@@ -5539,9 +5557,9 @@ const SETTINGS_STYLES = `
   .project-record-tools summary::-webkit-details-marker { display: none; }
   .project-record-tools summary svg:last-child { font-size: 11px; }
   .project-record-tools details[open] summary svg:last-child { transform: rotate(180deg); }
-  .project-record-tools form, .project-db-details { width: min(100%, 440px); margin: 5px 0 0; padding: 13px; border: 1px solid var(--line); background: #fbfcfd; }
+  .project-record-tools form, .project-db-details { width: min(100%, 440px); margin: 5px 0 0; padding: 13px; border: 1px solid var(--line); background: var(--rail); }
   .project-record-tools form { display: grid; gap: 9px; }
-  .project-record-tools form label { display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
+  .project-record-tools form label { display: grid; gap: 5px; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
   .project-record-tools form button { justify-self: end; }
   .project-db-details { display: grid; gap: 7px; }
   .project-db-details > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
@@ -5550,25 +5568,25 @@ const SETTINGS_STYLES = `
   .connection-settings-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
   .connection-settings-heading p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
   .connection-record-list { border-bottom: 1px solid var(--line-strong); }
-  .connection-record .settings-record-title p strong { color: #3b4350; }
+  .connection-record .settings-record-title p strong { color: var(--ink-soft); }
   .connection-record-tools { margin: -6px 0 17px 46px; display: flex; align-items: flex-start; gap: 10px; }
   .connection-record-tools details { min-width: min(100%, 300px); }
   .connection-record-tools summary { min-height: 32px; padding: 0 7px; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; list-style: none; }
   .connection-record-tools summary::-webkit-details-marker { display: none; }
   .connection-record-tools summary svg:last-child { font-size: 11px; }
   .connection-record-tools details[open] summary svg:last-child { transform: rotate(180deg); }
-  .connection-action-form { width: min(100%, 460px); margin-top: 5px; padding: 13px; border: 1px solid var(--line); background: #fbfcfd; display: grid; gap: 10px; }
-  .connection-action-form > label:not(.inline-confirm) { display: grid; gap: 5px; color: #38414d; font-size: 12px; font-weight: 650; }
-  .connection-action-form select { width: 100%; min-height: 36px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: #fff; }
+  .connection-action-form { width: min(100%, 460px); margin-top: 5px; padding: 13px; border: 1px solid var(--line); background: var(--rail); display: grid; gap: 10px; }
+  .connection-action-form > label:not(.inline-confirm) { display: grid; gap: 5px; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
+  .connection-action-form select { width: 100%; min-height: 36px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); }
   .connection-action-form .inline-confirm { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
   .connection-action-form .inline-confirm input { margin-top: 2px; }
-  .connection-action-form > button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; justify-self: end; color: var(--blue-dark); background: #fff; font-weight: 650; cursor: pointer; }
+  .connection-action-form > button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; justify-self: end; color: var(--blue-dark); background: var(--paper); font-weight: 650; cursor: pointer; }
   .connection-action-form--danger > button { color: var(--red); }
   .workspace-project-list { list-style: none; margin: -4px 0 12px 46px; padding: 0; width: min(100%, 620px); border-top: 1px solid var(--line); }
   .workspace-project-list li { min-height: 46px; padding: 7px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .workspace-project-list li > span { display: flex; align-items: center; gap: 9px; }
   .workspace-project-list form { display: flex; align-items: center; gap: 8px; }
-  .workspace-project-list form button { min-height: 30px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--red); background: #fff; cursor: pointer; }
+  .workspace-project-list form button { min-height: 30px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--red); background: var(--paper); cursor: pointer; }
   .workspace-project-list .settings-form-error { flex-basis: 100%; }
   .settings-import-row { border-top: 1px solid var(--line-strong); margin-top: 24px; }
   .settings-import-row > button { justify-self: end; }
@@ -5583,8 +5601,8 @@ const SETTINGS_STYLES = `
   .launcher-section li > span:first-child { min-width: 0; display: grid; grid-template-columns: 22px 50px minmax(0, 1fr); align-items: center; gap: 8px; }
   .launcher-section li small { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
   .service-action-row { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
-  .service-action-row button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: #fff; font-weight: 650; cursor: pointer; }
-  .runtime-plan-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(760px, calc(100dvh - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); box-shadow: var(--shadow); }
+  .service-action-row button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--blue-dark); background: var(--paper); font-weight: 650; cursor: pointer; }
+  .runtime-plan-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(760px, calc(100dvh - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
   .runtime-plan-dialog::backdrop { background: rgba(27, 35, 45, .34); }
   .runtime-plan-shell { max-height: min(760px, calc(100dvh - 28px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   .runtime-plan-shell > header { padding: 21px 24px 17px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
@@ -5599,10 +5617,10 @@ const SETTINGS_STYLES = `
   .runtime-change-list li small { display: block; margin-top: 3px; color: var(--muted); overflow-wrap: anywhere; }
   .runtime-plan-meta { margin: 18px 0 0; display: grid; gap: 7px; }
   .runtime-plan-meta > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 12px; }
-  .runtime-plan-confirm { margin-top: 18px; padding: 12px; border: 1px solid #c8d9ef; background: #f5f9ff; display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+  .runtime-plan-confirm { margin-top: 18px; padding: 12px; border: 1px solid color-mix(in srgb, var(--blue) 36%, var(--line)); background: var(--blue-soft); display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
   .runtime-plan-confirm input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }
-  .runtime-plan-shell > footer { padding: 14px 24px; border-top: 1px solid var(--line); background: #fbfcfd; display: flex; justify-content: flex-end; gap: 9px; }
-  .runtime-plan-shell > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer; }
+  .runtime-plan-shell > footer { padding: 14px 24px; border-top: 1px solid var(--line); background: var(--rail); display: flex; justify-content: flex-end; gap: 9px; }
+  .runtime-plan-shell > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); cursor: pointer; }
   .runtime-plan-shell > footer .runtime-plan-apply { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
   .runtime-plan-shell > footer .runtime-plan-apply:disabled { opacity: .55; cursor: not-allowed; }
   .settings-page .toast { position: fixed; right: 22px; bottom: 22px; z-index: 30; }
@@ -5612,7 +5630,9 @@ const SETTINGS_STYLES = `
     .settings-page .top-action span { display: none; }
     .settings-page .project-context small { display: none; }
     .settings-shell { height: calc(100dvh - 52px); grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-    .settings-navigation { padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--line-strong); flex-direction: row; overflow-x: auto; }
+    .settings-navigation { overflow-x: auto; overflow-y: hidden; padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--line-strong); flex-direction: row; }
+    .settings-nav-group { display: contents; }
+    .settings-nav-label { display: none; }
     .settings-navigation a { min-width: max-content; min-height: 40px; grid-template-columns: 18px auto; }
     .settings-navigation small { display: none; }
     .settings-document { padding: 25px 18px 60px; }
@@ -5646,11 +5666,11 @@ const PROJECT_RULES_SETTINGS_STYLES = `
   .project-rules-receipt strong { color: var(--green); font-size: 12px; }
   .project-rules-receipt span { color: var(--muted); font-size: 12px; line-height: 1.5; }
   .project-rules-receipt:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-  .project-rules-intro { margin: 24px 0 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; }
+  .project-rules-intro { margin: 24px 0 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--rail); }
   .project-rules-intro h2 { margin: 0; font-size: 15px; }
   .project-rules-intro p { max-width: 70ch; margin: 5px 0 0; color: var(--muted); font-size: 12px; }
   .project-rules-intro ol { margin: 14px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-  .project-rules-intro li { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; }
+  .project-rules-intro li { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; }
   .project-rules-intro li > span:first-child { width: 22px; height: 22px; border-radius: 50%; color: var(--blue-dark); background: var(--blue-soft); display: grid; place-items: center; font-size: 10px; font-weight: 750; }
   .project-rules-intro li > span:last-child { min-width: 0; display: grid; }
   .project-rules-intro li strong { font-size: 12px; }
@@ -5660,7 +5680,6 @@ const PROJECT_RULES_SETTINGS_STYLES = `
   .project-rules-page .settings-footnote { margin-top: 16px; }
   @media (max-width: 760px) {
     .project-rules-intro ol { grid-template-columns: 1fr; }
-    .project-rules-page .settings-navigation a:last-child { display: none; }
     .project-rules-page .policy-source-state { min-width: 0; }
   }
 `;
@@ -6946,9 +6965,24 @@ const CLIENT_SCRIPT = `
       setGoalFactor(goalFactorFromHash() || "relations", false);
     };
 
+    const setGoalDocumentBusy = (busy) => {
+      if (busy) documentPane.setAttribute("aria-busy", "true");
+      else documentPane.removeAttribute("aria-busy");
+      documentPane.querySelector("[data-goal-document-loading]")?.remove();
+      if (!busy) return;
+      const indicator = document.createElement("div");
+      indicator.className = "goal-document-loading";
+      indicator.dataset.goalDocumentLoading = "true";
+      indicator.setAttribute("role", "status");
+      indicator.textContent = L("正在载入 Goal…");
+      const paneHeader = documentPane.querySelector(":scope > .desktop-pane-header");
+      if (paneHeader) paneHeader.after(indicator);
+      else documentPane.prepend(indicator);
+    };
+
     const loadGoalDocument = async (goalId) => {
       const requestId = ++goalDocumentRequest;
-      documentPane.setAttribute("aria-busy", "true");
+      setGoalDocumentBusy(true);
       setSyncState("载入 Goal…", "syncing");
       try {
         const response = await fetch(
@@ -6967,7 +7001,7 @@ const CLIENT_SCRIPT = `
         showToast(error.message || "无法读取这条 Goal 正文", true);
         return false;
       } finally {
-        if (requestId === goalDocumentRequest) documentPane.removeAttribute("aria-busy");
+        if (requestId === goalDocumentRequest) setGoalDocumentBusy(false);
       }
     };
 
@@ -8763,7 +8797,7 @@ function renderProjectSettings(view: GoalBoardSettingsView): string {
   const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
     <header>
       <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? L("演示数据 · 可随时重建，不属于用户项目") : project.source === "migrated" ? L("用户数据 · 由已有 GoalBoard 数据迁入") : L("用户数据 · 在 GoalBoard 中创建")}</p></div></div>
-      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/rules">${L("工作规则")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
+      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/rules">${L("工作规则")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/planning">${L("工作规划")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
     </header>
     <div class="project-record-tools">
       <details><summary>${icon("settings")}<span>${L("改名")}</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>${L("项目名称")}<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("保存名称")}</button></form></details>
@@ -8772,7 +8806,7 @@ function renderProjectSettings(view: GoalBoardSettingsView): string {
     </div>
   </article>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">
-    <header class="settings-heading"><h1 id="settings-title">${L("项目")}</h1><p>${L("每个项目单独保存自己的 Goal 和记录。网页里切换项目只会改变当前查看的内容，不会改变其他对话或工具正在使用的项目。")}</p></header>
+    <header class="settings-heading"><h1 id="settings-title">${L("项目设置")}</h1><p>${L("先选择要配置的项目，再进入它的工作规则或工作规划。每个项目单独保存自己的 Goal、记录和项目专用设置。")}</p></header>
     <section class="settings-action-section" aria-labelledby="create-project-title"><div><h2 id="create-project-title">${L("创建项目")}</h2><p>${L("创建一个空的 GoalBoard 项目，然后直接打开它的 Goal Tree。")}</p></div><form class="inline-settings-form" data-project-create><label>${L("项目名称")}<input name="display_name" required maxlength="160" placeholder="${L("例如：新产品发布")}"></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认创建这个项目")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("创建并打开")}</button></form></section>
     <section class="settings-action-section" aria-labelledby="demo-project-title"><div><h2 id="demo-project-title">${L("产品示例")}</h2><p>${demo ? L("示例项目已单独标记为可重建数据，可以放心重置或删除。") : L("创建一份明确标记为可重建的示例数据；普通卸载会清理它，但保留用户项目。")}</p></div>${demo ? `<a class="settings-button" href="/projects/${encodeURIComponent(demo.project_id)}/">${L("打开示例")}</a>` : `<button type="button" data-demo-action="create">${L("创建示例项目")}</button>`}<p class="settings-form-error" data-demo-error role="alert" hidden></p></section>
     <div class="settings-record-list project-settings-list">${rows || `<div class="settings-empty"><h2>${L("还没有项目")}</h2><p>${L("在上方创建第一个项目，或从下方导入一份已有 GoalBoard 数据。")}</p></div>`}</div>
@@ -8914,12 +8948,58 @@ function renderTuiPane(
       `;
 }
 
+type SettingsNavigationActive = WebSettingsSection | "planning";
+type ProjectSettingsNavigationActive = "rules" | "planning";
+
+function settingsContextHref(
+  path: string,
+  _project: WebProjectNavigation | null,
+  desktopShell: boolean,
+): string {
+  return desktopShell ? withDesktopQuery(path) : path;
+}
+
+function renderSettingsNavigation(
+  active: SettingsNavigationActive,
+  project: WebProjectNavigation | null,
+  desktopShell = false,
+): string {
+  const globalHref = (path: string) => settingsContextHref(path, project, desktopShell);
+  const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
+  return `<nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}">
+    <section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("对所有项目生效")}</small></div>
+      <a href="${globalHref("/settings/projects")}"${current("projects")}>${icon("folder")}<span><strong>${L("项目设置")}</strong><small>${L("选择项目并配置")}</small></span></a>
+      <a href="${globalHref("/settings/runtimes")}"${current("runtimes")}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("连接 Runtime 与会话")}</small></span></a>
+      <a href="${globalHref("/settings/diagnostics")}"${current("diagnostics")}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装、服务与环境")}</small></span></a>
+      <a href="${globalHref("/settings/planning")}"${current("planning")}>${icon("book")}<span><strong>${L("规划方法")}</strong><small>${L("维护拆分与依赖方法库")}</small></span></a>
+    </section>
+  </nav>`;
+}
+
+function renderProjectSettingsNavigation(
+  active: ProjectSettingsNavigationActive,
+  project: WebProjectNavigation,
+  desktopShell = false,
+): string {
+  const routePrefix = `/projects/${encodeURIComponent(project.project_id)}`;
+  const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
+  const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
+  return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
+    <a class="project-settings-back" href="${href("/settings/projects")}">${icon("arrow")}<span><strong>${L("返回所有项目")}</strong></span></a>
+    <section class="settings-nav-group" aria-labelledby="settings-project-group"><div class="settings-nav-label" id="settings-project-group"><span>${L("项目设置")}</span><small>${escapeHtml(project.display_name)}</small></div>
+      <a href="${href(`${routePrefix}/settings/rules`)}"${current("rules")}>${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("执行和复核底线")}</small></span></a>
+      <a href="${href(`${routePrefix}/settings/planning`)}"${current("planning")}>${icon("workflow")}<span><strong>${L("工作规划")}</strong><small>${L("选择和调整规划方法")}</small></span></a>
+    </section>
+  </nav>`;
+}
+
 export function renderGoalBoardProjectSettings(
   view: GoalBoardWebView,
   controlToken = "",
   desktopShell = false,
 ): string {
   const projectName = view.project?.display_name ?? L("当前项目");
+  const settingsProject = view.project ?? null;
   const routePrefix = view.route_prefix;
   const pagePath = `${routePrefix}/settings/rules`;
   const projectBinding = view.policy_bindings
@@ -8933,11 +9013,7 @@ export function renderGoalBoardProjectSettings(
   ${renderIconSprite()}
   <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${routePrefix || "/"}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(pagePath || "/settings/rules")}${renderThemeSwitch()}<a class="top-action" href="${routePrefix || "/"}">${icon("tree")}<span>${L("Goal Tree")}</span></a></header>
   <main class="settings-shell">
-    <nav class="settings-navigation" aria-label="${L("项目设置")}">
-      <a href="${pagePath}" aria-current="page">${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("项目的共同最低要求")}</small></span></a>
-      <a href="${routePrefix || "/"}">${icon("tree")}<span><strong>${L("Goal Tree")}</strong><small>${L("返回目标与工作")}</small></span></a>
-      <a href="/settings/projects">${icon("folder")}<span><strong>${L("所有项目")}</strong><small>${L("创建、导入与规则")}</small></span></a>
-    </nav>
+    ${settingsProject ? renderProjectSettingsNavigation("rules", settingsProject, desktopShell) : renderSettingsNavigation("projects", null, desktopShell)}
     <div class="settings-content"><section class="settings-document" aria-labelledby="project-rules-title">
       <header class="settings-heading"><h1 id="project-rules-title">${L("项目工作规则")}</h1><p>${L("设置这个项目里所有 Goal 共同遵守的最低要求。单个 Goal 可以增加要求，但不能降低这里的规则。")}</p></header>
       <aside class="project-rules-receipt" data-project-rules-receipt role="status" tabindex="-1" hidden><strong data-project-rules-receipt-title></strong><span data-project-rules-receipt-detail></span></aside>
@@ -8951,8 +9027,127 @@ export function renderGoalBoardProjectSettings(
 </body></html>`;
 }
 
+const PLANNING_SETTINGS_STYLES = `
+  .planning-back svg{transform:rotate(180deg)}
+  .planning-page .settings-content{max-width:none}.planning-catalog,.planning-detail,.planning-edit,.work-planning{width:min(100%,1120px);margin:0 auto;padding:36px 38px 56px}
+  .planning-page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:26px}.planning-page-header>div{min-width:0}.planning-page-header h1{margin:0;color:var(--ink);font-size:28px;letter-spacing:-.028em}.planning-page-header p{max-width:68ch;margin:9px 0 0;color:var(--muted);font-size:13px;line-height:1.65}
+  .planning-primary-action,.planning-secondary-action{min-height:36px;padding:0 13px;border:1px solid var(--line-strong);border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:7px;color:var(--ink-soft);background:var(--paper);font-size:12px;font-weight:680;text-decoration:none;white-space:nowrap;cursor:pointer}.planning-primary-action{border-color:var(--blue);color:#fff;background:var(--blue)}.planning-primary-action:hover{background:var(--blue-dark)}.planning-secondary-action:hover{border-color:var(--blue);color:var(--blue-dark)}
+  .planning-library-note{margin-bottom:22px;padding:14px 16px;border:1px solid color-mix(in srgb,var(--blue) 24%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--blue-soft) 52%,var(--paper));display:flex;align-items:flex-start;gap:11px}.planning-library-note>svg{flex:0 0 auto;margin-top:1px;color:var(--blue-dark)}.planning-library-note strong{display:block;font-size:12px}.planning-library-note p{margin:3px 0 0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+  .planning-library-tools{margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:14px}.planning-filters{min-width:0;display:flex;gap:5px;overflow-x:auto}.planning-filters button{min-height:32px;padding:0 11px;border:0;border-radius:8px;color:var(--muted);background:transparent;font-size:11px;font-weight:680;white-space:nowrap;cursor:pointer}.planning-filters button:hover,.planning-filters button[aria-pressed=true]{color:var(--blue-dark);background:var(--blue-soft)}
+  .planning-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.planning-card{min-height:220px;padding:18px;border:1px solid var(--line);border-radius:14px;color:inherit;background:var(--paper);display:flex;flex-direction:column;gap:14px;text-decoration:none;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}.planning-card:hover{border-color:color-mix(in srgb,var(--blue) 54%,var(--line));box-shadow:0 10px 30px color-mix(in srgb,var(--ink) 9%,transparent);transform:translateY(-2px)}.planning-card:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+  .planning-card-top,.planning-card-footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.planning-card-kind{color:var(--blue-dark);font-size:10px;font-weight:750}.planning-card-scope{padding:2px 7px;border-radius:999px;color:var(--muted);background:var(--rail);font-size:9px;font-weight:700}.planning-card-scope--personal{color:var(--green);background:var(--green-soft)}.planning-card-scope--project{color:var(--blue-dark);background:var(--blue-soft)}.planning-card h2{margin:0;color:var(--ink);font-size:17px;letter-spacing:-.018em}.planning-card>div>p{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.6}.planning-card-tags{display:flex;flex-wrap:wrap;gap:5px}.planning-card-tags span{padding:3px 7px;border-radius:6px;color:var(--ink-soft);background:var(--rail);font-size:9px;font-weight:650}.planning-card-footer{margin-top:auto;padding-top:13px;border-top:1px solid var(--line);color:var(--faint);font-size:10px}.planning-card-footer svg{color:var(--blue-dark)}.planning-filter-empty{grid-column:1/-1;padding:38px 20px;border:1px dashed var(--line-strong);border-radius:14px;color:var(--muted);text-align:center}
+  .planning-back{margin-bottom:22px;display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:11px;font-weight:650;text-decoration:none}.planning-back:hover{color:var(--blue-dark)}.planning-detail-header{padding-bottom:28px;border-bottom:1px solid var(--line-strong)}.planning-detail-header-main{display:flex;align-items:flex-start;justify-content:space-between;gap:28px}.planning-detail-header h1{max-width:720px;margin:8px 0 0;color:var(--ink);font-size:32px;letter-spacing:-.032em}.planning-detail-header p{max-width:70ch;margin:10px 0 0;color:var(--muted);font-size:14px;line-height:1.65}.planning-detail-meta,.planning-detail-tags{display:flex;flex-wrap:wrap;gap:7px}.planning-detail-meta span,.planning-detail-tags span{padding:3px 8px;border-radius:7px;color:var(--ink-soft);background:var(--rail);font-size:10px;font-weight:650}.planning-detail-tags{margin-top:16px}
+  .planning-detail-section{padding:30px 0;border-bottom:1px solid var(--line)}.planning-detail-section>header{margin-bottom:18px}.planning-detail-section h2{margin:0;color:var(--ink);font-size:18px}.planning-detail-section header p{max-width:66ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-path{margin:0;padding:0;list-style:none}.planning-path li{min-height:58px;padding:13px 0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;gap:12px;color:var(--ink-soft);font-size:13px;line-height:1.5}.planning-path li:not(:last-child){border-bottom:1px solid var(--line)}.planning-path li span{width:26px;height:26px;border-radius:50%;color:var(--blue-dark);background:var(--blue-soft);display:grid;place-items:center;font-size:10px;font-weight:750}
+  .planning-question-list,.planning-dependency-list{display:grid;gap:8px}.planning-question,.planning-dependency{padding:14px 15px;border-radius:11px;background:var(--rail);display:grid;gap:4px}.planning-question strong,.planning-dependency strong{color:var(--ink);font-size:12px}.planning-question p,.planning-dependency p{margin:0;color:var(--muted);font-size:12px;line-height:1.55}.planning-finish-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.planning-finish-grid h3{margin:0 0 9px;color:var(--ink);font-size:12px}.planning-finish-grid ul{margin:0;padding-left:18px;color:var(--muted);font-size:11px;line-height:1.7}
+  .planning-save-context{margin-bottom:24px;padding:13px 15px;border:1px solid color-mix(in srgb,var(--blue) 26%,var(--line));border-radius:11px;background:color-mix(in srgb,var(--blue-soft) 44%,var(--paper));display:flex;align-items:flex-start;gap:10px}.planning-save-context svg{color:var(--blue-dark)}.planning-save-context strong{display:block;font-size:12px}.planning-save-context p{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+  .planning-edit-form{display:grid}.planning-edit-section{padding:28px 0;border-bottom:1px solid var(--line)}.planning-edit-section>header{margin-bottom:18px}.planning-edit-section h2{margin:0;color:var(--ink);font-size:17px}.planning-edit-section header p{max-width:66ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.planning-edit-form label{min-width:0;display:grid;gap:6px;color:var(--ink-soft);font-size:11px;font-weight:680}.planning-edit-form label>small{color:var(--muted);font-size:10px;font-weight:400;line-height:1.45}.planning-edit-form input,.planning-edit-form select,.planning-edit-form textarea{width:100%;border:1px solid var(--line-strong);border-radius:8px;color:var(--ink);background:var(--paper);font:inherit}.planning-edit-form input,.planning-edit-form select{min-height:38px;padding:0 10px}.planning-edit-form textarea{min-height:68px;padding:9px 10px;resize:vertical;line-height:1.5}.planning-edit-form input:focus,.planning-edit-form select:focus,.planning-edit-form textarea:focus{border-color:var(--blue);outline:2px solid color-mix(in srgb,var(--blue),transparent 80%);outline-offset:1px}
+  .planning-row-list{display:grid;gap:9px}.planning-edit-row{padding:12px;border-radius:11px;background:var(--rail);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.planning-edit-row--structured{grid-template-columns:minmax(150px,.42fr) minmax(0,1fr) auto}.planning-remove-row{width:32px;height:32px;border:0;border-radius:7px;color:var(--muted);background:transparent;cursor:pointer}.planning-remove-row:hover{color:var(--red);background:var(--red-soft)}.planning-add-row{margin-top:10px;min-height:34px;padding:0 11px;border:1px dashed var(--line-strong);border-radius:8px;color:var(--blue-dark);background:transparent;font-size:11px;font-weight:680;cursor:pointer}.planning-add-row:hover{border-style:solid;background:var(--blue-soft)}
+  .planning-advanced{margin-top:24px;border:1px solid var(--line);border-radius:11px}.planning-advanced>summary{min-height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--ink-soft);font-size:11px;font-weight:680;cursor:pointer;list-style:none}.planning-advanced>summary::-webkit-details-marker{display:none}.planning-advanced>summary svg{color:var(--faint);transition:transform .16s ease}.planning-advanced[open]>summary svg{transform:rotate(180deg)}.planning-advanced-body{padding:16px;border-top:1px solid var(--line);display:grid;gap:14px}.planning-enabled{margin-top:16px;display:flex!important;align-items:center;gap:8px!important}.planning-enabled input{width:16px;min-height:16px;accent-color:var(--blue)}.planning-form-error{margin:18px 0 0;padding:10px 12px;border-radius:8px;color:var(--red);background:var(--red-soft);font-size:11px}.planning-edit-footer{padding-top:22px;display:flex;align-items:center;justify-content:flex-end;gap:10px}.planning-edit-footer button{min-height:38px;padding:0 15px;border:1px solid var(--blue);border-radius:8px;color:#fff;background:var(--blue);font-weight:700;cursor:pointer}
+  .work-planning-section-header{margin:0 0 16px}.work-planning-section-header h2{margin:0;color:var(--ink);font-size:17px}.work-planning-section-header p{max-width:72ch;margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.55}.work-planning-empty{padding:28px;border:1px dashed var(--line-strong);border-radius:14px;text-align:center}.work-planning-empty h3{margin:0;color:var(--ink);font-size:14px}.work-planning-empty p{max-width:64ch;margin:7px auto 0;color:var(--muted);font-size:11px;line-height:1.6}
+  .planning-composition-section{margin-bottom:36px;padding-bottom:34px;border-bottom:1px solid var(--line)}.planning-composition-overview{padding:16px 18px;border:1px solid color-mix(in srgb,var(--blue) 24%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--blue-soft) 34%,var(--paper));display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px}.planning-composition-overview strong{display:block;color:var(--ink);font-size:13px}.planning-composition-overview p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.55}.planning-composition-facts{display:flex;align-items:center;gap:14px;color:var(--ink-soft);font-size:10px;white-space:nowrap}.planning-composition-facts span+span{padding-left:14px;border-left:1px solid var(--line-strong)}.planning-composition-list{margin-top:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.planning-composition-row{min-height:70px;padding:11px 4px;display:grid;grid-template-columns:86px minmax(0,1fr) auto;align-items:center;gap:14px;color:inherit;text-decoration:none}.planning-composition-row+.planning-composition-row{border-top:1px solid var(--line)}.planning-composition-row:hover{background:color-mix(in srgb,var(--blue-soft) 32%,transparent)}.planning-composition-row-copy{min-width:0;display:grid;gap:3px}.planning-composition-row-copy strong{color:var(--ink);font-size:13px}.planning-composition-row-copy small{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.planning-composition-row-meta{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:9px;white-space:nowrap}.planning-composition-row-meta svg{color:var(--blue-dark)}.planning-inactive-section{margin-top:34px;padding-top:30px;border-top:1px solid var(--line)}
+  .planning-adoption-section{margin-bottom:36px;padding-bottom:34px;border-bottom:1px solid var(--line)}.planning-adoption-tools{margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:14px}.planning-adoption-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.planning-adoption-card{min-height:168px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--paper);display:flex;flex-direction:column;gap:10px}.planning-adoption-card header{display:flex;align-items:center;justify-content:space-between;gap:8px}.planning-adoption-card h3{margin:0;font-size:14px;letter-spacing:-.012em}.planning-adoption-card h3 a{color:var(--ink);text-decoration:none}.planning-adoption-card h3 a:hover{color:var(--blue-dark)}.planning-adoption-card>p{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.planning-adoption-card footer{margin-top:auto;padding-top:10px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}.planning-adoption-card footer span{color:var(--faint);font-size:9px}.planning-adoption-card button{min-height:30px;padding:0 10px;border:1px solid var(--line-strong);border-radius:7px;color:var(--blue-dark);background:var(--paper);font-size:10px;font-weight:700;cursor:pointer}.planning-adoption-card button:hover{border-color:var(--blue);background:var(--blue-soft)}.planning-adoption-card button:disabled{cursor:wait;opacity:.62}.planning-adoption-error{margin:12px 0 0;padding:10px 12px;border-radius:8px;color:var(--red);background:var(--red-soft);font-size:11px}
+  @media(max-width:1040px){.planning-card-grid,.planning-adoption-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.planning-finish-grid{grid-template-columns:1fr}.planning-composition-overview{grid-template-columns:1fr}.planning-composition-facts{white-space:normal}}@media(max-width:720px){.planning-catalog,.planning-detail,.planning-edit,.work-planning{padding:24px 18px 42px}.planning-page-header,.planning-detail-header-main{align-items:stretch;flex-direction:column}.planning-card-grid,.planning-adoption-grid,.planning-edit-grid{grid-template-columns:1fr}.planning-composition-row{grid-template-columns:76px minmax(0,1fr)}.planning-composition-row-meta{grid-column:2}.planning-edit-row--structured{grid-template-columns:1fr auto}.planning-edit-row--structured label:last-of-type{grid-column:1/-1;grid-row:2}.planning-detail-header h1{font-size:27px}}@media(max-width:480px){.planning-card-grid{grid-template-columns:1fr}.planning-library-tools,.planning-adoption-tools{align-items:stretch;flex-direction:column}.planning-composition-facts{align-items:flex-start;flex-direction:column;gap:6px}.planning-composition-facts span+span{padding-left:0;border-left:0}}
+`;
+
+const PLANNING_DEPENDENCY_HINTS: Record<string, string> = {
+  "analysis depends_on validated data":"先确认数据可用，再开始分析","commitment depends_on decision":"先完成关键决定，再开始不可逆投入","consumer depends_on provider":"先完成可交付结果，再开始使用它的工作","consumer depends_on provider contract":"先确认提供方契约，再实现使用方","cutover depends_on validation and rollback":"先验证并准备回退，再执行切换","decision depends_on evidence":"先形成可信证据，再做决定","fix depends_on root-cause evidence":"先确认根因证据，再实施修复","full build depends_on validated slice":"先验证最小切片，再扩展完整实现","implementation depends_on validated direction":"先验证方向，再进入实现","production depends_on playable loop":"先验证可玩循环，再扩展生产内容","publication depends_on review":"先完成审核，再发布","recommendation depends_on market evidence":"先取得市场证据，再给出建议","runtime capability depends_on data and evaluation":"先准备数据与评测，再扩展 Runtime 能力","verification depends_on deliverable":"先产生可验收结果，再开始验证",
+};
+function friendlyPlanningDependencyHint(value:string):string{return PLANNING_DEPENDENCY_HINTS[value]??value.replace(" depends_on "," 依赖 ")}
+function friendlyPlanningDependencyStatement(value:string):string{return value.replaceAll("depends_on",L("依赖关系"))}
+function planningMethodKindLabel(kind:PlanningMethodPack["kind"]):string{return kind==="work_type"?L("工作类型"):kind==="domain"?L("专业领域"):kind==="meta"?L("元方法"):L("自定义")}
+function planningMethodScopeLabel(scope:PlanningMethodPack["scope"]):string{return scope==="built_in"?L("系统模板"):scope==="personal"?L("我的方法"):L("项目专用")}
+function planningSettingsHref(path:string,project:WebProjectNavigation|null,desktop:boolean):string{return settingsContextHref(path,project,desktop)}
+function renderPlanningMethodCards(methods:readonly PlanningMethodPack[],basePath:string,project:WebProjectNavigation|null,desktop:boolean):string{
+  return methods.map((method)=>{const path=`${basePath}/${encodeURIComponent(method.method_id)}`;const href=path.startsWith("/settings/")?planningSettingsHref(path,project,desktop):desktop?withDesktopQuery(path):path;return `<a class="planning-card" href="${href}" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><div class="planning-card-top"><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></div><div><h2>${escapeHtml(method.name)}</h2><p>${escapeHtml(method.summary)}</p></div>${method.applies_to.length?`<div class="planning-card-tags">${method.applies_to.slice(0,3).map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}<div class="planning-card-footer"><span>${L("{steps} 个规划阶段 · {checks} 个必答问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span>${icon("arrow")}</div></a>`}).join("")
+}
+function renderPlanningCompositionRows(methods:readonly PlanningMethodPack[],basePath:string,desktop:boolean):string{
+  return methods.map((method)=>{const path=`${basePath}/${encodeURIComponent(method.method_id)}`;const href=desktop?withDesktopQuery(path):path;return `<a class="planning-composition-row" href="${href}"><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-composition-row-copy"><strong>${escapeHtml(method.name)}</strong><small>${escapeHtml(method.summary)}</small></span><span class="planning-composition-row-meta">${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}${icon("arrow")}</span></a>`}).join("")
+}
+function renderPlanningAdoptionCards(methods:readonly PlanningMethodPack[],project:WebProjectNavigation,desktop:boolean):string{
+  const endpoint=`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods/apply`;
+  return methods.map((method)=>{const detailHref=planningSettingsHref(`/settings/planning/${encodeURIComponent(method.method_id)}`,null,desktop);return `<article class="planning-adoption-card" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><header><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></header><div><h3><a href="${detailHref}">${escapeHtml(method.name)}</a></h3></div><p>${escapeHtml(method.summary)}</p><footer><span>${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span><button type="button" data-adopt-planning-method="${escapeHtml(method.method_id)}" data-adopt-endpoint="${endpoint}">${L("加入组合")}</button></footer></article>`}).join("")
+}
+function planningTopbar(title:string,subtitle:string,returnHref:string,pagePath:string,desktop:boolean):string{return `<header class="topbar"${desktop?" data-tauri-drag-region":""}><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div><div class="top-spacer"></div>${renderLocaleSwitch(pagePath)}${renderThemeSwitch()}<a class="top-action" href="${returnHref}">${icon(returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
+
+const PLANNING_SETTINGS_CLIENT_SCRIPT = `
+(()=>{document.querySelectorAll("[data-planning-filter]").forEach((button)=>button.addEventListener("click",()=>{const filter=button.dataset.planningFilter||"all";document.querySelectorAll("[data-planning-filter]").forEach((item)=>item.setAttribute("aria-pressed",String(item===button)));let visible=0;document.querySelectorAll("[data-planning-method]").forEach((item)=>{const matches=filter==="all"||item.dataset.kind===filter||(filter==="mine"&&item.dataset.scope!=="built_in");item.hidden=!matches;if(matches)visible+=1});const empty=document.querySelector("[data-planning-filter-empty]");if(empty)empty.hidden=visible!==0}));const form=document.querySelector("[data-planning-edit-form]");if(!form)return;const error=form.querySelector("[data-planning-method-error]");const cloneRow=(list)=>{const source=list.querySelector("[data-planning-row]");if(!source)return;const row=source.cloneNode(true);row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""});list.append(row);row.querySelector("input, textarea")?.focus({preventScroll:true})};form.addEventListener("click",(event)=>{const add=event.target.closest("[data-add-planning-row]");if(add){const list=form.querySelector('[data-planning-row-list="'+add.dataset.addPlanningRow+'"]');if(list)cloneRow(list);return}const remove=event.target.closest("[data-remove-planning-row]");if(!remove)return;const row=remove.closest("[data-planning-row]");const list=row?.parentElement;if(!row||!list)return;if(list.querySelectorAll("[data-planning-row]").length===1){row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""})}else row.remove()});form.addEventListener("submit",async(event)=>{event.preventDefault();error.hidden=true;error.textContent="";const submit=form.querySelector('button[type="submit"]');submit.disabled=true;const values=(name)=>[...form.querySelectorAll('[name="'+name+'"]')].map((input)=>input.value.trim()).filter(Boolean);const internalId=(prefix,value,index)=>{const readable=String(value||"").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,32);return prefix+"-"+(readable||String(index+1))+"-"+String(index+1)};try{const coverage=[...form.querySelectorAll("[data-coverage-row]")].map((row,index)=>{const label=row.querySelector('[name="coverage_label"]').value.trim();const question=row.querySelector('[name="coverage_question"]').value.trim();return label||question?{area:internalId("coverage",label,index),label,question}:null}).filter(Boolean);const dependencies=[...form.querySelectorAll("[data-dependency-row]")].map((row,index)=>{const statement=row.querySelector('[name="dependency_statement"]').value.trim();const direction=row.querySelector('[name="dependency_direction"]').value.trim();return statement||direction?{rule_id:internalId("dependency",statement,index),statement,direction_hint:direction}:null}).filter(Boolean);const method={method_id:form.elements.method_id.value,kind:form.elements.kind.value,name:form.elements.name.value.trim(),summary:form.elements.summary.value.trim(),applies_to:String(form.elements.applies_to.value||"").split(",").map((item)=>item.trim()).filter(Boolean),domain_tags:String(form.elements.domain_tags.value||"").split(",").map((item)=>item.trim()).filter(Boolean),steps:values("steps"),required_coverage:coverage,dependency_rules:dependencies,evidence_requirements:values("evidence_requirements"),completion_checks:values("completion_checks"),failure_modes:values("failure_modes"),source_refs:String(form.elements.source_refs.value||"").split(/\\n/).map((item)=>item.trim()).filter(Boolean),confidence:Number(form.elements.confidence.value),enabled:form.elements.enabled.checked};const response=await fetch(form.dataset.apiEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({scope:form.dataset.saveScope,method})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||L("保存失败"));location.assign(form.dataset.returnHref)}catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;submit.disabled=false}})})();
+`;
+
+const PLANNING_ADOPTION_CLIENT_SCRIPT = `
+(()=>{
+  const errorBox=document.querySelector("[data-planning-adoption-error]");
+  document.querySelectorAll("[data-adopt-planning-method]").forEach((button)=>button.addEventListener("click",async()=>{
+    const label=button.textContent;
+    button.disabled=true;
+    button.textContent=L("正在加入…");
+    if(errorBox){errorBox.hidden=true;errorBox.textContent=""}
+    try{
+      const response=await fetch(button.dataset.adoptEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({method_id:button.dataset.adoptPlanningMethod})});
+      const payload=await response.json();
+      if(!response.ok)throw new Error(payload.error||L("加入失败"));
+      location.reload();
+    }catch(reason){
+      if(errorBox){errorBox.textContent=reason instanceof Error?reason.message:String(reason);errorBox.hidden=false}
+      button.disabled=false;
+      button.textContent=label;
+    }
+  }));
+})();
+`;
+
+export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPack[],contextProject:WebProjectNavigation|null=null,controlToken="",desktopShell=false):string{
+  const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);
+  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(L("设置"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${renderSettingsNavigation("planning",contextProject,desktopShell)}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+
+function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section>`}
+function renderPlanningSimpleRows(name:string,values:readonly string[],placeholder:string):string{const rows=values.length?values:[""];return `<div class="planning-row-list" data-planning-row-list="${name}">${rows.map((value)=>`<div class="planning-edit-row" data-planning-row><input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="${name}">${icon("plus")}${L("添加一项")}</button>`}
+
+function renderPlanningEditForm(method:PlanningMethodPack|null,saveScope:"personal"|"project",project:WebProjectNavigation|null,apiEndpoint:string,returnHref:string):string{
+  const methodId=method?.method_id??`custom-method-${Date.now().toString(36)}`;const coverage=method?.required_coverage.length?method.required_coverage:[{area:"",label:"",question:""}];const dependencies=method?.dependency_rules.length?method.dependency_rules:[{rule_id:"",statement:"",direction_hint:""}];
+  return `<div class="planning-save-context">${icon(saveScope==="project"?"folder":"user")}<div><strong>${saveScope==="project"?L("保存到项目「{name}」",{name:project?.display_name??L("当前项目")}):L("保存到我的方法库")}</strong><p>${saveScope==="project"?L("这个版本只影响当前项目；全局模板和其他项目不会改变。"):L("这里不设置项目。保存后，这套方法可以在各项目的工作规划中使用。")}</p></div></div><form class="planning-edit-form" data-planning-edit-form data-save-scope="${saveScope}" data-api-endpoint="${apiEndpoint}" data-return-href="${returnHref}"><input type="hidden" name="method_id" value="${escapeHtml(methodId)}">
+  <section class="planning-edit-section"><header><h2>${L("方法说明")}</h2><p>${L("先说清这套方法适合什么工作，以及它会带来什么规划结果。")}</p></header><div class="planning-edit-grid"><label>${L("方法名称")}<input name="name" required value="${escapeHtml(method?.name??"")}" placeholder="${L("例如：SaaS 功能发布")}"></label><label>${L("适合哪些工作")}<input name="applies_to" value="${escapeHtml(method?.applies_to.join(", ")??"")}" placeholder="${L("例如：新功能、系统改造、版本发布；用逗号分隔")}"></label></div><label>${L("一句话说明这套方法")}<textarea name="summary" rows="2" required placeholder="${L("例如：从用户结果反推实现、验证与发布依赖。")}">${escapeHtml(method?.summary??"")}</textarea></label></section>
+  <section class="planning-edit-section"><header><h2>${L("规划路径")}</h2><p>${L("把 Runtime 应该依次想清楚的阶段列出来。它们是规划顺序，不是强制串行的任务。")}</p></header>${renderPlanningSimpleRows("steps",method?.steps??[],L("例如：确认用户结果和边界"))}</section>
+  <section class="planning-edit-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("每一项由“检查主题”和一个清晰问题组成；系统会自动处理内部标识。")}</p></header><div class="planning-row-list" data-planning-row-list="coverage">${coverage.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-coverage-row><label>${L("检查主题")}<input name="coverage_label" value="${escapeHtml(rule.label)}" placeholder="${L("例如：最终结果")}"></label><label>${L("Runtime 必须回答的问题")}<textarea name="coverage_question" placeholder="${L("例如：最终交付什么、由谁使用？")}">${escapeHtml(rule.question)}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="coverage">${icon("plus")}${L("添加一个问题")}</button></section>
+  <section class="planning-edit-section"><header><h2>${L("依赖判断")}</h2><p>${L("写清什么时候需要建立依赖，以及谁必须先完成。不要把时间上的先后误当成产出依赖。")}</p></header><div class="planning-row-list" data-planning-row-list="dependencies">${dependencies.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-dependency-row><label>${L("什么时候建立依赖")}<textarea name="dependency_statement" placeholder="${L("例如：下游需要消费上游的可验收结果")}">${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</textarea></label><label>${L("谁必须先完成")}<textarea name="dependency_direction" placeholder="${L("例如：先完成提供结果的 Goal，再开始使用它的 Goal")}">${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="dependencies">${icon("plus")}${L("添加一条依赖判断")}</button></section>
+  <section class="planning-edit-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("分别写清完成证据、收口检查和 Runtime 应避免的误拆。")}</p></header><div class="planning-edit-grid"><div><label>${L("完成前要看到的证据")}</label>${renderPlanningSimpleRows("evidence_requirements",method?.evidence_requirements??[],L("例如：端到端主路径的验证记录"))}</div><div><label>${L("收口前检查")}</label>${renderPlanningSimpleRows("completion_checks",method?.completion_checks??[],L("例如：依赖方向可以由产出消费关系解释"))}</div></div><div><label>${L("提醒 Runtime 避免什么")}</label>${renderPlanningSimpleRows("failure_modes",method?.failure_modes??[],L("例如：按页面或文件夹机械拆 Goal"))}</div><label class="planning-enabled"><input name="enabled" type="checkbox"${method?.enabled===false?"":" checked"}><span>${L("保存后启用这套方法")}</span></label></section>
+  <details class="planning-advanced"><summary><span>${L("高级设置")}</span>${icon("chevron-down")}</summary><div class="planning-advanced-body"><div class="planning-edit-grid"><label>${L("方法类型")}<select name="kind"><option value="custom"${method?.kind==="custom"||!method?" selected":""}>${L("自定义")}</option><option value="work_type"${method?.kind==="work_type"?" selected":""}>${L("工作类型")}</option><option value="domain"${method?.kind==="domain"?" selected":""}>${L("专业领域")}</option><option value="meta"${method?.kind==="meta"?" selected":""}>${L("元方法")}</option></select><small>${L("只用于方法库分类。")}</small></label><label>${L("参考成熟度")}<input name="confidence" type="number" min="0" max="1" step="0.05" value="${method?.confidence??0.8}" required><small>${L("0 到 1；不确定时保持 0.8。")}</small></label></div><label>${L("领域标签")}<input name="domain_tags" value="${escapeHtml(method?.domain_tags.join(", ")??"")}" placeholder="${L("用逗号分隔")}"></label><label>${L("可追溯来源")}<textarea name="source_refs" placeholder="${L("每行一个来源")}">${escapeHtml(method?.source_refs.join("\n")??"")}</textarea></label></div></details><p class="planning-form-error" data-planning-method-error role="alert" hidden></p><footer class="planning-edit-footer"><a class="planning-secondary-action" href="${returnHref}">${L("取消")}</a><button type="submit">${saveScope==="project"?L("保存项目方法"):L("保存到我的方法库")}</button></footer></form>`}
+
+export function renderGoalBoardPlanningMethodPage(method:PlanningMethodPack|null,mode:"detail"|"edit"|"new",saveScope:"personal"|"project",project:WebProjectNavigation|null,controlToken="",desktopShell=false):string{
+  const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const active:SettingsNavigationActive=projectScope?"projects":"planning";const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectScope?project?.display_name??L("当前项目"):L("设置"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell">${projectScope&&project?renderProjectSettingsNavigation("planning",project,desktopShell):renderSettingsNavigation(active,project,desktopShell)}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+
+export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:readonly PlanningMethodPack[],controlToken="",desktopShell=false):string{
+  const project=view.project;
+  const projectMethods=methods.filter((method)=>method.scope==="project");
+  const selectedMethods=projectMethods.filter((method)=>method.enabled);
+  const inactiveProjectMethods=projectMethods.filter((method)=>!method.enabled);
+  const availableMethods=methods.filter((method)=>method.scope!=="project"&&method.enabled);
+  const composition=composePlanningMethodPacks(selectedMethods);
+  const basePath=`${view.route_prefix}/settings/planning`;
+  const globalLibraryHref=planningSettingsHref("/settings/planning",null,desktopShell);
+  const newProjectHref=desktopShell?withDesktopQuery(`${basePath}/new`):`${basePath}/new`;
+  const orderedSelectedMethods=composition.method_pack_ids
+    .map((methodId)=>selectedMethods.find((method)=>method.method_id===methodId))
+    .filter((method):method is PlanningMethodPack=>method!=null);
+  const compositionRows=renderPlanningCompositionRows(orderedSelectedMethods,basePath,desktopShell);
+  const inactiveRows=renderPlanningCompositionRows(inactiveProjectMethods,basePath,desktopShell);
+  const adoptionCards=project?renderPlanningAdoptionCards(availableMethods,project,desktopShell):"";
+  const pagePath=desktopShell?withDesktopQuery(basePath):basePath;
+  const returnHref=view.route_prefix||"/";
+  const projectName=project?.display_name??L("当前项目");
+  const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell):renderSettingsNavigation("projects",null,desktopShell);
+  const compositionContent=selectedMethods.length
+    ? `<div class="planning-composition-overview"><div><strong>${L("{count} 套方法共同生效",{count:selectedMethods.length})}</strong><p>${escapeHtml(listJoin(composition.method_names))}</p></div><div class="planning-composition-facts"><span>${L("{count} 个覆盖项",{count:composition.required_coverage.length})}</span><span>${L("{count} 条依赖规则",{count:composition.dependency_rules.length})}</span><span>${L("{count} 项完成检查",{count:composition.completion_checks.length})}</span></div></div><div class="planning-composition-list">${compositionRows}</div>`
+    : `<div class="work-planning-empty"><h3>${L("尚未建立项目规划组合")}</h3><p>${L("Runtime 会先检查每个 Goal 的实际工作、专业领域、交付方式和风险，再选用所有相关方法；不预设类型或数量。你也可以把项目长期需要的方法加入组合，作为之后规划的共同基础。")}</p></div>`;
+  const inactiveSection=inactiveProjectMethods.length
+    ? `<section class="planning-inactive-section" aria-labelledby="planning-inactive-title"><div class="work-planning-section-header"><h2 id="planning-inactive-title">${L("未启用的方法")}</h2><p>${L("这些项目方法仍然保留，但不会参与当前组合；打开后可以重新启用。")}</p></div><div class="planning-composition-list">${inactiveRows}</div></section>`
+    : "";
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规划")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectName,L("工作规划"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="work-planning"><header class="planning-page-header"><div><h1>${L("工作规划")}</h1><p>${L("为项目「{name}」组合多套规划方法。它们会共同检查同一棵 Goal Tree，不会被机械拆成串行步骤。",{name:projectName})}</p></div><div><a class="planning-secondary-action" href="${globalLibraryHref}">${L("浏览完整方法库")}</a> <a class="planning-primary-action" href="${newProjectHref}">${icon("plus")}${L("从空白新建")}</a></div></header><section class="planning-composition-section" aria-labelledby="planning-composition-title"><div class="work-planning-section-header"><h2 id="planning-composition-title">${L("当前规划组合")}</h2><p>${L("当前组合是规划下限，不是方法上限。Runtime 必须完整使用这组方法，并根据当前 Goal 的实际工作补充其他相关方法。")}</p></div>${compositionContent}</section><section class="planning-adoption-section" aria-labelledby="planning-adoption-title"><div class="work-planning-section-header"><h2 id="planning-adoption-title">${L("添加规划方法")}</h2><p>${L("可以继续加入多套互补方法。加入后会建立该项目的独立版本，原方法和其他项目不变。")}</p></div><div class="planning-adoption-tools"><nav class="planning-filters" aria-label="${L("筛选已有方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-adoption-grid">${adoptionCards}<p class="planning-filter-empty" data-planning-filter-empty${availableMethods.length?" hidden":""}>${L("这个分类里还没有可加入的方法。")}</p></div><p class="planning-adoption-error" data-planning-adoption-error role="alert" hidden></p></section>${inactiveSection}</section></div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${PLANNING_ADOPTION_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+
 export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = "", desktopShell = false): string {
-  const title = view.section === "runtimes" ? L("AI 与执行工具") : view.section === "projects" ? L("项目") : L("诊断");
+  const title = view.section === "runtimes" ? L("AI 与执行工具") : view.section === "projects" ? L("项目设置") : L("诊断");
+  const settingsPath = settingsContextHref(`/settings/${view.section}`, null, desktopShell);
+  const returnHref = desktopShell ? withDesktopQuery("/") : "/";
   const content = view.section === "runtimes"
     ? renderRuntimeSettings(view)
     : view.section === "projects"
@@ -8963,9 +9158,9 @@ export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToke
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
 <body class="settings-page" data-settings-section="${view.section}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="/" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目、AI 与执行工具、诊断")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(`/settings/${view.section}`)}${renderThemeSwitch()}<a class="top-action" href="/">${icon("folder")}<span>${L("项目列表")}</span></a></header>
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${returnHref}" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("管理项目、执行工具与本机服务")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(settingsPath)}${renderThemeSwitch()}<a class="top-action" href="${returnHref}">${icon("folder")}<span>${L("项目列表")}</span></a></header>
   <main class="settings-shell">
-    <nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}"><a href="/settings/projects"${view.section === "projects" ? ' aria-current="page"' : ""}>${icon("folder")}<span><strong>${L("项目")}</strong><small>${L("创建、导入与规则")}</small></span></a><a href="/settings/runtimes"${view.section === "runtimes" ? ' aria-current="page"' : ""}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("可选连接与会话")}</small></span></a><a href="/settings/diagnostics"${view.section === "diagnostics" ? ' aria-current="page"' : ""}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装与服务")}</small></span></a></nav>
+    ${renderSettingsNavigation(view.section, null, desktopShell)}
     <div class="settings-content">${content}</div>
   </main>
   ${renderRuntimePlanDialog()}

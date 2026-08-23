@@ -63,6 +63,10 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_goal_tree_propose"));
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
+    assert.ok(names.includes("goalboard_v1_planning_methods"));
+    assert.ok(names.includes("goalboard_v1_planning_method_save"));
+    assert.ok(names.includes("goalboard_v1_planning_analyze_change"));
+    assert.ok(names.includes("goalboard_v1_planning_graph_check"));
     assert.ok(names.includes("goalboard_v1_goal_tree_decide"));
     assert.ok(names.includes("goalboard_v1_contract_propose"));
     assert.ok(names.includes("goalboard_v1_candidate_submit"));
@@ -238,6 +242,11 @@ describe("mcp server", () => {
     assert.match(skill, /A game also covers gameplay/);
     assert.match(skill, /An App covers its core function/);
     assert.match(skill, /One well-scoped child may own several areas/);
+    assert.match(skill, /inspect the current task's intended outcome/);
+    assert.match(skill, /not from template order, method kind, or a target count/);
+    assert.match(skill, /entire project composition as a required floor/);
+    assert.match(skill, /Omitting a materially relevant method makes the Goal setup incomplete/);
+    assert.doesNotMatch(skill, /smallest useful set/);
     assert.match(skill, /never present a staged pause as a finished tree/);
     assert.match(skill, /`waiting_children` \(UI: “已澄清，等待子 Goal”\)/);
     assert.match(skill, /`execution_pending` \(“待执行”\)/);
@@ -262,8 +271,13 @@ describe("mcp server", () => {
     assert.match(protocol, /current Runtime chooses one returned item/);
     assert.match(protocol, /A successful result always includes its Claim and started Run/);
     assert.match(protocol, /The tree can include a compound parent, a family of children, and children split more finely again/);
-    assert.match(protocol, /perform a result-chain pass/);
+    assert.match(protocol, /recover the original user outcome/);
     assert.match(protocol, /decomposition_review/);
+    assert.match(protocol, /`composition\.method_pack_ids`/);
+    assert.match(protocol, /use every method in that project composition/);
+    assert.match(protocol, /without preferring a method kind, library order, or fixed count/);
+    assert.match(protocol, /the Goal setup is incomplete/);
+    assert.doesNotMatch(protocol, /select one work-type plus the closest domain method/);
     assert.match(protocol, /Do not call any plan complete/);
     assert.match(protocol, /GoalBoard has one derived work state, not a second “clarification complete” flag/);
     assert.match(protocol, /a confirmed parent with child Goals must show “已澄清，等待子 Goal”, not “待澄清”/);
@@ -345,7 +359,7 @@ describe("mcp server", () => {
     assert.match(protocol, /output_coverage/);
     assert.match(protocol, /split_candidates/);
     assert.match(protocol, /Two or more true signals require `decision=split`/);
-    assert.match(protocol, /Every new proposal accounts for `final_outcome`, `operating_flow`, `core_capabilities`, `foundation_infrastructure`, and `quality_continuous_delivery`/);
+    assert.match(protocol, /Every new proposal still accounts for `final_outcome`, `operating_flow`, `core_capabilities`, `foundation_infrastructure`, and `quality_continuous_delivery`/);
     assert.match(protocol, /task_context: game \| app \| ai_data \| content_research \| operations \| other/);
     assert.match(protocol, /Historical `product_context=game\|app\|other` remains readable/);
     assert.match(protocol, /Footballnia is one game regression example, not the rule's boundary/);
@@ -384,6 +398,99 @@ describe("mcp server", () => {
       (templates as { result: { resourceTemplates: unknown[] } }).result.resourceTemplates,
       [],
     );
+  });
+
+  it("returns one combined project planning composition to the current Runtime", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-planning-composition-"));
+    const databasePath = path.join(directory, "goalboard.db");
+    const management = new GoalBoardServer("management");
+    const runtime = new GoalBoardServer("runtime", {
+      databasePath,
+      boardId: "planning-composition-board",
+      webBaseUrl: "https://goalboard.example/app/",
+    });
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+    ) =>
+      server.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    const method = (methodId: string, name: string, kind: "work_type" | "domain") => ({
+      method_id: methodId,
+      kind,
+      name,
+      summary: `${name}为项目拆分提供一条独立规划路径。`,
+      applies_to: ["复杂项目"],
+      domain_tags: [kind],
+      steps: [`执行${name}路径`],
+      required_coverage: [{
+        area: `${methodId}-coverage`,
+        label: `${name}覆盖`,
+        question: `${name}必须回答什么？`,
+      }],
+      dependency_rules: [{
+        rule_id: `${methodId}-dependency`,
+        statement: `${name}产出被消费时才建立依赖。`,
+        direction_hint: "consumer depends_on provider",
+      }],
+      evidence_requirements: [`${name}证据`],
+      completion_checks: [`${name}检查完成`],
+      failure_modes: [`遗漏${name}路径`],
+      source_refs: ["mcp-test"],
+      confidence: 0.9,
+      enabled: true,
+    });
+
+    try {
+      const initialized = await call(management, "goalboard_v1_initialize", {
+        database_path: databasePath,
+        board_id: "planning-composition-board",
+        title: "Planning Composition",
+        actor_id: "user-1",
+        idempotency_key: "planning-composition-init",
+      });
+      assert.equal(initialized.result.isError, false, initialized.result.content[0]?.text);
+
+      for (const pack of [
+        method("work-build", "构建与改变", "work_type"),
+        method("domain-software", "软件开发", "domain"),
+      ]) {
+        const saved = await call(runtime, "goalboard_v1_planning_method_save", {
+          board_id: "planning-composition-board",
+          method: pack,
+          actor_id: "user-1",
+          user_confirmed: true,
+        });
+        assert.equal(saved.result.isError, false, saved.result.content[0]?.text);
+      }
+
+      const response = await call(runtime, "goalboard_v1_planning_methods", {
+        board_id: "planning-composition-board",
+      });
+      assert.equal(response.result.isError, false, response.result.content[0]?.text);
+      const result = JSON.parse(response.result.content[0]?.text ?? "{}") as {
+        composition: {
+          method_pack_ids: string[];
+          method_paths: Array<{ method_id: string; steps: string[] }>;
+          required_coverage: unknown[];
+          completion_checks: string[];
+        };
+      };
+      assert.deepEqual(result.composition.method_pack_ids, ["work-build", "domain-software"]);
+      assert.deepEqual(
+        result.composition.method_paths.map((path) => path.method_id),
+        result.composition.method_pack_ids,
+      );
+      assert.equal(result.composition.required_coverage.length, 2);
+      assert.equal(result.composition.completion_checks.length, 2);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("serves one filtered V1 Goal Contract with a stable Web URL", async () => {

@@ -49,7 +49,10 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - 用户可以直接手工录入 `draft / abstract` Goal；用户在当前 Runtime 提出粗略想法时，Runtime 可通过复合 MCP 创建最小 Draft 和澄清会话，但不把推断写成 accepted Contract 或 canonical 结构。
 - Runtime 发现新需求时只提交 Candidate Goal。用户是否接受 Candidate、是否确认它引起的 Rewire 是两个独立决定；接受新 Goal 不等于同意它阻塞当前 Goal。
 - 用户创建 Goal 时亲自指定的 `parent / depends_on` 可以直接成为 active；Runtime 发现的拆分、依赖或关系变化只能先成为 Proposal。
-- 依赖 Proposal 不由 GoalBoard 扫描代码自动产生。Runtime 应结合 Contract、代码、文档、测试、数据结构、业务顺序、影响冲突和风险策略给出依据。
+- 依赖 Proposal 不由 GoalBoard 扫描代码自动产生。Runtime 先选择当前任务的工作类型与专业领域方法，再结合 Contract、代码、文档、测试、数据结构、业务顺序、影响冲突和风险策略，说明哪项产出被哪项工作消费；依赖方向由这条产出—消费关系推导，不能只凭时间先后或主观直觉连接。
+- 规划方法按 `项目 > 个人 > 内置冷启包` 生效。内置方法覆盖通用元规划、主要工作类型和常见专业领域；遇到未知领域时，Runtime 先用元方法补齐领域边界、专业阶段、关键产物、质量门和失败模式，再提出可复用的新方法。项目与个人方法都由用户显式保存，不会自动改写 Goal Tree。
+- 每轮拆分和 Rewire 都必须通过同一套整图检查：不存在缺失端点、自依赖、重复关系、父子循环、依赖循环或父子与依赖组合形成的执行循环。通过后，Coordinator 按拓扑层级、可解锁下游数量和最长后续链给出执行顺序与理由，不再由各 Runtime 各排一套顺序。
+- 用户提出新要求时，Runtime 先分析直接受影响的 Goal、依赖它的下游和仍可复用的工作，只对受影响子图提交 Proposal；确认后再重新计算整图顺序。历史有效且不受影响的 Goal 不重拆、不重做。
 - 正式 Dependency Proposal 必须说明 `from_goal_id`、`to_goal_id`、类型、原因、`basis`、`evidence_refs`、`impact_if_rejected`、`confidence`，以及为什么方向是 A → B 而不是 B → A。
 - 已确认依赖是 Claim 和完成的硬门禁。代码变化只能触发 revalidation / Rewire Proposal，不能静默删除或反转 active dependency。
 - clarifier 认领手工 Draft 后，可以提出 Contract 补全建议；客观代码/文档事实可以标为 proposed/unconfirmed，业务意义、边界、优先级、验收和风险接受必须由用户确认。
@@ -74,6 +77,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - Goal 逐步拆解，不要求一开始列出所有远端实现任务；但每轮暂停都要保留开放边界，正式收口前必须确认产品关键路径没有被近期讨论主题淹没。
 - Runtime-neutral。网页和 App 都可以托管用户显式打开的本地 TUI 视口，仍不派单、不选择谁来做。终端必须持续显示所属 Goal；复合父 Goal 无论正在等待还是已经完成，都只提供子 Goal 入口，不能新建、重新打开或继续写入执行终端。打开页面不等于启动 Runtime，也不自动绑定 Session。
 - GoalBoard 是 pull-based 真相源：Runtime 自己读取、认领和回传，不由 Board 分发任务。
+- GoalBoard 同时提供可解释的规划层：Runtime 可读取当前有效方法、整图结构问题、执行优先级和需求变化影响；它仍通过 Proposal 与用户确认改变 canonical Goal，不把规划建议变成自动派单或静默改树。
 - 支持 self、cross、adversarial、human Review Policy，以及 Runtime Goal Mode 要求。
 - Goal 详情按“概览 / 完成要求 / 进展与阻塞 / 关联与约束 / 完整记录”组织，一次只显示一个任务区域；概览回答下一步和目标说明，“关联与约束”集中维护关系、风险、影响范围和工作规则，完整记录只读保留原始事实与历史。
 - Goal 标题旁提供“快速记录”，只录入完成依据、风险、影响范围或 Goal 关系；普通字段先出现，低频但必需的信息按需展开，保存失败必须明确指出缺什么。

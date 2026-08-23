@@ -9,7 +9,11 @@ import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, GoalTreeProposalItemInput, RiskRecord } from "../v1/types.js";
-import { GoalBoardProjectCatalog, GoalBoardProjectCatalogError } from "../projects/catalog.js";
+import {
+  GoalBoardProjectCatalog,
+  GoalBoardProjectCatalogError,
+  readPersonalPlanningMethodPacks,
+} from "../projects/catalog.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
@@ -37,6 +41,9 @@ import {
   renderGoalBoardWeb,
   renderGoalBoardProjectIndex,
   renderGoalBoardProjectSettings,
+  renderGoalBoardPlanningLibrary,
+  renderGoalBoardPlanningMethodPage,
+  renderGoalBoardPlanningSettings,
   renderGoalBoardSettings,
   WEB_GOAL_STATUSES,
   type GoalBoardWebView,
@@ -53,6 +60,11 @@ import {
   type WebSettingsSection,
   type WebSettingsWorkspaceMembership,
 } from "./render.js";
+import {
+  normalizePlanningMethodPack,
+  resolvePlanningMethodPacks,
+  type PlanningMethodPackInput,
+} from "../planning/method-packs.js";
 import {
   L,
   isWebLocale,
@@ -102,6 +114,28 @@ type WebViewOptions = Pick<
   ResolvedWebBoardOptions,
   "databasePath" | "boardId" | "demo" | "projectRoot"
 > & Partial<Pick<ResolvedWebBoardOptions, "project" | "projects" | "routePrefix">>;
+
+interface GoalBoardWebViewCacheEntry {
+  cursor: number;
+  databaseVersion: string;
+  optionsFingerprint: string;
+  view: GoalBoardWebView;
+}
+
+type GoalBoardWebViewCache = Map<string, GoalBoardWebViewCacheEntry>;
+
+function sqliteDatabaseVersion(databasePath: string): string {
+  return [databasePath, `${databasePath}-wal`]
+    .map((filePath) => {
+      try {
+        const stat = fs.statSync(filePath, { bigint: true });
+        return `${stat.size}:${stat.mtimeNs}`;
+      } catch {
+        return "missing";
+      }
+    })
+    .join("|");
+}
 
 type ResolvedWebRequest =
   | { kind: "catalog_index"; projects: WebProjectNavigation[] }
@@ -529,6 +563,33 @@ export function buildGoalBoardWebView(
     policy_bindings: policyBindings,
     events,
   };
+}
+
+function cachedGoalBoardWebView(
+  cache: GoalBoardWebViewCache,
+  store: SqliteGoalBoardStore,
+  coordinator: GoalBoardCoordinator,
+  options: WebViewOptions,
+): GoalBoardWebView {
+  const cursor = store.eventCursor(options.boardId);
+  const databaseVersion = sqliteDatabaseVersion(options.databasePath);
+  const optionsFingerprint = JSON.stringify({
+    board_id: options.boardId,
+    demo: Boolean(options.demo),
+    project_root: options.projectRoot ?? "",
+    project: options.project ?? null,
+    projects: options.projects ?? [],
+    route_prefix: options.routePrefix ?? "",
+  });
+  const cached = cache.get(options.databasePath);
+  if (
+    cached?.cursor === cursor &&
+    cached.databaseVersion === databaseVersion &&
+    cached.optionsFingerprint === optionsFingerprint
+  ) return cached.view;
+  const view = buildGoalBoardWebView(store, coordinator, options);
+  cache.set(options.databasePath, { cursor, databaseVersion, optionsFingerprint, view });
+  return view;
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1097,6 +1158,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
   });
   const controlToken = resolveWebControlToken(serverOptions);
   const mutationKeys = new Map<string, LocalMutationState>();
+  const webViewCache: GoalBoardWebViewCache = new Map();
   if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
   const pty = { host: null as GoalBoardPtyHost | null };
   const server = http.createServer(async (request, response) => {
@@ -1129,6 +1191,7 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           webService,
           controlToken,
           mutationKeys,
+          webViewCache,
           pty.host,
           loopbackWebOrigin(server),
         );
@@ -1151,6 +1214,7 @@ async function handleGoalBoardWebRequest(
   webService: GoalBoardWebServiceManager,
   controlToken: string,
   mutationKeys: Map<string, LocalMutationState>,
+  webViewCache: GoalBoardWebViewCache,
   ptyHost: GoalBoardPtyHost,
   webUrl: string,
 ): Promise<void> {
@@ -1159,6 +1223,62 @@ async function handleGoalBoardWebRequest(
         if (request.method === "GET" && url.pathname === "/settings") {
           response.writeHead(302, { location: "/settings/projects", "cache-control": "no-store" });
           response.end();
+          return;
+        }
+        const globalPlanningMatch = url.pathname.match(/^\/settings\/planning(?:\/([^/]+))?(?:\/(edit))?$/);
+        if (request.method === "GET" && globalPlanningMatch) {
+          const methods = resolvePlanningMethodPacks(readPersonalPlanningMethodPacks(serverOptions.homeDirectory));
+          const methodId = globalPlanningMatch[1] ? decodeURIComponent(globalPlanningMatch[1]) : null;
+          const method = methodId && methodId !== "new"
+            ? methods.find((item) => item.method_id === methodId) ?? null
+            : null;
+          if (methodId && methodId !== "new" && !method) {
+            sendJson(response, 404, { error: L("找不到这套规划方法") });
+            return;
+          }
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
+          });
+          response.end(methodId
+            ? renderGoalBoardPlanningMethodPage(
+                method,
+                methodId === "new" ? "new" : globalPlanningMatch[2] === "edit" ? "edit" : "detail",
+                "personal",
+                null,
+                controlToken,
+                isDesktopShellRequest(request, url),
+              )
+            : renderGoalBoardPlanningLibrary(methods, null, controlToken, isDesktopShellRequest(request, url)));
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/planning-methods") {
+          sendJson(response, 200, { methods: resolvePlanningMethodPacks(readPersonalPlanningMethodPacks(serverOptions.homeDirectory)) });
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/planning-methods") {
+          const body = await readBody(request);
+          const method = body.method && typeof body.method === "object" && !Array.isArray(body.method)
+            ? body.method as PlanningMethodPackInput
+            : null;
+          if (body.scope !== "personal" || !method) {
+            sendJson(response, 400, { error: L("个人方法内容无效") });
+            return;
+          }
+          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          try {
+            const current = catalog.listPersonalPlanningMethodPacks()
+              .find((pack) => pack.method_id === method.method_id) ?? null;
+            const saved = normalizePlanningMethodPack(method, "personal", current, new Date().toISOString());
+            catalog.putPersonalPlanningMethodPack(saved);
+            sendJson(response, 200, { method: saved });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            catalog.close();
+          }
           return;
         }
         const settingsPageMatch = url.pathname.match(/^\/settings\/(runtimes|projects|diagnostics)$/);
@@ -1175,6 +1295,7 @@ async function handleGoalBoardWebRequest(
           });
           response.end(renderGoalBoardSettings({
             section,
+            context_project: null,
             runtimes,
             projects,
             connections: catalogSettings.connections,
@@ -1538,7 +1659,11 @@ async function handleGoalBoardWebRequest(
         return;
       }
       const store = new SqliteGoalBoardStore(options.databasePath);
-      const coordinator = new GoalBoardCoordinator(store);
+      const coordinator = new GoalBoardCoordinator(
+        store,
+        () => new Date(),
+        readPersonalPlanningMethodPacks(serverOptions.homeDirectory),
+      );
       try {
         if (request.method === "GET" && url.pathname === "/settings/rules") {
           response.writeHead(200, {
@@ -1548,10 +1673,138 @@ async function handleGoalBoardWebRequest(
             ...desktopCookieHeaders(request, url),
           });
           response.end(renderGoalBoardProjectSettings(
-            buildGoalBoardWebView(store, coordinator, options),
+            cachedGoalBoardWebView(webViewCache, store, coordinator, options),
             controlToken,
             isDesktopShellRequest(request, url),
           ));
+          return;
+        }
+        const projectPlanningMethodMatch = url.pathname.match(/^\/settings\/planning\/([^/]+)(?:\/(edit))?$/);
+        if (request.method === "GET" && projectPlanningMethodMatch) {
+          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          const methodId = decodeURIComponent(projectPlanningMethodMatch[1]);
+          const method = methodId === "new"
+            ? null
+            : coordinator.effectivePlanningMethods(options.boardId)
+              .find((item) => item.method_id === methodId && item.scope === "project") ?? null;
+          if (methodId !== "new" && !method) {
+            sendJson(response, 404, { error: L("找不到这个项目方法") });
+            return;
+          }
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
+          });
+          response.end(renderGoalBoardPlanningMethodPage(
+            method,
+            methodId === "new" ? "new" : projectPlanningMethodMatch[2] === "edit" ? "edit" : "detail",
+            "project",
+            view.project,
+            controlToken,
+            isDesktopShellRequest(request, url),
+          ));
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/settings/planning") {
+          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
+          });
+          response.end(renderGoalBoardPlanningSettings(
+            view,
+            coordinator.effectivePlanningMethods(options.boardId),
+            controlToken,
+            isDesktopShellRequest(request, url),
+          ));
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/settings/planning-methods") {
+          sendJson(response, 200, {
+            methods: coordinator.effectivePlanningMethods(options.boardId),
+            composition: coordinator.projectPlanningComposition(options.boardId),
+          });
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/planning-methods/apply") {
+          const body = await readBody(request);
+          const methodId = typeof body.method_id === "string" ? body.method_id.trim() : "";
+          const source = methodId
+            ? resolvePlanningMethodPacks(readPersonalPlanningMethodPacks(serverOptions.homeDirectory))
+              .find((method) => method.method_id === methodId && method.scope !== "project") ?? null
+            : null;
+          if (!source) {
+            sendJson(response, 404, { error: L("找不到可选的规划方法") });
+            return;
+          }
+          const method: PlanningMethodPackInput = {
+            method_id: source.method_id,
+            version: source.version,
+            kind: source.kind,
+            name: source.name,
+            summary: source.summary,
+            applies_to: source.applies_to,
+            domain_tags: source.domain_tags,
+            steps: source.steps,
+            required_coverage: source.required_coverage,
+            dependency_rules: source.dependency_rules,
+            evidence_requirements: source.evidence_requirements,
+            completion_checks: source.completion_checks,
+            failure_modes: source.failure_modes,
+            source_refs: source.source_refs,
+            confidence: source.confidence,
+            enabled: true,
+          };
+          try {
+            sendJson(response, 200, coordinator.saveProjectPlanningMethod({
+              board_id: options.boardId,
+              method,
+              actor_id: "web-user",
+              user_confirmed: true,
+            }));
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/settings/planning-methods") {
+          const body = await readBody(request);
+          const scope = body.scope === "personal" ? "personal" : body.scope === "project" ? "project" : null;
+          const method = body.method && typeof body.method === "object" && !Array.isArray(body.method)
+            ? body.method as PlanningMethodPackInput
+            : null;
+          if (!scope || !method) {
+            sendJson(response, 400, { error: L("保存范围或方法内容无效") });
+            return;
+          }
+          try {
+            if (scope === "project") {
+              const saved = coordinator.saveProjectPlanningMethod({
+                board_id: options.boardId,
+                method,
+                actor_id: "web-user",
+                user_confirmed: true,
+              });
+              sendJson(response, 200, saved);
+            } else {
+              const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+              try {
+                const current = catalog.listPersonalPlanningMethodPacks()
+                  .find((pack) => pack.method_id === method.method_id) ?? null;
+                const saved = normalizePlanningMethodPack(method, "personal", current, new Date().toISOString());
+                catalog.putPersonalPlanningMethodPack(saved);
+                sendJson(response, 200, { method: saved });
+              } finally {
+                catalog.close();
+              }
+            }
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
           return;
         }
         if (request.method === "GET" && url.pathname === "/health") {
@@ -1567,7 +1820,7 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/board") {
-          sendJson(response, 200, buildGoalBoardWebView(store, coordinator, options));
+          sendJson(response, 200, cachedGoalBoardWebView(webViewCache, store, coordinator, options));
           return;
         }
         if (options.project?.project_id) {
@@ -1598,7 +1851,7 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "Goal 正文集合无效" });
             return;
           }
-          const view = buildGoalBoardWebView(store, coordinator, options);
+          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
           const fragment = renderGoalDocumentFragment(view, goalId, collection);
           if (!fragment) {
             sendJson(response, 404, { error: `找不到这个 Goal: ${goalId}` });
@@ -2611,7 +2864,7 @@ async function handleGoalBoardWebRequest(
               return;
             }
           }
-          const view = buildGoalBoardWebView(store, coordinator, options);
+          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
           const requestedArchived = requestedGoalId
             ? view.archived_goals.some((item) => item.goal.goal_id === requestedGoalId)
             : false;

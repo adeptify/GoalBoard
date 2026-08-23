@@ -169,6 +169,8 @@ export type LegacyProductContext = "game" | "app" | "other";
 
 export interface DecompositionReview {
   status: "complete" | "paused";
+  /** The effective planning methods used to derive coverage and dependencies. */
+  method_pack_ids?: string[];
   /** New proposals use this task-neutral context. */
   task_context?: TaskContext;
   /** Compatibility input for proposals created before task_context existed. */
@@ -683,6 +685,13 @@ export interface AvailableGoal extends ReadyGoal {
   review_obligation_id: string | null;
   /** True when an open parent must return to the user before unrelated work is chosen. */
   requires_parent_confirmation: boolean;
+  /** Dependency-derived planning signals used to explain the execution order. */
+  planning: {
+    topological_level: number;
+    unlock_count: number;
+    longest_downstream_chain: number;
+    rationale: string;
+  };
 }
 
 export interface BoardSnapshot {
@@ -709,6 +718,7 @@ export interface BoardSnapshot {
   clarification_sessions: ClarificationSessionRecord[];
   clarification_turns: ClarificationTurnRecord[];
   goal_tree_proposals: GoalTreeProposalRecord[];
+  planning_method_packs: PlanningMethodPack[];
 }
 
 export interface GoalContractView {
@@ -865,3 +875,4 @@ export const DEFAULT_GOAL_POLICY: GoalPolicy = {
   human_approval: false,
   max_lease_seconds: 1800,
 };
+import type { PlanningMethodPack } from "../planning/method-packs.js";

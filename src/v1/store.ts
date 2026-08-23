@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import type { PlanningMethodPack } from "../planning/method-packs.js";
 import type {
   AcceptanceCriterion,
   BoardSnapshot,
@@ -514,6 +515,17 @@ export class SqliteGoalBoardStore {
           PRIMARY KEY (board_id, actor_id, operation, idempotency_key)
         );
 
+        CREATE TABLE planning_method_packs (
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          method_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          pack_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (board_id, method_id)
+        );
+
         CREATE TABLE events (
           seq INTEGER PRIMARY KEY AUTOINCREMENT,
           event_id TEXT NOT NULL UNIQUE,
@@ -572,6 +584,9 @@ export class SqliteGoalBoardStore {
         .run(new Date().toISOString());
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (15, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (16, ?)")
         .run(new Date().toISOString());
       });
       return;
@@ -633,6 +648,10 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 15")
       .get();
     if (!riskTreatmentPlanApplied) this.migrateRiskTreatmentPlan();
+    const planningMethodPacksApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 16")
+      .get();
+    if (!planningMethodPacksApplied) this.migratePlanningMethodPacks();
   }
 
   private migrateClarifierRoles(): void {
@@ -1280,6 +1299,26 @@ export class SqliteGoalBoardStore {
     });
   }
 
+  private migratePlanningMethodPacks(): void {
+    this.immediate(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS planning_method_packs (
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          method_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          pack_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (board_id, method_id)
+        );
+      `);
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (16, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
   eventCursor(boardId: string): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS cursor FROM events WHERE board_id = ?")
@@ -1397,6 +1436,37 @@ export class SqliteGoalBoardStore {
     return this.listGoals(boardId).filter((goal) => goal.trashed_at !== null);
   }
 
+  listPlanningMethodPacks(boardId: string): PlanningMethodPack[] {
+    return (this.db
+      .prepare("SELECT pack_json FROM planning_method_packs WHERE board_id = ? ORDER BY method_id")
+      .all(boardId) as Row[])
+      .map((row) => parseJson<PlanningMethodPack | null>(row.pack_json, null))
+      .filter((pack): pack is PlanningMethodPack => pack != null);
+  }
+
+  putPlanningMethodPack(boardId: string, pack: PlanningMethodPack): void {
+    this.db
+      .prepare(`
+        INSERT INTO planning_method_packs (
+          board_id, method_id, version, enabled, pack_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(board_id, method_id) DO UPDATE SET
+          version = excluded.version,
+          enabled = excluded.enabled,
+          pack_json = excluded.pack_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        boardId,
+        pack.method_id,
+        pack.version,
+        pack.enabled ? 1 : 0,
+        json(pack),
+        pack.created_at,
+        pack.updated_at,
+      );
+  }
+
   snapshot(boardId: string): BoardSnapshot {
     const board = this.db.prepare("SELECT * FROM boards WHERE board_id = ?").get(boardId) as
       | Row
@@ -1452,6 +1522,7 @@ export class SqliteGoalBoardStore {
         .prepare("SELECT * FROM clarification_turns WHERE board_id = ? ORDER BY session_id, turn_index, turn_id")
         .all(boardId) as Row[]).map(mapClarificationTurn),
       goal_tree_proposals: this.readGoalTreeProposals(boardId),
+      planning_method_packs: this.listPlanningMethodPacks(boardId),
     };
   }
 
