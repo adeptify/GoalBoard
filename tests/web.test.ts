@@ -18,11 +18,15 @@ import {
   activeOutgoingDependsOn,
   displayedPassedCriterionIds,
   firstBlockedDescendant,
+  renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
+  renderGoalBoardWorkbenchClientScript,
+  renderGoalBoardWorkbenchStylesheet,
   renderGoalBoardWeb,
   sortGoalTreeItems,
   unsatisfiedOutgoingDependencies,
   WEB_GOAL_STATUSES,
+  WEB_GOAL_EVENT_PAGE_SIZE,
 } from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
@@ -31,6 +35,8 @@ import {
 } from "../src/web/server.js";
 
 const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
+const WORKBENCH_CLIENT_SCRIPT = renderGoalBoardWorkbenchClientScript();
+const WORKBENCH_STYLES = renderGoalBoardWorkbenchStylesheet();
 let webRequestSequence = 0;
 
 test("completed Goal presentation closes criteria without inventing Evidence", () => {
@@ -603,13 +609,18 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(historyDecisionHtml, /<details class="decision-details goal-tree-proposal-changes"><summary><span>查看采用后的 1 项变化/);
   assert.match(historyDecisionHtml, /展开查看每项变化/);
   assert.match(historyRootHtml, /处理 \d+ 项决定/);
-  const html = renderGoalBoardWeb(view);
-  const coreHtml = renderGoalBoardWeb(view, "CORE");
+  const pageHtml = renderGoalBoardWeb(view);
+  const corePageHtml = renderGoalBoardWeb(view, "CORE");
+  // Keep this broad presentation contract checking the same assembled workbench
+  // surface even though production now serves the shared assets separately.
+  const html = `${pageHtml}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
+  const coreHtml = `${corePageHtml}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
   const recordsFragment = renderGoalRecordsFragment(view, "V1");
   const coreRecordsFragment = renderGoalRecordsFragment(view, "CORE");
   assert.ok(recordsFragment);
   assert.ok(coreRecordsFragment);
-  const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
+  const decisionPageHtml = renderGoalBoardWeb(view, undefined, false, true);
+  const decisionHtml = `${decisionPageHtml}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
   assert.ok(html.startsWith("<!--\nTHESIS:"));
   assert.equal((html.match(/data-goal-view=/g) ?? []).length, 1);
   assert.match(html, /data-goal-view="V1"/);
@@ -622,7 +633,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((html.match(/data-goal-tab="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.equal((html.match(/data-goal-panel="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.match(html, /data-goal-tab="overview"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-goal-tab="overview"/);
-  assert.match(html, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, false\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, false\)/);
   assert.match(html, /data-goal-panel="completion" hidden|hidden[^>]*data-goal-panel="completion"/);
   assert.match(html, /aria-controls="goal-panel-overview-V1"/);
   assert.match(html, /aria-labelledby="goal-tab-overview-V1"/);
@@ -640,17 +651,17 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /name="direction" required/);
   assert.match(html, /name="type" required/);
   assert.equal((html.match(/data-goal-factor-panel="(?:relations|risks|impacts|rules)"/g) ?? []).length, 4);
-  assert.match(html, /data-factor-write-receipt/);
-  assert.match(html, /\.factor-write-receipt \{/);
-  assert.match(html, /showFactorReceipt\(\s*"relations"/);
-  assert.match(html, /showFactorReceipt\(\s*"risks"/);
-  assert.match(html, /showFactorReceipt\(\s*"impacts"/);
-  assert.match(html, /showFactorReceipt\(\s*"rules"/);
-  assert.match(html, /请填写解除原因。说明这条关系为什么不再成立。/);
-  assert.match(html, /请填写停用原因。说明这条影响范围为什么不再有效。/);
-  assert.match(html, /\.replaceAll\("Impact", "影响范围"\)/);
-  assert.match(html, /\.replaceAll\("Policy", "工作规则"\)/);
-  assert.match(html, /\.replaceAll\("Runtime", "执行工具"\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /data-factor-write-receipt/);
+  assert.match(WORKBENCH_STYLES, /\.factor-write-receipt \{/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /showFactorReceipt\(\s*"relations"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /showFactorReceipt\(\s*"risks"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /showFactorReceipt\(\s*"impacts"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /showFactorReceipt\(\s*"rules"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /请填写解除原因。说明这条关系为什么不再成立。/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /请填写停用原因。说明这条影响范围为什么不再有效。/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /\.replaceAll\("Impact", "影响范围"\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /\.replaceAll\("Policy", "工作规则"\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /\.replaceAll\("Runtime", "执行工具"\)/);
   assert.match(html, /data-open-quick-record/);
   assert.match(html, /data-quick-record-type="evidence"/);
   assert.match(html, /data-quick-record-type="risk"/);
@@ -678,6 +689,37 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(recordsFragment, /Claim 历史/);
   assert.match(recordsFragment, /Run 历史/);
   assert.match(recordsFragment, /风险与影响/);
+  const pagedView = structuredClone(view);
+  const pagedGoal = pagedView.goals.find((item) => item.goal.goal_id === "V1");
+  assert.ok(pagedGoal);
+  pagedGoal.events = Array.from({ length: WEB_GOAL_EVENT_PAGE_SIZE * 2 + 5 }, (_, index) => ({
+    seq: index + 1,
+    event_id: `EVENT-${index + 1}`,
+    actor_id: "pagination-test",
+    type: `event.type.${index + 1}`,
+    object_type: "goal",
+    object_id: "V1",
+    reason: `事件 ${index + 1}`,
+    payload: { index: index + 1 },
+    at: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+  }));
+  const firstEventPage = renderGoalRecordsFragment(pagedView, "V1");
+  const secondEventPage = renderGoalRecordEventsFragment(pagedView, "V1", "current", WEB_GOAL_EVENT_PAGE_SIZE);
+  const finalEventPage = renderGoalRecordEventsFragment(pagedView, "V1", "current", WEB_GOAL_EVENT_PAGE_SIZE * 2);
+  assert.ok(firstEventPage);
+  assert.ok(secondEventPage);
+  assert.ok(finalEventPage);
+  assert.equal((firstEventPage.match(/data-goal-event-seq=/g) ?? []).length, WEB_GOAL_EVENT_PAGE_SIZE);
+  assert.match(firstEventPage, new RegExp(`data-next-offset="${WEB_GOAL_EVENT_PAGE_SIZE}"`));
+  assert.match(firstEventPage, /加载更早记录/);
+  assert.equal((secondEventPage.match(/data-goal-event-seq=/g) ?? []).length, WEB_GOAL_EVENT_PAGE_SIZE);
+  assert.match(secondEventPage, new RegExp(`data-next-offset="${WEB_GOAL_EVENT_PAGE_SIZE * 2}"`));
+  assert.match(secondEventPage, /data-has-more="true"/);
+  assert.equal((finalEventPage.match(/data-goal-event-seq=/g) ?? []).length, 5);
+  assert.match(finalEventPage, /data-has-more="false"/);
+  const renderedSequences = [firstEventPage, secondEventPage, finalEventPage]
+    .flatMap((fragment) => Array.from(fragment.matchAll(/data-goal-event-seq="(\d+)"/g), (match) => Number(match[1])));
+  assert.deepEqual(renderedSequences, Array.from({ length: WEB_GOAL_EVENT_PAGE_SIZE * 2 + 5 }, (_, index) => WEB_GOAL_EVENT_PAGE_SIZE * 2 + 5 - index));
   assert.match(html, /工作规则/);
   assert.match(html, /项目默认规则/);
   assert.match(html, /为当前 Goal 增加要求/);
@@ -1047,10 +1089,10 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   )?.[0];
   assert.ok(newRewireForm);
   assert.match(newRewireForm, /新事项/);
-  assert.match(decisionHtml, /保存后仍会留在待决定中。\{effect\}/);
-  assert.match(decisionHtml, /决定已记录，但这次没有新增或解除 Goal 关系，也没有新增风险。/);
-  assert.match(decisionHtml, /风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。/);
-  assert.match(decisionHtml, /风险已接受，不再阻止关联 Goal。/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /保存后仍会留在待决定中。\{effect\}/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /决定已记录，但这次没有新增或解除 Goal 关系，也没有新增风险。/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /风险已接受，不再阻止关联 Goal。/);
   store.close();
 });
 
@@ -1097,11 +1139,35 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(alphaPage, /仅 Beta 可见的 Goal|数据源:|goalboard\.db/);
     assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
     assert.match(alphaPage, new RegExp(`href="${alphaPrefix}/decisions"`));
-    assert.match(alphaPage, /body \{[^}]*height: 100dvh;/);
-    assert.match(alphaPage, /\.app \{[^}]*height: 100dvh;/);
-    assert.match(alphaPage, /\.workspace \{[^}]*height: 100%;/);
-    assert.match(alphaPage, /\.app \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\)/);
+    assert.match(alphaPage, /href="\/assets\/goalboard-workbench\.css"/);
+    assert.match(alphaPage, /src="\/assets\/goalboard-workbench\.js"/);
+    assert.doesNotMatch(alphaPage, /<style>/);
+    assert.doesNotMatch(alphaPage, /const loadGoalDocument = async/);
+    assert.match(WORKBENCH_STYLES, /body \{[^}]*height: 100dvh;/);
+    assert.match(WORKBENCH_STYLES, /\.app \{[^}]*height: 100dvh;/);
+    assert.match(WORKBENCH_STYLES, /\.workspace \{[^}]*height: 100%;/);
+    assert.match(WORKBENCH_STYLES, /\.app \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\)/);
     assert.equal((alphaPage.match(/data-goal-view=/g) ?? []).length, 1);
+
+    const stylesheetResponse = await webFetch(`${origin}/assets/goalboard-workbench.css`);
+    assert.equal(stylesheetResponse.status, 200);
+    assert.match(stylesheetResponse.headers.get("content-type") ?? "", /text\/css/);
+    assert.equal(stylesheetResponse.headers.get("cache-control"), "private, max-age=0, must-revalidate");
+    const stylesheetEtag = stylesheetResponse.headers.get("etag");
+    assert.ok(stylesheetEtag);
+    assert.equal(await stylesheetResponse.text(), WORKBENCH_STYLES);
+    const revalidatedStylesheet = await webFetch(`${origin}/assets/goalboard-workbench.css`, {
+      headers: { "if-none-match": stylesheetEtag },
+    });
+    assert.equal(revalidatedStylesheet.status, 304);
+    assert.equal(await revalidatedStylesheet.text(), "");
+
+    const clientResponse = await webFetch(`${origin}/assets/goalboard-workbench.js`);
+    assert.equal(clientResponse.status, 200);
+    assert.match(clientResponse.headers.get("content-type") ?? "", /text\/javascript/);
+    assert.ok(clientResponse.headers.get("etag"));
+    assert.equal(await clientResponse.text(), WORKBENCH_CLIENT_SCRIPT);
+    assert.doesNotThrow(() => new Script(WORKBENCH_CLIENT_SCRIPT));
 
     const alphaCursorResponse = await webFetch(`${origin}${alphaPrefix}/api/board/cursor`);
     assert.equal(alphaCursorResponse.status, 200);
@@ -1117,6 +1183,15 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(alphaDocument, /data-goal-view="ALPHA-ONLY"/);
     assert.match(alphaDocument, /仅 Alpha 可见的 Goal/);
     assert.doesNotMatch(alphaDocument, /<!doctype html>|仅 Beta 可见的 Goal/);
+    const alphaEventPage = await webFetch(
+      `${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/record-events?view=current&offset=0`,
+    );
+    assert.equal(alphaEventPage.status, 200);
+    assert.match(await alphaEventPage.text(), /data-goal-event-page/);
+    assert.equal(
+      (await webFetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/record-events?view=current&offset=-1`)).status,
+      400,
+    );
     assert.equal(
       (await webFetch(`${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=trash`)).status,
       404,
@@ -2011,7 +2086,7 @@ test("Web chrome switches between Chinese and English without translating Goal t
     assert.match(board, /让页面看懂下一步/);
     assert.match(board, /New Goal/);
     assert.match(board, /aria-label="Filter Goals"/);
-    assert.match(board, /L\("筛选目标，已选择 \{count\} 种状态"/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /L\("筛选目标，已选择 \{count\} 种状态"/);
     assert.match(board, /Settings/);
     assert.match(board, /href="\/locale\?lang=zh/);
     assertInlineScriptsCompile(english);
@@ -2353,7 +2428,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     assert.match(decisionPage, /<details class="decision-details goal-tree-proposal-changes"><summary><span>查看采用后的 2 项变化/);
     assert.match(decisionPage, /展开查看每项变化/);
     assert.match(decisionPage, /data-goal-tree-decision-form[\s\S]*novalidate/);
-    assert.match(decisionPage, /goalTreeDecisionForm[\s\S]*请填写决定理由或修改意见/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /goalTreeDecisionForm[\s\S]*请填写决定理由或修改意见/);
     assert.match(rootPage, /查看并决定这份方案/);
     assert.match(rootPage, /处理 1 项决定/);
     assert.match(rootPage, /goal-status--clarification_decision_pending[^>]*[\s\S]*?<span>待你确认<\/span>/);
@@ -4032,12 +4107,12 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(emptyPage, /name="affected_surfaces"/);
     assert.match(emptyPage, /name="blocking_mode"/);
     assert.match(emptyPage, /name="treatment_plan"/);
-    assert.match(emptyPage, /需要确认处理结果时，请到待决定/);
-    assert.match(emptyPage, /这次修改没有改变它的处理结果/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /需要确认处理结果时，请到待决定/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /这次修改没有改变它的处理结果/);
     assert.match(emptyPage, /name="goal_ids" value="RISK-A" checked/);
     assert.match(emptyPage, /验证关联 Goal/);
-    assert.match(emptyPage, /\.risk-facts, \.risk-form, \.risk-state-form \{ grid-template-columns: 1fr; \}/);
-    assert.match(emptyPage, /\.risk-form input:not\(\[type=checkbox\]\).*font-size: 16px/);
+    assert.match(WORKBENCH_STYLES, /\.risk-facts, \.risk-form, \.risk-state-form \{ grid-template-columns: 1fr; \}/);
+    assert.match(WORKBENCH_STYLES, /\.risk-form input:not\(\[type=checkbox\]\).*font-size: 16px/);
 
     const createResponse = await webFetch(`${origin}/api/goals/RISK-A/risks`, {
       method: "POST",
@@ -4219,11 +4294,11 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     }
     assert.match(emptyPage, /option value="confirmed"/);
     assert.match(emptyPage, /option value="proposed"/);
-    assert.match(emptyPage, /并按保存的确认状态参与工作冲突判断/);
-    assert.match(emptyPage, /旧值和修改说明已进入完整记录/);
-    assert.match(emptyPage, /不再参与工作冲突判断；原记录和停用原因仍会保留/);
-    assert.match(emptyPage, /\.impact-facts, \.impact-form \{ grid-template-columns: 1fr; \}/);
-    assert.match(emptyPage, /\.impact-form input.*font-size: 16px/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /并按保存的确认状态参与工作冲突判断/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /旧值和修改说明已进入完整记录/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /不再参与工作冲突判断；原记录和停用原因仍会保留/);
+    assert.match(WORKBENCH_STYLES, /\.impact-facts, \.impact-form \{ grid-template-columns: 1fr; \}/);
+    assert.match(WORKBENCH_STYLES, /\.impact-form input.*font-size: 16px/);
 
     const createResponse = await webFetch(`${origin}/api/goals/IMPACT-A/impacts`, {
       method: "POST",
@@ -4483,16 +4558,22 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /name="cross_reviewers"/);
     assert.match(page, /name="adversarial_reviewers"/);
     assert.match(page, /name="max_lease_seconds"[^>]*max="1800"[^>]*data-policy-max="1800"/);
-    assert.match(page, /最终生效：按 Goal 工作/);
-    assert.match(page, /const loadGoalDocument = async \(goalId\) =>/);
-    assert.match(page, /const paneHeader = documentPane\.querySelector\(":scope > \.desktop-pane-header"\)/);
-    assert.match(page, /documentPane\.replaceChildren\(\.\.\.\(paneHeader \? \[paneHeader, nextView\] : \[nextView\]\)\)/);
-    assert.match(page, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/document\?view=/);
-    assert.match(page, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/records\?view=/);
-    assert.match(page, /history\.replaceState\(\{ \.\.\.initialHistoryState, goalId: selected \}/);
-    assert.match(page, /event\.state\?\.goalId \|\| state\.active_goal_id/);
-    assert.doesNotMatch(page, /documentPane\.innerHTML = nextDocument\.innerHTML/);
-    assert.match(page, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /最终生效：按 Goal 工作/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const loadGoalDocument = async \(goalId\) =>/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const paneHeader = documentPane\.querySelector\(":scope > \.desktop-pane-header"\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /documentPane\.replaceChildren\(\.\.\.\(paneHeader \? \[paneHeader, nextView\] : \[nextView\]\)\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/document\?view=/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/records\?view=/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /\/record-events\?view=" \+ documentCollection \+ "&offset=" \+ offset/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /goalDocumentRequest\?\.abort\(\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /goalRecordsRequest\?\.abort\(\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /\{ cache: "no-store", signal: controller\.signal \}/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /isAbortError\(error\) \|\| goalDocumentRequest !== controller/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /if \(goalRecordsRequest === controller\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /history\.replaceState\(\{ \.\.\.initialHistoryState, goalId: selected \}/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /event\.state\?\.goalId \|\| state\.active_goal_id/);
+    assert.doesNotMatch(WORKBENCH_CLIENT_SCRIPT, /documentPane\.innerHTML = nextDocument\.innerHTML/);
+    assert.match(WORKBENCH_STYLES, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
     assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB"/);
     assert.match(page, /处理 \d+ 项决定/);
@@ -4519,7 +4600,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(reviewDecisionPage, /拿当前完成标准和依据来说/);
     assert.match(reviewDecisionPage, /完成标准「Policy 与 Review 可以保存」已有一条通过依据「tests\/web\.test\.ts#policy-review」/);
     assert.match(reviewDecisionPage, /这份记录支持该标准，但不等于你已经确认通过/);
-    assert.match(reviewDecisionPage, /requireDecisionText\(reviewForm, errorBox, "verdict", "请先选择结论。"\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /requireDecisionText\(reviewForm, errorBox, "verdict", "请先选择结论。"\)/);
     assert.match(reviewDecisionPage, /如果选择通过[\s\S]*Goal「维护 Runtime 与 Review Policy」还会等待/);
     assert.match(reviewDecisionPage, /如果需要修改或依据不足[\s\S]*两种情况都不会完成这条 Goal/);
     assert.match(reviewDecisionPage, /human-review-list[\s\S]*<section class="decision-scenario"[\s\S]*<details class="decision-details"/);

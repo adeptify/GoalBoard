@@ -18,7 +18,11 @@ import {
   resolveNvmBinDirectory,
   resolvePtyCommand,
 } from "../src/web/pty-host.js";
-import { renderGoalBoardWeb } from "../src/web/render.js";
+import {
+  renderGoalBoardWeb,
+  renderGoalBoardWorkbenchClientScript,
+  renderGoalBoardWorkbenchStylesheet,
+} from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
   createGoalBoardWebServer as createBaseGoalBoardWebServer,
@@ -371,8 +375,9 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
       boardId: DEMO_BOARD_ID,
       demo: true,
     });
-    const browser = renderGoalBoardWeb(view);
-    const desktop = renderGoalBoardWeb(view, undefined, false, false, false, "", true);
+    const workbenchAssets = `<style>${renderGoalBoardWorkbenchStylesheet()}</style><script>${renderGoalBoardWorkbenchClientScript()}</script>`;
+    const browser = `${renderGoalBoardWeb(view)}${workbenchAssets}`;
+    const desktop = `${renderGoalBoardWeb(view, undefined, false, false, false, "", true)}${workbenchAssets}`;
     const decisions = renderGoalBoardWeb(view, undefined, false, true);
     assert.match(browser, /class="tui-pane"/);
     assert.match(browser, /推进这个 Goal/);

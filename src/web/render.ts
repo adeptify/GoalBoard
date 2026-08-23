@@ -1671,8 +1671,21 @@ function renderEventPayload(payload: unknown): string {
   }
 }
 
+export const WEB_GOAL_EVENT_PAGE_SIZE = 40;
+
+function renderEventLedgerItems(events: WebEventRecord[]): string {
+  return events.map((event) => `<li data-goal-event-seq="${event.seq}"><details><summary><time>${formatDate(event.at)}</time><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.actor_id)} · ${escapeHtml(event.object_type)} · ${escapeHtml(event.object_id)} · #${event.seq}</small></span></summary><dl><div><dt>${L("事件 ID")}</dt><dd>${escapeHtml(event.event_id)}</dd></div><div><dt>${L("理由")}</dt><dd>${escapeHtml(event.reason || L("未记录"))}</dd></div></dl><pre>${escapeHtml(renderEventPayload(event.payload))}</pre></details></li>`).join("");
+}
+
+function renderEventLedgerPagination(total: number, shown: number): string {
+  if (total === 0) return "";
+  const hasMore = shown < total;
+  return `<footer class="event-ledger-pagination" data-goal-event-pagination data-total="${total}" data-next-offset="${shown}"><span data-goal-event-progress>${L("已显示 {shown}/{total} 条事件", { shown, total })}</span>${hasMore ? `<button type="button" data-load-more-goal-events>${L("加载更早记录")}</button>` : ""}<p data-goal-event-error role="alert" hidden></p></footer>`;
+}
+
 function renderFullRecords(item: WebGoalView): string {
   const events = item.events.slice().sort((left, right) => right.seq - left.seq);
+  const initialEvents = events.slice(0, WEB_GOAL_EVENT_PAGE_SIZE);
   return `<details class="full-records"><summary>${L("查看完整事实记录与事件账本 ")}<span>${L("{count} 条事件", { count: events.length })}</span></summary><div class="record-grid">
     <section><h3>${L("Claim 历史")}</h3>${
       item.claims.length
@@ -1699,7 +1712,7 @@ function renderFullRecords(item: WebGoalView): string {
         ? item.policy_bindings.map((binding) => `<p><strong>${escapeHtml(binding.scope)}</strong><small>${escapeHtml(binding.state)} · ${escapeHtml(binding.reason)} · ${escapeHtml(JSON.stringify(binding.policy))}</small></p>`).join("")
         : `<p class="empty-row">${L("使用默认策略")}</p>`
     }</section>
-  </div><section class="event-ledger"><header><h3>${L("完整事件账本")}</h3><p>${L("按时间倒序保留 Claim、Run、Evidence、Review、Policy、Risk、Relation、Candidate、Rewire、Contract/Goal Tree Proposal 和澄清相关事件。")}</p></header>${events.length ? `<ol>${events.map((event) => `<li><details><summary><time>${formatDate(event.at)}</time><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.actor_id)} · ${escapeHtml(event.object_type)} · ${escapeHtml(event.object_id)} · #${event.seq}</small></span></summary><dl><div><dt>${L("事件 ID")}</dt><dd>${escapeHtml(event.event_id)}</dd></div><div><dt>${L("理由")}</dt><dd>${escapeHtml(event.reason || L("未记录"))}</dd></div></dl><pre>${escapeHtml(renderEventPayload(event.payload))}</pre></details></li>`).join("")}</ol>` : `<p class="empty-row">${L("暂无与这条 Goal 关联的事件")}</p>`}</section></details>`;
+  </div><section class="event-ledger"><header><h3>${L("完整事件账本")}</h3><p>${L("按时间倒序保留 Claim、Run、Evidence、Review、Policy、Risk、Relation、Candidate、Rewire、Contract/Goal Tree Proposal 和澄清相关事件。")}</p></header>${events.length ? `<ol data-goal-event-list>${renderEventLedgerItems(initialEvents)}</ol>${renderEventLedgerPagination(events.length, initialEvents.length)}` : `<p class="empty-row">${L("暂无与这条 Goal 关联的事件")}</p>`}</section></details>`;
 }
 
 const DEPENDENCY_BASIS_LABELS: Record<string, string> = {
@@ -3631,6 +3644,24 @@ export function renderGoalRecordsFragment(
   return prefixLocalLinks(renderGoalTechnicalDetails(item, view), view.route_prefix);
 }
 
+/** Render one older event page without repeating the surrounding record sections. */
+export function renderGoalRecordEventsFragment(
+  view: GoalBoardWebView,
+  goalId: string,
+  collection: GoalDocumentCollection = "current",
+  offset = 0,
+): string | null {
+  if (collection === "trash") return null;
+  const items = collection === "archive" ? view.archived_goals : view.goals;
+  const item = items.find((candidate) => candidate.goal.goal_id === goalId);
+  if (!item) return null;
+  const events = item.events.slice().sort((left, right) => right.seq - left.seq);
+  const safeOffset = Math.max(0, Math.trunc(offset));
+  const page = events.slice(safeOffset, safeOffset + WEB_GOAL_EVENT_PAGE_SIZE);
+  const nextOffset = safeOffset + page.length;
+  return `<div data-goal-event-page data-next-offset="${nextOffset}" data-total="${events.length}" data-has-more="${nextOffset < events.length}"><ol>${renderEventLedgerItems(page)}</ol></div>`;
+}
+
 function renderGoalTrashDialog(): string {
   return `<dialog class="create-dialog goal-trash-dialog" data-goal-trash-dialog aria-labelledby="goal-trash-dialog-title">
     <form method="dialog" class="dialog-shell" data-goal-trash-form data-live-form="goal-trash">
@@ -4972,6 +5003,14 @@ const MORE_STYLES = `
   .event-ledger dt { color: var(--muted); font-size: 11px; }
   .event-ledger dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
   .event-ledger pre { max-height: 300px; margin: 0 0 11px; padding: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: #f7f9fb; color: #36404c; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .event-ledger-pagination { min-height: 42px; padding-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .event-ledger-pagination > span { color: var(--muted); font-size: 11px; }
+  .event-ledger-pagination button { min-height: 30px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); color: var(--text); font-weight: 650; cursor: pointer; }
+  .event-ledger-pagination button:hover { border-color: var(--blue); color: var(--blue-dark); }
+  .event-ledger-pagination button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .event-ledger-pagination button:disabled { cursor: wait; opacity: .58; }
+  .event-ledger-pagination [role="alert"] { flex-basis: 100%; margin: 0; color: var(--red); font-size: 11px; }
+  .event-ledger-pagination:has([role="alert"]:not([hidden])) { flex-wrap: wrap; }
   @keyframes document-in { from { opacity: .5; transform: translateY(5px); } }
   @keyframes pulse { 50% { opacity: .35; } }
 `;
@@ -6014,7 +6053,8 @@ const CLIENT_SCRIPT = `
     let resizeStartX = 0;
     let resizeStartWidth = 0;
     let selectedStatuses = new Set();
-    let goalDocumentRequest = 0;
+    let goalDocumentRequest = null;
+    let goalRecordsRequest = null;
     let searchBusyUntil = 0;
     let searchComposing = false;
     let deferredRefreshTimer;
@@ -6635,17 +6675,26 @@ const CLIENT_SCRIPT = `
       return target?.closest?.("[data-goal-factor-panel]")?.dataset.goalFactorPanel || "";
     };
 
+    const isAbortError = (error) => error instanceof DOMException && error.name === "AbortError";
+
+    const abortGoalRecordsRequest = () => {
+      goalRecordsRequest?.abort();
+    };
+
     const loadGoalRecords = async (article) => {
       const container = article?.querySelector("[data-goal-records-content]");
       if (!container || container.dataset.loaded === "true" || container.dataset.loading === "true") return;
       const goalId = article.dataset.goalView;
       if (!goalId) return;
+      abortGoalRecordsRequest();
+      const controller = new AbortController();
+      goalRecordsRequest = controller;
       container.dataset.loading = "true";
       container.setAttribute("aria-busy", "true");
       try {
         const response = await fetch(
           route("/api/goals/" + encodeURIComponent(goalId) + "/records?view=" + documentCollection),
-          { cache: "no-store" },
+          { cache: "no-store", signal: controller.signal },
         );
         if (!response.ok) throw new Error(L("无法读取这条 Goal 的完整记录"));
         const template = document.createElement("template");
@@ -6656,6 +6705,7 @@ const CLIENT_SCRIPT = `
         container.replaceChildren(records);
         container.dataset.loaded = "true";
       } catch (error) {
+        if (isAbortError(error)) return;
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
         const message = error instanceof Error ? error.message : L("无法载入完整记录");
         const errorRow = document.createElement("p");
@@ -6665,8 +6715,66 @@ const CLIENT_SCRIPT = `
         container.replaceChildren(errorRow);
         showToast(message, true);
       } finally {
-        container.dataset.loading = "false";
-        container.removeAttribute("aria-busy");
+        if (goalRecordsRequest === controller) {
+          goalRecordsRequest = null;
+          container.dataset.loading = "false";
+          container.removeAttribute("aria-busy");
+        }
+      }
+    };
+
+    const loadMoreGoalEvents = async (button) => {
+      const pagination = button.closest("[data-goal-event-pagination]");
+      const article = button.closest("[data-goal-view]");
+      const eventList = article?.querySelector("[data-goal-event-list]");
+      const goalId = article?.dataset.goalView;
+      const offset = Number.parseInt(pagination?.dataset.nextOffset || "", 10);
+      if (!pagination || !eventList || !goalId || !Number.isSafeInteger(offset) || offset < 0) return;
+      abortGoalRecordsRequest();
+      const controller = new AbortController();
+      goalRecordsRequest = controller;
+      const defaultLabel = button.textContent;
+      const errorBox = pagination.querySelector("[data-goal-event-error]");
+      button.disabled = true;
+      button.textContent = L("正在载入…");
+      if (errorBox) errorBox.hidden = true;
+      try {
+        const response = await fetch(
+          route("/api/goals/" + encodeURIComponent(goalId) + "/record-events?view=" + documentCollection + "&offset=" + offset),
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) throw new Error(L("无法读取更早的 Goal 记录"));
+        const template = document.createElement("template");
+        template.innerHTML = (await response.text()).trim();
+        const page = template.content.querySelector("[data-goal-event-page]");
+        const pageList = page?.querySelector("ol");
+        if (!page || !pageList) throw new Error(L("Goal 事件响应不完整"));
+        if (!article.isConnected || article.dataset.goalView !== goalId) return;
+        eventList.append(...Array.from(pageList.children));
+        const nextOffset = Number.parseInt(page.dataset.nextOffset || "", 10);
+        const total = Number.parseInt(page.dataset.total || "", 10);
+        if (!Number.isSafeInteger(nextOffset) || !Number.isSafeInteger(total)) throw new Error(L("Goal 事件响应不完整"));
+        pagination.dataset.nextOffset = String(nextOffset);
+        pagination.dataset.total = String(total);
+        const progress = pagination.querySelector("[data-goal-event-progress]");
+        if (progress) progress.textContent = L("已显示 {shown}/{total} 条事件", { shown: nextOffset, total });
+        if (page.dataset.hasMore !== "true") button.remove();
+      } catch (error) {
+        if (isAbortError(error)) return;
+        if (!article.isConnected || article.dataset.goalView !== goalId) return;
+        const message = error instanceof Error ? error.message : L("无法载入更早记录");
+        if (errorBox) {
+          errorBox.textContent = message;
+          errorBox.hidden = false;
+        }
+      } finally {
+        if (goalRecordsRequest === controller) {
+          goalRecordsRequest = null;
+          if (button.isConnected) {
+            button.disabled = false;
+            button.textContent = defaultLabel;
+          }
+        }
       }
     };
 
@@ -6686,6 +6794,7 @@ const CLIENT_SCRIPT = `
         candidate.hidden = candidate !== activePanel;
       });
       if (panel === "records") void loadGoalRecords(article);
+      else abortGoalRecordsRequest();
       if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
       if (resetScroll) article.querySelector(".goal-workspace-nav")?.scrollIntoView({ block: "start" });
       if (persist) queueSave();
@@ -6877,27 +6986,32 @@ const CLIENT_SCRIPT = `
     };
 
     const loadGoalDocument = async (goalId) => {
-      const requestId = ++goalDocumentRequest;
+      goalDocumentRequest?.abort();
+      const controller = new AbortController();
+      goalDocumentRequest = controller;
       setGoalDocumentBusy(true);
       setSyncState("载入 Goal…", "syncing");
       try {
         const response = await fetch(
           route("/api/goals/" + encodeURIComponent(goalId) + "/document?view=" + documentCollection),
-          { cache: "no-store" },
+          { cache: "no-store", signal: controller.signal },
         );
         if (!response.ok) throw new Error("无法读取这条 Goal 正文");
         const html = await response.text();
-        if (requestId !== goalDocumentRequest) return null;
+        if (goalDocumentRequest !== controller) return null;
         replaceGoalDocument(html);
         setSyncState("已同步");
         return true;
       } catch (error) {
-        if (requestId !== goalDocumentRequest) return null;
+        if (isAbortError(error) || goalDocumentRequest !== controller) return null;
         setSyncState("暂时离线", "offline");
         showToast(error.message || "无法读取这条 Goal 正文", true);
         return false;
       } finally {
-        if (requestId === goalDocumentRequest) setGoalDocumentBusy(false);
+        if (goalDocumentRequest === controller) {
+          goalDocumentRequest = null;
+          setGoalDocumentBusy(false);
+        }
       }
     };
 
@@ -6913,6 +7027,7 @@ const CLIENT_SCRIPT = `
       }
       const fallbackGoalId = currentView?.dataset.goalView || selected;
       if (!applySelection(goalId, true)) return;
+      abortGoalRecordsRequest();
       const loaded = await loadGoalDocument(goalId);
       if (loaded == null) return;
       if (!loaded) {
@@ -7377,7 +7492,12 @@ const CLIENT_SCRIPT = `
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
-    if (!treeFilter?.hidden && !target.closest("[data-tree-filter], [data-tree-filter-trigger]")) setTreeFilterOpen(false);
+      const loadMoreEventsButton = target.closest("[data-load-more-goal-events]");
+      if (loadMoreEventsButton) {
+        await loadMoreGoalEvents(loadMoreEventsButton);
+        return;
+      }
+      if (!treeFilter?.hidden && !target.closest("[data-tree-filter], [data-tree-filter-trigger]")) setTreeFilterOpen(false);
       if (target.closest("[data-clear-status-filter]")) {
         setSelectedStatuses([]);
         filterTree(treeSearch.value);
@@ -9104,8 +9224,19 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
     : html;
   const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
+    .replaceAll('href="__WORKBENCH_CSS__"', 'href="/assets/goalboard-workbench.css"')
     .replaceAll('href="__SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/rules` : "/settings/projects"}"`);
   return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
+}
+
+/** Shared workbench presentation. Kept outside project HTML so the browser can reuse it. */
+export function renderGoalBoardWorkbenchStylesheet(): string {
+  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
+}
+
+/** Shared workbench behavior. Locale strings and project facts remain page-local. */
+export function renderGoalBoardWorkbenchClientScript(): string {
+  return `${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}`;
 }
 
 export function renderGoalBoardWeb(
@@ -9206,7 +9337,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   ${controlTokenMeta(controlToken)}
   <title>${escapeHtml(title)}</title>
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
-  <style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }</style>
+  <link rel="stylesheet" href="__WORKBENCH_CSS__">
 </head>
 <body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
@@ -9245,7 +9376,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   ${renderGoalTrashDialog()}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
-  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}</script>
+  <script src="/assets/goalboard-workbench.js"></script>
   ${showTui ? '<script src="/desktop/pty-client.js"></script>' : ""}
 </body>
 </html>`;
