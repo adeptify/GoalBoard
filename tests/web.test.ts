@@ -25,6 +25,7 @@ import {
 } from "../src/web/render.js";
 import {
   buildGoalBoardWebView,
+  cachedGoalBoardWebView,
   createGoalBoardWebServer as createBaseGoalBoardWebServer,
 } from "../src/web/server.js";
 
@@ -124,6 +125,61 @@ function webFixture() {
   seedDemoBoard(databasePath);
   return { databasePath };
 }
+
+test("Web View cache follows Board events and main DB changes instead of SQLite WAL lifecycle", () => {
+  const { databasePath } = webFixture();
+  const cache = new Map() as Parameters<typeof cachedGoalBoardWebView>[0];
+  const options = { databasePath, boardId: DEMO_BOARD_ID, demo: true };
+
+  const firstStore = new SqliteGoalBoardStore(databasePath);
+  const first = cachedGoalBoardWebView(
+    cache,
+    firstStore,
+    new GoalBoardCoordinator(firstStore),
+    options,
+  );
+  firstStore.close();
+
+  const reopenedStore = new SqliteGoalBoardStore(databasePath);
+  try {
+    const coordinator = new GoalBoardCoordinator(reopenedStore);
+    const unchanged = cachedGoalBoardWebView(cache, reopenedStore, coordinator, options);
+    assert.strictEqual(unchanged, first, "opening the SQLite WAL must not invalidate an unchanged Board");
+
+    coordinator.createGoal(
+      DEMO_BOARD_ID,
+      {
+        goal_id: "CACHE-EVENT",
+        title: "通过事件使 Web View 失效",
+        outcome: "",
+        why: "",
+        business_logic: "",
+        definition_state: "draft",
+        decomposition_state: "abstract",
+        acceptance_criteria: [],
+      },
+      { actor_id: "test-user", idempotency_key: "web-cache-event" },
+    );
+    const changed = cachedGoalBoardWebView(cache, reopenedStore, coordinator, options);
+    assert.notStrictEqual(changed, first);
+    assert.ok(changed.goals.some((item) => item.goal.goal_id === "CACHE-EVENT"));
+
+    const cursorBeforeDirectWrite = reopenedStore.eventCursor(DEMO_BOARD_ID);
+    reopenedStore.db
+      .prepare("UPDATE goals SET title = ? WHERE goal_id = ?")
+      .run("没有事件的存量写入", "CACHE-EVENT");
+    reopenedStore.db.pragma("wal_checkpoint(TRUNCATE)");
+    assert.equal(reopenedStore.eventCursor(DEMO_BOARD_ID), cursorBeforeDirectWrite);
+    const directlyChanged = cachedGoalBoardWebView(cache, reopenedStore, coordinator, options);
+    assert.notStrictEqual(directlyChanged, changed);
+    assert.equal(
+      directlyChanged.goals.find((item) => item.goal.goal_id === "CACHE-EVENT")?.goal.title,
+      "没有事件的存量写入",
+    );
+  } finally {
+    reopenedStore.close();
+  }
+});
 
 async function webProjectCatalogFixture() {
   const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-catalog-"));

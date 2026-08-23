@@ -125,17 +125,13 @@ interface GoalBoardWebViewCacheEntry {
 
 type GoalBoardWebViewCache = Map<string, GoalBoardWebViewCacheEntry>;
 
-function sqliteDatabaseVersion(databasePath: string): string {
-  return [databasePath, `${databasePath}-wal`]
-    .map((filePath) => {
-      try {
-        const stat = fs.statSync(filePath, { bigint: true });
-        return `${stat.size}:${stat.mtimeNs}`;
-      } catch {
-        return "missing";
-      }
-    })
-    .join("|");
+function sqliteMainDatabaseVersion(databasePath: string): string {
+  try {
+    const stat = fs.statSync(databasePath, { bigint: true });
+    return `${stat.size}:${stat.mtimeNs}`;
+  } catch {
+    return "missing";
+  }
 }
 
 type ResolvedWebRequest =
@@ -381,17 +377,16 @@ export function buildGoalBoardWebView(
     ...risk,
     goal_ids: riskGoalIds.get(risk.risk_id) ?? [],
   }));
+  const workStates = new Map(
+    coordinator.getGoalWorkStates({ board_id: options.boardId }).map((state) => [state.goal_id, state]),
+  );
   const allGoals = snapshot.goals.map((goal) => {
-    const workState = coordinator.getGoalWorkState({
-      board_id: options.boardId,
-      goal_id: goal.goal_id,
-    });
+    const workState = workStates.get(goal.goal_id);
+    if (!workState) throw new Error(`Goal 工作状态不存在: ${goal.goal_id}`);
     const activeClaim = workState.active_claim;
-    const explanation = coordinator.explainGoal({
+    const resolvedPolicy = coordinator.getResolvedGoalPolicy({
       board_id: options.boardId,
       goal_id: goal.goal_id,
-      actor_id: "web-observer",
-      goal_mode_attestation: true,
     });
     const status: WebGoalStatus = goalPresentationState(
       workState.work_state,
@@ -519,7 +514,7 @@ export function buildGoalBoardWebView(
         (item) => item.goal_id == null || item.goal_id === goal.goal_id,
       ),
       events: events.filter((item) => relatedObjectIds.has(item.object_id)),
-      resolved_policy: explanation.resolved_policy,
+      resolved_policy: resolvedPolicy,
       passed_criteria: [...passedCriteria],
       pending_reviews: pendingReviews,
     };
@@ -564,14 +559,14 @@ export function buildGoalBoardWebView(
   };
 }
 
-function cachedGoalBoardWebView(
+export function cachedGoalBoardWebView(
   cache: GoalBoardWebViewCache,
   store: SqliteGoalBoardStore,
   coordinator: GoalBoardCoordinator,
   options: WebViewOptions,
 ): GoalBoardWebView {
   const cursor = store.eventCursor(options.boardId);
-  const databaseVersion = sqliteDatabaseVersion(options.databasePath);
+  const databaseVersion = sqliteMainDatabaseVersion(options.databasePath);
   const optionsFingerprint = JSON.stringify({
     board_id: options.boardId,
     demo: Boolean(options.demo),
@@ -589,6 +584,14 @@ function cachedGoalBoardWebView(
   const view = buildGoalBoardWebView(store, coordinator, options);
   cache.set(options.databasePath, { cursor, databaseVersion, optionsFingerprint, view });
   return view;
+}
+
+function alignCachedMainDatabaseVersion(
+  cache: GoalBoardWebViewCache,
+  databasePath: string,
+): void {
+  const cached = cache.get(databasePath);
+  if (cached) cached.databaseVersion = sqliteMainDatabaseVersion(databasePath);
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1644,6 +1647,12 @@ async function handleGoalBoardWebRequest(
         () => new Date(),
         readPersonalPlanningMethodPacks(serverOptions.homeDirectory),
       );
+      let webViewWasRead = false;
+      const readWebView = (): GoalBoardWebView => {
+        const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+        webViewWasRead = true;
+        return view;
+      };
       try {
         if (request.method === "GET" && url.pathname === "/settings/rules") {
           response.writeHead(200, {
@@ -1653,7 +1662,7 @@ async function handleGoalBoardWebRequest(
             ...desktopCookieHeaders(request, url),
           });
           response.end(renderGoalBoardProjectSettings(
-            cachedGoalBoardWebView(webViewCache, store, coordinator, options),
+            readWebView(),
             controlToken,
             isDesktopShellRequest(request, url),
           ));
@@ -1661,7 +1670,7 @@ async function handleGoalBoardWebRequest(
         }
         const projectPlanningMethodMatch = url.pathname.match(/^\/settings\/planning\/([^/]+)(?:\/(edit))?$/);
         if (request.method === "GET" && projectPlanningMethodMatch) {
-          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          const view = readWebView();
           const methodId = decodeURIComponent(projectPlanningMethodMatch[1]);
           const method = methodId === "new"
             ? null
@@ -1688,7 +1697,7 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/settings/planning") {
-          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          const view = readWebView();
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
@@ -1798,7 +1807,7 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/board") {
-          sendJson(response, 200, cachedGoalBoardWebView(webViewCache, store, coordinator, options));
+          sendJson(response, 200, readWebView());
           return;
         }
         if (options.project?.project_id) {
@@ -1829,7 +1838,7 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "Goal 正文集合无效" });
             return;
           }
-          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          const view = readWebView();
           const fragment = renderGoalDocumentFragment(view, goalId, collection);
           if (!fragment) {
             sendJson(response, 404, { error: `找不到这个 Goal: ${goalId}` });
@@ -2842,7 +2851,7 @@ async function handleGoalBoardWebRequest(
               return;
             }
           }
-          const view = cachedGoalBoardWebView(webViewCache, store, coordinator, options);
+          const view = readWebView();
           const requestedArchived = requestedGoalId
             ? view.archived_goals.some((item) => item.goal.goal_id === requestedGoalId)
             : false;
@@ -2886,6 +2895,7 @@ async function handleGoalBoardWebRequest(
         sendJson(response, 404, { error: L("页面或接口不存在") });
       } finally {
         store.close();
+        if (webViewWasRead) alignCachedMainDatabaseVersion(webViewCache, options.databasePath);
       }
 }
 
