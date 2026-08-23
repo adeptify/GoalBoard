@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{webview::PageLoadEvent, Emitter, Manager, State};
+use tauri::{webview::PageLoadEvent, Emitter, Manager, State, Url};
 
 struct PtySession {
   writer: Mutex<Box<dyn Write + Send>>,
@@ -100,7 +100,46 @@ fn health_body() -> Option<String> {
   }
 }
 
-fn ensure_goalboard_web() -> Result<(), String> {
+fn embedded_goalboard_source(resource_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+  for relative in ["goalboard-runtime", "resources/goalboard-runtime"] {
+    let source = resource_dir.join(relative);
+    let node = source.join("runtime").join("node");
+    let installer = source.join("dist").join("cli").join("main.js");
+    if node.is_file() && installer.is_file() {
+      return Some((source, node));
+    }
+  }
+  None
+}
+
+fn install_embedded_goalboard(resource_dir: &Path, home: &Path) -> Result<(), String> {
+  let (source, node) = embedded_goalboard_source(resource_dir).ok_or_else(|| {
+    "GoalBoard App 不含可用的 Runtime payload，请重新下载安装包。".to_string()
+  })?;
+  let installer = source.join("dist").join("cli").join("main.js");
+  let output = Command::new(&node)
+    .arg(&installer)
+    .arg("install")
+    .arg("--home")
+    .arg(home)
+    .arg("--source")
+    .arg(&source)
+    .arg("--json")
+    .stdin(Stdio::null())
+    .output()
+    .map_err(|error| format!("无法运行 GoalBoard 内置安装器：{error}"))?;
+  if output.status.success() {
+    return Ok(());
+  }
+  let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+  Err(if detail.is_empty() {
+    "GoalBoard 内置 Runtime 安装失败。".to_string()
+  } else {
+    format!("GoalBoard 内置 Runtime 安装失败：{detail}")
+  })
+}
+
+fn ensure_goalboard_web(resource_dir: Option<&Path>) -> Result<(), String> {
   if web_healthy() {
     if !web_desktop_ready() {
       eprintln!(
@@ -111,9 +150,14 @@ fn ensure_goalboard_web() -> Result<(), String> {
   }
   let home = goalboard_home();
   let bin = home.join("bin").join("goalboard-web");
+  if let Some(resource_dir) = resource_dir {
+    // The installer is idempotent. Running it before a stopped Web service also
+    // upgrades older source launchers to the App's self-contained runtime.
+    install_embedded_goalboard(resource_dir, &home)?;
+  }
   if !bin.is_file() {
     return Err(format!(
-      "GoalBoard Web 未安装：找不到 {}。请先运行 pnpm install:local。",
+      "GoalBoard Web 未安装：找不到 {}。源码运行请先执行 pnpm install:local。",
       bin.display()
     ));
   }
@@ -370,14 +414,32 @@ fn pty_collect_output(command: &str, args: &[&str], cwd: &Path) -> Result<String
 }
 
 fn main() {
-  if let Err(error) = ensure_goalboard_web() {
-    eprintln!("{error}");
-    std::process::exit(1);
-  }
-
   tauri::Builder::default()
     .manage(PtyState::default())
     .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_kill])
+    .setup(|app| {
+      let resource_dir = app.path().resource_dir().ok();
+      let result = ensure_goalboard_web(resource_dir.as_deref());
+      if let Some(window) = app.get_webview_window("main") {
+        match result {
+          Ok(()) => {
+            if let Ok(url) = Url::parse("http://127.0.0.1:4173/?desktop=1") {
+              let _ = window.navigate(url);
+            }
+          }
+          Err(error) => {
+            eprintln!("{error}");
+            let message = serde_json::to_string(&error)
+              .unwrap_or_else(|_| "\"GoalBoard 启动失败\"".into());
+            let script = format!(
+              r#"document.body.innerHTML='<main style="font:14px -apple-system,sans-serif;max-width:640px;margin:12vh auto;padding:32px;color:#20232a"><h1 style="font-size:24px">GoalBoard 无法启动</h1><p id="goalboard-bootstrap-error" style="line-height:1.7;color:#5f6673"></p></main>';document.getElementById('goalboard-bootstrap-error').textContent={message};"#
+            );
+            let _ = window.eval(&script);
+          }
+        }
+      }
+      Ok(())
+    })
     .on_page_load(|window, payload| {
       if payload.event() == PageLoadEvent::Finished {
         let _ = window.eval(

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -249,7 +249,7 @@ test("repair upgrades the obsolete linked release layout in place", async () => 
       dependencies: string;
       source_directory?: string;
     };
-    assert.equal(manifest.schema_version, 3);
+    assert.equal(manifest.schema_version, 4);
     assert.equal(manifest.dependencies, "embedded");
     assert.equal(manifest.source_directory, undefined);
   });
@@ -377,6 +377,33 @@ test("all installed launchers keep running after the installation source is dele
 
     for (const [name, launcher] of Object.entries(result.launchers)) {
       const output = await execFileAsync(process.execPath, [launcher], { cwd: directory });
+      assert.equal(output.stdout.trim(), `${name}:embedded`);
+    }
+  });
+});
+
+test("a bundled Node runtime produces standalone launchers without a system Node PATH", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const bundledNode = join(source, "runtime", "node");
+    await mkdir(join(source, "runtime"), { recursive: true });
+    await copyFile(process.execPath, bundledNode);
+    await chmod(bundledNode, 0o755);
+    const home = join(directory, "home", ".goalboard");
+    const result = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    assert.ok((await stat(join(result.release_directory, "runtime", "node"))).isFile());
+    assert.match(await readFile(result.launchers.cli, "utf8"), /^#!\/bin\/sh\n# goalboard-home-launcher-v2/);
+    const releaseManifest = JSON.parse(
+      await readFile(join(result.release_directory, "release.json"), "utf8"),
+    ) as { node_runtime?: string };
+    assert.equal(releaseManifest.node_runtime, "embedded");
+
+    await rm(source, { recursive: true, force: true });
+    for (const [name, launcher] of Object.entries(result.launchers)) {
+      const output = await execFileAsync(launcher, [], {
+        cwd: directory,
+        env: { ...process.env, PATH: "/usr/bin:/bin" },
+      });
       assert.equal(output.stdout.trim(), `${name}:embedded`);
     }
   });

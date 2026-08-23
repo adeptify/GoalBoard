@@ -24,7 +24,7 @@
           "x": 16,
           "y": 16
         },
-        "url": "http://127.0.0.1:4173/?desktop=1"
+        "url": "index.html"
       }
     ],
     "security": {
@@ -32,8 +32,9 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": ["app"],
+    "active": true,
+    "targets": ["app", "dmg"],
+    "resources": ["resources/goalboard-runtime"],
     "icon": ["icons/icon.png"],
     "macOS": {
       "minimumSystemVersion": "13.0"

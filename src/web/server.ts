@@ -2916,7 +2916,15 @@ function flag(args: string[], name: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const modulePath = fileURLToPath(import.meta.url);
+const requestedModulePath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+const isMain = requestedModulePath != null && (() => {
+  try {
+    return fs.realpathSync(modulePath) === fs.realpathSync(requestedModulePath);
+  } catch {
+    return modulePath === requestedModulePath;
+  }
+})();
 if (isMain) {
   const args = process.argv.slice(2);
   const homeArgument = flag(args, "--home");

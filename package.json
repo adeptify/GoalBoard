@@ -47,6 +47,9 @@
     "mcp": "tsx src/mcp/server.ts",
     "web": "tsx src/web/server.ts",
     "desktop": "cargo run --manifest-path desktop/src-tauri/Cargo.toml",
+    "desktop:build:macos": "bash scripts/build-macos-release.sh",
+    "desktop:install:macos": "bash scripts/install-macos-app.sh",
+    "desktop:start:macos": "bash scripts/start-macos-app.sh",
     "goalboard": "tsx src/cli/main.ts"
   },
   "dependencies": {
@@ -56,6 +59,7 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.13.0",
     "@types/ws": "^8.18.1",
