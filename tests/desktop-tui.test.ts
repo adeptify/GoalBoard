@@ -615,6 +615,19 @@ test("compound parent terminals become read-only and direct execution APIs requi
       completionStore.db
         .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id IN (?, ?)")
         .run("TUI-CHILD", "TUI-PARENT");
+      // This test-only fixture mutation bypasses the coordinator, so publish a
+      // matching cursor event just as every supported product write does.
+      completionStore.appendEvent({
+        eventId: "desktop-tui-compound-completed",
+        boardId: fixture.project.board_id,
+        actorId: "test-user",
+        type: "test.fixture.updated",
+        objectType: "goal",
+        objectId: "TUI-PARENT",
+        reason: "测试复合 Goal 完成后的只读终端",
+        payload: { child_goal_id: "TUI-CHILD" },
+        at: new Date().toISOString(),
+      });
     } finally {
       completionStore.close();
     }

@@ -413,8 +413,9 @@ test("batch Goal work states match canonical single-Goal reads", () => {
       { actor_id: "user-1", idempotency_key: "batch-state-draft" },
     );
 
+    const snapshot = store.snapshot("board-1");
     const batch = new Map(
-      coordinator.getGoalWorkStates({ board_id: "board-1" }).map((state) => [state.goal_id, state]),
+      coordinator.getGoalWorkStates({ board_id: "board-1", snapshot }).map((state) => [state.goal_id, state]),
     );
     for (const goal of store.listGoals("board-1")) {
       assert.deepEqual(
