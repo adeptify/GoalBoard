@@ -1975,6 +1975,20 @@ test("Web command only starts from the project catalog", () => {
   assert.match(result.stderr, /--db 已不支持/);
 });
 
+test("Web command still starts when its entrypoint is reached through a symlink", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-entrypoint-"));
+  const entrypoint = join(directory, "goalboard-web.ts");
+  symlinkSync(join(process.cwd(), "src", "web", "server.ts"), entrypoint);
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", entrypoint, "--db", "/tmp/legacy-goalboard.db"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /只按项目启动/);
+  assert.match(result.stderr, /--db 已不支持/);
+});
+
 test("Web migrates an explicitly confirmed legacy DB into one project without changing Runtime bindings", async () => {
   const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-migration-"));
   const legacyDirectory = join(homeDirectory, "legacy-source");

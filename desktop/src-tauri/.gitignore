@@ -1,2 +1,4 @@
 /target
 /gen
+/resources/goalboard-runtime/*
+!/resources/goalboard-runtime/.gitkeep

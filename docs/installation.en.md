@@ -2,6 +2,22 @@
 
 > Detailed install, update, startup, uninstall, and demo-data notes. For the quick start, see "3-minute experience" in the [README](../README.en.md).
 
+## macOS Desktop installer
+
+For macOS, download the `macos-arm64` (Apple Silicon) or `macos-x64` (Intel) DMG from [GitHub Releases](https://github.com/adeptify/GoalBoard/releases), drag GoalBoard into Applications, and launch it. The App contains architecture-matched Node, GoalBoard Core, and production dependencies. On first launch it calls the same `goalboard install` service to populate `~/.goalboard`, then starts the local Web service. It does not create a project, connect a Runtime, create demo data, or edit a user project.
+
+Repository development provides the same release path:
+
+```bash
+pnpm desktop:build:macos    # DMG, App zip, and SHA256 under release/macos
+pnpm desktop:install:macos  # install in ~/Applications; trash the previous App first
+pnpm desktop:start:macos    # launch the installed App
+```
+
+For automation or acceptance checks, set `GOALBOARD_SKIP_OPEN=1` to install without opening a window. `GOALBOARD_APP_DIR` can point the script at another user-level Applications directory.
+
+The build downloads a fixed Node LTS release and verifies it against Node's official `SHASUMS256.txt` before creating the payload. Apple Silicon and Intel are built separately so native addons are never mixed into a fake universal package. Without Developer ID and notarization credentials, local builds and manually dispatched workflows can only produce internal ad-hoc artifacts that trigger Gatekeeper; the scripts do not remove quarantine on the user's behalf. A public `v*` tag release requires all Apple Secrets, then Tauri signs, notarizes, staples, and publishes both architectures.
+
 ## Install boundaries
 
 `goalboard install` only maintains `~/.goalboard`: the versioned program, shared Skill, MCP/Web/CLI launchers, project DB root, logs, and install manifest. It never creates or starts projects, never writes into user projects, and never modifies any Runtime user-level configuration. Registering the MCP entry into a Runtime later requires the user-confirmed Runtime integration flow.
@@ -59,7 +75,7 @@ This runs the foreground `goalboard-web`; the page stops when the terminal or Ru
 "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-After opening `http://127.0.0.1:4173`, you can create, import, rename, and open projects in Settings, and configure Runtime integration first. Selecting a project only changes what the page browses; it does not bind or switch the current Runtime Session. Existing legacy DBs are migrated into a project only after you explicitly select and confirm. On macOS you can also run `pnpm desktop` from the repository; the App is just a window shell over the same pages.
+After opening `http://127.0.0.1:4173`, you can create, import, rename, and open projects in Settings, and configure Runtime integration first. Selecting a project only changes what the page browses; it does not bind or switch the current Runtime Session. Existing legacy DBs are migrated into a project only after you explicitly select and confirm. On macOS you can use the Desktop installer or run `pnpm desktop` from the repository; both are window shells over the same pages and local data.
 
 Running `goalboard-web` directly is still foreground mode, good for temporary debugging; closing the terminal closes the page too. On macOS you can instead use the user-level LaunchAgent persistent service — preview first, then confirm:
 

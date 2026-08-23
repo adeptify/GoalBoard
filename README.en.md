@@ -78,6 +78,19 @@ Built-in launch recipes cover Codex, Claude Code, OpenCode, Pi Agent, and Grok B
 
 ## Try it in 3 minutes
 
+### macOS Desktop (recommended)
+
+Download the DMG for your Mac from [GitHub Releases](https://github.com/adeptify/GoalBoard/releases):
+
+- Apple Silicon (M1/M2/M3/M4…): `macos-arm64`
+- Intel Mac: `macos-x64`
+
+Open the DMG, drag GoalBoard into Applications, and launch it. Desktop includes Node and the GoalBoard Runtime. On first launch it installs Core into `~/.goalboard` and starts the same local workbench, without requiring Node, pnpm, or a repository checkout. App upgrades do not rewrite existing projects or history.
+
+Development builds that are not signed with Developer ID and notarized by Apple still trigger Gatekeeper and require explicit approval in System Settings → Privacy & Security. The release workflow produces signed and notarized artifacts once the repository has the Apple credentials.
+
+### Run from source
+
 You need Node.js 20+, pnpm, and macOS (the persistent Web service currently uses LaunchAgent; other platforms can run Web in the foreground).
 
 ```bash
@@ -101,13 +114,23 @@ Open `http://127.0.0.1:4173` and enter the demo project. In “Settings → Runt
 
 Runtimes read MCP and Skill manifests at Session startup, so a newly connected Runtime needs a new Session.
 
-### macOS Desktop Preview
+### Build, install, and start macOS Desktop
 
 ```bash
+# Run the development app from source
 pnpm desktop
+
+# Build a DMG and App zip for the current architecture
+pnpm desktop:build:macos
+
+# Install the freshly built DMG into ~/Applications and launch it
+pnpm desktop:install:macos
+
+# Start the installed app later
+pnpm desktop:start:macos
 ```
 
-Desktop uses the same local service and project data. It is currently available as a source-run Preview; a signed and notarized installer for general users is not available yet.
+Each architecture ships separately because GoalBoard's SQLite and PTY native addons must match both the bundled Node runtime and the Mac CPU. Pushing a `v*` tag makes GitHub Actions build Apple Silicon and Intel DMGs, but the public Release is published only after signing and notarization succeed. Credentials are read only from GitHub Secrets and never committed to the repository.
 
 ## Product boundaries
 

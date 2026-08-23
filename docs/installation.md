@@ -2,6 +2,22 @@
 
 > 详细安装、更新、启动、卸载与演示数据说明。快速上手见 [README](../README.md) 的「3 分钟体验」。
 
+## macOS Desktop 安装包
+
+普通 macOS 用户优先从 [GitHub Releases](https://github.com/adeptify/GoalBoard/releases) 下载 `macos-arm64`（Apple Silicon）或 `macos-x64`（Intel）DMG，把 GoalBoard 拖入 Applications 后启动。App 内含匹配架构的 Node、GoalBoard Core 和生产依赖；首次打开才调用同一套 `goalboard install` 服务写入 `~/.goalboard`，随后启动本地 Web。它不会在首次启动时创建项目、接入 Runtime、创建 demo 或修改用户项目。
+
+开发者可以从仓库运行：
+
+```bash
+pnpm desktop:build:macos    # release/macos 中生成 DMG、App zip 与 SHA256
+pnpm desktop:install:macos  # 安装到 ~/Applications；旧 App 先移入废纸篓
+pnpm desktop:start:macos    # 启动已安装 App
+```
+
+自动化或验收时可设置 `GOALBOARD_SKIP_OPEN=1`，只安装、不立即打开窗口；也可以用 `GOALBOARD_APP_DIR` 指定其他用户级安装目录。
+
+构建脚本下载固定的 Node LTS，并使用 Node 官方 `SHASUMS256.txt` 校验后再生成 payload。Apple Silicon 与 Intel 分别构建，不能把两个架构的 native addon 混成一个伪 universal 包。没有 Developer ID 与 notarization credentials 时，本地构建和手动触发的工作流只能生成会触发 Gatekeeper 的内部 ad-hoc 包；脚本不会替用户删除 quarantine 标记。公开的 `v*` tag Release 必须先配置完整 Apple Secrets，由 Tauri 完成签名、公证与 stapling 后才会发布两种架构的产物。
+
 ## 安装边界
 
 `goalboard install` 只维护 `~/.goalboard`：版本化程序与共享 Skill、MCP/Web/CLI 启动入口、项目 DB 根目录、日志和安装清单。它不会创建或启动项目，不会写入用户项目，也不会修改任何 Runtime 的用户级配置。之后若要把 MCP 入口注册到某个 Runtime，必须走用户确认的 Runtime 集成流程。
@@ -59,7 +75,7 @@ Runtime 会先只读检查 `goalboard service status`，不会直接拉起一个
 "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Runtime 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。macOS 上也可从仓库运行 `pnpm desktop`，App 只是同一套页面的窗口壳。
+打开 `http://127.0.0.1:4173` 后，可以在设置中创建、导入、改名和打开项目，也可以先配置 Runtime 接入。选择一个项目只改变网页浏览位置，不会自动绑定或切换当前 Runtime Session；已有旧 DB 只有明确选择并确认后才会迁入项目。macOS 上也可运行 Desktop 安装包，或从仓库执行 `pnpm desktop`；二者都是同一套页面与本地数据的窗口壳。
 
 直接运行 `goalboard-web` 仍是前台模式，适合临时调试；关闭终端会同时关闭页面。macOS 上可改用用户级 LaunchAgent 常驻服务，先预览再确认：
 

@@ -19,7 +19,10 @@ import {
 import { WEB_CONTROL_TOKEN_RELATIVE_PATH } from "../web/control-token.js";
 
 const HOME_OWNER = "goalboard-home-install-v1";
-const LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
+const OWNED_LAUNCHER_HEADERS = [
+  "#!/usr/bin/env node\n// goalboard-home-launcher-v1",
+  "#!/bin/sh\n# goalboard-home-launcher-v2",
+] as const;
 const UNINSTALL_OWNER = "goalboard-uninstall-v1";
 
 export interface GoalBoardUninstallChange {
@@ -409,7 +412,7 @@ async function inspectOwnedHomeAssets(homeDirectory: string): Promise<{
     const text = await readText(launcher);
     snapshotPaths.push(launcher);
     if (text == null) continue;
-    if (text.startsWith(LAUNCHER_HEADER)) ownedPaths.push(launcher);
+    if (OWNED_LAUNCHER_HEADERS.some((header) => text.startsWith(header))) ownedPaths.push(launcher);
     else conflicts.push(`启动器已被修改，不会删除：${launcher}`);
   }
   const releasesDirectory = path.join(homeDirectory, "releases");

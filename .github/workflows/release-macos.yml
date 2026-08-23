@@ -1,0 +1,100 @@
+name: Release macOS Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_APPLE_RELEASE_CREDENTIALS: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: corepack prepare pnpm@11.9.0 --activate
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag and package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          test "$TAG_VERSION" = "$PACKAGE_VERSION"
+
+      - name: Require Apple credentials for a public release
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_RELEASE_CREDENTIALS != 'true'
+        run: |
+          echo "A public macOS release requires Developer ID signing and Apple notarization credentials." >&2
+          echo "Configure APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID." >&2
+          exit 1
+
+      - name: Import Developer ID certificate
+        if: env.HAS_APPLE_RELEASE_CREDENTIALS == 'true'
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build signed and notarized DMG
+        if: env.HAS_APPLE_RELEASE_CREDENTIALS == 'true'
+        run: pnpm desktop:build:macos
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build ad-hoc DMG
+        if: env.HAS_APPLE_RELEASE_CREDENTIALS != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        run: pnpm desktop:build:macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goalboard-macos-${{ matrix.arch }}
+          path: release/macos/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: goalboard-macos-*
+          path: release-assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*

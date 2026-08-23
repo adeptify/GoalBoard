@@ -11,9 +11,10 @@ import {
 } from "./fingerprint.js";
 
 const INSTALLER_ID = "goalboard-home-install-v1";
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
+const LEGACY_LAUNCHER_HEADER = "#!/usr/bin/env node\n// goalboard-home-launcher-v1";
+const BUNDLED_NODE_LAUNCHER_HEADER = "#!/bin/sh\n# goalboard-home-launcher-v2";
 
 export type GoalBoardHomeInstallStatus = "installed" | "upgraded" | "refreshed" | "repaired" | "unchanged";
 
@@ -64,6 +65,7 @@ interface ReleaseManifest {
   installer: string;
   version: string;
   dependencies?: "embedded";
+  node_runtime?: "embedded";
   content_digest?: string;
   /** Present only in the obsolete schema-1 linked layout. */
   source_directory?: string;
@@ -95,6 +97,7 @@ interface InspectedSource {
   directory: string;
   version: string;
   runtimeDependencies: RuntimeDependencyPackage[];
+  bundledNodePath: string | null;
   contentDigest: string;
 }
 
@@ -153,7 +156,12 @@ export async function installGoalBoardHome(
       [releasesDirectory, configDirectory, binDirectory, projectDirectory, logsDirectory].map(ensureDirectory),
     );
 
-    const existingRelease = await inspectRelease(releaseDirectory, source.version, source.contentDigest);
+    const existingRelease = await inspectRelease(
+      releaseDirectory,
+      source.version,
+      source.contentDigest,
+      source.bundledNodePath != null,
+    );
     let releaseChanged = false;
     if (existingRelease === "valid") {
       preservedPaths.push(releaseDirectory);
@@ -180,7 +188,11 @@ export async function installGoalBoardHome(
     for (const [name, launcherPath] of Object.entries(launchers)) {
       const changed = await writeOwnedText(
         launcherPath,
-        launcherSource(name as keyof typeof launchers),
+        launcherSource(
+          name as keyof typeof launchers,
+          releaseDirectory,
+          source.bundledNodePath != null,
+        ),
         mutations,
       );
       if (changed) writtenPaths.push(launcherPath);
@@ -308,8 +320,21 @@ async function inspectSource(
   }
   await assertFreshRepositoryBuild(sourceDirectory);
   const runtimeDependencies = await collectRuntimeDependencies(packageJson, packageMetadata);
-  const contentDigest = await computeSourceContentDigest(sourceDirectory, runtimeDependencies);
-  return { directory: sourceDirectory, version, runtimeDependencies, contentDigest };
+  const bundledNodeCandidate = path.join(sourceDirectory, "runtime", "node");
+  const bundledNodeState = await pathState(bundledNodeCandidate);
+  if (bundledNodeState && !bundledNodeState.isFile()) {
+    throw new GoalBoardHomeInstallError(
+      "source.invalid",
+      `GoalBoard bundled Node 不是文件: ${bundledNodeCandidate}`,
+    );
+  }
+  const bundledNodePath = bundledNodeState ? bundledNodeCandidate : null;
+  const contentDigest = await computeSourceContentDigest(
+    sourceDirectory,
+    runtimeDependencies,
+    bundledNodePath != null,
+  );
+  return { directory: sourceDirectory, version, runtimeDependencies, bundledNodePath, contentDigest };
 }
 
 async function assertFreshRepositoryBuild(sourceDirectory: string): Promise<void> {
@@ -328,8 +353,14 @@ async function assertFreshRepositoryBuild(sourceDirectory: string): Promise<void
 async function computeSourceContentDigest(
   sourceDirectory: string,
   runtimeDependencies: readonly RuntimeDependencyPackage[],
+  includesBundledNode: boolean,
 ): Promise<string> {
-  const rootDigest = await digestPaths(sourceDirectory, ["dist", "skills", "package.json"]);
+  const rootDigest = await digestPaths(sourceDirectory, [
+    "dist",
+    "skills",
+    "package.json",
+    ...(includesBundledNode ? ["runtime/node"] : []),
+  ]);
   const dependencies = [];
   for (const dependency of runtimeDependencies) {
     dependencies.push({
@@ -465,6 +496,9 @@ async function createRelease(
   await fs.mkdir(stagingDirectory, { recursive: false });
   const embeddedNodeModules = path.join(stagingDirectory, "node_modules");
   await fs.mkdir(embeddedNodeModules, { recursive: true });
+  if (source.bundledNodePath) {
+    await fs.mkdir(path.join(stagingDirectory, "runtime"), { recursive: true });
+  }
   await Promise.all([
     fs.cp(path.join(source.directory, "dist"), path.join(stagingDirectory, "dist"), {
       recursive: true,
@@ -478,7 +512,19 @@ async function createRelease(
       errorOnExist: true,
       dereference: true,
     }),
+    ...(source.bundledNodePath
+      ? [
+          fs.cp(source.bundledNodePath, path.join(stagingDirectory, "runtime", "node"), {
+            recursive: false,
+            force: false,
+            errorOnExist: true,
+          }),
+        ]
+      : []),
   ]);
+  if (source.bundledNodePath) {
+    await fs.chmod(path.join(stagingDirectory, "runtime", "node"), 0o755);
+  }
   for (const dependency of source.runtimeDependencies) {
     const target = path.join(embeddedNodeModules, dependency.name);
     await assertContainedDependencyLinks(dependency.directory);
@@ -515,6 +561,7 @@ async function createRelease(
         installer: INSTALLER_ID,
         version,
         dependencies: "embedded",
+        ...(source.bundledNodePath ? { node_runtime: "embedded" as const } : {}),
         content_digest: source.contentDigest,
         created_at: new Date().toISOString(),
       } satisfies ReleaseManifest,
@@ -552,6 +599,7 @@ async function inspectRelease(
   releaseDirectory: string,
   version: string,
   expectedContentDigest: string,
+  expectsBundledNode: boolean,
 ): Promise<"missing" | "valid" | "refreshable" | "repairable"> {
   const state = await pathState(releaseDirectory);
   if (!state) return "missing";
@@ -566,6 +614,7 @@ async function inspectRelease(
     manifest.schema_version !== SCHEMA_VERSION
     || manifest.dependencies !== "embedded"
     || typeof manifest.content_digest !== "string"
+    || (expectsBundledNode && manifest.node_runtime !== "embedded")
   ) {
     return "repairable";
   }
@@ -576,11 +625,13 @@ async function inspectRelease(
     "skills/goal-advance/SKILL.md",
     "node_modules",
     "package.json",
+    ...(expectsBundledNode ? ["runtime/node"] : []),
   ];
   const states = await Promise.all(required.map((item) => pathState(path.join(releaseDirectory, item))));
   if (!states.every(Boolean)) return "repairable";
   const nodeModulesState = states[4];
   if (!nodeModulesState?.isDirectory() || nodeModulesState.isSymbolicLink()) return "repairable";
+  if (expectsBundledNode && !states.at(-1)?.isFile()) return "repairable";
   return manifest.content_digest === expectedContentDigest ? "valid" : "refreshable";
 }
 
@@ -631,7 +682,11 @@ async function ensureDirectory(directory: string): Promise<void> {
 async function writeOwnedText(filePath: string, content: string, mutations: TextMutation[]): Promise<boolean> {
   const previous = await readTextIfPresent(filePath);
   if (previous === content) return false;
-  if (previous != null && !previous.startsWith(LAUNCHER_HEADER)) {
+  if (
+    previous != null
+    && !previous.startsWith(LEGACY_LAUNCHER_HEADER)
+    && !previous.startsWith(BUNDLED_NODE_LAUNCHER_HEADER)
+  ) {
     throw new GoalBoardHomeInstallError("home.unknown_file", `不会覆盖未知用户文件: ${filePath}`);
   }
   mutations.push({ filePath, previous });
@@ -676,14 +731,29 @@ async function rollbackTextMutations(mutations: TextMutation[]): Promise<void> {
   }
 }
 
-function launcherSource(entry: "cli" | "mcp" | "web"): string {
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function launcherSource(
+  entry: "cli" | "mcp" | "web",
+  releaseDirectory: string,
+  useBundledNode: boolean,
+): string {
   const target =
     entry === "cli"
       ? "dist/cli/main.js"
       : entry === "mcp"
         ? "dist/mcp/server.js"
         : "dist/web/server.js";
-  return `${LAUNCHER_HEADER}
+  if (useBundledNode) {
+    const nodePath = path.join(releaseDirectory, "runtime", "node");
+    const entryPath = path.join(releaseDirectory, target);
+    return `${BUNDLED_NODE_LAUNCHER_HEADER}
+exec ${shellQuote(nodePath)} ${shellQuote(entryPath)} "$@"
+`;
+  }
+  return `${LEGACY_LAUNCHER_HEADER}
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";

@@ -78,6 +78,19 @@ GoalBoard 不负责调度一群 Agent，也不替代 Codex、Claude Code 或其�
 
 ## 3 分钟体验
 
+### macOS Desktop（推荐）
+
+从 [GitHub Releases](https://github.com/adeptify/GoalBoard/releases) 下载与你的 Mac 匹配的 DMG：
+
+- Apple Silicon（M1/M2/M3/M4…）：`macos-arm64`
+- Intel Mac：`macos-x64`
+
+打开 DMG，把 GoalBoard 拖入 Applications 后直接启动。Desktop 已内置 Node 与 GoalBoard Runtime；首次打开会把 Core 安装到 `~/.goalboard` 并启动同一套本地工作台，不要求先安装 Node、pnpm 或克隆仓库。升级 App 不会改写已有项目和历史。
+
+未使用 Developer ID 签名和 Apple 公证的开发构建仍会触发 Gatekeeper，需要在“系统设置 → 隐私与安全性”中明确允许；正式发布流水线配置证书后会生成签名并公证的同名产物。
+
+### 从源码体验
+
 需要 Node.js 20+、pnpm，以及 macOS（常驻 Web 服务目前使用 LaunchAgent；其他系统可以前台启动 Web）。
 
 ```bash
@@ -101,13 +114,23 @@ pnpm install:local
 
 Runtime 只在 Session 启动时读取 MCP 和 Skill，因此刚完成接入后需要新开 Session。
 
-### macOS Desktop Preview
+### 构建、安装和启动 macOS Desktop
 
 ```bash
+# 开发态源码运行
 pnpm desktop
+
+# 构建当前架构的 DMG 与 App zip
+pnpm desktop:build:macos
+
+# 安装刚构建的 DMG 到 ~/Applications 并启动
+pnpm desktop:install:macos
+
+# 以后直接启动已安装 App
+pnpm desktop:start:macos
 ```
 
-Desktop 使用同一套本地服务和项目数据。目前提供源码运行的 Preview，尚未提供正式签名、公证和面向普通用户的安装包。
+每个架构单独打包，是因为 GoalBoard 的 SQLite 与 PTY native addon 必须和 Node、Mac CPU 架构一致。向 `v*` tag 推送后，GitHub Actions 会分别构建 Apple Silicon 与 Intel DMG；只有签名和公证成功才会发布公开 Release，凭据只从 GitHub Secrets 读取，不进入仓库。
 
 ## 产品边界
 
