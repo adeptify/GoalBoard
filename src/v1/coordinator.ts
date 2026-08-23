@@ -2316,9 +2316,12 @@ export class GoalBoardCoordinator {
    * need the whole navigator, so repeating `getGoalWorkState` would otherwise
    * reload the same Board once per Goal.
    */
-  getGoalWorkStates(input: { board_id: string }): GoalWorkStateView[] {
+  getGoalWorkStates(input: { board_id: string; snapshot?: BoardSnapshot }): GoalWorkStateView[] {
     this.requireBoard(input.board_id);
-    const snapshot = this.store.snapshot(input.board_id);
+    const snapshot = input.snapshot ?? this.store.snapshot(input.board_id);
+    if (snapshot.board.board_id !== input.board_id) {
+      throw new GoalBoardV1Error("board.snapshot_mismatch", "BoardSnapshot 不属于请求的 Board");
+    }
     const now = this.clock().toISOString();
     return snapshot.goals.map((goal) =>
       this.deriveGoalWorkState(input.board_id, goal, snapshot, now),

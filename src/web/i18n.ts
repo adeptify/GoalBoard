@@ -1851,6 +1851,10 @@ Object.assign(EN, {
 });
 
 Object.assign(EN, {
+  "正在载入完整记录…": "Loading complete records…",
+  "无法读取这条 Goal 的完整记录": "Could not read this Goal's complete records",
+  "Goal 记录响应不完整": "The Goal records response is incomplete",
+  "无法载入完整记录": "Could not load complete records",
   "当前终端归属": "This terminal belongs to",
   "打开这个子 Goal": "Open this child Goal",
   "请先选择一个具体的子 Goal": "Choose a specific child Goal first",

@@ -3562,7 +3562,7 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
         ${renderGoalFactors(item, view)}
       </div>
       <div id="goal-panel-records-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-records-${goalId}" data-goal-panel="records" hidden>
-        ${renderGoalTechnicalDetails(item, view)}
+        <div data-goal-records-content data-loaded="false"><p class="empty-row" role="status">${L("正在载入完整记录…")}</p></div>
       </div>
     </div>
     ${quickRecordAction ? renderQuickRecordDialog(item, view) : ""}
@@ -3616,6 +3616,19 @@ export function renderGoalDocumentFragment(
     ? renderTrashGoalDocument(item, true)
     : renderGoalDocument(item, view, true);
   return prefixLocalLinks(html, view.route_prefix);
+}
+
+/** Render the heavy, read-only record ledger only after its Goal tab is opened. */
+export function renderGoalRecordsFragment(
+  view: GoalBoardWebView,
+  goalId: string,
+  collection: GoalDocumentCollection = "current",
+): string | null {
+  if (collection === "trash") return null;
+  const items = collection === "archive" ? view.archived_goals : view.goals;
+  const item = items.find((candidate) => candidate.goal.goal_id === goalId);
+  if (!item) return null;
+  return prefixLocalLinks(renderGoalTechnicalDetails(item, view), view.route_prefix);
 }
 
 function renderGoalTrashDialog(): string {
@@ -5990,6 +6003,10 @@ const CLIENT_SCRIPT = `
     const visibleGoals = (source = state) => trashView ? source.trashed_goals : archiveView ? source.archived_goals : source.goals;
     const storageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
     let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
+    if (!decisionView) {
+      const initialHistoryState = history.state && typeof history.state === "object" ? history.state : {};
+      history.replaceState({ ...initialHistoryState, goalId: selected }, "", location.href);
+    }
     let trashIntent = null;
     let toastTimer;
     let syncing = false;
@@ -6618,6 +6635,41 @@ const CLIENT_SCRIPT = `
       return target?.closest?.("[data-goal-factor-panel]")?.dataset.goalFactorPanel || "";
     };
 
+    const loadGoalRecords = async (article) => {
+      const container = article?.querySelector("[data-goal-records-content]");
+      if (!container || container.dataset.loaded === "true" || container.dataset.loading === "true") return;
+      const goalId = article.dataset.goalView;
+      if (!goalId) return;
+      container.dataset.loading = "true";
+      container.setAttribute("aria-busy", "true");
+      try {
+        const response = await fetch(
+          route("/api/goals/" + encodeURIComponent(goalId) + "/records?view=" + documentCollection),
+          { cache: "no-store" },
+        );
+        if (!response.ok) throw new Error(L("无法读取这条 Goal 的完整记录"));
+        const template = document.createElement("template");
+        template.innerHTML = (await response.text()).trim();
+        const records = template.content.querySelector('[data-goal-section="technical"]');
+        if (!records) throw new Error(L("Goal 记录响应不完整"));
+        if (!article.isConnected || article.dataset.goalView !== goalId) return;
+        container.replaceChildren(records);
+        container.dataset.loaded = "true";
+      } catch (error) {
+        if (!article.isConnected || article.dataset.goalView !== goalId) return;
+        const message = error instanceof Error ? error.message : L("无法载入完整记录");
+        const errorRow = document.createElement("p");
+        errorRow.className = "empty-row";
+        errorRow.setAttribute("role", "alert");
+        errorRow.textContent = message;
+        container.replaceChildren(errorRow);
+        showToast(message, true);
+      } finally {
+        container.dataset.loading = "false";
+        container.removeAttribute("aria-busy");
+      }
+    };
+
     const setGoalPanel = (panelName, persist = true, updateHash = false, resetScroll = false) => {
       const article = documentPane.querySelector("[data-goal-view]");
       if (!article) return false;
@@ -6633,6 +6685,7 @@ const CLIENT_SCRIPT = `
       article.querySelectorAll("[data-goal-panel]").forEach((candidate) => {
         candidate.hidden = candidate !== activePanel;
       });
+      if (panel === "records") void loadGoalRecords(article);
       if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
       if (resetScroll) article.querySelector(".goal-workspace-nav")?.scrollIntoView({ block: "start" });
       if (persist) queueSave();
@@ -8367,11 +8420,17 @@ const CLIENT_SCRIPT = `
       }
     });
 
-    addEventListener("popstate", () => {
-      const match = localPathname().match(
+    addEventListener("popstate", (event) => {
+      const pathname = localPathname();
+      const match = pathname.match(
         trashView ? /^\\/trash\\/goals\\/(.+)$/ : archiveView ? /^\\/archive\\/goals\\/(.+)$/ : /^\\/goals\\/(.+)$/,
       );
-      if (match) void selectGoal(decodeURIComponent(match[1]), false);
+      const collectionRoot = trashView ? "/trash" : archiveView ? "/archive" : "/";
+      const rootGoalId = pathname === collectionRoot
+        ? String(event.state?.goalId || state.active_goal_id || visibleGoals()[0]?.goal.goal_id || "")
+        : "";
+      const goalId = match ? decodeURIComponent(match[1]) : rootGoalId;
+      if (goalId) void selectGoal(goalId, false);
     });
     addEventListener("hashchange", () => {
       const targetId = decodeURIComponent(location.hash.slice(1));

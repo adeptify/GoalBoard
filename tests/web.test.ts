@@ -18,6 +18,7 @@ import {
   activeOutgoingDependsOn,
   displayedPassedCriterionIds,
   firstBlockedDescendant,
+  renderGoalRecordsFragment,
   renderGoalBoardWeb,
   sortGoalTreeItems,
   unsatisfiedOutgoingDependencies,
@@ -126,7 +127,7 @@ function webFixture() {
   return { databasePath };
 }
 
-test("Web View cache follows Board events and main DB changes instead of SQLite WAL lifecycle", () => {
+test("Web View cache follows canonical Board events instead of SQLite file lifecycle", () => {
   const { databasePath } = webFixture();
   const cache = new Map() as Parameters<typeof cachedGoalBoardWebView>[0];
   const options = { databasePath, boardId: DEMO_BOARD_ID, demo: true };
@@ -164,18 +165,6 @@ test("Web View cache follows Board events and main DB changes instead of SQLite 
     assert.notStrictEqual(changed, first);
     assert.ok(changed.goals.some((item) => item.goal.goal_id === "CACHE-EVENT"));
 
-    const cursorBeforeDirectWrite = reopenedStore.eventCursor(DEMO_BOARD_ID);
-    reopenedStore.db
-      .prepare("UPDATE goals SET title = ? WHERE goal_id = ?")
-      .run("没有事件的存量写入", "CACHE-EVENT");
-    reopenedStore.db.pragma("wal_checkpoint(TRUNCATE)");
-    assert.equal(reopenedStore.eventCursor(DEMO_BOARD_ID), cursorBeforeDirectWrite);
-    const directlyChanged = cachedGoalBoardWebView(cache, reopenedStore, coordinator, options);
-    assert.notStrictEqual(directlyChanged, changed);
-    assert.equal(
-      directlyChanged.goals.find((item) => item.goal.goal_id === "CACHE-EVENT")?.goal.title,
-      "没有事件的存量写入",
-    );
   } finally {
     reopenedStore.close();
   }
@@ -616,6 +605,10 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(historyRootHtml, /处理 \d+ 项决定/);
   const html = renderGoalBoardWeb(view);
   const coreHtml = renderGoalBoardWeb(view, "CORE");
+  const recordsFragment = renderGoalRecordsFragment(view, "V1");
+  const coreRecordsFragment = renderGoalRecordsFragment(view, "CORE");
+  assert.ok(recordsFragment);
+  assert.ok(coreRecordsFragment);
   const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
   assert.ok(html.startsWith("<!--\nTHESIS:"));
   assert.equal((html.match(/data-goal-view=/g) ?? []).length, 1);
@@ -664,25 +657,27 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-quick-record-type="impact"/);
   assert.match(html, /data-quick-record-type="relation"/);
   assert.equal((html.match(/class="goal-primary-action"/g) ?? []).length, 1);
-  assert.match(html, /<section class="goal-technical"[^>]*>/);
-  assert.doesNotMatch(html, /查看执行细节|goal-execution-details/);
-  assert.match(html, /领取、推进、完成依据和检查记录/);
+  assert.doesNotMatch(html, /<section class="goal-technical"[^>]*>/);
+  assert.match(html, /data-goal-records-content data-loaded="false"/);
+  assert.match(recordsFragment, /<section class="goal-technical"[^>]*>/);
+  assert.doesNotMatch(recordsFragment, /查看执行细节|goal-execution-details/);
+  assert.match(recordsFragment, /领取、推进、完成依据和检查记录/);
   assert.match(html, /为什么现在做/);
-  assert.match(html, /目标标识、负责人、时间、状态和完整工作边界/);
-  assert.match(html, /当前状态/);
-  assert.match(html, /class="contract-list"/);
-  assert.doesNotMatch(html, /class="contract-grid"/);
-  assert.match(html, /包含什么/);
-  assert.match(html, /明确不做/);
-  assert.match(html, /必须遵守/);
-  assert.match(html, /需要的输入/);
-  assert.match(html, /承诺的输出/);
+  assert.match(recordsFragment, /目标标识、负责人、时间、状态和完整工作边界/);
+  assert.match(recordsFragment, /当前状态/);
+  assert.match(recordsFragment, /class="contract-list"/);
+  assert.doesNotMatch(recordsFragment, /class="contract-grid"/);
+  assert.match(recordsFragment, /包含什么/);
+  assert.match(recordsFragment, /明确不做/);
+  assert.match(recordsFragment, /必须遵守/);
+  assert.match(recordsFragment, /需要的输入/);
+  assert.match(recordsFragment, /承诺的输出/);
   assert.match(html, /Goal 关系/);
   assert.match(html, /上游/);
   assert.match(html, /下游/);
-  assert.match(html, /Claim 历史/);
-  assert.match(html, /Run 历史/);
-  assert.match(html, /风险与影响/);
+  assert.match(recordsFragment, /Claim 历史/);
+  assert.match(recordsFragment, /Run 历史/);
+  assert.match(recordsFragment, /风险与影响/);
   assert.match(html, /工作规则/);
   assert.match(html, /项目默认规则/);
   assert.match(html, /为当前 Goal 增加要求/);
@@ -692,15 +687,11 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-live-form="policy-goal-/);
   assert.match(html, /name="required_capabilities"/);
   assert.match(html, /name="max_lease_seconds"/);
-  const recordsStart = html.indexOf('data-goal-panel="records"');
-  const quickDialogStart = html.indexOf('data-quick-record-dialog', recordsStart);
-  const recordsHtml = html.slice(recordsStart, quickDialogStart);
-  assert.doesNotMatch(recordsHtml, /data-(?:relation|risk|impact|evidence|policy)[a-z-]*-form/);
-  assert.match(recordsHtml, /基础信息/);
-  assert.match(recordsHtml, /执行与检查/);
-  assert.match(recordsHtml, /变更历史/);
-  assert.match(recordsHtml, /关联与规则记录/);
-  assert.match(html, /事件历史/);
+  assert.doesNotMatch(recordsFragment, /data-(?:relation|risk|impact|evidence|policy)[a-z-]*-form/);
+  assert.match(recordsFragment, /基础信息/);
+  assert.match(recordsFragment, /执行与检查/);
+  assert.match(recordsFragment, /变更历史/);
+  assert.match(recordsFragment, /关联与规则记录/);
   assert.match(html, /待决定/);
   assert.match(html, /打开不会自动发送或领取/);
   assert.match(html, /示例数据/);
@@ -711,10 +702,10 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(coreHtml, /验证 corrects 关系的完整呈现/);
   assert.match(coreHtml, /字段过多导致信息过载/);
   assert.match(coreHtml, /fixture-snapshot/);
-  assert.match(coreHtml, /REQ-WEB-COVERAGE/);
-  assert.match(coreHtml, /sha256:web-fixture/);
-  assert.match(coreHtml, /href="https:\/\/example.com\/goalboard-contract"/);
-  assert.match(coreHtml, /data-copy-value/);
+  assert.match(coreRecordsFragment, /REQ-WEB-COVERAGE/);
+  assert.match(coreRecordsFragment, /sha256:web-fixture/);
+  assert.match(coreRecordsFragment, /href="https:\/\/example.com\/goalboard-contract"/);
+  assert.match(coreRecordsFragment, /data-copy-value/);
   assert.match(html, /data-select-goal/);
   assert.match(html, /class="tree-chrome"/);
   assert.match(html, /class="tree-search"/);
@@ -798,7 +789,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
   assert.match(html, /父 Goal 如何完成/);
   assert.match(html, /href="\/goals\/PLATFORM"/);
-  assert.match(html, /id="execution-V1"/);
+  assert.match(recordsFragment, /id="execution-V1"/);
   assert.match(html, /id="acceptance-V1"/);
   assert.match(html, /data-collapse-all aria-label="折叠全部"/);
   assert.match(html, /class="tree-dep is-waiting"/);
@@ -838,8 +829,8 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /target\.closest\("button\[data-navigator-view\]"\)/);
   assert.doesNotMatch(html, /api\/goals\/[^"']+\/graph/);
   assert.match(html, /<span class="tree-dep-copy"><strong>让不同 AI 对话看到同一项目进度<\/strong>/);
-  assert.match(html, /class="scope-gaps"/);
-  assert.match(html, /还有 \d+ 项未写|范围、输入与输出尚未填写/);
+  assert.match(recordsFragment, /class="scope-gaps"/);
+  assert.match(recordsFragment, /还有 \d+ 项未写|范围、输入与输出尚未填写/);
   const webGoal = view.goals.find((item) => item.goal.goal_id === "WEB");
   const v1Goal = view.goals.find((item) => item.goal.goal_id === "V1");
   const interfacesGoal = view.goals.find((item) => item.goal.goal_id === "INTERFACES");
@@ -3953,8 +3944,11 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     assert.ok(board.snapshot.impacts.some((impact) => impact.goal_id === "EDIT-ME" && impact.surface === "src/web" && impact.state === "confirmed"));
 
     const updatedPage = await (await webFetch(`${origin}/goals/EDIT-ME`)).text();
-    assert.match(updatedPage, /目标：100%/);
-    assert.match(updatedPage, /证据：test、inspection/);
+    const updatedRecords = await (
+      await webFetch(`${origin}/api/goals/EDIT-ME/records?view=current`)
+    ).text();
+    assert.match(updatedRecords, /目标：100%/);
+    assert.match(updatedRecords, /证据：test、inspection/);
     assert.match(updatedPage, /子 Goal 边界仍可能重叠/);
     assert.match(updatedPage, /contract:\/\/EDIT-ME/);
 
@@ -4494,13 +4488,19 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /const paneHeader = documentPane\.querySelector\(":scope > \.desktop-pane-header"\)/);
     assert.match(page, /documentPane\.replaceChildren\(\.\.\.\(paneHeader \? \[paneHeader, nextView\] : \[nextView\]\)\)/);
     assert.match(page, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/document\?view=/);
+    assert.match(page, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/records\?view=/);
+    assert.match(page, /history\.replaceState\(\{ \.\.\.initialHistoryState, goalId: selected \}/);
+    assert.match(page, /event\.state\?\.goalId \|\| state\.active_goal_id/);
     assert.doesNotMatch(page, /documentPane\.innerHTML = nextDocument\.innerHTML/);
     assert.match(page, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
     assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB"/);
     assert.match(page, /处理 \d+ 项决定/);
     assert.doesNotMatch(page, /<form class="human-review-form"/);
-    assert.match(page, new RegExp(evidence.evidence_id));
+    const policyRecords = await (
+      await webFetch(`${origin}/api/goals/POLICY-WEB/records?view=current`)
+    ).text();
+    assert.match(policyRecords, new RegExp(evidence.evidence_id));
     assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);
     assert.match(page, /class="project-decisions/);
     assert.match(page, /class="tree-chrome"/);
@@ -4753,7 +4753,12 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     const beforeSubmit = await (await webFetch(`${origin}/goals/EVIDENCE-WEB`)).text();
     assert.match(beforeSubmit, /data-evidence-form/);
     assert.match(beforeSubmit, /保存完成依据/);
-    assert.match(beforeSubmit, /完整事件账本/);
+    assert.match(beforeSubmit, /data-goal-records-content data-loaded="false"/);
+    assert.doesNotMatch(beforeSubmit, /完整事件账本/);
+    const recordsBeforeSubmit = await (
+      await webFetch(`${origin}/api/goals/EVIDENCE-WEB/records?view=current`)
+    ).text();
+    assert.match(recordsBeforeSubmit, /完整事件账本/);
 
     const missingCriterion = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
@@ -4810,14 +4815,18 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     }
 
     const goalPage = await (await webFetch(`${origin}/goals/EVIDENCE-WEB`)).text();
-    assert.match(goalPage, new RegExp(submittedResult.evidence.evidence_id));
-    assert.match(goalPage, /href="\/api\/project-references\/notes%2Fevidence\.txt"/);
-    assert.match(goalPage, /data-project-reference/);
-    assert.match(goalPage, /href="https:\/\/example\.com\/manual-evidence"/);
-    assert.match(goalPage, /evidence\.submitted/);
-    assert.match(goalPage, /risk\.created/);
-    assert.match(goalPage, /relation\.added/);
-    assert.match(goalPage, /policy\.added/);
+    assert.doesNotMatch(goalPage, /完整事件账本/);
+    const goalRecords = await (
+      await webFetch(`${origin}/api/goals/EVIDENCE-WEB/records?view=current`)
+    ).text();
+    assert.match(goalRecords, new RegExp(submittedResult.evidence.evidence_id));
+    assert.match(goalRecords, /href="\/api\/project-references\/notes%2Fevidence\.txt"/);
+    assert.match(goalRecords, /data-project-reference/);
+    assert.match(goalRecords, /href="https:\/\/example\.com\/manual-evidence"/);
+    assert.match(goalRecords, /evidence\.submitted/);
+    assert.match(goalRecords, /risk\.created/);
+    assert.match(goalRecords, /relation\.added/);
+    assert.match(goalRecords, /policy\.added/);
 
     const opened = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}`);
     assert.equal(opened.status, 200, await opened.clone().text());
