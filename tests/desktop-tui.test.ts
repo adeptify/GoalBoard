@@ -217,10 +217,13 @@ async function catalogFixture() {
 }
 
 test("desktop Skill reads GOALBOARD_GOAL_ID and does not auto-claim", () => {
-  const skill = readFileSync(join(process.cwd(), "skills/goal-advance/SKILL.md"), "utf8");
-  assert.match(skill, /GOALBOARD_GOAL_ID/);
-  assert.match(skill, /Do \*\*not\*\* call `select_goal`, `claim`, or `run_start` just because the tab is open/);
-  assert.match(skill, /Opening a terminal is not claiming work/);
+  const projectConnection = readFileSync(
+    join(process.cwd(), "skills/goal-advance/references/project-connection.md"),
+    "utf8",
+  );
+  assert.match(projectConnection, /GOALBOARD_GOAL_ID/);
+  assert.match(projectConnection, /Do not call `select_goal`, `claim`, or `run_start` merely because the terminal exists/);
+  assert.match(projectConnection, /opened this Runtime beside that Goal/);
 });
 
 test("advance prompt names the Goal and omits the five-chapter contract", () => {

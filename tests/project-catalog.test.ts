@@ -9,6 +9,7 @@ import {
   GoalBoardProjectCatalogError,
   type RuntimeWorkContext,
 } from "../src/projects/catalog.js";
+import { withGoalBoardProjectCatalog } from "../src/projects/catalog-session.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
@@ -93,6 +94,42 @@ function createLegacyBoard(databasePath: string): void {
     store.close();
   }
 }
+
+test("catalog session closes its catalog after successful work", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    let scopedCatalog: GoalBoardProjectCatalog | null = null;
+    const result = await withGoalBoardProjectCatalog(
+      { homeDirectory: join(directory, ".goalboard") },
+      (catalog) => {
+        scopedCatalog = catalog;
+        return catalog.listProjects().length;
+      },
+    );
+
+    assert.equal(result, 0);
+    assert.ok(scopedCatalog);
+    assert.throws(() => scopedCatalog.listProjects(), /database connection is not open/i);
+  });
+});
+
+test("catalog session closes its catalog when work fails", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    let scopedCatalog: GoalBoardProjectCatalog | null = null;
+    await assert.rejects(
+      withGoalBoardProjectCatalog(
+        { homeDirectory: join(directory, ".goalboard") },
+        (catalog) => {
+          scopedCatalog = catalog;
+          throw new Error("fixture failure");
+        },
+      ),
+      /fixture failure/,
+    );
+
+    assert.ok(scopedCatalog);
+    assert.throws(() => scopedCatalog.listProjects(), /database connection is not open/i);
+  });
+});
 
 function snapshot(databasePath: string) {
   const store = new SqliteGoalBoardStore(databasePath);

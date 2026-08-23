@@ -3122,163 +3122,6 @@ function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
   return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
 }
 
-function situationNextStep(
-  item: WebGoalView,
-  blockedDescendant: WebGoalView | null,
-): { label: string; href: string | null; tone?: "blocked" | "ready" } {
-  const explanation = explainWorkState(item.status);
-  const acceptance = `#acceptance-${item.goal.goal_id}`;
-  const execution = `#execution-${item.goal.goal_id}`;
-  const relations = `#relations-${item.goal.goal_id}`;
-  switch (item.status) {
-    case "clarification_decision_pending":
-      return {
-        label: explanation.nextAction,
-        href: `/decisions#decision-goal-${encodeURIComponent(item.goal.goal_id)}`,
-      };
-    case "compound_closure_pending":
-      return { label: explanation.nextAction, href: `#completion-${item.goal.goal_id}` };
-    case "handoff_pending":
-      return { label: explanation.nextAction, href: null };
-    case "clarification_pending":
-    case "clarifying":
-      return { label: explanation.nextAction, href: acceptance };
-    case "clarification_blocked":
-    case "execution_blocked":
-    case "review_blocked":
-    case "revalidation_blocked":
-      return { label: explanation.nextAction, href: execution, tone: "blocked" };
-    case "waiting_children":
-      return blockedDescendant
-        ? {
-            label: L("先处理「{title}」", { title: blockedDescendant.goal.title }),
-            href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
-            tone: "blocked",
-          }
-        : { label: explanation.nextAction, href: relations };
-    case "execution_pending":
-      return { label: explanation.nextAction, href: execution };
-    case "executing":
-      return { label: explanation.nextAction, href: execution };
-    case "review_pending":
-    case "reviewing":
-      return { label: explanation.nextAction, href: execution };
-    case "revalidation_pending":
-    case "revalidating":
-      return { label: explanation.nextAction, href: execution };
-    case "invalidated":
-      return { label: explanation.nextAction, href: execution, tone: "blocked" };
-    case "satisfied":
-      return { label: explanation.nextAction, href: null, tone: "ready" };
-    case "archived":
-      return { label: explanation.nextAction, href: null };
-    case "trashed":
-      return { label: explanation.nextAction, href: null };
-  }
-}
-
-function renderSituationCell(options: {
-  label: string;
-  value: string;
-  href?: string | null;
-  extra?: string;
-  tone?: "blocked" | "ready" | "muted";
-}): string {
-  const classes = ["goal-situation-cell"];
-  if (!options.href) classes.push("goal-situation-cell--static");
-  if (options.tone) classes.push(`goal-situation-cell--${options.tone}`);
-  const body = `<span>${escapeHtml(options.label)}</span><strong>${escapeHtml(options.value)}</strong>${
-    options.extra ? `<small>${escapeHtml(options.extra)}</small>` : ""
-  }`;
-  return options.href
-    ? `<a class="${classes.join(" ")}" href="${escapeHtml(options.href)}">${body}</a>`
-    : `<div class="${classes.join(" ")}">${body}</div>`;
-}
-
-function renderGoalSituationStrip(item: WebGoalView, view: GoalBoardWebView): string {
-  const goalId = item.goal.goal_id;
-  const ownBlocker = item.reasons.find((reason) => reason.severity === "blocker");
-  const blockedDescendant =
-    !ownBlocker && item.status === "waiting_children" ? firstBlockedDescendant(item, view) : null;
-  const next = situationNextStep(item, blockedDescendant);
-  const stuck = ownBlocker
-    ? {
-        value: ownBlocker.message,
-        href: `#execution-${goalId}`,
-        extra: undefined as string | undefined,
-        tone: "blocked" as const,
-      }
-    : blockedDescendant
-      ? {
-          value: L("子 Goal「{title}」{status}", {
-            title: blockedDescendant.goal.title,
-            status: explainWorkState(blockedDescendant.status).label,
-          }),
-          href: `/goals/${encodeURIComponent(blockedDescendant.goal.goal_id)}`,
-          extra: blockedDescendant.reasons.find((reason) => reason.severity === "blocker")?.message,
-          tone: "blocked" as const,
-        }
-      : {
-          value: L("当前没有阻塞"),
-          href: `#execution-${goalId}`,
-          extra: undefined,
-          tone: "ready" as const,
-        };
-  const total = item.goal.acceptance_criteria.length;
-  const passed = displayedPassedCriterionIds(item).length;
-  const remaining = total - passed;
-  const decisions = countGoalDecisions(view, goalId);
-  const boardPending = pendingDecisionCount(view);
-  const completion = !total
-    ? { value: L("还没有验收条件"), tone: "muted" as const }
-    : remaining === 0
-      ? { value: L("已满足 {passed}/{total}", { passed, total }), tone: "ready" as const }
-      : { value: L("还缺 {remaining} 条 · {passed}/{total}", { remaining, passed, total }), tone: undefined };
-  const decisionCell = decisions
-    ? {
-        value: L("{count} 项等待你的决定", { count: decisions }),
-        href: `/decisions#decision-goal-${goalId}`,
-        extra: L("前往处理"),
-        tone: undefined as "muted" | undefined,
-      }
-    : boardPending
-      ? {
-          value: L("这条没有，项目里还有 {count} 项", { count: boardPending }),
-          href: "/decisions",
-          extra: L("前往处理"),
-          tone: undefined,
-        }
-      : {
-          value: L("没有待你决定的事项"),
-          href: null as string | null,
-          extra: undefined,
-          tone: "muted" as const,
-        };
-  return `<nav class="goal-situation" aria-label="${L("这条 Goal 现在怎样")}">
-    ${renderSituationCell({ label: L("下一步"), value: next.label, href: next.href, tone: next.tone })}
-    ${renderSituationCell({
-      label: L("卡住"),
-      value: stuck.value,
-      href: stuck.href,
-      extra: stuck.extra,
-      tone: stuck.tone,
-    })}
-    ${renderSituationCell({
-      label: L("完成"),
-      value: completion.value,
-      href: `#acceptance-${goalId}`,
-      tone: completion.tone,
-    })}
-    ${renderSituationCell({
-      label: L("待决定"),
-      value: decisionCell.value,
-      href: decisionCell.href,
-      extra: decisionCell.extra,
-      tone: decisionCell.tone,
-    })}
-  </nav>`;
-}
-
 function renderDraftGaps(item: WebGoalView): string {
   const goal = item.goal;
   if (item.status === "clarification_decision_pending") {
@@ -3554,7 +3397,7 @@ function plainRunState(run: RunRecord | undefined): string {
   return L("最近一次推进已经停止。")
 }
 
-function renderProgressOverview(item: WebGoalView, view: GoalBoardWebView): string {
+function renderProgressOverview(item: WebGoalView): string {
   const latestRun = item.runs.at(-1);
   const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered");
   const pendingReviews = item.review_obligations.filter((review) => review.state === "pending").length;
@@ -3712,7 +3555,7 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
       <div id="goal-panel-progress-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-progress-${goalId}" data-goal-panel="progress" hidden>
         <section class="document-section" data-goal-section="progress" id="progress-${goalId}">
           ${sectionHeading("workflow", "进展与阻塞", "执行情况、依据、检查、阻塞和风险。")}
-          ${renderProgressOverview(item, view)}
+          ${renderProgressOverview(item)}
         </section>
       </div>
       <div id="goal-panel-factors-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-factors-${goalId}" data-goal-panel="factors" hidden>
@@ -9039,6 +8882,7 @@ const PLANNING_SETTINGS_STYLES = `
   .planning-back{margin-bottom:22px;display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:11px;font-weight:650;text-decoration:none}.planning-back:hover{color:var(--blue-dark)}.planning-detail-header{padding-bottom:28px;border-bottom:1px solid var(--line-strong)}.planning-detail-header-main{display:flex;align-items:flex-start;justify-content:space-between;gap:28px}.planning-detail-header h1{max-width:720px;margin:8px 0 0;color:var(--ink);font-size:32px;letter-spacing:-.032em}.planning-detail-header p{max-width:70ch;margin:10px 0 0;color:var(--muted);font-size:14px;line-height:1.65}.planning-detail-meta,.planning-detail-tags{display:flex;flex-wrap:wrap;gap:7px}.planning-detail-meta span,.planning-detail-tags span{padding:3px 8px;border-radius:7px;color:var(--ink-soft);background:var(--rail);font-size:10px;font-weight:650}.planning-detail-tags{margin-top:16px}
   .planning-detail-section{padding:30px 0;border-bottom:1px solid var(--line)}.planning-detail-section>header{margin-bottom:18px}.planning-detail-section h2{margin:0;color:var(--ink);font-size:18px}.planning-detail-section header p{max-width:66ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-path{margin:0;padding:0;list-style:none}.planning-path li{min-height:58px;padding:13px 0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;gap:12px;color:var(--ink-soft);font-size:13px;line-height:1.5}.planning-path li:not(:last-child){border-bottom:1px solid var(--line)}.planning-path li span{width:26px;height:26px;border-radius:50%;color:var(--blue-dark);background:var(--blue-soft);display:grid;place-items:center;font-size:10px;font-weight:750}
   .planning-question-list,.planning-dependency-list{display:grid;gap:8px}.planning-question,.planning-dependency{padding:14px 15px;border-radius:11px;background:var(--rail);display:grid;gap:4px}.planning-question strong,.planning-dependency strong{color:var(--ink);font-size:12px}.planning-question p,.planning-dependency p{margin:0;color:var(--muted);font-size:12px;line-height:1.55}.planning-finish-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.planning-finish-grid h3{margin:0 0 9px;color:var(--ink);font-size:12px}.planning-finish-grid ul{margin:0;padding-left:18px;color:var(--muted);font-size:11px;line-height:1.7}
+  .planning-instructions{padding:30px 0;border-bottom:1px solid var(--line)}.planning-instructions>header{margin-bottom:16px}.planning-instructions h2{margin:0;color:var(--ink);font-size:18px}.planning-instructions header p{max-width:70ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-instructions pre{margin:0;padding:22px 24px;border:1px solid var(--line);border-radius:14px;color:var(--ink-soft);background:var(--paper);font:12px/1.75 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.planning-structured-summary{margin-top:24px;border:1px solid var(--line);border-radius:13px}.planning-structured-summary>summary{min-height:48px;padding:0 15px;display:flex;align-items:center;color:var(--ink-soft);font-size:12px;font-weight:700;cursor:pointer;list-style:none}.planning-structured-summary>summary::-webkit-details-marker{display:none}.planning-structured-summary-body{padding:0 18px 4px;border-top:1px solid var(--line)}.planning-method-body textarea{min-height:360px;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}.planning-method-body>label>small{max-width:76ch}
   .planning-save-context{margin-bottom:24px;padding:13px 15px;border:1px solid color-mix(in srgb,var(--blue) 26%,var(--line));border-radius:11px;background:color-mix(in srgb,var(--blue-soft) 44%,var(--paper));display:flex;align-items:flex-start;gap:10px}.planning-save-context svg{color:var(--blue-dark)}.planning-save-context strong{display:block;font-size:12px}.planning-save-context p{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
   .planning-edit-form{display:grid}.planning-edit-section{padding:28px 0;border-bottom:1px solid var(--line)}.planning-edit-section>header{margin-bottom:18px}.planning-edit-section h2{margin:0;color:var(--ink);font-size:17px}.planning-edit-section header p{max-width:66ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.planning-edit-form label{min-width:0;display:grid;gap:6px;color:var(--ink-soft);font-size:11px;font-weight:680}.planning-edit-form label>small{color:var(--muted);font-size:10px;font-weight:400;line-height:1.45}.planning-edit-form input,.planning-edit-form select,.planning-edit-form textarea{width:100%;border:1px solid var(--line-strong);border-radius:8px;color:var(--ink);background:var(--paper);font:inherit}.planning-edit-form input,.planning-edit-form select{min-height:38px;padding:0 10px}.planning-edit-form textarea{min-height:68px;padding:9px 10px;resize:vertical;line-height:1.5}.planning-edit-form input:focus,.planning-edit-form select:focus,.planning-edit-form textarea:focus{border-color:var(--blue);outline:2px solid color-mix(in srgb,var(--blue),transparent 80%);outline-offset:1px}
   .planning-row-list{display:grid;gap:9px}.planning-edit-row{padding:12px;border-radius:11px;background:var(--rail);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.planning-edit-row--structured{grid-template-columns:minmax(150px,.42fr) minmax(0,1fr) auto}.planning-remove-row{width:32px;height:32px;border:0;border-radius:7px;color:var(--muted);background:transparent;cursor:pointer}.planning-remove-row:hover{color:var(--red);background:var(--red-soft)}.planning-add-row{margin-top:10px;min-height:34px;padding:0 11px;border:1px dashed var(--line-strong);border-radius:8px;color:var(--blue-dark);background:transparent;font-size:11px;font-weight:680;cursor:pointer}.planning-add-row:hover{border-style:solid;background:var(--blue-soft)}
@@ -9051,6 +8895,30 @@ const PLANNING_SETTINGS_STYLES = `
 
 const PLANNING_DEPENDENCY_HINTS: Record<string, string> = {
   "analysis depends_on validated data":"先确认数据可用，再开始分析","commitment depends_on decision":"先完成关键决定，再开始不可逆投入","consumer depends_on provider":"先完成可交付结果，再开始使用它的工作","consumer depends_on provider contract":"先确认提供方契约，再实现使用方","cutover depends_on validation and rollback":"先验证并准备回退，再执行切换","decision depends_on evidence":"先形成可信证据，再做决定","fix depends_on root-cause evidence":"先确认根因证据，再实施修复","full build depends_on validated slice":"先验证最小切片，再扩展完整实现","implementation depends_on validated direction":"先验证方向，再进入实现","production depends_on playable loop":"先验证可玩循环，再扩展生产内容","publication depends_on review":"先完成审核，再发布","recommendation depends_on market evidence":"先取得市场证据，再给出建议","runtime capability depends_on data and evaluation":"先准备数据与评测，再扩展 Runtime 能力","verification depends_on deliverable":"先产生可验收结果，再开始验证",
+  "task decomposition depends_on validated method pack":"先验证领域方法，再拆实际任务",
+  "capability depends_on consumed foundation":"先完成会被核心能力真实消费的基础，再实现该能力",
+  "delivery depends_on validated capability":"先验证核心能力，再进入交付与发布",
+  "regression depends_on fix and failure baseline":"先保留失败基线并完成修复，再做回归",
+  "evidence plan depends_on decision question":"先明确要支持的决定，再规划证据",
+  "validation slice depends_on intent and constraints":"先明确目标与约束，再制作验证切片",
+  "legacy cleanup depends_on proven cutover":"先确认切换稳定，再清理旧路径",
+  "workflow depends_on roles and permissions":"先明确角色与权限，再运行工作流",
+  "improvement depends_on operational evidence":"先取得真实运行证据，再调整流程",
+  "claim depends_on audience and product evidence":"先确认受众问题与产品事实，再形成主张",
+  "publication depends_on reviewed content":"先完成事实与渠道审核，再发布",
+  "technical design depends_on confirmed product plan":"先确认产品计划，再设计技术方案",
+  "technical foundation depends_on technical design":"先明确技术方案，再建设被需要的基础能力",
+  "product feature depends_on consumed technical design and foundation":"先完成该功能真实消费的技术方案与基础，再实现功能",
+  "verification and release depend_on working feature":"先形成可运行功能，再验收与发布",
+  "decision delivery depends_on validated analysis":"先完成并验证分析，再交付结论",
+  "comparison depends_on market boundary":"先明确市场边界，再比较替代方案",
+  "high-fidelity slice depends_on core flow and states":"先明确核心动线与状态，再制作高保真切片",
+  "rollout depends_on safety and recovery evidence":"先验证安全与恢复，再真实上线",
+  "systems depend_on core loop intent":"先明确玩家动机与核心循环，再设计系统",
+  "draft depends_on sources and method":"先确认来源与方法，再形成内容或结论",
+  "implementation depends_on product flow":"先确认产品目标与主路径，再实现功能",
+  "validation and release depend_on working feature":"先形成可运行功能，再验证与发布",
+  "use part_of for hierarchy; keep independent goals parallel":"父子层级使用归属关系；没有产出消费的 Goal 保持并行",
 };
 function friendlyPlanningDependencyHint(value:string):string{return PLANNING_DEPENDENCY_HINTS[value]??value.replace(" depends_on "," 依赖 ")}
 function friendlyPlanningDependencyStatement(value:string):string{return value.replaceAll("depends_on",L("依赖关系"))}
@@ -9070,7 +8938,7 @@ function renderPlanningAdoptionCards(methods:readonly PlanningMethodPack[],proje
 function planningTopbar(title:string,subtitle:string,returnHref:string,pagePath:string,desktop:boolean):string{return `<header class="topbar"${desktop?" data-tauri-drag-region":""}><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div><div class="top-spacer"></div>${renderLocaleSwitch(pagePath)}${renderThemeSwitch()}<a class="top-action" href="${returnHref}">${icon(returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
 
 const PLANNING_SETTINGS_CLIENT_SCRIPT = `
-(()=>{document.querySelectorAll("[data-planning-filter]").forEach((button)=>button.addEventListener("click",()=>{const filter=button.dataset.planningFilter||"all";document.querySelectorAll("[data-planning-filter]").forEach((item)=>item.setAttribute("aria-pressed",String(item===button)));let visible=0;document.querySelectorAll("[data-planning-method]").forEach((item)=>{const matches=filter==="all"||item.dataset.kind===filter||(filter==="mine"&&item.dataset.scope!=="built_in");item.hidden=!matches;if(matches)visible+=1});const empty=document.querySelector("[data-planning-filter-empty]");if(empty)empty.hidden=visible!==0}));const form=document.querySelector("[data-planning-edit-form]");if(!form)return;const error=form.querySelector("[data-planning-method-error]");const cloneRow=(list)=>{const source=list.querySelector("[data-planning-row]");if(!source)return;const row=source.cloneNode(true);row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""});list.append(row);row.querySelector("input, textarea")?.focus({preventScroll:true})};form.addEventListener("click",(event)=>{const add=event.target.closest("[data-add-planning-row]");if(add){const list=form.querySelector('[data-planning-row-list="'+add.dataset.addPlanningRow+'"]');if(list)cloneRow(list);return}const remove=event.target.closest("[data-remove-planning-row]");if(!remove)return;const row=remove.closest("[data-planning-row]");const list=row?.parentElement;if(!row||!list)return;if(list.querySelectorAll("[data-planning-row]").length===1){row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""})}else row.remove()});form.addEventListener("submit",async(event)=>{event.preventDefault();error.hidden=true;error.textContent="";const submit=form.querySelector('button[type="submit"]');submit.disabled=true;const values=(name)=>[...form.querySelectorAll('[name="'+name+'"]')].map((input)=>input.value.trim()).filter(Boolean);const internalId=(prefix,value,index)=>{const readable=String(value||"").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,32);return prefix+"-"+(readable||String(index+1))+"-"+String(index+1)};try{const coverage=[...form.querySelectorAll("[data-coverage-row]")].map((row,index)=>{const label=row.querySelector('[name="coverage_label"]').value.trim();const question=row.querySelector('[name="coverage_question"]').value.trim();return label||question?{area:internalId("coverage",label,index),label,question}:null}).filter(Boolean);const dependencies=[...form.querySelectorAll("[data-dependency-row]")].map((row,index)=>{const statement=row.querySelector('[name="dependency_statement"]').value.trim();const direction=row.querySelector('[name="dependency_direction"]').value.trim();return statement||direction?{rule_id:internalId("dependency",statement,index),statement,direction_hint:direction}:null}).filter(Boolean);const method={method_id:form.elements.method_id.value,kind:form.elements.kind.value,name:form.elements.name.value.trim(),summary:form.elements.summary.value.trim(),applies_to:String(form.elements.applies_to.value||"").split(",").map((item)=>item.trim()).filter(Boolean),domain_tags:String(form.elements.domain_tags.value||"").split(",").map((item)=>item.trim()).filter(Boolean),steps:values("steps"),required_coverage:coverage,dependency_rules:dependencies,evidence_requirements:values("evidence_requirements"),completion_checks:values("completion_checks"),failure_modes:values("failure_modes"),source_refs:String(form.elements.source_refs.value||"").split(/\\n/).map((item)=>item.trim()).filter(Boolean),confidence:Number(form.elements.confidence.value),enabled:form.elements.enabled.checked};const response=await fetch(form.dataset.apiEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({scope:form.dataset.saveScope,method})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||L("保存失败"));location.assign(form.dataset.returnHref)}catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;submit.disabled=false}})})();
+(()=>{document.querySelectorAll("[data-planning-filter]").forEach((button)=>button.addEventListener("click",()=>{const filter=button.dataset.planningFilter||"all";document.querySelectorAll("[data-planning-filter]").forEach((item)=>item.setAttribute("aria-pressed",String(item===button)));let visible=0;document.querySelectorAll("[data-planning-method]").forEach((item)=>{const matches=filter==="all"||item.dataset.kind===filter||(filter==="mine"&&item.dataset.scope!=="built_in");item.hidden=!matches;if(matches)visible+=1});const empty=document.querySelector("[data-planning-filter-empty]");if(empty)empty.hidden=visible!==0}));const form=document.querySelector("[data-planning-edit-form]");if(!form)return;const error=form.querySelector("[data-planning-method-error]");const cloneRow=(list)=>{const source=list.querySelector("[data-planning-row]");if(!source)return;const row=source.cloneNode(true);row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""});list.append(row);row.querySelector("input, textarea")?.focus({preventScroll:true})};form.addEventListener("click",(event)=>{const add=event.target.closest("[data-add-planning-row]");if(add){const list=form.querySelector('[data-planning-row-list="'+add.dataset.addPlanningRow+'"]');if(list)cloneRow(list);return}const remove=event.target.closest("[data-remove-planning-row]");if(!remove)return;const row=remove.closest("[data-planning-row]");const list=row?.parentElement;if(!row||!list)return;if(list.querySelectorAll("[data-planning-row]").length===1){row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""})}else row.remove()});form.addEventListener("submit",async(event)=>{event.preventDefault();error.hidden=true;error.textContent="";const submit=form.querySelector('button[type="submit"]');submit.disabled=true;const values=(name)=>[...form.querySelectorAll('[name="'+name+'"]')].map((input)=>input.value.trim()).filter(Boolean);const internalId=(prefix,value,index)=>{const readable=String(value||"").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,32);return prefix+"-"+(readable||String(index+1))+"-"+String(index+1)};try{const coverage=[...form.querySelectorAll("[data-coverage-row]")].map((row,index)=>{const label=row.querySelector('[name="coverage_label"]').value.trim();const question=row.querySelector('[name="coverage_question"]').value.trim();return label||question?{area:internalId("coverage",label,index),label,question}:null}).filter(Boolean);const dependencies=[...form.querySelectorAll("[data-dependency-row]")].map((row,index)=>{const statement=row.querySelector('[name="dependency_statement"]').value.trim();const direction=row.querySelector('[name="dependency_direction"]').value.trim();return statement||direction?{rule_id:internalId("dependency",statement,index),statement,direction_hint:direction}:null}).filter(Boolean);const method={method_id:form.elements.method_id.value,kind:form.elements.kind.value,name:form.elements.name.value.trim(),summary:form.elements.summary.value.trim(),instructions:form.elements.instructions.value.trim(),applies_to:String(form.elements.applies_to.value||"").split(",").map((item)=>item.trim()).filter(Boolean),domain_tags:String(form.elements.domain_tags.value||"").split(",").map((item)=>item.trim()).filter(Boolean),steps:values("steps"),required_coverage:coverage,dependency_rules:dependencies,evidence_requirements:values("evidence_requirements"),completion_checks:values("completion_checks"),failure_modes:values("failure_modes"),source_refs:String(form.elements.source_refs.value||"").split(/\\n/).map((item)=>item.trim()).filter(Boolean),confidence:Number(form.elements.confidence.value),enabled:form.elements.enabled.checked};const response=await fetch(form.dataset.apiEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({scope:form.dataset.saveScope,method})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||L("保存失败"));location.assign(form.dataset.returnHref)}catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;submit.disabled=false}})})();
 `;
 
 const PLANNING_ADOPTION_CLIENT_SCRIPT = `
@@ -9099,13 +8967,14 @@ export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPa
   const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);
   return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(L("设置"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${renderSettingsNavigation("planning",contextProject,desktopShell)}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
-function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section>`}
+function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-instructions"><header><h2>${L("Runtime 方法说明")}</h2><p>${L("这是 Runtime 在拆分或调整 Goal Tree 前完整阅读的方法正文。")}</p></header><pre>${escapeHtml(method.instructions)}</pre></section><details class="planning-structured-summary"><summary>${L("查看用于检索与检查的结构化摘要")}</summary><div class="planning-structured-summary-body"><section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section></div></details>`}
 function renderPlanningSimpleRows(name:string,values:readonly string[],placeholder:string):string{const rows=values.length?values:[""];return `<div class="planning-row-list" data-planning-row-list="${name}">${rows.map((value)=>`<div class="planning-edit-row" data-planning-row><input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="${name}">${icon("plus")}${L("添加一项")}</button>`}
 
 function renderPlanningEditForm(method:PlanningMethodPack|null,saveScope:"personal"|"project",project:WebProjectNavigation|null,apiEndpoint:string,returnHref:string):string{
   const methodId=method?.method_id??`custom-method-${Date.now().toString(36)}`;const coverage=method?.required_coverage.length?method.required_coverage:[{area:"",label:"",question:""}];const dependencies=method?.dependency_rules.length?method.dependency_rules:[{rule_id:"",statement:"",direction_hint:""}];
   return `<div class="planning-save-context">${icon(saveScope==="project"?"folder":"user")}<div><strong>${saveScope==="project"?L("保存到项目「{name}」",{name:project?.display_name??L("当前项目")}):L("保存到我的方法库")}</strong><p>${saveScope==="project"?L("这个版本只影响当前项目；全局模板和其他项目不会改变。"):L("这里不设置项目。保存后，这套方法可以在各项目的工作规划中使用。")}</p></div></div><form class="planning-edit-form" data-planning-edit-form data-save-scope="${saveScope}" data-api-endpoint="${apiEndpoint}" data-return-href="${returnHref}"><input type="hidden" name="method_id" value="${escapeHtml(methodId)}">
   <section class="planning-edit-section"><header><h2>${L("方法说明")}</h2><p>${L("先说清这套方法适合什么工作，以及它会带来什么规划结果。")}</p></header><div class="planning-edit-grid"><label>${L("方法名称")}<input name="name" required value="${escapeHtml(method?.name??"")}" placeholder="${L("例如：SaaS 功能发布")}"></label><label>${L("适合哪些工作")}<input name="applies_to" value="${escapeHtml(method?.applies_to.join(", ")??"")}" placeholder="${L("例如：新功能、系统改造、版本发布；用逗号分隔")}"></label></div><label>${L("一句话说明这套方法")}<textarea name="summary" rows="2" required placeholder="${L("例如：从用户结果反推实现、验证与发布依赖。")}">${escapeHtml(method?.summary??"")}</textarea></label></section>
+  <section class="planning-edit-section planning-method-body"><header><h2>${L("Runtime 方法正文")}</h2><p>${L("像维护一段 Skill 一样，直接告诉 Runtime 应该怎么思考、怎么拆、如何判断依赖、怎样检查完成，以及需求变化后如何调整。")}</p></header><label>${L("完整方法说明")}<textarea name="instructions" rows="18" required placeholder="${L("写清适用边界、规划顺序、依赖方向、完成检查、常见误拆和需求变化处理。")}">${escapeHtml(method?.instructions??"")}</textarea><small>${L("Runtime 会在创建或调整 Goal Tree 前完整阅读这里；普通执行阶段不会反复加载。")}</small></label></section>
   <section class="planning-edit-section"><header><h2>${L("规划路径")}</h2><p>${L("把 Runtime 应该依次想清楚的阶段列出来。它们是规划顺序，不是强制串行的任务。")}</p></header>${renderPlanningSimpleRows("steps",method?.steps??[],L("例如：确认用户结果和边界"))}</section>
   <section class="planning-edit-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("每一项由“检查主题”和一个清晰问题组成；系统会自动处理内部标识。")}</p></header><div class="planning-row-list" data-planning-row-list="coverage">${coverage.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-coverage-row><label>${L("检查主题")}<input name="coverage_label" value="${escapeHtml(rule.label)}" placeholder="${L("例如：最终结果")}"></label><label>${L("Runtime 必须回答的问题")}<textarea name="coverage_question" placeholder="${L("例如：最终交付什么、由谁使用？")}">${escapeHtml(rule.question)}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="coverage">${icon("plus")}${L("添加一个问题")}</button></section>
   <section class="planning-edit-section"><header><h2>${L("依赖判断")}</h2><p>${L("写清什么时候需要建立依赖，以及谁必须先完成。不要把时间上的先后误当成产出依赖。")}</p></header><div class="planning-row-list" data-planning-row-list="dependencies">${dependencies.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-dependency-row><label>${L("什么时候建立依赖")}<textarea name="dependency_statement" placeholder="${L("例如：下游需要消费上游的可验收结果")}">${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</textarea></label><label>${L("谁必须先完成")}<textarea name="dependency_direction" placeholder="${L("例如：先完成提供结果的 Goal，再开始使用它的 Goal")}">${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="dependencies">${icon("plus")}${L("添加一条依赖判断")}</button></section>

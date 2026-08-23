@@ -5,13 +5,13 @@ import path from "node:path";
 import readline from "node:readline";
 import { createHash } from "node:crypto";
 import {
-  GoalBoardProjectCatalog,
   GoalBoardProjectCatalogError,
   readPersonalPlanningMethodPacks,
   type GoalBoardRuntimeContextResolution,
   type RuntimeProjectSuggestionClue,
   type RuntimeWorkContext,
 } from "../projects/catalog.js";
+import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { ClaimRequest, CreateGoalInput, GoalTrashResult } from "../v1/types.js";
@@ -95,6 +95,7 @@ const PLANNING_METHOD_PACK = {
     kind: { type: "string", enum: ["meta", "work_type", "domain", "custom"] },
     name: V1_STRING,
     summary: V1_STRING,
+    instructions: V1_STRING,
     applies_to: V1_STRING_ARRAY,
     domain_tags: V1_STRING_ARRAY,
     steps: V1_STRING_ARRAY,
@@ -275,7 +276,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "goalboard_v1_planning_methods",
-    description: "读取当前项目的完整方法库和多方法规划组合。项目组合是必须使用的下限，不是方法选择的上限；Runtime 还要检查当前任务，并补充所有确实相关的方法，不得按方法类型、列表顺序或固定数量预设选择。项目覆盖个人，个人覆盖内置冷启方法。",
+    description: "读取当前项目的完整方法库和多方法规划组合。Runtime 在创建、拆分或重连 Goal 前，必须从 methods[] 完整阅读每个已选方法的 instructions，并把多套方法作为互补的规划 Skill 一起使用；composition.method_paths 只重复项目必选组合。项目组合是必须使用的下限，不是方法选择的上限。Runtime 还要检查各主题的提供者产出与消费者用途，召回遗漏的相关方法，并在真实产出消费存在时建立硬依赖；不得按类型、列表顺序、固定数量或一般相关性预设选择和依赖。项目覆盖个人，个人覆盖内置冷启方法。",
     inputSchema: {
       type: "object",
       properties: V1_COMMON,
@@ -1289,22 +1290,19 @@ export class GoalBoardServer {
     const panelId = host?.panelId?.trim() || "";
     const sessionId = callContext.sessionId?.trim() || "";
     if (!host || !panelId || !sessionId) return;
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       catalog.aliasDesktopPanelSession({
         panel_id: panelId,
         runtime_id: host.runtimeContext.runtime_id,
         host_session_id: sessionId,
         actor_id: `desktop-panel:${panelId}`,
       });
-    } catch (error) {
+    }).catch((error: unknown) => {
       if (error instanceof GoalBoardProjectCatalogError && error.code === "catalog.panel_not_found") {
         return;
       }
       throw error;
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private requireRuntimeContextHost(
@@ -1332,21 +1330,17 @@ export class GoalBoardServer {
     // A later resolve must never keep using an earlier in-process answer.
     this.runtimeConnection = null;
     this.runtimeConnectionContextKey = null;
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       return this.contextResolutionResponse(
         catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues),
         host,
       );
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async listRuntimeProjects(callContext: GoalBoardMcpToolCallContext): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       const current = catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues);
       if (current.status !== "bound") {
         this.runtimeConnection = null;
@@ -1370,9 +1364,7 @@ export class GoalBoardServer {
         null,
         2,
       );
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async rejectRuntimeContextSuggestion(
@@ -1380,8 +1372,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext,
   ): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       const result = catalog.rejectRuntimeContextSuggestion({
         context: host.runtimeContext,
         project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
@@ -1394,9 +1385,7 @@ export class GoalBoardServer {
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
       return JSON.stringify(result, null, 2);
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async bindRuntimeContext(
@@ -1404,8 +1393,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext,
   ): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       const resolution = catalog.bindRuntimeContext({
         context: host.runtimeContext,
         project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
@@ -1417,9 +1405,7 @@ export class GoalBoardServer {
           : undefined,
       });
       return this.contextResolutionResponse(resolution, host);
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async unbindRuntimeContext(
@@ -1427,8 +1413,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext,
   ): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
       const result = catalog.unbindRuntimeContext({
         context: host.runtimeContext,
         actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
@@ -1439,9 +1424,7 @@ export class GoalBoardServer {
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
       return JSON.stringify(result, null, 2);
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async createAndBindRuntimeContext(
@@ -1449,8 +1432,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext,
   ): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, async (catalog) => {
       const resolution = await catalog.createProjectAndBindRuntimeContext({
         context: host.runtimeContext,
         display_name: typeof arguments_.display_name === "string" ? arguments_.display_name : "",
@@ -1463,9 +1445,7 @@ export class GoalBoardServer {
         idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
       });
       return this.contextResolutionResponse(resolution, host);
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private async deleteRuntimeProject(
@@ -1473,8 +1453,7 @@ export class GoalBoardServer {
     callContext: GoalBoardMcpToolCallContext,
   ): Promise<string> {
     const host = this.requireRuntimeContextHost(callContext);
-    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: host.homeDirectory });
-    try {
+    return withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, async (catalog) => {
       const result = await catalog.deleteProject({
         project_id: typeof arguments_.project_id === "string" ? arguments_.project_id : "",
         actor_id: typeof arguments_.actor_id === "string" ? arguments_.actor_id : "",
@@ -1486,9 +1465,7 @@ export class GoalBoardServer {
         this.runtimeConnectionContextKey = null;
       }
       return JSON.stringify(result, null, 2);
-    } finally {
-      catalog.close();
-    }
+    });
   }
 
   private contextResolutionResponse(

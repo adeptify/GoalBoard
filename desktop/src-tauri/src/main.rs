@@ -190,6 +190,9 @@ fn drop_session(state: &PtyState, panel_id: &str) {
 }
 
 #[tauri::command]
+// These names are the stable Tauri invoke payload used by the WebView client.
+// Wrapping them in an options object would change that public desktop boundary.
+#[allow(clippy::too_many_arguments)]
 fn pty_spawn(
   app: tauri::AppHandle,
   state: State<PtyState>,
@@ -378,6 +381,7 @@ fn pty_kill(state: State<PtyState>, panel_id: String) -> Result<(), String> {
   Ok(())
 }
 
+#[cfg(test)]
 fn pty_collect_output(command: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
   let pty_system = native_pty_system();
   let pair = pty_system

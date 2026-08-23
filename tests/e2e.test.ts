@@ -277,6 +277,12 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       );
       assert.match(installedServiceStart, /service status/);
       assert.match(installedServiceStart, /临时打开 GoalBoard/);
+      const installedPlanning = await readFile(
+        join(userHome, ".codex", "skills", "goal-advance", "references", "planning.md"),
+        "utf8",
+      );
+      assert.match(installedPlanning, /The planning loop/);
+      assert.match(installedPlanning, /consumer_goal depends_on provider_goal/);
 
       const claudePlanResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/plan", { action: "connect" });
       assert.equal(claudePlanResponse.status, 200);

@@ -7,7 +7,7 @@ import {
   type GoalBoardWebServicePlan,
 } from "../install/web-service.js";
 import { printV1Help, runV1Cli } from "../v1/cli.js";
-import { GoalBoardProjectCatalog } from "../projects/catalog.js";
+import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -147,8 +147,7 @@ export async function main(args = process.argv.slice(2)): Promise<number> {
       const action = args[1];
       if (!["create", "reset", "remove"].includes(action)) throw new Error(`未知 demo 操作: ${action}`);
       const homeDirectory = flag(args, "--home");
-      const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
-      try {
+      return await withGoalBoardProjectCatalog({ homeDirectory }, async (catalog) => {
         const demo = catalog.listProjects().find((project) => project.data_class === "regenerable_demo") ?? null;
         if (!args.includes("--confirm")) {
           const preview = {
@@ -180,9 +179,7 @@ export async function main(args = process.argv.slice(2)): Promise<number> {
         if (args.includes("--json")) console.log(JSON.stringify(result, null, 2));
         else console.log(action === "remove" ? "可重建 demo 已删除；用户项目未修改" : `demo ${action === "create" ? "已创建或打开" : "已重置"}`);
         return result == null ? 1 : 0;
-      } finally {
-        catalog.close();
-      }
+      });
     }
     if (args[0] === "uninstall") {
       if (args.includes("--help") || args.includes("-h")) {

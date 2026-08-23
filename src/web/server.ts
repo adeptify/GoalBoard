@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
-import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
+import { seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { GoalPolicy, GoalRelationRecord, GoalTreeProposalItemInput, RiskRecord } from "../v1/types.js";
 import {
@@ -14,6 +14,7 @@ import {
   GoalBoardProjectCatalogError,
   readPersonalPlanningMethodPacks,
 } from "../projects/catalog.js";
+import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
@@ -141,8 +142,6 @@ type ResolvedWebRequest =
   | { kind: "catalog_index"; projects: WebProjectNavigation[] }
   | { kind: "project_not_found" }
   | { kind: "board"; pathname: string; options: ResolvedWebBoardOptions };
-
-const SETTINGS_SECTIONS = new Set<WebSettingsSection>(["runtimes", "projects", "diagnostics"]);
 
 const REVIEW_LABELS: Record<string, string> = {
   self_verifier: "自检",
@@ -669,124 +668,125 @@ async function handleDesktopPanelApi(
   const reopenMatch = url.pathname.match(/^\/api\/panels\/([^/]+)\/reopen$/);
   if (!panelsMatch && !promptMatch && !panelMatch && !exitedMatch && !reopenMatch) return false;
 
-  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
   try {
-    if (request.method === "GET" && promptMatch) {
-      const goalId = decodeURIComponent(promptMatch[1]);
-      const contract = coordinator.readGoalContract(boardId, goalId);
-      if (contract.goal.decomposition_state === "closed_compound") {
-        sendJson(response, 409, {
-          error: L("这条上层 Goal 由子 Goal 共同完成，不能直接推进。请选择一个具体的子 Goal。"),
+    return await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, async (catalog) => {
+      if (request.method === "GET" && promptMatch) {
+        const goalId = decodeURIComponent(promptMatch[1]);
+        const contract = coordinator.readGoalContract(boardId, goalId);
+        if (contract.goal.decomposition_state === "closed_compound") {
+          sendJson(response, 409, {
+            error: L("这条上层 Goal 由子 Goal 共同完成，不能直接推进。请选择一个具体的子 Goal。"),
+          });
+          return true;
+        }
+        sendJson(response, 200, {
+          goal_id: goalId,
+          title: contract.goal.title,
+          prompt: desktopAdvancePrompt({ goal_id: goalId, title: contract.goal.title }),
         });
         return true;
       }
-      sendJson(response, 200, {
-        goal_id: goalId,
-        title: contract.goal.title,
-        prompt: desktopAdvancePrompt({ goal_id: goalId, title: contract.goal.title }),
-      });
-      return true;
-    }
-    if (request.method === "GET" && panelsMatch) {
-      const goalId = decodeURIComponent(panelsMatch[1]);
-      const contract = coordinator.readGoalContract(boardId, goalId);
-      sendJson(response, 200, {
-        panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
-          ...panel,
+      if (request.method === "GET" && panelsMatch) {
+        const goalId = decodeURIComponent(panelsMatch[1]);
+        const contract = coordinator.readGoalContract(boardId, goalId);
+        sendJson(response, 200, {
+          panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
+            ...panel,
+            spawn: desktopPanelSpawn(catalog, panel, webUrl),
+          })),
+          read_only: contract.goal.decomposition_state === "closed_compound",
+        });
+        return true;
+      }
+      if (request.method === "POST" && panelsMatch) {
+        const goalId = decodeURIComponent(panelsMatch[1]);
+        const contract = coordinator.readGoalContract(boardId, goalId);
+        if (contract.goal.decomposition_state === "closed_compound") {
+          sendJson(response, 409, {
+            error: L("这条上层 Goal 由子 Goal 共同完成，不能直接开终端。请选择一个具体的子 Goal。"),
+          });
+          return true;
+        }
+        const body = await readBody(request);
+        const runtimeKind = typeof body.runtime_kind === "string" ? body.runtime_kind : "generic";
+        if (!isDesktopRuntimeKind(runtimeKind)) {
+          sendJson(response, 400, { error: "不支持的终端类型" });
+          return true;
+        }
+        const resume = typeof body.resume_session_id === "string" ? body.resume_session_id : null;
+        const launch = desktopLaunchSpec({
+          runtime_kind: runtimeKind,
+          command: typeof body.command === "string" ? body.command : undefined,
+          args: Array.isArray(body.args) ? body.args.map((item) => String(item)) : undefined,
+          resume_session_id: resume,
+        });
+        const cwd = typeof body.cwd === "string" && body.cwd.trim()
+          ? body.cwd.trim()
+          : catalog.preferredWorkspacePath(projectId);
+        if (!cwd) {
+          sendJson(response, 400, { error: L("打开终端需要先把这个项目关联到一个工作目录") });
+          return true;
+        }
+        const panel = catalog.openDesktopPanel({
+          project_id: projectId,
+          goal_id: goalId,
+          runtime_kind: launch.runtime_kind,
+          launch_command: launch.command,
+          launch_args: launch.args,
+          cwd,
+          title: launch.title,
+          host_session_id: resume,
+          actor_id: "desktop-user",
+          user_confirmed: true,
+        });
+        sendJson(response, 200, {
+          panel,
           spawn: desktopPanelSpawn(catalog, panel, webUrl),
-        })),
-        read_only: contract.goal.decomposition_state === "closed_compound",
-      });
-      return true;
-    }
-    if (request.method === "POST" && panelsMatch) {
-      const goalId = decodeURIComponent(panelsMatch[1]);
-      const contract = coordinator.readGoalContract(boardId, goalId);
-      if (contract.goal.decomposition_state === "closed_compound") {
-        sendJson(response, 409, {
-          error: L("这条上层 Goal 由子 Goal 共同完成，不能直接开终端。请选择一个具体的子 Goal。"),
         });
         return true;
       }
-      const body = await readBody(request);
-      const runtimeKind = typeof body.runtime_kind === "string" ? body.runtime_kind : "generic";
-      if (!isDesktopRuntimeKind(runtimeKind)) {
-        sendJson(response, 400, { error: "不支持的终端类型" });
+      if (request.method === "DELETE" && panelMatch) {
+        const panelId = decodeURIComponent(panelMatch[1]);
+        const panel = catalog.getDesktopPanel(panelId);
+        if (panel.project_id !== projectId) {
+          sendJson(response, 404, { error: "找不到这个终端面板" });
+          return true;
+        }
+        catalog.closeDesktopPanel(panelId, "desktop-user");
+        ptyHost.kill(panelId);
+        sendJson(response, 200, { closed: true, panel_id: panelId });
         return true;
       }
-      const resume = typeof body.resume_session_id === "string" ? body.resume_session_id : null;
-      const launch = desktopLaunchSpec({
-        runtime_kind: runtimeKind,
-        command: typeof body.command === "string" ? body.command : undefined,
-        args: Array.isArray(body.args) ? body.args.map((item) => String(item)) : undefined,
-        resume_session_id: resume,
-      });
-      const cwd = typeof body.cwd === "string" && body.cwd.trim()
-        ? body.cwd.trim()
-        : catalog.preferredWorkspacePath(projectId);
-      if (!cwd) {
-        sendJson(response, 400, { error: L("打开终端需要先把这个项目关联到一个工作目录") });
+      if (request.method === "POST" && exitedMatch) {
+        const panelId = decodeURIComponent(exitedMatch[1]);
+        const panel = catalog.getDesktopPanel(panelId);
+        if (panel.project_id !== projectId) {
+          sendJson(response, 404, { error: "找不到这个终端面板" });
+          return true;
+        }
+        sendJson(response, 200, { panel: catalog.markDesktopPanelExited(panelId) });
         return true;
       }
-      const panel = catalog.openDesktopPanel({
-        project_id: projectId,
-        goal_id: goalId,
-        runtime_kind: launch.runtime_kind,
-        launch_command: launch.command,
-        launch_args: launch.args,
-        cwd,
-        title: launch.title,
-        host_session_id: resume,
-        actor_id: "desktop-user",
-        user_confirmed: true,
-      });
-      sendJson(response, 200, {
-        panel,
-        spawn: desktopPanelSpawn(catalog, panel, webUrl),
-      });
-      return true;
-    }
-    if (request.method === "DELETE" && panelMatch) {
-      const panelId = decodeURIComponent(panelMatch[1]);
-      const panel = catalog.getDesktopPanel(panelId);
-      if (panel.project_id !== projectId) {
-        sendJson(response, 404, { error: "找不到这个终端面板" });
+      if (request.method === "POST" && reopenMatch) {
+        const panelId = decodeURIComponent(reopenMatch[1]);
+        const panel = catalog.getDesktopPanel(panelId);
+        if (panel.project_id !== projectId) {
+          sendJson(response, 404, { error: "找不到这个终端面板" });
+          return true;
+        }
+        const contract = coordinator.readGoalContract(boardId, panel.goal_id);
+        if (contract.goal.decomposition_state === "closed_compound") {
+          sendJson(response, 409, {
+            error: L("这是上层 Goal 的历史终端，只能查看。请到具体的子 Goal 继续。"),
+          });
+          return true;
+        }
+        const opened = catalog.markDesktopPanelOpen(panelId);
+        sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, opened, webUrl) });
         return true;
       }
-      catalog.closeDesktopPanel(panelId, "desktop-user");
-      ptyHost.kill(panelId);
-      sendJson(response, 200, { closed: true, panel_id: panelId });
-      return true;
-    }
-    if (request.method === "POST" && exitedMatch) {
-      const panelId = decodeURIComponent(exitedMatch[1]);
-      const panel = catalog.getDesktopPanel(panelId);
-      if (panel.project_id !== projectId) {
-        sendJson(response, 404, { error: "找不到这个终端面板" });
-        return true;
-      }
-      sendJson(response, 200, { panel: catalog.markDesktopPanelExited(panelId) });
-      return true;
-    }
-    if (request.method === "POST" && reopenMatch) {
-      const panelId = decodeURIComponent(reopenMatch[1]);
-      const panel = catalog.getDesktopPanel(panelId);
-      if (panel.project_id !== projectId) {
-        sendJson(response, 404, { error: "找不到这个终端面板" });
-        return true;
-      }
-      const contract = coordinator.readGoalContract(boardId, panel.goal_id);
-      if (contract.goal.decomposition_state === "closed_compound") {
-        sendJson(response, 409, {
-          error: L("这是上层 Goal 的历史终端，只能查看。请到具体的子 Goal 继续。"),
-        });
-        return true;
-      }
-      const opened = catalog.markDesktopPanelOpen(panelId);
-      sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, opened, webUrl) });
-      return true;
-    }
-    return false;
+      return false;
+    });
   } catch (error) {
     if (error instanceof GoalBoardV1Error) {
       sendJson(response, 404, { error: error.message });
@@ -801,8 +801,6 @@ async function handleDesktopPanelApi(
       return true;
     }
     throw error;
-  } finally {
-    catalog.close();
   }
 }
 
@@ -962,8 +960,7 @@ async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promi
   connections: WebSettingsConnection[];
   workspace_memberships: WebSettingsWorkspaceMembership[];
 }> {
-  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
-  try {
+  return withGoalBoardProjectCatalog({ homeDirectory }, (catalog) => {
     const projects = catalog.listProjects().map(settingsProject);
     const projectMap = new Map(projects.map((project) => [project.project_id, project]));
     return {
@@ -987,9 +984,7 @@ async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promi
         })
         .filter((membership): membership is WebSettingsWorkspaceMembership => membership !== null),
     };
-  } finally {
-    catalog.close();
-  }
+  });
 }
 
 async function settingsProjects(homeDirectory: string | undefined): Promise<WebSettingsProject[]> {
@@ -1100,8 +1095,7 @@ async function resolveWebRequest(
   const fixture = fixtureWebBoardOptions(serverOptions);
   if (fixture) return { kind: "board", pathname, options: fixture };
 
-  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
-  try {
+  return withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
     const records = catalog.listProjects();
     const projects = records.map(projectNavigation);
     if (
@@ -1143,9 +1137,7 @@ async function resolveWebRequest(
         demo: project.data_class === "regenerable_demo",
       },
     };
-  } finally {
-    catalog.close();
-  }
+  });
 }
 
 export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): http.Server {
@@ -1186,11 +1178,9 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           response,
           url,
           serverOptions,
-          fixture,
           runtimeIntegrations,
           webService,
           controlToken,
-          mutationKeys,
           webViewCache,
           pty.host,
           loopbackWebOrigin(server),
@@ -1209,11 +1199,9 @@ async function handleGoalBoardWebRequest(
   response: ServerResponse,
   url: URL,
   serverOptions: WebServerOptions,
-  fixture: ReturnType<typeof fixtureWebBoardOptions>,
   runtimeIntegrations: RuntimeIntegrationService,
   webService: GoalBoardWebServiceManager,
   controlToken: string,
-  mutationKeys: Map<string, LocalMutationState>,
   webViewCache: GoalBoardWebViewCache,
   ptyHost: GoalBoardPtyHost,
   webUrl: string,
@@ -1267,17 +1255,16 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: L("个人方法内容无效") });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            const current = catalog.listPersonalPlanningMethodPacks()
-              .find((pack) => pack.method_id === method.method_id) ?? null;
-            const saved = normalizePlanningMethodPack(method, "personal", current, new Date().toISOString());
-            catalog.putPersonalPlanningMethodPack(saved);
-            sendJson(response, 200, { method: saved });
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
+              const current = catalog.listPersonalPlanningMethodPacks()
+                .find((pack) => pack.method_id === method.method_id) ?? null;
+              const saved = normalizePlanningMethodPack(method, "personal", current, new Date().toISOString());
+              catalog.putPersonalPlanningMethodPack(saved);
+              sendJson(response, 200, { method: saved });
+            });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1397,17 +1384,16 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "请确认并填写项目名称" });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            const project = await catalog.createProject({ display_name: displayName, actor_id: "web-user" });
-            sendJson(response, 201, {
-              project: settingsProject(project),
-              project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, async (catalog) => {
+              const project = await catalog.createProject({ display_name: displayName, actor_id: "web-user" });
+              sendJson(response, 201, {
+                project: settingsProject(project),
+                project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+              });
             });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1420,42 +1406,41 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "请明确确认要创建、重建或删除演示数据" });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            if (action === "create") {
-              const result = await catalog.ensureDemoProject({ actor_id: "web-user", user_confirmed: true });
-              sendJson(response, 200, {
-                ...result,
-                project: settingsProject(result.project),
-                message: result.status === "existing" ? "示例项目已经存在" : "示例项目已创建",
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, async (catalog) => {
+              if (action === "create") {
+                const result = await catalog.ensureDemoProject({ actor_id: "web-user", user_confirmed: true });
+                sendJson(response, 200, {
+                  ...result,
+                  project: settingsProject(result.project),
+                  message: result.status === "existing" ? "示例项目已经存在" : "示例项目已创建",
+                });
+                return;
+              }
+              if (action === "reset") {
+                const result = await catalog.resetDemoProject({ actor_id: "web-user", user_confirmed: true });
+                sendJson(response, 200, {
+                  ...result,
+                  project: settingsProject(result.project),
+                  message: "示例项目已重建；用户项目未修改",
+                });
+                return;
+              }
+              const demo = catalog.listProjects().find((project) => project.data_class === "regenerable_demo");
+              if (!demo) {
+                sendJson(response, 404, { error: "示例项目已经不存在" });
+                return;
+              }
+              const result = await catalog.removeDemoProject({
+                project_id: demo.project_id,
+                actor_id: "web-user",
+                delete_confirmed: true,
+                idempotency_key: `web-demo-remove-${randomBytes(16).toString("hex")}`,
               });
-              return;
-            }
-            if (action === "reset") {
-              const result = await catalog.resetDemoProject({ actor_id: "web-user", user_confirmed: true });
-              sendJson(response, 200, {
-                ...result,
-                project: settingsProject(result.project),
-                message: "示例项目已重建；用户项目未修改",
-              });
-              return;
-            }
-            const demo = catalog.listProjects().find((project) => project.data_class === "regenerable_demo");
-            if (!demo) {
-              sendJson(response, 404, { error: "示例项目已经不存在" });
-              return;
-            }
-            const result = await catalog.removeDemoProject({
-              project_id: demo.project_id,
-              actor_id: "web-user",
-              delete_confirmed: true,
-              idempotency_key: `web-demo-remove-${randomBytes(16).toString("hex")}`,
+              sendJson(response, 200, { ...result, message: "可重建 demo 已删除；用户项目未修改" });
             });
-            sendJson(response, 200, { ...result, message: "可重建 demo 已删除；用户项目未修改" });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1467,14 +1452,13 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "项目名称不能为空" });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            const project = catalog.renameProject(decodeURIComponent(projectRenameMatch[1]), displayName, "web-user");
-            sendJson(response, 200, { project: settingsProject(project) });
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
+              const project = catalog.renameProject(decodeURIComponent(projectRenameMatch[1]), displayName, "web-user");
+              sendJson(response, 200, { project: settingsProject(project) });
+            });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1489,53 +1473,52 @@ async function handleGoalBoardWebRequest(
           }
           const bindingId = decodeURIComponent(connectionActionMatch[1]);
           const action = connectionActionMatch[2];
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            const binding = catalog.listRuntimeContextBindings()
-              .find((candidate) => candidate.binding_id === bindingId);
-            if (!binding) {
-              sendJson(response, 404, { error: "这条 Session 关联已不存在，请刷新页面" });
-              return;
-            }
-            if (action === "rebind") {
-              const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
-              if (!projectId) {
-                sendJson(response, 400, { error: "请选择要切换到的项目" });
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
+              const binding = catalog.listRuntimeContextBindings()
+                .find((candidate) => candidate.binding_id === bindingId);
+              if (!binding) {
+                sendJson(response, 404, { error: "这条 Session 关联已不存在，请刷新页面" });
                 return;
               }
-              catalog.bindRuntimeContext({
+              if (action === "rebind") {
+                const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
+                if (!projectId) {
+                  sendJson(response, 400, { error: "请选择要切换到的项目" });
+                  return;
+                }
+                catalog.bindRuntimeContext({
+                  context: bindingRuntimeContext(binding),
+                  project_id: projectId,
+                  actor_id: "web-user",
+                  user_confirmed: true,
+                  rebind_confirmed: true,
+                });
+                const rebound = catalog.listRuntimeContextBindings()
+                  .find((candidate) => candidate.binding_id === bindingId);
+                const projects = catalog.listProjects().map(settingsProject);
+                const safeConnection = rebound
+                  ? settingsConnection(rebound, new Map(projects.map((project) => [project.project_id, project])))
+                  : null;
+                if (!safeConnection) throw new Error("Session 切换后无法读取关联结果");
+                sendJson(response, 200, { connection: safeConnection });
+                return;
+              }
+              const result = catalog.unbindRuntimeContext({
                 context: bindingRuntimeContext(binding),
-                project_id: projectId,
                 actor_id: "web-user",
                 user_confirmed: true,
-                rebind_confirmed: true,
               });
-              const rebound = catalog.listRuntimeContextBindings()
-                .find((candidate) => candidate.binding_id === bindingId);
-              const projects = catalog.listProjects().map(settingsProject);
-              const safeConnection = rebound
-                ? settingsConnection(rebound, new Map(projects.map((project) => [project.project_id, project])))
-                : null;
-              if (!safeConnection) throw new Error("Session 切换后无法读取关联结果");
-              sendJson(response, 200, { connection: safeConnection });
-              return;
-            }
-            const result = catalog.unbindRuntimeContext({
-              context: bindingRuntimeContext(binding),
-              actor_id: "web-user",
-              user_confirmed: true,
-            });
-            sendJson(response, 200, {
-              binding_id: bindingId,
-              changed: result.changed,
-              unbound_project: result.unbound_project,
+              sendJson(response, 200, {
+                binding_id: bindingId,
+                changed: result.changed,
+                unbound_project: result.unbound_project,
+              });
             });
           } catch (error) {
             sendJson(response, error instanceof GoalBoardProjectCatalogError && error.code === "catalog.project_not_found" ? 404 : 400, {
               error: error instanceof Error ? error.message : String(error),
             });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1546,19 +1529,19 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "请先明确确认目录默认项目" });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
+          const projectId = body.project_id;
           try {
-            const memberships = catalog.setWorkspaceDefault({
-              workspace_id: decodeURIComponent(workspaceDefaultMatch[1]),
-              project_id: body.project_id,
-              actor_id: "web-user",
-              user_confirmed: true,
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
+              const memberships = catalog.setWorkspaceDefault({
+                workspace_id: decodeURIComponent(workspaceDefaultMatch[1]),
+                project_id: projectId,
+                actor_id: "web-user",
+                user_confirmed: true,
+              });
+              sendJson(response, 200, { changed: true, membership_count: memberships.length });
             });
-            sendJson(response, 200, { changed: true, membership_count: memberships.length });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1571,19 +1554,18 @@ async function handleGoalBoardWebRequest(
             sendJson(response, 400, { error: "请先明确确认解除目录关联" });
             return;
           }
-          const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
           try {
-            const memberships = catalog.removeWorkspaceMembership({
-              workspace_id: decodeURIComponent(workspaceUnlinkMatch[1]),
-              project_id: decodeURIComponent(workspaceUnlinkMatch[2]),
-              actor_id: "web-user",
-              user_confirmed: true,
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
+              const memberships = catalog.removeWorkspaceMembership({
+                workspace_id: decodeURIComponent(workspaceUnlinkMatch[1]),
+                project_id: decodeURIComponent(workspaceUnlinkMatch[2]),
+                actor_id: "web-user",
+                user_confirmed: true,
+              });
+              sendJson(response, 200, { changed: true, membership_count: memberships.length });
             });
-            sendJson(response, 200, { changed: true, membership_count: memberships.length });
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          } finally {
-            catalog.close();
           }
           return;
         }
@@ -1592,18 +1574,18 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "POST" && url.pathname === "/api/projects/migrate") {
-          let catalog: GoalBoardProjectCatalog | null = null;
           try {
             const requestInput = webMigrationRequest(await readBody(request));
-            catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
-            const project = await catalog.migrateLegacyDatabase({
-              legacy_database_path: requestInput.legacyDatabasePath,
-              ...(requestInput.displayName ? { display_name: requestInput.displayName } : {}),
-              actor_id: "web-user",
-            });
-            sendJson(response, 201, {
-              project: projectNavigation(project),
-              project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, async (catalog) => {
+              const project = await catalog.migrateLegacyDatabase({
+                legacy_database_path: requestInput.legacyDatabasePath,
+                ...(requestInput.displayName ? { display_name: requestInput.displayName } : {}),
+                actor_id: "web-user",
+              });
+              sendJson(response, 201, {
+                project: projectNavigation(project),
+                project_path: `/projects/${encodeURIComponent(project.project_id)}/`,
+              });
             });
           } catch (error) {
             const message = error instanceof GoalBoardProjectCatalogError
@@ -1612,8 +1594,6 @@ async function handleGoalBoardWebRequest(
                 ? `迁移失败：${error.message}`
                 : "迁移失败，请检查来源 DB 后重试";
             sendJson(response, 400, { error: message });
-          } finally {
-            catalog?.close();
           }
           return;
         }
@@ -1747,6 +1727,7 @@ async function handleGoalBoardWebRequest(
             kind: source.kind,
             name: source.name,
             summary: source.summary,
+            instructions: source.instructions,
             applies_to: source.applies_to,
             domain_tags: source.domain_tags,
             steps: source.steps,
@@ -1791,16 +1772,13 @@ async function handleGoalBoardWebRequest(
               });
               sendJson(response, 200, saved);
             } else {
-              const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: serverOptions.homeDirectory });
-              try {
+              await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
                 const current = catalog.listPersonalPlanningMethodPacks()
                   .find((pack) => pack.method_id === method.method_id) ?? null;
                 const saved = normalizePlanningMethodPack(method, "personal", current, new Date().toISOString());
                 catalog.putPersonalPlanningMethodPack(saved);
                 sendJson(response, 200, { method: saved });
-              } finally {
-                catalog.close();
-              }
+              });
             }
           } catch (error) {
             sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });

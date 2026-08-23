@@ -1,4 +1,4 @@
 interface:
   display_name: "GoalBoard Runtime"
-  short_description: "启动 Web，并在当前对话澄清、选择和推进 GoalBoard 工作"
-  default_prompt: "Use $goal-advance in this conversation to start GoalBoard when requested, explain what happens next in plain language, and continue the current GoalBoard flow."
+  short_description: "澄清目标、组合规划方法、建立依赖并持续推进 Goal"
+  default_prompt: "Use $goal-advance to connect this conversation to GoalBoard, clarify and plan the Goal with relevant methods, then advance it through evidence and completion."
