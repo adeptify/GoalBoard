@@ -174,6 +174,7 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     await execFileAsync("tar", ["-xzf", join(artifacts, tarballName), "-C", dirname(packageDirectory)]);
     await rename(join(dirname(packageDirectory), "package"), packageDirectory);
     const packageMetadata = JSON.parse(await readFile(join(repository, "package.json"), "utf8")) as {
+      version: string;
       dependencies?: Record<string, string>;
     };
     for (const dependency of Object.keys(packageMetadata.dependencies ?? {})) {
@@ -215,7 +216,13 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.match(packedReadme, /README\.en\.md/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/desktop-workstation-dark\.jpg/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/goal-graph-dark\.jpg/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-companion-privacy\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-goals-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-focus-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-runtime-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-runtime-picker-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-focus-main-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-navigator-focus-en\.png/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-navigator-runtime-en\.png/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/web-workspace-light\.jpg/);
     assert.match(packedReadme, /pnpm install:local/);
     assert.match(packedReadme, /service install/);
@@ -249,7 +256,7 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       };
       assert.deepEqual(diagnostics, {
         installation_state: "ready",
-        version: "0.1.0",
+        version: packageMetadata.version,
         project_count: 0,
         home_directory: goalboardHome,
         release_directory: installation.release_directory,
@@ -447,14 +454,15 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       await stopChild(web);
     }
 
+    const upgradeVersion = `${packageMetadata.version}-upgrade-test`;
     const upgradeOutput = await execFileAsync(
       process.execPath,
-      [installation.launchers.cli, "install", "--home", goalboardHome, "--source", installation.release_directory, "--version", "0.1.1", "--json"],
+      [installation.launchers.cli, "install", "--home", goalboardHome, "--source", installation.release_directory, "--version", upgradeVersion, "--json"],
       { cwd: directory, env: environment, maxBuffer: 10 * 1024 * 1024 },
     );
     const upgrade = JSON.parse(upgradeOutput.stdout) as { status: string; version: string; release_directory: string };
     assert.equal(upgrade.status, "upgraded");
-    assert.equal(upgrade.version, "0.1.1");
+    assert.equal(upgrade.version, upgradeVersion);
     assert.notEqual(upgrade.release_directory, installation.release_directory);
     const upgradedHelp = await execFileAsync(process.execPath, [installation.launchers.cli, "--help"], { cwd: directory, env: environment });
     assert.match(upgradedHelp.stdout, /goalboard v1 <operation>/);
