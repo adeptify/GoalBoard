@@ -60,7 +60,35 @@ GoalBoard 不负责调度一群 Agent，也不替代 Codex、Claude Code 或其�
 | **Harness 同屏** | 把窄版 Desktop 放在 Codex 等桌面 Harness 旁边；对话继续执行，GoalBoard 持续显示同一个 Goal 的下一步、阻塞和完成要求。 |
 | **Web 工作台** | 不安装桌面 GUI，直接在浏览器查看同一项目；与 Desktop 共用本地数据。 |
 
-![Codex 与 GoalBoard Desktop 同屏：同一个 Goal 同时出现在 Harness 对话与伴随工作台中](docs/screenshots/showcase/codex-companion-privacy.png)
+### 在 Codex 内完成同一条闭环
+
+主 Session 管理整棵 Goal Tree：确认目标、调整依赖、判断新需求影响哪些工作。Codex 内置侧边浏览器持续打开同一项目；选中可执行叶子 Goal 后，可以直接选择 Runtime，在与该 Goal 绑定的 TUI 中推进，不必切换窗口。
+
+**窄侧栏：Goal 列表、当前 Goal 与绑定 Runtime**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Codex 内部侧栏中的 Goal 列表"></a>
+  <a href="docs/screenshots/showcase/codex-internal-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-en.png" width="32%" alt="Codex 内部侧栏中的 Goal Focus"></a>
+  <a href="docs/screenshots/showcase/codex-internal-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-en.png" width="32%" alt="Codex 内部侧栏中与 Goal 绑定的 Runtime"></a>
+</p>
+
+**从选择 Runtime 到进入 Goal 绑定 TUI**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-runtime-picker-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-picker-en.png" width="31%" alt="为当前 Goal 选择 Runtime"></a>
+  <a href="docs/screenshots/showcase/codex-internal-focus-main-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-main-en.png" width="65%" alt="主 Session 与 Goal Focus 同屏"></a>
+</p>
+
+**展开侧栏：Goal Navigator 与当前工作并排**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-navigator-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-focus-en.png" width="49%" alt="Codex 内部的 Goal Navigator 与 Goal Focus"></a>
+  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="49%" alt="Codex 内部的 Goal Navigator 与 Goal Runtime"></a>
+</p>
+
+所有入口读写同一份 Goal 事实：主 Session 负责规划和复核，叶子 Goal 的 TUI 负责执行，进展与证据再回到 GoalBoard。
+
+### 也可以把 GoalBoard 作为 Desktop 工作站
 
 窄窗口不是压缩后的三栏：可以在 `Goals`、`Focus` 和 `Runtime` 三个状态间切换，适合长期停靠在 Harness 旁边。
 

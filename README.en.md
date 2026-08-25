@@ -60,7 +60,35 @@ The loop keeps long-running work stable without making it rigid: a Runtime canno
 | **Beside a Harness** | Dock the narrow Desktop app next to Codex or another desktop Harness; the conversation executes while GoalBoard keeps the same Goal, next action, blockers, and criteria visible. |
 | **Web workbench** | Use the same local project in a browser without installing a desktop GUI. Web and Desktop share the same data. |
 
-![Codex beside GoalBoard Desktop: the same Goal is visible in the Harness conversation and companion workbench](docs/screenshots/showcase/codex-companion-privacy.png)
+### Run the same loop inside Codex
+
+The main Session manages the whole Goal Tree: it confirms outcomes, adjusts dependencies, and decides which work a new request affects. GoalBoard stays open in Codex's internal side browser; select an executable leaf Goal, choose a Runtime, and continue in a TUI bound to that Goal without leaving the window.
+
+**Narrow side panel: Goal list, current Goal, and bound Runtime**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Goal list in the Codex internal side panel"></a>
+  <a href="docs/screenshots/showcase/codex-internal-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-en.png" width="32%" alt="Goal Focus in the Codex internal side panel"></a>
+  <a href="docs/screenshots/showcase/codex-internal-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-en.png" width="32%" alt="Goal-bound Runtime in the Codex internal side panel"></a>
+</p>
+
+**Choose a Runtime, then enter the Goal-bound TUI**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-runtime-picker-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-picker-en.png" width="31%" alt="Choose a Runtime for the current Goal"></a>
+  <a href="docs/screenshots/showcase/codex-internal-focus-main-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-main-en.png" width="65%" alt="Main Session beside Goal Focus"></a>
+</p>
+
+**Wider side panel: Goal Navigator beside the current work**
+
+<p align="center">
+  <a href="docs/screenshots/showcase/codex-internal-navigator-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-focus-en.png" width="49%" alt="Goal Navigator and Goal Focus inside Codex"></a>
+  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="49%" alt="Goal Navigator and Goal Runtime inside Codex"></a>
+</p>
+
+Every entry point reads and writes the same Goal facts: the main Session plans and reviews, a leaf Goal's TUI executes, and progress and evidence return to GoalBoard.
+
+### Or use GoalBoard as the Desktop workstation
 
 The narrow window is not a squeezed three-pane layout. Switch between `Goals`, `Focus`, and `Runtime` while keeping GoalBoard docked beside the Harness.
 
