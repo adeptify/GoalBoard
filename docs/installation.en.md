@@ -1,6 +1,6 @@
 # Install & Maintenance (GoalBoard)
 
-> Detailed install, update, startup, uninstall, and demo-data notes. For the quick start, see "3-minute experience" in the [README](../README.en.md).
+> Detailed install, update, startup, uninstall, and demo-data notes. For the quick start, see "Try it in 3 minutes" in the [README](../README.md).
 
 ## macOS Desktop installer
 

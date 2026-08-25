@@ -1,6 +1,6 @@
 # 安装与维护（GoalBoard）
 
-> 详细安装、更新、启动、卸载与演示数据说明。快速上手见 [README](../README.md) 的「3 分钟体验」。
+> 详细安装、更新、启动、卸载与演示数据说明。快速上手见 [README](../README.zh.md) 的「3 分钟体验」。
 
 ## macOS Desktop 安装包
 

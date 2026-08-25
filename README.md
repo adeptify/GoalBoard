@@ -1,180 +1,179 @@
 # GoalBoard
 
-**中文** | [English](README.en.md)
+**English** | [简体中文](README.zh.md)
 
-## 让长程 Goal 跨 Session、跨 Runtime，仍然目标明确、拆分清楚、进度可核对
+GoalBoard is a Goal ledger and workbench shared by different AI Runtimes.
 
-### 长程任务为什么容易失控
+Long-running work fails in a boring way: a new Session cannot see the last one, the original outcome drifts as local decisions pile up, and “done” is a sentence with nothing to check. What is missing is not a smarter model. It is one project record every Runtime can read: the accepted Goal, how it was split, what is blocked, who is working, and the evidence for completion.
 
-- 任务跑着跑着偏离原目标，往往到交付前才被发现。
-- 换 Runtime 或新开 Session 后，目标、进展和未完成工作需要重新解释。
-- 复杂 Goal 被拆成多条执行线后，依赖、占用和阻塞很快失去全貌。
-- “已完成”停留在对话结论里，缺少可以核对的依据。
-- 人只能等待 Runtime 汇报，无法随时判断正在做什么、为什么停住、还差什么。
+GoalBoard keeps that record locally. Codex, Claude Code, OpenCode, or another connected Harness updates the same Goal. You confirm material changes. You can see how far the work has got without asking the model to recap.
 
-### 核心思路
+It does not host a model and does not dispatch an agent team. Execution stays in the Harness you already use.
 
-GoalBoard 是一份跨 Session、跨 Runtime 的 Goal 账本，也是一套本地执行工作台。它把目标结果、拆分、依赖、决定、进展和完成依据留在同一份可追溯事实中；Runtime 可以更换，Goal 不随对话消失。人确认正式目标和变化，Runtime 自主选择可执行工作，并把占用、进展和证据写回同一个项目。
+The longer derivation (WeChat article, link forthcoming): *[placeholder — 公众号文章待发布]*. Draft: [From conversational facts to ledger facts](https://github.com/adeptify/article/blob/main/AI%E9%95%BF%E7%A8%8B%E4%BB%BB%E5%8A%A1-%E4%BB%8E%E5%AF%B9%E8%AF%9D%E6%80%81%E4%BA%8B%E5%AE%9E%E5%88%B0%E8%B4%A6%E6%9C%AC%E6%80%81%E4%BA%8B%E5%AE%9E.md).
 
-### 一套事实，三个工作面
+## Three ways to use it
 
-**聚焦**：选中一条 Goal，就看到目标、下一步、完成要求与当前阻塞。
+Same project, three surfaces.
 
-![GoalBoard Desktop：在 Goal Navigator 旁聚焦查看一条 Goal](docs/screenshots/showcase/desktop-workstation-dark.jpg)
+### Desktop
 
-**关系图**：在项目层查看父子与依赖网络；圆点是起点，箭头指向终点。
-
-![Goal Graph：项目级父子与依赖网络](docs/screenshots/showcase/goal-graph-dark.jpg)
-
-**Runtime**：从具体 Goal 打开终端，Session 始终与这条 Goal 关联。
-
-![Goal-bound Runtime：在同一桌面工作站内执行当前 Goal](docs/screenshots/showcase/desktop-runtime-dark.jpg)
-
-### Goal 层，不是 Agent Orchestration
-
-GoalBoard 不负责调度一群 Agent，也不替代 Codex、Claude Code 或其他 Harness。
-
-| | 负责什么 |
-| --- | --- |
-| **GoalBoard** | 明确要得到什么、如何拆分、依赖什么、当前做到哪一步，以及凭什么算完成。 |
-| **Agent Orchestration** | 决定哪些 Agent 参与、如何分工、通信和执行。 |
-
-两者可以组合：复杂 Goal 先在 GoalBoard 中形成清楚的结果、子 Goal 和依赖，再交给合适的 Runtime 或 Agent team 执行；不同执行入口继续把进展和证据写回同一份 Goal 事实。
-
-## 从 Goal 到完成的闭环
-
-1. **定义**：写清结果、边界和完成标准，避免执行中偷偷改题。
-2. **拆分**：用 Goal Tree 管理层级，用 Graph 看清复杂依赖和阻塞传播。
-3. **选择**：Runtime 读取可执行 Goal，自主领取；前置条件不满足时不能提前开始。
-4. **执行**：在现有 Harness 中继续工作，或从具体 Goal 打开与它绑定的 Runtime TUI。
-5. **核验**：进展、证据和复核写回 Goal；“完成”不只是一句对话总结。
-6. **演进**：新工作、依赖调整和风险先成为提案，说明原因与影响，经用户确认后进入正式 Goal Tree。
-
-这套闭环让长程任务保持稳定，但不僵化：已确认的 Goal 不会被 Runtime 静默改写；执行中发现的新事实也有明确入口进入项目。
-
-## 三种使用方式
-
-| 使用方式 | 适合的工作方式 |
-| --- | --- |
-| **Desktop 工作站** | 把 GoalBoard 作为主工作台，在一个窗口内对照 Goal、关系和 Runtime；全局控制位于原生 TitleBar。 |
-| **Harness 同屏** | 把窄版 Desktop 放在 Codex 等桌面 Harness 旁边；对话继续执行，GoalBoard 持续显示同一个 Goal 的下一步、阻塞和完成要求。 |
-| **Web 工作台** | 不安装桌面 GUI，直接在浏览器查看同一项目；与 Desktop 共用本地数据。 |
-
-### 在 Codex 内完成同一条闭环
-
-主 Session 管理整棵 Goal Tree：确认目标、调整依赖、判断新需求影响哪些工作。Codex 内置侧边浏览器持续打开同一项目；选中可执行叶子 Goal 后，可以直接选择 Runtime，在与该 Goal 绑定的 TUI 中推进，不必切换窗口。
-
-**窄侧栏：Goal 列表、当前 Goal 与绑定 Runtime**
+A native macOS window: focus one Goal, then open a terminal that stays bound to it. GoalBoard also lives in the **macOS menu bar at the top of the screen** (a status item you can click — not minimizing to the Dock). Click it for the current project, focused Goal, status, and next action.
 
 <p align="center">
-  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Codex 内部侧栏中的 Goal 列表"></a>
-  <a href="docs/screenshots/showcase/codex-internal-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-en.png" width="32%" alt="Codex 内部侧栏中的 Goal Focus"></a>
-  <a href="docs/screenshots/showcase/codex-internal-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-en.png" width="32%" alt="Codex 内部侧栏中与 Goal 绑定的 Runtime"></a>
+  <img src="docs/screenshots/showcase/desktop-workstation-dark.jpg" width="48%" alt="Desktop: focus one Goal beside the Goal Navigator">
+  &nbsp;
+  <img src="docs/screenshots/showcase/goal-bound-tui-en.jpg" width="48%" alt="Desktop: a terminal bound to the selected Goal">
 </p>
-
-**从选择 Runtime 到进入 Goal 绑定 TUI**
 
 <p align="center">
-  <a href="docs/screenshots/showcase/codex-internal-runtime-picker-en.png"><img src="docs/screenshots/showcase/codex-internal-runtime-picker-en.png" width="31%" alt="为当前 Goal 选择 Runtime"></a>
-  <a href="docs/screenshots/showcase/codex-internal-focus-main-en.png"><img src="docs/screenshots/showcase/codex-internal-focus-main-en.png" width="65%" alt="主 Session 与 Goal Focus 同屏"></a>
+  <sub><b>Goal focus</b> · what this Goal is, the next action, and what still blocks it &nbsp;·&nbsp; <b>Goal-bound TUI</b> · the terminal belongs to this Goal</sub>
 </p>
 
-**展开侧栏：Goal Navigator 与当前工作并排**
+### Inside a Harness
+
+Open GoalBoard in the Harness side browser and keep working in the same window. Narrow: the Goal list. Wider: the current Goal and its TUI.
 
 <p align="center">
-  <a href="docs/screenshots/showcase/codex-internal-navigator-focus-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-focus-en.png" width="49%" alt="Codex 内部的 Goal Navigator 与 Goal Focus"></a>
-  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="49%" alt="Codex 内部的 Goal Navigator 与 Goal Runtime"></a>
+  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Harness side panel: Goal list"></a>
+  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="65%" alt="Harness side panel: Goal and bound TUI"></a>
 </p>
-
-所有入口读写同一份 Goal 事实：主 Session 负责规划和复核，叶子 Goal 的 TUI 负责执行，进展与证据再回到 GoalBoard。
-
-### 也可以把 GoalBoard 作为 Desktop 工作站
-
-窄窗口不是压缩后的三栏：可以在 `Goals`、`Focus` 和 `Runtime` 三个状态间切换，适合长期停靠在 Harness 旁边。
 
 <p align="center">
-  <img src="docs/screenshots/showcase/companion-goals-dark.jpg" width="31%" alt="GoalBoard Desktop 窄屏 Goals 视图">
-  <img src="docs/screenshots/showcase/companion-focus-dark.jpg" width="31%" alt="GoalBoard Desktop 窄屏 Focus 视图">
-  <img src="docs/screenshots/showcase/companion-runtime-dark.jpg" width="31%" alt="GoalBoard Desktop 窄屏 Runtime 视图">
+  <sub><b>Narrow</b> · Goal list beside the conversation &nbsp;·&nbsp; <b>Wide</b> · current Goal and a TUI bound to it</sub>
 </p>
 
-具有 CLI/TUI 的 Runtime 可以直接从可执行叶子 Goal 打开。终端从哪个 Goal 启动，就持续属于哪个 Goal；复合父 Goal 只负责组织结果，不直接启动执行终端。
+### Web
 
-![GoalBoard Web：浏览器中的 Goal Tree 与 Goal Focus](docs/screenshots/showcase/web-workspace-light.jpg)
+The same local project in a browser. Desktop and Web share data under `~/.goalboard`.
 
-当前内置启动配方覆盖 Codex、Claude Code、OpenCode、Pi Agent、Grok Build，也支持自定义命令。其他桌面 Harness 可以通过 GoalBoard 的 MCP 与共享 Skill 读取和更新同一项目。
+![GoalBoard Web: Goal Tree and Goal Focus](docs/screenshots/showcase/web-workspace-light.jpg)
 
-## 3 分钟体验
+Built-in Runtime recipes cover Codex, Claude Code, OpenCode, Pi Agent, and Grok Build. Other Harnesses can use the same project through GoalBoard's MCP server and shared Skill.
 
-### macOS Desktop（推荐）
+## Core features
 
-从 [GitHub Releases](https://github.com/adeptify/GoalBoard/releases) 下载与你的 Mac 匹配的 DMG：
+Plain use, and the problem each one is for.
 
-- Apple Silicon（M1/M2/M3/M4…）：`macos-arm64`
-- Intel Mac：`macos-x64`
+### See the Goal, the next action, and why it is stuck
 
-打开 DMG，把 GoalBoard 拖入 Applications 后直接启动。Desktop 已内置 Node 与 GoalBoard Runtime；首次打开会把 Core 安装到 `~/.goalboard` 并启动同一套本地工作台，不要求先安装 Node、pnpm 或克隆仓库。升级 App 不会改写已有项目和历史。
+Open a Goal. The page should answer three questions without reading the chat: what we are trying to get, what to do now, and why it cannot finish yet. Parent Goals organize a larger result; only a concrete leaf is executable.
 
-未使用 Developer ID 签名和 Apple 公证的开发构建仍会触发 Gatekeeper，需要在“系统设置 → 隐私与安全性”中明确允许；正式发布流水线配置证书后会生成签名并公证的同名产物。
+![Goal focus: outcome, next action, and completion criteria](docs/screenshots/showcase/desktop-workstation-dark.jpg)
 
-### 从源码体验
+### See who depends on whom
 
-需要 Node.js 20+、pnpm，以及 macOS（常驻 Web 服务目前使用 LaunchAgent；其他系统可以前台启动 Web）。
+The Graph is for when the list is no longer enough. Parent/child is structure. A dependency is a hard gate: if B needs A's result, B cannot start early. When a requirement changes, you can see which downstream work is affected instead of re-explaining the whole tree.
+
+![Goal Graph: hierarchy, prerequisites, and current focus](docs/screenshots/showcase/goal-graph-en.jpg)
+
+### You confirm material changes
+
+A Runtime may discover new work, a new dependency, or a risk. It can propose. It cannot quietly rewrite an accepted Goal. The Decision Center puts the question, why it matters now, the evidence or the gap, and what each choice changes in one place.
+
+![Decision Center: the question, the gap, and what each choice changes](docs/screenshots/showcase/decisions-en.jpg)
+
+### Keep the terminal on the Goal
+
+Open Codex, Claude Code, or a custom command from an executable leaf. That terminal stays owned by that Goal — switching Focus later does not silently reassign it. A parent Goal does not pretend to be executable; it sends you to a child.
+
+![Goal-bound TUI: the terminal recovers this Goal's outcome, next action, and done-when](docs/screenshots/showcase/goal-bound-tui-en.jpg)
+
+On macOS, the same current Goal is also on the **top menu bar**. Click the GoalBoard status item — not the Dock — for the project, the focused Goal, its state, and the next action; click away and the panel disappears.
+
+### Treat “done” as something you can check
+
+Completion is not a sentence in chat. Each Goal has criteria. Evidence maps to those criteria. The required review has to pass. The record keeps who worked it, what was produced, and why it counts as complete.
+
+![Evidence and review attached to completion criteria](docs/screenshots/showcase/evidence-review-en.jpg)
+
+If something new shows up while you work — proof, a risk, an affected area, a relation — attach it to the current Goal with **Quick add**. It stays on the Goal instead of disappearing into the thread.
+
+![Quick add: attach evidence, a risk, an affected area, or a Goal relation](docs/screenshots/showcase/quick-capture-en.jpg)
+
+### Tell the Runtime how this project should be split
+
+Planning methods are not a task template and they do not auto-build the tree. They are the questions a Runtime must work through before it proposes a split: what to cover, what depends on what, what “done” must show. A project can combine a work-type method and a domain method. The result is still a proposal you confirm.
+
+![Project planning methods that shape how a Goal is decomposed](docs/screenshots/showcase/planning-composition-en.jpg)
+
+### Connect a Runtime on purpose
+
+GoalBoard works as a board with no Runtime connected. Connect Codex, Claude Code, or another tool only when it should read and advance Goals directly. Every write is previewed; you confirm; a failed apply rolls back. After connecting, open a **new Session** — tools load at Session start.
+
+![Runtime settings: detect, preview, and confirm before anything is written](docs/screenshots/showcase/runtime-settings-en.jpg)
+
+## Try it in 3 minutes
+
+### macOS Desktop (recommended)
+
+Download the DMG for your Mac from [GitHub Releases](https://github.com/adeptify/GoalBoard/releases):
+
+- Apple Silicon (M1/M2/M3/M4…): `macos-arm64`
+- Intel Mac: `macos-x64`
+
+Open the DMG, drag GoalBoard into Applications, and launch it. Desktop includes Node and the GoalBoard Runtime. On first launch it installs Core into `~/.goalboard` and starts the same local workbench, without requiring Node, pnpm, or a repository checkout. App upgrades do not rewrite existing projects or history.
+
+Development builds that are not signed with Developer ID and notarized by Apple still trigger Gatekeeper and require explicit approval in System Settings → Privacy & Security. The release workflow produces signed and notarized artifacts once the repository has the Apple credentials.
+
+### Run from source
+
+You need Node.js 20+, pnpm, and macOS (the persistent Web service currently uses LaunchAgent; other platforms can run Web in the foreground).
 
 ```bash
 git clone https://github.com/adeptify/goalboard.git
 cd goalboard
 pnpm install --frozen-lockfile
 
-# 构建并安装到 ~/.goalboard
+# Build and install into ~/.goalboard
 pnpm install:local
 
-# macOS：安装常驻 Web 服务
+# macOS: install the persistent Web service
 "$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard" --confirm
 
-# 创建与用户数据分开的可重建示例
+# Create a rebuildable demo kept separate from user data
 "$HOME/.goalboard/bin/goalboard" demo create --confirm
 ```
 
-打开 `http://127.0.0.1:4173`，进入示例项目。然后在“设置 → Runtime”中预览并确认所需接入，再**新开一个 Runtime Session**：
+Open `http://127.0.0.1:4173` and enter the demo project. In “Settings → Runtime,” preview and confirm an integration, then **open a new Runtime Session**:
 
-> 使用 GoalBoard 连接示例项目，选择一个当前可执行的 Goal，并告诉我目标、下一步和完成要求。
+> Use GoalBoard to connect to the demo project, choose one currently executable Goal, and tell me its outcome, next action, and completion requirements.
 
-Runtime 只在 Session 启动时读取 MCP 和 Skill，因此刚完成接入后需要新开 Session。
+Runtimes read MCP and Skill manifests at Session startup, so a newly connected Runtime needs a new Session.
 
-### 构建、安装和启动 macOS Desktop
+### Build, install, and start macOS Desktop
 
 ```bash
-# 开发态源码运行
+# Run the development app from source
 pnpm desktop
 
-# 构建当前架构的 DMG 与 App zip
+# Build a DMG and App zip for the current architecture
 pnpm desktop:build:macos
 
-# 安装刚构建的 DMG 到 ~/Applications 并启动
+# Install the freshly built DMG into ~/Applications and launch it
 pnpm desktop:install:macos
 
-# 以后直接启动已安装 App
+# Start the installed app later
 pnpm desktop:start:macos
 ```
 
-每个架构单独打包，是因为 GoalBoard 的 SQLite 与 PTY native addon 必须和 Node、Mac CPU 架构一致。向 `v*` tag 推送后，GitHub Actions 会分别构建 Apple Silicon 与 Intel DMG；只有签名和公证成功才会发布公开 Release，凭据只从 GitHub Secrets 读取，不进入仓库。
+Each architecture ships separately because GoalBoard's SQLite and PTY native addons must match both the bundled Node runtime and the Mac CPU. Pushing a `v*` tag makes GitHub Actions build Apple Silicon and Intel DMGs, but the public Release is published only after signing and notarization succeed. Credentials are read only from GitHub Secrets and never committed to the repository.
 
-## 产品边界
+## Product boundaries
 
-- 项目的权威状态保存在本地 SQLite；GoalBoard 不捆绑模型。
-- 打开页面不会自动绑定 Session、启动 Runtime 或领取工作。
-- Runtime 接入、终端启动和正式 Goal 变化都需要明确操作或确认。
-- GoalBoard 管理 Goal 事实与执行闭环，不替代 Harness 或 Agent Orchestration。
+- The authoritative project state is stored in local SQLite; GoalBoard does not bundle a model.
+- Opening a page does not bind a Session, start a Runtime, or claim work.
+- Runtime integration, terminal launch, and accepted Goal changes require explicit action or confirmation.
+- GoalBoard manages Goal facts and the execution loop; it does not replace a Harness or Agent Orchestration.
 
-## 更多文档
+## Further reading
 
-- [安装与维护](docs/installation.md)
-- [运行时协议](docs/runtime.md)
-- [MCP 接入](docs/mcp.md)
-- [CLI 与开发](docs/cli-and-development.md)
+- [Install & Maintenance](docs/installation.en.md)
+- [Runtime Protocol](docs/runtime.en.md)
+- [MCP Integration](docs/mcp.en.md)
+- [CLI & Development](docs/cli-and-development.en.md)
 - [Runtime Skill](skills/goal-advance/SKILL.md)
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).

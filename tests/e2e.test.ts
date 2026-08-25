@@ -213,25 +213,20 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.equal(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), unrelatedCodexConfig);
 
     const packedReadme = await readFile(join(packageDirectory, "README.md"), "utf8");
-    assert.match(packedReadme, /README\.en\.md/);
+    assert.match(packedReadme, /README\.zh\.md/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/desktop-workstation-dark\.jpg/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/goal-graph-dark\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/goal-bound-tui-en\.jpg/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-goals-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-focus-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-runtime-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-runtime-picker-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-focus-main-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-navigator-focus-en\.png/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-navigator-runtime-en\.png/);
     assert.match(packedReadme, /docs\/screenshots\/showcase\/web-workspace-light\.jpg/);
     assert.match(packedReadme, /pnpm install:local/);
     assert.match(packedReadme, /service install/);
     assert.match(packedReadme, /http:\/\/127\.0\.0\.1:4173/);
-    assert.match(packedReadme, /docs\/installation\.md/);
-    assert.match(packedReadme, /docs\/runtime\.md/);
-    assert.match(packedReadme, /docs\/mcp\.md/);
+    assert.match(packedReadme, /docs\/installation\.en\.md/);
+    assert.match(packedReadme, /docs\/runtime\.en\.md/);
+    assert.match(packedReadme, /docs\/mcp\.en\.md/);
     assert.match(packedReadme, /skills\/goal-advance\/SKILL\.md/);
-    assert.match(packedReadme, /MIT，见 \[LICENSE\]/);
+    assert.match(packedReadme, /MIT, see \[LICENSE\]/);
     assert.doesNotMatch(packedReadme, /postinstall-project|兼容模式|GOALBOARD_DATABASE=/);
 
     await rm(runtimeRoot, { recursive: true, force: true });
