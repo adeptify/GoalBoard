@@ -79,6 +79,7 @@ import {
   safeNextPath,
 } from "./i18n.js";
 import { goalPresentationState } from "./human-language.js";
+import { buildCapsuleSnapshot, renderCapsuleShell } from "./capsule.js";
 
 export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
 
@@ -1185,7 +1186,15 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
         response.end();
         return;
       }
-      const locale = resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
+      const capsuleLocale = request.method === "GET" && (
+        url.pathname === "/desktop/capsule" ||
+        /^\/projects\/[^/]+\/api\/capsule$/.test(url.pathname)
+      )
+        ? url.searchParams.get("locale")
+        : null;
+      const locale = isWebLocale(capsuleLocale)
+        ? capsuleLocale
+        : resolveWebLocale(request.headers.cookie, request.headers["accept-language"]);
       await runWithLocale(locale, async () => {
         if (!authorizeLocalWebRequest(request, response, url, controlToken, mutationKeys)) return;
         if (serveWorkbenchAsset(request, response, url.pathname)) return;
@@ -1225,6 +1234,16 @@ async function handleGoalBoardWebRequest(
 ): Promise<void> {
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
+        if (request.method === "GET" && url.pathname === "/desktop/capsule") {
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            ...desktopCookieHeaders(request, url),
+          });
+          response.end(renderCapsuleShell(resolved.projects));
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/settings") {
           response.writeHead(302, { location: "/settings/projects", "cache-control": "no-store" });
           response.end();
@@ -1818,6 +1837,18 @@ async function handleGoalBoardWebRequest(
         }
         if (request.method === "GET" && url.pathname === "/api/board") {
           sendJson(response, 200, readWebView());
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/capsule") {
+          if (!options.project) {
+            sendJson(response, 400, { error: L("请先选择一个 GoalBoard 项目") });
+            return;
+          }
+          const available = coordinator.queryAvailable({
+            board_id: options.boardId,
+            actor_id: "capsule-viewer",
+          }).available;
+          sendJson(response, 200, buildCapsuleSnapshot(readWebView(), available));
           return;
         }
         if (options.project?.project_id) {

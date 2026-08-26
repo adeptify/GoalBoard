@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "GoalBoard desktop TUI window",
-  "windows": ["main"],
+  "description": "GoalBoard desktop workbench and live work capsule",
+  "windows": ["main", "capsule"],
   "remote": {
     "urls": ["http://127.0.0.1:4173/*", "http://localhost:4173/*"]
   },
@@ -15,6 +15,7 @@
     "allow-pty-spawn",
     "allow-pty-write",
     "allow-pty-resize",
-    "allow-pty-kill"
+    "allow-pty-kill",
+    "allow-capsule-window"
   ]
 }

@@ -18,16 +18,16 @@ GoalBoard 把这份记录放在本地。Codex、Claude Code、OpenCode 或其他
 
 ### 桌面端
 
-独立的 macOS 窗口：聚焦一条 Goal，再打开始终属于它的终端。GoalBoard 还会进 **屏幕顶部的 macOS 菜单栏**（状态栏图标，点开即可操作 — 不是最小化到 Dock）。点一下就能看到当前项目、聚焦的 Goal、状态和下一步。
+独立的 macOS 窗口：聚焦一条 Goal，再打开始终属于它的终端。GoalBoard 还有一个可点击的 **macOS 顶部菜单栏状态图标**。点一下就能看到当前项目、聚焦的 Goal、状态和下一步。
 
 <p align="center">
-  <img src="docs/screenshots/showcase/desktop-workstation-dark.jpg" width="48%" alt="桌面端：在 Goal 导航旁聚焦一条 Goal">
-  &nbsp;
-  <img src="docs/screenshots/showcase/goal-bound-tui-zh.jpg" width="48%" alt="桌面端：绑定到当前 Goal 的终端">
+  <img src="docs/screenshots/showcase/desktop-focus-zh-dark.jpg" width="32%" alt="GoalBoard 桌面端：在 Goal 导航旁聚焦一条 Goal">
+  <img src="docs/screenshots/showcase/harness-runtime-zh-dark.jpg" width="32%" alt="GoalBoard：绑定到当前 Goal 的终端">
+  <img src="docs/screenshots/showcase/macos-menu-bar-capsule-zh-dark.jpg" width="32%" alt="从 macOS 状态栏图标打开的 GoalBoard 工作胶囊">
 </p>
 
 <p align="center">
-  <sub><b>Goal 查看</b> · 这条 Goal 是什么、下一步、卡在哪 &nbsp;·&nbsp; <b>Goal 绑定 TUI</b> · 终端属于这条 Goal</sub>
+  <sub><b>Goal 查看</b> · 这条 Goal 是什么、下一步、卡在哪 &nbsp;·&nbsp; <b>Goal 绑定 TUI</b> · 终端属于这条 Goal &nbsp;·&nbsp; <b>工作胶囊</b> · 从 macOS 状态栏快速查看</sub>
 </p>
 
 ### Harness 里
@@ -35,8 +35,8 @@ GoalBoard 把这份记录放在本地。Codex、Claude Code、OpenCode 或其他
 把 GoalBoard 放在 Harness 的侧边浏览器里，对话继续在同一个窗口里进行。窄：Goal 列表。宽：当前 Goal 和它的 TUI。
 
 <p align="center">
-  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Harness 侧栏：Goal 列表"></a>
-  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="65%" alt="Harness 侧栏：当前 Goal 与绑定 TUI"></a>
+  <a href="docs/screenshots/showcase/harness-narrow-zh-dark.jpg"><img src="docs/screenshots/showcase/harness-narrow-zh-dark.jpg" width="32%" alt="Harness 侧栏：Goal 列表"></a>
+  <a href="docs/screenshots/showcase/harness-runtime-zh-dark.jpg"><img src="docs/screenshots/showcase/harness-runtime-zh-dark.jpg" width="65%" alt="Harness 侧栏：当前 Goal 与绑定 TUI"></a>
 </p>
 
 <p align="center">
@@ -47,7 +47,7 @@ GoalBoard 把这份记录放在本地。Codex、Claude Code、OpenCode 或其他
 
 同一份本地项目也可以在浏览器里打开。Web 和桌面端共用 `~/.goalboard` 里的数据。
 
-![GoalBoard Web：Goal Tree 与 Goal 聚焦](docs/screenshots/showcase/web-workspace-light.jpg)
+![GoalBoard Web：Goal Tree 与 Goal 聚焦](docs/screenshots/showcase/web-workspace-zh-dark.jpg)
 
 内置启动配方覆盖 Codex、Claude Code、OpenCode、Pi Agent、Grok Build。其他 Harness 可以通过 GoalBoard 的 MCP 和共享 Skill 读写同一项目。
 
@@ -59,49 +59,33 @@ GoalBoard 把这份记录放在本地。Codex、Claude Code、OpenCode 或其他
 
 点开一条 Goal。不翻聊天记录，也应能回答三件事：要得到什么、现在做什么、为什么还不能完成。上层 Goal 只负责组织结果；真正能执行的是具体的叶子 Goal。
 
-![Goal 聚焦：结果、下一步和完成要求](docs/screenshots/showcase/desktop-workstation-dark.jpg)
-
 ### 看清谁依赖谁
 
 列表不够用的时候看关系图。父子是结构；依赖是硬门禁：B 要用 A 的结果，B 就不能提前开工。需求变了，能看见下游哪些工作受影响，而不用把整棵树重新讲一遍。
-
-![Goal 关系图：层级、前置和当前焦点](docs/screenshots/showcase/goal-graph-zh.jpg)
 
 ### 改题要你点头
 
 Runtime 可能发现新工作、新依赖或风险。它可以提案，但不能悄悄改已经确认的 Goal。决定中心把问题、为什么现在要决定、依据或缺口、每个选择会改什么放在同一页。
 
-![决定中心：要决定什么、缺口是什么、选了会怎样](docs/screenshots/showcase/decisions-zh.jpg)
-
 ### 终端跟着 Goal 走
 
 从一条可执行的叶子 Goal 打开 Codex、Claude Code 或自定义命令。这个终端一直属于这条 Goal — 后来再点别的 Goal，不会把它偷偷改绑走。上层 Goal 不会假装自己能执行，而是让你进到具体的子 Goal。
 
-![Goal 绑定 TUI：终端能找回这条 Goal 的结果、下一步和完成标准](docs/screenshots/showcase/goal-bound-tui-zh.jpg)
-
-macOS 上，当前这条 Goal 也在 **屏幕顶部菜单栏**。点 GoalBoard 的状态栏图标 — 不是 Dock — 可以看到项目、聚焦的 Goal、状态和下一步；点别处，面板就收起来。
+macOS 上，当前这条 Goal 也在 **屏幕顶部菜单栏**。点 GoalBoard 的状态栏图标，可以看到项目、聚焦的 Goal、状态和下一步；点别处，面板就收起来。
 
 ### “完成了”得能核对
 
 完成不是对话里的一句话。每条 Goal 有完成标准，证据对上这些标准，该做的复核也要通过。记录里能看到谁做的、产出了什么、为什么算完成。
 
-![证据和复核对上完成标准](docs/screenshots/showcase/evidence-review-zh.jpg)
-
 干活时冒出来的新事实 — 完成依据、风险、影响范围、Goal 关系 — 用 **快速记录** 贴到当前这条 Goal 上，而不是留在聊天里消失。
-
-![快速记录：给当前 Goal 补证据、风险、影响范围或关系](docs/screenshots/showcase/quick-capture-zh.jpg)
 
 ### 告诉 Runtime 这个项目该怎么拆
 
 规划方法不是任务模板，也不会自动长出一棵树。它是 Runtime 在提出拆分之前必须想清楚的问题：要覆盖什么、谁依赖谁、完成时必须看见什么。一个项目可以同时用工作类型方法和领域方法。结果仍然是提案，要你确认。
 
-![项目规划方法，约束 Goal 该怎么拆](docs/screenshots/showcase/planning-composition-zh.jpg)
-
 ### 接入 Runtime 是一次明确操作
 
 不接 Runtime，GoalBoard 也可以当看板用。只有当你希望 Codex、Claude Code 等直接读取和推进 Goal 时，才去接入。每次写入都先预览，你确认后才改配置；失败会回滚。接入之后要 **新开一个 Session** — 工具只在 Session 启动时加载。
-
-![Runtime 设置：先探测、再预览，确认后才写入](docs/screenshots/showcase/runtime-settings-zh.jpg)
 
 ## 3 分钟体验
 

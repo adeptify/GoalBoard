@@ -213,12 +213,20 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     assert.equal(await readFile(join(userHome, ".codex", "config.toml"), "utf8"), unrelatedCodexConfig);
 
     const packedReadme = await readFile(join(packageDirectory, "README.md"), "utf8");
+    const packedChineseReadme = await readFile(join(packageDirectory, "README.zh.md"), "utf8");
     assert.match(packedReadme, /README\.zh\.md/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/desktop-workstation-dark\.jpg/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/goal-bound-tui-en\.jpg/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-goals-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/codex-internal-navigator-runtime-en\.png/);
-    assert.match(packedReadme, /docs\/screenshots\/showcase\/web-workspace-light\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/desktop-focus-en-dark\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/harness-narrow-en-dark\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/harness-runtime-en-dark\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/macos-menu-bar-capsule-en-dark\.jpg/);
+    assert.match(packedReadme, /docs\/screenshots\/showcase\/web-workspace-en-dark\.jpg/);
+    assert.doesNotMatch(packedReadme, /(?:-zh\.jpg|-zh\.png|light\.jpg|codex-internal)/);
+    assert.match(packedChineseReadme, /docs\/screenshots\/showcase\/desktop-focus-zh-dark\.jpg/);
+    assert.match(packedChineseReadme, /docs\/screenshots\/showcase\/harness-narrow-zh-dark\.jpg/);
+    assert.match(packedChineseReadme, /docs\/screenshots\/showcase\/harness-runtime-zh-dark\.jpg/);
+    assert.match(packedChineseReadme, /docs\/screenshots\/showcase\/macos-menu-bar-capsule-zh-dark\.jpg/);
+    assert.match(packedChineseReadme, /docs\/screenshots\/showcase\/web-workspace-zh-dark\.jpg/);
+    assert.doesNotMatch(packedChineseReadme, /(?:-en\.jpg|-en\.png|light\.jpg|codex-internal)/);
     assert.match(packedReadme, /pnpm install:local/);
     assert.match(packedReadme, /service install/);
     assert.match(packedReadme, /http:\/\/127\.0\.0\.1:4173/);
