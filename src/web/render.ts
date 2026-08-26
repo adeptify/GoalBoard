@@ -3129,7 +3129,7 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
   </article>`;
 }
 
-function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
+export function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
   const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
   if (!group) return 0;
   return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
@@ -6372,7 +6372,7 @@ const CLIENT_SCRIPT = `
     };
 
     const setSyncState = (label, mode = "") => {
-      syncState.textContent = label;
+      syncState.textContent = L(label);
       syncState.classList.toggle("is-syncing", mode === "syncing");
       syncState.classList.toggle("is-offline", mode === "offline");
     };

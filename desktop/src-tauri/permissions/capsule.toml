@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-capsule-window"
+description = "Allow the GoalBoard menu-bar popover to hide, update its status, and open an exact GoalBoard path."
+commands.allow = [
+  "capsule_hide",
+  "capsule_update_menu_bar",
+  "capsule_set_locale",
+  "capsule_open_main"
+]

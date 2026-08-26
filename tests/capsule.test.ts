@@ -1,0 +1,492 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { buildCapsuleSnapshot, renderCapsuleShell } from "../src/web/capsule.js";
+import type { AvailableGoal, GoalRecord } from "../src/v1/types.js";
+import type { GoalBoardWebView, WebGoalView } from "../src/web/render.js";
+
+const PROJECT = { project_id: "project-capsule", display_name: "胶囊测试" };
+
+function goal(goalId: string, title: string, fulfillmentState: "unmet" | "satisfied" = "unmet"): GoalRecord {
+  return {
+    goal_id: goalId,
+    board_id: "board-capsule",
+    title,
+    outcome: `${title}有明确结果`,
+    why: `为了验证${title}`,
+    business_logic: "只读取同一份 GoalBoard 状态。",
+    in_scope: [],
+    out_of_scope: [],
+    constraints: [],
+    required_inputs: [],
+    promised_outputs: [],
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+    validity_state: "valid",
+    fulfillment_state: fulfillmentState,
+    trashed_at: null,
+    trashed_by: null,
+    archived_at: null,
+    archived_by: null,
+    priority: 1,
+    accepted_by: "test-user",
+    accepted_at: "2026-08-24T08:00:00.000Z",
+    created_at: "2026-08-24T08:00:00.000Z",
+    updated_at: "2026-08-24T08:00:00.000Z",
+    acceptance_criteria: [{
+      criterion_id: `${goalId}-done`,
+      goal_id: goalId,
+      statement: "真实状态能在四秒内显示",
+      decision_method: "inspection",
+      pass_condition: "界面显示与 GoalBoard 一致",
+      target: null,
+      required_evidence: [],
+    }],
+  };
+}
+
+function webGoal(
+  record: GoalRecord,
+  workState: WebGoalView["work_state"],
+  options: Partial<WebGoalView> = {},
+): WebGoalView {
+  return {
+    goal: record,
+    status: workState as WebGoalView["status"],
+    work_state: workState,
+    status_label: workState,
+    reasons: [],
+    active_claim_actor: null,
+    active_claim: null,
+    claims: [],
+    runs: [],
+    evidence: [],
+    review_obligations: [],
+    reviews: [],
+    risks: [],
+    impacts: [],
+    relations: [],
+    coverage: [],
+    input_bindings: [],
+    policy_bindings: [],
+    events: [],
+    resolved_policy: {
+      goal_mode: "disabled",
+      required_capabilities: [],
+      self_verification: false,
+      cross_reviewers: 0,
+      adversarial_reviewers: 0,
+      human_approval: false,
+      max_lease_seconds: 1800,
+    },
+    passed_criteria: [],
+    pending_reviews: [],
+    ...options,
+  };
+}
+
+function view(goals: WebGoalView[], activeGoalId: string | null): GoalBoardWebView {
+  return {
+    snapshot: {
+      board: {
+        board_id: "",
+        title: "胶囊测试",
+        active_goal_id: activeGoalId,
+        created_at: "2026-08-24T08:00:00.000Z",
+        updated_at: "2026-08-24T08:00:00.000Z",
+      },
+      cursor: 9,
+      goals: goals.map((item) => item.goal),
+      relations: [],
+      impacts: [],
+      risks: [],
+      claims: goals.flatMap((item) => item.claims),
+      runs: goals.flatMap((item) => item.runs),
+      evidence: goals.flatMap((item) => item.evidence),
+      review_obligations: goals.flatMap((item) => item.review_obligations),
+      reviews: goals.flatMap((item) => item.reviews),
+      candidates: [],
+      contract_proposals: [],
+      rewires: [],
+      clarification_sessions: [],
+      clarification_turns: [],
+      goal_tree_proposals: [],
+      planning_method_packs: [],
+    },
+    project: PROJECT,
+    projects: [PROJECT],
+    route_prefix: "/projects/project-capsule",
+    demo: false,
+    active_goal_id: activeGoalId,
+    goals,
+    archived_goals: [],
+    trashed_goals: [],
+    counts: {} as GoalBoardWebView["counts"],
+    coverage: [],
+    input_bindings: [],
+    policy_bindings: [],
+    events: [],
+  };
+}
+
+function ready(
+  record: GoalRecord,
+  nextAction: AvailableGoal["next_action"] = "execute",
+): AvailableGoal {
+  const role = nextAction === "clarify"
+    ? "clarifier"
+    : nextAction === "review"
+      ? "self_verifier"
+      : nextAction === "revalidate"
+        ? "revalidator"
+        : "executor";
+  const workState = nextAction === "clarify"
+    ? "clarification_pending"
+    : nextAction === "review"
+      ? "review_pending"
+      : nextAction === "revalidate"
+        ? "revalidation_pending"
+        : "execution_pending";
+  return {
+    goal: record,
+    role,
+    work_state: workState,
+    next_action: nextAction,
+    review_obligation_id: null,
+    requires_parent_confirmation: false,
+    why_now: "前置事项已经满足",
+    priority_hint: record.priority,
+    dependency_summary: [],
+    risk_summary: [],
+    resolved_policy: {
+      goal_mode: "disabled",
+      required_capabilities: [],
+      self_verification: false,
+      cross_reviewers: 0,
+      adversarial_reviewers: 0,
+      human_approval: false,
+      max_lease_seconds: 1800,
+    },
+    relevant_surfaces: [],
+    planning: { topological_level: 0, unlock_count: 0, longest_downstream_chain: 0, rationale: "" },
+  };
+}
+
+function activeRun(goalId: string, startedAt: string, actorId = "runtime-a") {
+  return {
+    run_id: `run-${goalId}`,
+    board_id: "board-capsule",
+    goal_id: goalId,
+    claim_id: `claim-${goalId}`,
+    actor_id: actorId,
+    role: "executor" as const,
+    state: "started" as const,
+    block_reason: null,
+    output_refs: [],
+    discovery_refs: [],
+    started_at: startedAt,
+    ended_at: null,
+  };
+}
+
+test("capsule projects a real active Run as Working", () => {
+  const record = goal("working-goal", "实现真实状态胶囊");
+  const item = webGoal(record, "executing", {
+    runs: [activeRun(record.goal_id, "2026-08-24T09:00:00.000Z")],
+  });
+  const result = buildCapsuleSnapshot(view([item], record.goal_id), [], new Date("2026-08-24T09:03:00.000Z"));
+  assert.equal(result.state.kind, "working");
+  assert.equal(result.state.goal_title, record.title);
+  assert.equal(result.state.status_since, "2026-08-24T09:00:00.000Z");
+  assert.equal(result.state.action_path, "/projects/project-capsule/goals/working-goal");
+  assert.equal(result.state.menu_bar_title, "执行中");
+  assert.equal(result.default_tab, "executing");
+  assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [["executing", 1]]);
+});
+
+test("capsule routes an actionable Goal to main GoalBoard instead of creating work", () => {
+  const record = goal("startable-goal", "开始下一项真实工作");
+  const result = buildCapsuleSnapshot(
+    view([webGoal(record, "execution_pending")], null),
+    [ready(record)],
+    new Date("2026-08-24T09:04:00.000Z"),
+  );
+  const projected = result.tabs[0]?.items[0];
+
+  assert.equal(projected?.action_label, "前往开始");
+  assert.match(projected?.next ?? "", /主界面确认由哪个 Runtime 领取/);
+});
+
+test("capsule ignores a stale current Goal and shows the real running Goal", () => {
+  const staleRecord = goal("stale-goal", "上次查看的目标");
+  const liveRecord = goal("live-goal", "真正正在推进的目标");
+  const stale = webGoal(staleRecord, "execution_pending");
+  const live = webGoal(liveRecord, "executing", {
+    runs: [activeRun(liveRecord.goal_id, "2026-08-24T09:02:00.000Z")],
+  });
+
+  const result = buildCapsuleSnapshot(
+    view([stale, live], staleRecord.goal_id),
+    [ready(staleRecord)],
+    new Date("2026-08-24T09:03:00.000Z"),
+  );
+
+  assert.equal(result.state.kind, "working");
+  assert.equal(result.state.goal_id, liveRecord.goal_id);
+  assert.equal(result.state.goal_title, liveRecord.title);
+  assert.equal(result.state.running_count, 1);
+  assert.equal(result.default_tab, "executing");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["executing", "execution_pending"]);
+});
+
+test("capsule does not present an unclaimed prerequisite blocker as current work", () => {
+  const blockedRecord = goal("unclaimed-blocked-goal", "还不具备执行条件的目标");
+  const nextRecord = goal("actionable-goal", "现在可以开始的目标");
+  const blocked = webGoal(blockedRecord, "execution_blocked", {
+    reasons: [{
+      code: "dependency.unsatisfied",
+      severity: "blocker",
+      subject_type: "goal",
+      subject_id: blockedRecord.goal_id,
+      message: "前置目标还没有完成",
+    }],
+  });
+
+  const result = buildCapsuleSnapshot(
+    view([blocked, webGoal(nextRecord, "execution_pending")], blockedRecord.goal_id),
+    [ready(nextRecord)],
+    new Date("2026-08-24T09:03:00.000Z"),
+  );
+
+  assert.equal(result.state.kind, "ready");
+  assert.equal(result.state.goal_id, nextRecord.goal_id);
+  assert.equal(result.state.running_count, 0);
+  assert.equal(result.state.additional_running, 0);
+  assert.equal(result.default_tab, "execution_pending");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["execution_pending", "blocked"]);
+});
+
+test("capsule keeps an active current Goal focused and reports other running work", () => {
+  const focusedRecord = goal("focused-live-goal", "用户正在关注的工作");
+  const newerRecord = goal("newer-live-goal", "稍后启动的并行工作");
+  const focused = webGoal(focusedRecord, "executing", {
+    runs: [activeRun(focusedRecord.goal_id, "2026-08-24T09:00:00.000Z")],
+  });
+  const newer = webGoal(newerRecord, "executing", {
+    runs: [activeRun(newerRecord.goal_id, "2026-08-24T09:02:00.000Z", "runtime-b")],
+  });
+
+  const result = buildCapsuleSnapshot(
+    view([focused, newer], focusedRecord.goal_id),
+    [],
+    new Date("2026-08-24T09:03:00.000Z"),
+  );
+
+  assert.equal(result.state.goal_id, focusedRecord.goal_id);
+  assert.equal(result.state.running_count, 2);
+  assert.equal(result.state.additional_running, 1);
+  assert.equal(result.state.menu_bar_title, "进行中 · 2");
+  assert.deepEqual(result.tabs[0]?.items.map((item) => item.goal_id), [
+    focusedRecord.goal_id,
+    newerRecord.goal_id,
+  ]);
+});
+
+test("capsule shows work needing the user before unrelated running work when focus is stale", () => {
+  const staleRecord = goal("stale-ready-goal", "已经不在工作的当前目标");
+  const decisionRecord = goal("needs-user-goal", "确认关键结果");
+  const liveRecord = goal("background-live-goal", "并行推进其他工作");
+  const decision = webGoal(decisionRecord, "review_pending", {
+    review_obligations: [{
+      obligation_id: "needs-user-review",
+      board_id: "board-capsule",
+      goal_id: decisionRecord.goal_id,
+      role: "human_approver",
+      required_count: 1,
+      independence_rule: "user",
+      criterion_scope: ["needs-user-goal-done"],
+      state: "pending",
+      created_at: "2026-08-24T09:02:30.000Z",
+    }],
+  });
+  const live = webGoal(liveRecord, "executing", {
+    runs: [activeRun(liveRecord.goal_id, "2026-08-24T09:02:00.000Z")],
+  });
+
+  const result = buildCapsuleSnapshot(
+    view([webGoal(staleRecord, "execution_pending"), decision, live], staleRecord.goal_id),
+    [ready(staleRecord)],
+    new Date("2026-08-24T09:03:00.000Z"),
+  );
+
+  assert.equal(result.state.kind, "needs_you");
+  assert.equal(result.state.goal_id, decisionRecord.goal_id);
+  assert.equal(result.state.additional_running, 1);
+  assert.equal(result.default_tab, "needs_you");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["needs_you", "executing", "execution_pending"]);
+  assert.equal(
+    result.state.action_path,
+    "/projects/project-capsule/decisions#decision-goal-needs-user-goal",
+  );
+});
+
+test("capsule prioritizes a pending user decision and deep-links to that Goal", () => {
+  const record = goal("decision-goal", "确认胶囊信息结构");
+  const item = webGoal(record, "review_pending", {
+    review_obligations: [{
+      obligation_id: "human-decision",
+      board_id: "board-capsule",
+      goal_id: record.goal_id,
+      role: "human_approver",
+      required_count: 1,
+      independence_rule: "user",
+      criterion_scope: ["decision-goal-done"],
+      state: "pending",
+      created_at: "2026-08-24T09:04:00.000Z",
+    }],
+  });
+  const result = buildCapsuleSnapshot(view([item], record.goal_id), [], new Date("2026-08-24T09:05:00.000Z"));
+  assert.equal(result.state.kind, "needs_you");
+  assert.match(result.state.current, /1 项内容/);
+  assert.equal(
+    result.state.action_path,
+    "/projects/project-capsule/decisions#decision-goal-decision-goal",
+  );
+  assert.equal(result.state.menu_bar_title, "需要你");
+  assert.equal(result.tabs[0]?.items[0]?.next_step, "处理这 1 项决定");
+});
+
+test("capsule groups every actionable Goal into one horizontal status tab", () => {
+  const executeFirst = goal("execute-first", "先执行的目标");
+  const clarify = goal("clarify-next", "需要继续说清楚的目标");
+  clarify.definition_state = "draft";
+  clarify.decomposition_state = "abstract";
+  const executeSecond = goal("execute-second", "随后执行的目标");
+  const currentView = view([
+    webGoal(executeFirst, "execution_pending"),
+    webGoal(clarify, "clarification_pending"),
+    webGoal(executeSecond, "execution_pending"),
+  ], null);
+
+  const result = buildCapsuleSnapshot(currentView, [
+    ready(executeFirst),
+    ready(clarify, "clarify"),
+    ready(executeSecond),
+    ready(executeFirst),
+  ]);
+
+  assert.equal(result.default_tab, "execution_pending");
+  assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [
+    ["execution_pending", 2],
+    ["clarification_pending", 1],
+  ]);
+  assert.deepEqual(
+    result.tabs.find((tab) => tab.kind === "execution_pending")?.items.map((item) => item.goal_id),
+    [executeFirst.goal_id, executeSecond.goal_id],
+  );
+  assert.equal(result.tabs.flatMap((tab) => tab.items).length, 3);
+  assert.match(result.tabs[0]!.items[0]!.next_step, /开始推进/);
+});
+
+test("capsule shows a real completion briefly, then the authoritative next actionable Goal", () => {
+  const completed = webGoal(goal("completed-goal", "完成胶囊状态链", "satisfied"), "satisfied", {
+    evidence: [{
+      evidence_id: "evidence-complete",
+      board_id: "board-capsule",
+      goal_id: "completed-goal",
+      criterion_ids: ["completed-goal-done"],
+      producer_actor_id: "runtime-a",
+      run_id: "run-complete",
+      review_id: null,
+      kind: "test",
+      locator: "test://capsule",
+      digest: "三种真实状态已经通过检查",
+      captured_at: "2026-08-24T09:09:59.000Z",
+      result: "passed",
+    }],
+  });
+  const nextRecord = goal("next-goal", "补齐恢复与发布");
+  const next = webGoal(nextRecord, "execution_pending");
+  const currentView = view([completed, next], "completed-goal");
+  currentView.events = [{
+    seq: 10,
+    event_id: "event-complete",
+    actor_id: "runtime-a",
+    type: "goal.satisfied",
+    object_type: "goal",
+    object_id: "completed-goal",
+    reason: "完成条件满足",
+    payload: {},
+    at: "2026-08-24T09:10:00.000Z",
+  }];
+
+  const justCompleted = buildCapsuleSnapshot(
+    currentView,
+    [ready(nextRecord)],
+    new Date("2026-08-24T09:10:06.000Z"),
+  );
+  assert.equal(justCompleted.state.kind, "complete");
+  assert.equal(justCompleted.state.just_completed, "三种真实状态已经通过检查");
+  assert.equal(justCompleted.state.action_path, "/projects/project-capsule/goals/completed-goal");
+  assert.equal(justCompleted.state.menu_bar_title, "刚完成");
+  assert.equal(justCompleted.default_tab, "complete");
+  assert.deepEqual(justCompleted.tabs.map((tab) => tab.kind), ["execution_pending", "complete"]);
+
+  const afterResult = buildCapsuleSnapshot(
+    currentView,
+    [ready(nextRecord)],
+    new Date("2026-08-24T09:10:11.000Z"),
+  );
+  assert.equal(afterResult.state.kind, "ready");
+  assert.equal(afterResult.state.goal_id, "next-goal");
+  assert.equal(afterResult.state.menu_bar_title, "待执行");
+});
+
+test("capsule shell is one menu-bar popover with horizontal state tabs and inline Goal details", () => {
+  const html = renderCapsuleShell([PROJECT]);
+  assert.match(html, /capsule-shell/);
+  assert.match(html, /capsule__arrow/);
+  assert.match(html, /data-capsule-project/);
+  assert.match(html, /data-loading="true"/);
+  assert.match(html, /capsule__spinner/);
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /正在获取这个项目的最新工作状态/);
+  assert.match(html, /data-capsule-tabs/);
+  assert.match(html, /role="tablist"/);
+  assert.match(html, /data-capsule-list/);
+  assert.match(html, /capsule__goal-row/);
+  assert.match(html, /aria-selected/);
+  assert.match(html, /overflow-x: auto/);
+  assert.match(html, /event\.key !== "ArrowLeft"/);
+  assert.match(html, /event\.key !== "Escape"/);
+  assert.match(html, /capsule_hide/);
+  assert.match(html, /capsule_resize/);
+  assert.match(html, /capsule_update_menu_bar/);
+  assert.match(html, /title: next\.state\.menu_bar_title/);
+  assert.match(html, /new AbortController\(\)/);
+  assert.match(html, /requestId !== requestSequence/);
+  assert.match(html, /requestedProjectId !== projectId/);
+  assert.match(html, /activeRequest\?\.controller\.abort\(\)/);
+  assert.match(html, /if \(activeRequest\) return;/);
+  assert.match(html, /load\(\{ showLoading: true \}\)/);
+  assert.match(html, /window\.setInterval\(refresh, 2500\)/);
+  assert.match(html, /prefers-reduced-motion: reduce/);
+  assert.match(html, /goalboard:capsule-view:v1/);
+  assert.match(html, /expandedGoals\.get\(projectId\)/);
+  assert.match(html, /localStorage\.setItem\(viewStorageKey/);
+  assert.match(html, /data-capsule-error-detail/);
+  assert.match(html, /暂时无法确认最新状态/);
+  assert.match(html, /恢复前，这里不会把旧状态当成正在进行/);
+  assert.match(html, /title: L\("连接中断"\)/);
+  assert.match(html, /data-capsule-retry/);
+  assert.match(html, /setCapsuleHeight\(252\)/);
+  assert.match(html, /setCapsuleHeight\(280\)/);
+  assert.match(html, /window\.addEventListener\("online"/);
+  assert.match(html, /data-goal-id/);
+  assert.match(html, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(html, /aria-expanded="true"\] \.capsule__goal-title/);
+  assert.doesNotMatch(html, /window\.setInterval\(load, 2500\)/);
+  assert.doesNotMatch(html, /capsule_set_mode|data-tauri-drag-region|data-capsule-mode/);
+  assert.doesNotMatch(html, /capsule__compact|capsule__expanded|capsule__minimized/);
+  assert.doesNotMatch(html, /capsule__goal-block/);
+  assert.doesNotMatch(html, />Pause<|>Resume<|>Start</);
+});

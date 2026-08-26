@@ -18,16 +18,16 @@ Same project, three surfaces.
 
 ### Desktop
 
-A native macOS window: focus one Goal, then open a terminal that stays bound to it. GoalBoard also lives in the **macOS menu bar at the top of the screen** (a status item you can click — not minimizing to the Dock). Click it for the current project, focused Goal, status, and next action.
+A native macOS window: focus one Goal, then open a terminal that stays bound to it. GoalBoard also has a clickable **status icon in the macOS menu bar**. Click it for the current project, focused Goal, status, and next action.
 
 <p align="center">
-  <img src="docs/screenshots/showcase/desktop-workstation-dark.jpg" width="48%" alt="Desktop: focus one Goal beside the Goal Navigator">
-  &nbsp;
-  <img src="docs/screenshots/showcase/goal-bound-tui-en.jpg" width="48%" alt="Desktop: a terminal bound to the selected Goal">
+  <img src="docs/screenshots/showcase/desktop-focus-en-dark.jpg" width="32%" alt="GoalBoard Desktop: focus one Goal beside the Goal Navigator">
+  <img src="docs/screenshots/showcase/harness-runtime-en-dark.jpg" width="32%" alt="GoalBoard: a terminal bound to the selected Goal">
+  <img src="docs/screenshots/showcase/macos-menu-bar-capsule-en-dark.jpg" width="32%" alt="GoalBoard Work Capsule opened from the macOS status item">
 </p>
 
 <p align="center">
-  <sub><b>Goal focus</b> · what this Goal is, the next action, and what still blocks it &nbsp;·&nbsp; <b>Goal-bound TUI</b> · the terminal belongs to this Goal</sub>
+  <sub><b>Goal focus</b> · outcome, next action, and blockers &nbsp;·&nbsp; <b>Goal-bound TUI</b> · the terminal belongs to this Goal &nbsp;·&nbsp; <b>Work Capsule</b> · a quick check-in from the macOS status item</sub>
 </p>
 
 ### Inside a Harness
@@ -35,8 +35,8 @@ A native macOS window: focus one Goal, then open a terminal that stays bound to 
 Open GoalBoard in the Harness side browser and keep working in the same window. Narrow: the Goal list. Wider: the current Goal and its TUI.
 
 <p align="center">
-  <a href="docs/screenshots/showcase/codex-internal-goals-en.png"><img src="docs/screenshots/showcase/codex-internal-goals-en.png" width="32%" alt="Harness side panel: Goal list"></a>
-  <a href="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png"><img src="docs/screenshots/showcase/codex-internal-navigator-runtime-en.png" width="65%" alt="Harness side panel: Goal and bound TUI"></a>
+  <a href="docs/screenshots/showcase/harness-narrow-en-dark.jpg"><img src="docs/screenshots/showcase/harness-narrow-en-dark.jpg" width="32%" alt="Harness side panel: Goal list"></a>
+  <a href="docs/screenshots/showcase/harness-runtime-en-dark.jpg"><img src="docs/screenshots/showcase/harness-runtime-en-dark.jpg" width="65%" alt="Harness side panel: current Goal and bound TUI"></a>
 </p>
 
 <p align="center">
@@ -47,7 +47,7 @@ Open GoalBoard in the Harness side browser and keep working in the same window. 
 
 The same local project in a browser. Desktop and Web share data under `~/.goalboard`.
 
-![GoalBoard Web: Goal Tree and Goal Focus](docs/screenshots/showcase/web-workspace-light.jpg)
+![GoalBoard Web: Goal Tree and Goal Focus](docs/screenshots/showcase/web-workspace-en-dark.jpg)
 
 Built-in Runtime recipes cover Codex, Claude Code, OpenCode, Pi Agent, and Grok Build. Other Harnesses can use the same project through GoalBoard's MCP server and shared Skill.
 
@@ -59,49 +59,33 @@ Plain use, and the problem each one is for.
 
 Open a Goal. The page should answer three questions without reading the chat: what we are trying to get, what to do now, and why it cannot finish yet. Parent Goals organize a larger result; only a concrete leaf is executable.
 
-![Goal focus: outcome, next action, and completion criteria](docs/screenshots/showcase/desktop-workstation-dark.jpg)
-
 ### See who depends on whom
 
 The Graph is for when the list is no longer enough. Parent/child is structure. A dependency is a hard gate: if B needs A's result, B cannot start early. When a requirement changes, you can see which downstream work is affected instead of re-explaining the whole tree.
-
-![Goal Graph: hierarchy, prerequisites, and current focus](docs/screenshots/showcase/goal-graph-en.jpg)
 
 ### You confirm material changes
 
 A Runtime may discover new work, a new dependency, or a risk. It can propose. It cannot quietly rewrite an accepted Goal. The Decision Center puts the question, why it matters now, the evidence or the gap, and what each choice changes in one place.
 
-![Decision Center: the question, the gap, and what each choice changes](docs/screenshots/showcase/decisions-en.jpg)
-
 ### Keep the terminal on the Goal
 
 Open Codex, Claude Code, or a custom command from an executable leaf. That terminal stays owned by that Goal — switching Focus later does not silently reassign it. A parent Goal does not pretend to be executable; it sends you to a child.
 
-![Goal-bound TUI: the terminal recovers this Goal's outcome, next action, and done-when](docs/screenshots/showcase/goal-bound-tui-en.jpg)
-
-On macOS, the same current Goal is also on the **top menu bar**. Click the GoalBoard status item — not the Dock — for the project, the focused Goal, its state, and the next action; click away and the panel disappears.
+On macOS, the same current Goal is also on the **top menu bar**. Click the GoalBoard status icon for the project, the focused Goal, its state, and the next action; click away and the panel disappears.
 
 ### Treat “done” as something you can check
 
 Completion is not a sentence in chat. Each Goal has criteria. Evidence maps to those criteria. The required review has to pass. The record keeps who worked it, what was produced, and why it counts as complete.
 
-![Evidence and review attached to completion criteria](docs/screenshots/showcase/evidence-review-en.jpg)
-
 If something new shows up while you work — proof, a risk, an affected area, a relation — attach it to the current Goal with **Quick add**. It stays on the Goal instead of disappearing into the thread.
-
-![Quick add: attach evidence, a risk, an affected area, or a Goal relation](docs/screenshots/showcase/quick-capture-en.jpg)
 
 ### Tell the Runtime how this project should be split
 
 Planning methods are not a task template and they do not auto-build the tree. They are the questions a Runtime must work through before it proposes a split: what to cover, what depends on what, what “done” must show. A project can combine a work-type method and a domain method. The result is still a proposal you confirm.
 
-![Project planning methods that shape how a Goal is decomposed](docs/screenshots/showcase/planning-composition-en.jpg)
-
 ### Connect a Runtime on purpose
 
 GoalBoard works as a board with no Runtime connected. Connect Codex, Claude Code, or another tool only when it should read and advance Goals directly. Every write is previewed; you confirm; a failed apply rolls back. After connecting, open a **new Session** — tools load at Session start.
-
-![Runtime settings: detect, preview, and confirm before anything is written](docs/screenshots/showcase/runtime-settings-en.jpg)
 
 ## Try it in 3 minutes
 

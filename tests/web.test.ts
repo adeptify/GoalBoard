@@ -284,6 +284,25 @@ function addProjectGoal(
   }
 }
 
+function startProjectClarification(
+  project: { database_path: string; board_id: string },
+  goalId: string,
+  actorId: string,
+): void {
+  const store = new SqliteGoalBoardStore(project.database_path);
+  try {
+    new GoalBoardCoordinator(store).selectGoalAndStart({
+      board_id: project.board_id,
+      goal_id: goalId,
+      actor_id: actorId,
+      role: "clarifier",
+      idempotency_key: `web-project-start-${goalId}`,
+    });
+  } finally {
+    store.close();
+  }
+}
+
 function boardSnapshot(databasePath: string, boardId: string) {
   const store = new SqliteGoalBoardStore(databasePath);
   try {
@@ -1100,6 +1119,10 @@ test("Web project catalog switches browser scope without exposing storage or cha
   const fixture = await webProjectCatalogFixture();
   addProjectGoal(fixture.alpha, "ALPHA-ONLY", "仅 Alpha 可见的 Goal");
   addProjectGoal(fixture.beta, "BETA-ONLY", "仅 Beta 可见的 Goal");
+  startProjectClarification(fixture.alpha, "ALPHA-ONLY", "runtime-alpha");
+  startProjectClarification(fixture.beta, "BETA-ONLY", "runtime-beta");
+  const alphaBeforeSwitch = boardSnapshot(fixture.alpha.database_path, fixture.alpha.board_id);
+  const betaBeforeSwitch = boardSnapshot(fixture.beta.database_path, fixture.beta.board_id);
 
   const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1127,6 +1150,14 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true">/);
     assert.match(desktopProjectIndex, /<header class="topbar" data-tauri-drag-region>/);
     assert.match(desktopProjectIndex, /class="top-spacer" data-tauri-drag-region/);
+
+    const capsulePage = await (await webFetch(`${origin}/desktop/capsule?desktop=1`)).text();
+    assert.match(capsulePage, /工作胶囊/);
+    assert.match(capsulePage, /产品 Alpha/);
+    assert.match(capsulePage, /产品 Beta/);
+    assert.match(capsulePage, /data-capsule-project/);
+    assert.doesNotMatch(capsulePage, /database_path|goalboard\.db/);
+    assertInlineScriptsCompile(capsulePage);
 
     const missingSelection = await webFetch(`${origin}/api/board`);
     assert.equal(missingSelection.status, 400);
@@ -1174,6 +1205,36 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const alphaCursorText = await alphaCursorResponse.text();
     assert.ok(alphaCursorText.length < 100);
     assert.equal(typeof (JSON.parse(alphaCursorText) as { observed_event_cursor: number }).observed_event_cursor, "number");
+
+    const alphaCapsuleResponse = await webFetch(`${origin}${alphaPrefix}/api/capsule`);
+    assert.equal(alphaCapsuleResponse.status, 200);
+    const alphaCapsule = (await alphaCapsuleResponse.json()) as {
+      project: { project_id: string; display_name: string };
+      state: { kind: string; action_path: string };
+    };
+    assert.equal(alphaCapsule.project.project_id, fixture.alpha.project_id);
+    assert.equal(alphaCapsule.project.display_name, "产品 Alpha");
+    assert.match(alphaCapsule.state.action_path, new RegExp(`^${alphaPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+
+    const betaCapsuleResponse = await webFetch(`${origin}${betaPrefix}/api/capsule`);
+    assert.equal(betaCapsuleResponse.status, 200);
+    const betaCapsule = (await betaCapsuleResponse.json()) as {
+      project: { project_id: string; display_name: string };
+      state: { kind: string; action_path: string };
+    };
+    assert.equal(betaCapsule.project.project_id, fixture.beta.project_id);
+    assert.equal(betaCapsule.project.display_name, "产品 Beta");
+    assert.match(betaCapsule.state.action_path, new RegExp(`^${betaPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.deepEqual(
+      boardSnapshot(fixture.alpha.database_path, fixture.alpha.board_id),
+      alphaBeforeSwitch,
+      "reading another Project in the capsule must not change Alpha work",
+    );
+    assert.deepEqual(
+      boardSnapshot(fixture.beta.database_path, fixture.beta.board_id),
+      betaBeforeSwitch,
+      "reading another Project in the capsule must not change Beta work",
+    );
 
     const alphaDocumentResponse = await webFetch(
       `${origin}${alphaPrefix}/api/goals/ALPHA-ONLY/document?view=current`,
@@ -2072,6 +2133,35 @@ test("Web chrome switches between Chinese and English without translating Goal t
     assert.match(english, /<h1 id="project-index-title">Choose a project<\/h1>/);
     assert.match(english, />Settings</);
     assert.doesNotMatch(english, /<h1 id="project-index-title">选择一个项目<\/h1>/);
+
+    const capsuleEnglish = await (await webFetch(`${origin}/desktop/capsule?desktop=1&locale=en`, {
+      headers: { cookie: "goalboard_locale=zh" },
+    })).text();
+    assert.match(capsuleEnglish, /lang="en"/);
+    assert.match(capsuleEnglish, /<title>Work capsule · GoalBoard<\/title>/);
+    assert.match(capsuleEnglish, />Open GoalBoard</);
+    assert.doesNotMatch(capsuleEnglish, /<title>工作胶囊 · GoalBoard<\/title>/);
+
+    const capsuleChinese = await (await webFetch(`${origin}/desktop/capsule?desktop=1&locale=zh`, {
+      headers: { cookie: "goalboard_locale=en" },
+    })).text();
+    assert.match(capsuleChinese, /lang="zh-CN"/);
+    assert.match(capsuleChinese, /<title>工作胶囊 · GoalBoard<\/title>/);
+    assert.match(capsuleChinese, />打开 GoalBoard</);
+
+    const capsuleApiEnglish = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/capsule?locale=en`,
+      { headers: { cookie: "goalboard_locale=zh" } },
+    )).text();
+    assert.match(capsuleApiEnglish, /Needs clarification/);
+    assert.doesNotMatch(capsuleApiEnglish, /目标待澄清/);
+
+    const capsuleApiChinese = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/api/capsule?locale=zh`,
+      { headers: { cookie: "goalboard_locale=en" } },
+    )).text();
+    assert.match(capsuleApiChinese, /目标待澄清/);
+    assert.doesNotMatch(capsuleApiChinese, /Needs clarification/);
 
     const accepted = await (await webFetch(`${origin}/`, {
       headers: { "accept-language": "en-US,en;q=0.9" },
