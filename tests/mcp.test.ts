@@ -69,7 +69,8 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /state=resolved/);
     assert.match(goalTreeProposeTool?.description ?? "", /不存在 state=mitigated/);
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
-    assert.match(availableTool?.description ?? "", /不表示 complete/);
+    assert.match(availableTool?.description ?? "", /next_action=complete/);
+    assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
     const explainTool = listedTools.find((tool) => tool.name === "goalboard_v1_explain");
     assert.match(explainTool?.description ?? "", /ready 只表示执行 Claim 就绪/);
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));

@@ -43,6 +43,7 @@ export type CapsuleTabKind =
   | "executing"
   | "clarifying"
   | "checking"
+  | "completion_pending"
   | "execution_pending"
   | "clarification_pending"
   | "review_pending"
@@ -275,6 +276,7 @@ function activeItem(view: GoalBoardWebView, item: WebGoalView): CapsuleGoalItem 
 function availableTab(item: AvailableGoal): CapsuleTabKind {
   if (item.next_action === "clarify") return "clarification_pending";
   if (item.next_action === "execute") return "execution_pending";
+  if (item.next_action === "complete") return "completion_pending";
   return "review_pending";
 }
 
@@ -289,6 +291,8 @@ function availableItem(
     ? L("打开这条 Goal，补齐目标、范围和完成标准。")
     : tabKind === "execution_pending"
       ? L("前往主界面确认由哪个 Runtime 领取，再开始推进。")
+      : tabKind === "completion_pending"
+        ? L("让 Runtime 直接运行完成判定，不要重新领取或重复执行。")
       : explanation.howToContinue;
   return itemBase(view, item, {
     tab_kind: tabKind,
@@ -299,7 +303,7 @@ function availableItem(
     blocker: null,
     next_step: explanation.nextAction,
     next,
-    action_label: tabKind === "execution_pending" ? L("前往开始") : L("打开 Goal"),
+    action_label: tabKind === "execution_pending" || tabKind === "completion_pending" ? L("前往开始") : L("打开 Goal"),
     action_path: goalPath(view, item.goal.goal_id),
     has_active_run: false,
   });
@@ -344,6 +348,7 @@ const TAB_ORDER: CapsuleTabKind[] = [
   "executing",
   "clarifying",
   "checking",
+  "completion_pending",
   "execution_pending",
   "clarification_pending",
   "review_pending",
@@ -357,6 +362,7 @@ function tabMeta(kind: CapsuleTabKind): Pick<CapsuleTab, "label" | "tone"> {
     case "executing": return { label: L("执行中"), tone: "working" };
     case "clarifying": return { label: L("澄清中"), tone: "working" };
     case "checking": return { label: L("检查中"), tone: "checking" };
+    case "completion_pending": return { label: L("待完成"), tone: "ready" };
     case "execution_pending": return { label: L("待执行"), tone: "ready" };
     case "clarification_pending": return { label: L("待澄清"), tone: "ready" };
     case "review_pending": return { label: L("待检查"), tone: "ready" };
@@ -473,6 +479,7 @@ export function buildCapsuleSnapshot(
     ([
       "clarification_blocked",
       "execution_blocked",
+      "completion_blocked",
       "review_blocked",
       "revalidation_blocked",
       "invalidated",

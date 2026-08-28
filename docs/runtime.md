@@ -56,9 +56,17 @@ revalidator:
   available(next_action=revalidate) → contract → select-goal
   → 核对 Contract、active dependencies、Risks 和证据
   → revalidate → run-report → release
+
+direct completion:
+  available(next_action=complete, role=null) → complete
+  → 不再 select-goal，不创建新的 Claim、Run 或重复 Evidence
+
+completion blocker:
+  available.blocked(work_state=completion_blocked) → 报告具体完成门禁及恢复条件
+  → 门禁被 canonical 地解除后重新读取 available，再直接 complete
 ```
 
-`select-goal` 在同一个 SQLite 事务中创建 Claim 和 Run；失败不会留下只有 Claim、没有 Run 的假“进行中”。正常 Runtime 工作流使用 `available` 与 `select-goal`；`ready`、`claim` 和 `run-start` 只用于低层管理或测试场景。
+`select-goal` 在同一个 SQLite 事务中创建 Claim 和 Run；失败不会留下只有 Claim、没有 Run 的假“进行中”。正常 Runtime 工作流使用 `available` 与 `select-goal`；`next_action=complete` 是无需 Claim 的例外，直接调用 `complete`。已完成执行但被完成门禁阻止的 Goal 进入 `available.blocked`，不会再次显示成 `execute`。`ready`、`claim` 和 `run-start` 只用于低层管理或测试场景。
 
 对于新想法，Runtime 不必让用户先打开 Web 或逐字段填写 Contract：`draft-dialogue-start` 在一个事务中创建最小 `draft / abstract` Goal、clarifier Claim 和 Run，随后当前对话每产生一次实质澄清进展就调用 `draft-dialogue-turn` 保存用户回答、当前理解、来源事实、假设和唯一下一问；Session 中断后用 `draft-dialogue-resume` 恢复。澄清完成时，当前 Runtime 用 `goal-tree-propose` 一次提交整份可确认的拆分／变更方案，并可通过 `goal-tree-read`、`goal-tree-check` 跨 Session 恢复和检查；推断和建议在用户确认前都不是 canonical Goal、关系、Risk 或 Policy。用户随后仍在当前 Runtime 对话中逐项确认、拒绝或要求修改；用户明确回答后，Runtime 调用 `goal-tree-decide` 并传入 `user_confirmed=true`、确认摘要和具体决定，GoalBoard 再结合宿主 Session 元数据记录审计来源。这是本地对话来源记录，不伪装成密码学身份认证。已确认的安全条目才会物化，过期、悬空或循环条目会保持冲突，不影响其他已确认条目。
 

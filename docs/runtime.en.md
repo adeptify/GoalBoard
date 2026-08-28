@@ -56,9 +56,17 @@ revalidator:
   available(next_action=revalidate) → contract → select-goal
   → check Contract, active dependencies, Risks, and evidence
   → revalidate → run-report → release
+
+direct completion:
+  available(next_action=complete, role=null) → complete
+  → do not select the Goal or create another Claim, Run, or duplicate Evidence
+
+completion blocker:
+  available.blocked(work_state=completion_blocked) → report the concrete completion gate and recovery condition
+  → after that gate is canonically resolved, read Available again and call complete directly
 ```
 
-`select-goal` creates the Claim and Run in the same SQLite transaction; a failure never leaves a fake "in progress" state with a Claim but no Run. Normal Runtime workflows use `available` and `select-goal`; `ready`, `claim`, and `run-start` exist only for low-level management or tests.
+`select-goal` creates the Claim and Run in the same SQLite transaction; a failure never leaves a fake "in progress" state with a Claim but no Run. Normal Runtime workflows use `available` and `select-goal`; `next_action=complete` is the no-Claim exception and calls `complete` directly. A Goal whose execution is finished but whose completion gate remains unresolved appears under `available.blocked` instead of being mislabeled as `execute`. `ready`, `claim`, and `run-start` exist only for low-level management or tests.
 
 For a new idea, the Runtime doesn't require the user to open Web first or fill in a Contract field by field: `draft-dialogue-start` atomically creates a minimal `draft / abstract` Goal, a clarifier Claim, and a Run in one transaction; every material clarification step in the conversation then calls `draft-dialogue-turn` to save the user's answer, current understanding, sourced facts, assumptions, and the one next question; after an interruption, `draft-dialogue-resume` restores the session. When clarification completes, the current Runtime submits the whole confirmable breakdown/change plan once via `goal-tree-propose`, and can restore and check it across Sessions with `goal-tree-read` and `goal-tree-check`; inferences and suggestions are not canonical Goals, relations, Risks, or Policy before user confirmation. The user then confirms, rejects, or requests changes item by item in the current Runtime conversation; after the user's explicit answer, the Runtime calls `goal-tree-decide` with `user_confirmed=true`, a confirmation summary, and the concrete decisions, and GoalBoard records the audit source together with host Session metadata. This is a local conversational provenance record, not a fake cryptographic identity. Only confirmed safe items are materialized; expired, dangling, or cyclic items stay conflicted without affecting other confirmed items.
 

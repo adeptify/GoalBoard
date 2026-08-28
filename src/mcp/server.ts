@@ -273,7 +273,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可领取并推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；这表示当前动作具备领取条件，不表示 complete 的验收或 completion Risk 门禁已经通过，执行前后仍需读取 risk_summary/Contract。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成；初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {

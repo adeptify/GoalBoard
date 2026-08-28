@@ -78,6 +78,8 @@ export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "execution_pending",
   "executing",
   "execution_blocked",
+  "completion_pending",
+  "completion_blocked",
   "review_pending",
   "reviewing",
   "review_blocked",
@@ -257,6 +259,8 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   execution_pending: "ready",
   executing: "play",
   execution_blocked: "blocked",
+  completion_pending: "completed",
+  completion_blocked: "blocked",
   review_pending: "review",
   reviewing: "review",
   review_blocked: "blocked",
@@ -408,6 +412,7 @@ function renderStatus(status: WebGoalStatus): string {
 
 /** Goal Tree sibling order: work you can pick up, then in-flight, then blocked, then parked. */
 export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
+  "completion_pending",
   "execution_pending",
   "executing",
   "handoff_pending",
@@ -420,6 +425,7 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "clarification_pending",
   "clarifying",
   "execution_blocked",
+  "completion_blocked",
   "review_blocked",
   "revalidation_blocked",
   "clarification_blocked",
@@ -3984,8 +3990,8 @@ const STYLES = `
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
-  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
-  .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
+  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
+  .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
   .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }
   .goal-status--trashed, .goal-status--archived { color: #626b76; }
@@ -9605,6 +9611,7 @@ export function renderGoalBoardWeb(
   const blockedCount =
     view.counts.clarification_blocked +
     view.counts.execution_blocked +
+    view.counts.completion_blocked +
     view.counts.review_blocked +
     view.counts.revalidation_blocked +
     view.counts.invalidated;

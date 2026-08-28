@@ -36,6 +36,8 @@ Web is an optional viewing and user-confirmation surface. GoalBoard never requir
 
 The Runtime audience only exposes work-entry resolution/explicit binding, reads, Available/atomic selection/Run, Contract/Candidate/Dependency Proposal, Goal Tree Proposal/Decision, revalidation, Evidence, Runtime Review, completion checks, and release. `goal-tree-decide` is not a license for the Runtime to reshape the tree on its own: only after the user has just explicitly decided in the current conversation may the Runtime pass `user_confirmed=true`, a confirmation summary, and the concrete decisions; GoalBoard generates the audit reference from host Session metadata. The Runtime cannot forge a Session identity or override a resolved project connection through ordinary tool arguments.
 
+Available's `available` array may contain actions that need a Claim and the no-Claim action `next_action=complete / role=null`; the latter calls the completion check directly. A Goal whose execution, Evidence, and Reviews are finished but whose completion Risk remains open does not fall back to `execute`; it appears in the same response's `blocked` array with the concrete reason and recovery condition.
+
 Trusted user entries that need to create Goals, maintain relations/risks/Policy, decide Contract/Candidate/Rewire, or import legacy data should use `GOALBOARD_MCP_AUDIENCE=management` separately. Never hand the management MCP to an autonomous Runtime.
 
 When the service is unavailable or identities are inconsistent, the Runtime must stop; it cannot start another instance, switch databases, replace `board_id`, rewrite URLs, or fall back to the CLI. The full protocol lives in the [Runtime Skill](../skills/goal-advance/SKILL.md).

@@ -138,13 +138,17 @@ function ready(
       ? "self_verifier"
       : nextAction === "revalidate"
         ? "revalidator"
-        : "executor";
+        : nextAction === "complete"
+          ? null
+          : "executor";
   const workState = nextAction === "clarify"
     ? "clarification_pending"
     : nextAction === "review"
       ? "review_pending"
       : nextAction === "revalidate"
         ? "revalidation_pending"
+        : nextAction === "complete"
+          ? "completion_pending"
         : "execution_pending";
   return {
     goal: record,
@@ -356,26 +360,30 @@ test("capsule prioritizes a pending user decision and deep-links to that Goal", 
 });
 
 test("capsule groups every actionable Goal into one horizontal status tab", () => {
+  const complete = goal("complete-now", "直接完成的目标");
   const executeFirst = goal("execute-first", "先执行的目标");
   const clarify = goal("clarify-next", "需要继续说清楚的目标");
   clarify.definition_state = "draft";
   clarify.decomposition_state = "abstract";
   const executeSecond = goal("execute-second", "随后执行的目标");
   const currentView = view([
+    webGoal(complete, "completion_pending"),
     webGoal(executeFirst, "execution_pending"),
     webGoal(clarify, "clarification_pending"),
     webGoal(executeSecond, "execution_pending"),
   ], null);
 
   const result = buildCapsuleSnapshot(currentView, [
+    ready(complete, "complete"),
     ready(executeFirst),
     ready(clarify, "clarify"),
     ready(executeSecond),
     ready(executeFirst),
   ]);
 
-  assert.equal(result.default_tab, "execution_pending");
+  assert.equal(result.default_tab, "completion_pending");
   assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [
+    ["completion_pending", 1],
     ["execution_pending", 2],
     ["clarification_pending", 1],
   ]);
@@ -383,8 +391,8 @@ test("capsule groups every actionable Goal into one horizontal status tab", () =
     result.tabs.find((tab) => tab.kind === "execution_pending")?.items.map((item) => item.goal_id),
     [executeFirst.goal_id, executeSecond.goal_id],
   );
-  assert.equal(result.tabs.flatMap((tab) => tab.items).length, 3);
-  assert.match(result.tabs[0]!.items[0]!.next_step, /开始推进/);
+  assert.equal(result.tabs.flatMap((tab) => tab.items).length, 4);
+  assert.match(result.tabs[0]!.items[0]!.next_step, /完成判定/);
 });
 
 test("capsule shows a real completion briefly, then the authoritative next actionable Goal", () => {
@@ -399,9 +407,15 @@ test("capsule shows a real completion briefly, then the authoritative next actio
       review_id: null,
       kind: "test",
       locator: "test://capsule",
+      locator_status: "unverified",
+      locator_validation_reason: "测试夹具中的不透明 locator",
+      locator_checked_at: null,
+      locator_workspace_id: null,
       digest: "三种真实状态已经通过检查",
       captured_at: "2026-08-24T09:09:59.000Z",
       result: "passed",
+      lifecycle_state: "effective",
+      correction: null,
     }],
   });
   const nextRecord = goal("next-goal", "补齐恢复与发布");

@@ -62,7 +62,7 @@ test("every static renderer label has an English translation", () => {
 test("every work state explains what it means, what to do, and how to continue in both languages", () => {
   const states: GoalPresentationState[] = [
     "clarification_pending", "clarification_decision_pending", "compound_closure_pending", "handoff_pending", "clarifying", "clarification_blocked", "waiting_children",
-    "execution_pending", "executing", "execution_blocked", "review_pending", "reviewing",
+    "execution_pending", "executing", "execution_blocked", "completion_pending", "completion_blocked", "review_pending", "reviewing",
     "review_blocked", "revalidation_pending", "revalidating", "revalidation_blocked",
     "invalidated", "satisfied", "trashed", "archived",
   ];
@@ -83,6 +83,8 @@ test("work state labels stay concise and professional", () => {
   assert.equal(explainWorkState("compound_closure_pending").label, "待确认父目标");
   assert.equal(explainWorkState("handoff_pending").label, "正在收尾");
   assert.equal(explainWorkState("execution_blocked").label, "执行受阻");
+  assert.equal(explainWorkState("completion_pending").label, "待完成");
+  assert.equal(explainWorkState("completion_blocked").label, "完成受阻");
   assert.equal(explainWorkState("review_pending").label, "待复核");
   assert.equal(explainWorkState("satisfied").label, "已完成");
 });

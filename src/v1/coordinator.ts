@@ -9,6 +9,7 @@ import {
   DEFAULT_GOAL_POLICY,
   type AvailableGoal,
   type BoardSnapshot,
+  type BlockedAvailableGoal,
   type ClaimDecision,
   type ClaimRecord,
   type ClaimRunDecision,
@@ -141,6 +142,7 @@ export interface AvailableQuery {
 export interface AvailableQueryResult {
   observed_event_cursor: number;
   available: AvailableGoal[];
+  blocked: BlockedAvailableGoal[];
   parallel_suggestion: ParallelExecutionSuggestion | null;
 }
 
@@ -249,7 +251,7 @@ interface Evaluation {
 }
 
 interface AvailableAction {
-  role: ClaimRole;
+  role: ClaimRole | null;
   next_action: GoalWorkAction;
   review_obligation_id: string | null;
 }
@@ -2256,8 +2258,19 @@ export class GoalBoardCoordinator {
     const snapshot = this.store.snapshot(input.board_id);
     const metrics = planningMetrics(snapshot.goals, snapshot.relations);
     const available: AvailableGoal[] = [];
+    const blocked: BlockedAvailableGoal[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
+      if (workState.work_state === "completion_blocked") {
+        blocked.push({
+          goal,
+          work_state: "completion_blocked",
+          next_action: null,
+          reasons: workState.reasons,
+          priority_hint: goal.priority,
+          risk_summary: this.riskSummary(goal.goal_id),
+        });
+      }
       const requiresParentConfirmation =
         workState.work_state === "clarification_pending" &&
         requiresParentCompletionConfirmation(goal, snapshot);
@@ -2266,7 +2279,7 @@ export class GoalBoardCoordinator {
           boardId: input.board_id,
           goalId: goal.goal_id,
           actorId: input.actor_id,
-          role: action.role,
+          role: action.role ?? "executor",
           capabilities: input.capabilities ?? [],
           goalModeAttestation: input.goal_mode_attestation ?? false,
           now,
@@ -2304,11 +2317,16 @@ export class GoalBoardCoordinator {
         left.planning.topological_level - right.planning.topological_level ||
         right.priority_hint - left.priority_hint ||
         left.goal.goal_id.localeCompare(right.goal.goal_id) ||
-        left.role.localeCompare(right.role),
+        (left.role ?? "").localeCompare(right.role ?? ""),
+    );
+    blocked.sort(
+      (left, right) =>
+        right.priority_hint - left.priority_hint || left.goal.goal_id.localeCompare(right.goal.goal_id),
     );
     return {
       observed_event_cursor: snapshot.cursor,
       available,
+      blocked,
       parallel_suggestion: this.parallelExecutionSuggestion(available),
     };
   }
@@ -2358,12 +2376,27 @@ export class GoalBoardCoordinator {
       goalModeAttestation: input.goal_mode_attestation ?? false,
       now: this.clock().toISOString(),
     });
+    const workState = this.getGoalWorkState({ board_id: input.board_id, goal_id: input.goal_id });
+    const completionReasons = role === "executor"
+      ? this.executorHandoffReasons(workState)
+      : [];
+    const reasons = [...evaluation.reasons, ...completionReasons]
+      .filter(
+        (item, index, items) =>
+          items.findIndex(
+            (candidate) =>
+              candidate.code === item.code &&
+              candidate.subject_type === item.subject_type &&
+              candidate.subject_id === item.subject_id,
+          ) === index,
+      )
+      .sort(compareReasons);
     return {
       goal: evaluation.goal,
       role,
-      ready: evaluation.reasons.length === 0 && evaluation.goal !== null,
+      ready: reasons.length === 0 && evaluation.goal !== null,
       observed_event_cursor: this.store.eventCursor(input.board_id),
-      reasons: evaluation.reasons,
+      reasons,
       resolved_policy: evaluation.policy,
       relevant_surfaces: evaluation.surfaces,
     };
@@ -3695,6 +3728,44 @@ export class GoalBoardCoordinator {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
+
+      if (role === "executor") {
+        const snapshot = this.store.snapshot(request.board_id);
+        const goal = snapshot.goals.find((item) => item.goal_id === request.goal_id);
+        if (goal) {
+          const workState = this.deriveGoalWorkState(
+            request.board_id,
+            goal,
+            snapshot,
+            this.clock().toISOString(),
+          );
+          if (
+            workState.work_state === "completion_pending" ||
+            workState.work_state === "completion_blocked"
+          ) {
+            const reasons = this.executorHandoffReasons(workState);
+            const outcome: ClaimRunDecision = {
+              allowed: false,
+              observed_event_cursor: snapshot.cursor,
+              reasons,
+              claim: null,
+              run: null,
+              work_state: workState,
+              replayed: false,
+            };
+            this.remember(
+              request.board_id,
+              request.actor_id,
+              "select_goal_and_start",
+              request.idempotency_key,
+              hash,
+              outcome,
+              this.clock().toISOString(),
+            );
+            return outcome;
+          }
+        }
+      }
 
       const claimDecision = this.claimGoal({
         ...request,
@@ -8631,7 +8702,7 @@ export class GoalBoardCoordinator {
       const action = pendingReviewObligations
         .map((obligation) => this.reviewActionFor(obligation))
         .find((candidate): candidate is AvailableAction => candidate !== null);
-      const reasons = action
+      const reasons = action?.role
         ? this.workStatePhaseReasons(boardId, goal.goal_id, action.role, now, snapshot)
         : [
             reason(
@@ -8646,6 +8717,29 @@ export class GoalBoardCoordinator {
         work_state: reasons.length > 0 ? "review_blocked" : "review_pending",
         next_action: "review",
         reasons,
+      };
+    }
+
+    if (
+      reviewReady &&
+      pendingReviewObligations.length === 0 &&
+      !reworkRequested &&
+      this.acceptanceCriteriaPassed(goal, snapshot)
+    ) {
+      const completionRiskReasons = this.completionRiskReasons(goal.goal_id);
+      if (completionRiskReasons.length > 0) {
+        return {
+          ...base,
+          work_state: "completion_blocked",
+          next_action: null,
+          reasons: completionRiskReasons,
+        };
+      }
+      return {
+        ...base,
+        work_state: "completion_pending",
+        next_action: "complete",
+        reasons: [],
       };
     }
 
@@ -8809,6 +8903,70 @@ export class GoalBoardCoordinator {
     );
   }
 
+  private acceptanceCriteriaPassed(
+    goal: GoalRecord,
+    snapshot: ReturnType<SqliteGoalBoardStore["snapshot"]>,
+  ): boolean {
+    return goal.acceptance_criteria.every((criterion) =>
+      snapshot.evidence.some(
+        (evidence) =>
+          evidence.goal_id === goal.goal_id &&
+          evidence.lifecycle_state === "effective" &&
+          evidence.result === "passed" &&
+          evidence.criterion_ids.includes(criterion.criterion_id),
+      ),
+    );
+  }
+
+  private executorHandoffReasons(workState: GoalWorkStateView): DecisionReason[] {
+    if (workState.work_state === "completion_blocked") return workState.reasons;
+    if (workState.work_state !== "completion_pending") return [];
+    return [
+      reason(
+        "goal.ready_to_complete",
+        "goal",
+        workState.goal_id,
+        "执行、证据和复核已经完成，不应开始新的执行",
+        undefined,
+        "直接调用完成判定；如果仍有门禁，按返回原因处理后重试。",
+      ),
+    ];
+  }
+
+  private completionRiskReasons(goalId: string): DecisionReason[] {
+    const rows = this.store.db
+      .prepare(`
+        SELECT
+          risk.risk_id,
+          risk.description,
+          risk.blocking_mode,
+          risk.state,
+          risk.revisit_condition,
+          risk.owner
+        FROM risks risk
+        JOIN goal_risks goal_risk ON goal_risk.risk_id = risk.risk_id
+        WHERE goal_risk.goal_id = ?
+          AND risk.blocking_mode IN ('completion', 'invalidate_on_trigger')
+          AND risk.state IN ('open', 'triggered')
+        ORDER BY risk.risk_id
+      `)
+      .all(goalId) as Row[];
+    return rows.map((row) =>
+      reason(
+        "risk.blocks_completion",
+        "risk",
+        asText(row.risk_id),
+        asText(row.description),
+        {
+          blocking_mode: asText(row.blocking_mode),
+          state: asText(row.state),
+          owner: asText(row.owner),
+        },
+        asText(row.revisit_condition),
+      ),
+    );
+  }
+
   private hasPostExecutionNeedsChanges(boardId: string, goalId: string): boolean {
     const row = this.store.db
       .prepare(`
@@ -8886,6 +9044,9 @@ export class GoalBoardCoordinator {
     if (workState.work_state === "execution_pending") {
       return [{ role: "executor", next_action: "execute", review_obligation_id: null }];
     }
+    if (workState.work_state === "completion_pending") {
+      return [{ role: null, next_action: "complete", review_obligation_id: null }];
+    }
     if (workState.work_state === "revalidation_pending") {
       return [{ role: "revalidator", next_action: "revalidate", review_obligation_id: null }];
     }
@@ -8906,6 +9067,8 @@ export class GoalBoardCoordinator {
         return "执行结果正在等待所需 Review，当前 Runtime 可以按其角色复核";
       case "execute":
         return "Goal 已澄清为最小闭环，当前 Runtime 可以选择并开始执行";
+      case "complete":
+        return "执行、证据和复核已经完成；现在应直接重试完成判定，不要开始新的执行";
     }
   }
 

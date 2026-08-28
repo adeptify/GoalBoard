@@ -67,17 +67,21 @@ test("Goal Tree sorts ready work before blocked, waiting, and finished Goals", (
     { status: "satisfied", goal: { priority: 9, created_at: "2026-01-01T00:00:00.000Z" } },
     { status: "waiting_children", goal: { priority: 8, created_at: "2026-01-02T00:00:00.000Z" } },
     { status: "execution_blocked", goal: { priority: 7, created_at: "2026-01-03T00:00:00.000Z" } },
+    { status: "completion_blocked", goal: { priority: 7, created_at: "2026-01-03T12:00:00.000Z" } },
     { status: "clarification_pending", goal: { priority: 6, created_at: "2026-01-04T00:00:00.000Z" } },
     { status: "executing", goal: { priority: 1, created_at: "2026-01-06T00:00:00.000Z" } },
     { status: "execution_pending", goal: { priority: 1, created_at: "2026-01-05T00:00:00.000Z" } },
     { status: "execution_pending", goal: { priority: 3, created_at: "2026-01-07T00:00:00.000Z" } },
+    { status: "completion_pending", goal: { priority: 1, created_at: "2026-01-08T00:00:00.000Z" } },
   ]);
   assert.deepEqual(ordered.map((item) => [item.status, item.goal.priority, item.goal.created_at]), [
+    ["completion_pending", 1, "2026-01-08T00:00:00.000Z"],
     ["execution_pending", 3, "2026-01-07T00:00:00.000Z"],
     ["execution_pending", 1, "2026-01-05T00:00:00.000Z"],
     ["executing", 1, "2026-01-06T00:00:00.000Z"],
     ["clarification_pending", 6, "2026-01-04T00:00:00.000Z"],
     ["execution_blocked", 7, "2026-01-03T00:00:00.000Z"],
+    ["completion_blocked", 7, "2026-01-03T12:00:00.000Z"],
     ["waiting_children", 8, "2026-01-02T00:00:00.000Z"],
     ["satisfied", 9, "2026-01-01T00:00:00.000Z"],
   ]);

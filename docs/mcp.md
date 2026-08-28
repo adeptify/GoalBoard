@@ -36,6 +36,8 @@ Web 是可选查看和用户确认界面。GoalBoard 不会为解析关联而要
 
 Runtime audience 只暴露工作入口解析/显式绑定、读取、Available/原子选择/Run、Contract/Candidate/Dependency Proposal、Goal Tree Proposal/Decision、重新验证、Evidence、Runtime Review、完成检查和释放。`goal-tree-decide` 不是 Runtime 自己随意改树的权限：只有用户刚刚在当前对话明确决定后，Runtime 才能传 `user_confirmed=true`、确认摘要和具体决定；GoalBoard 结合宿主 Session 元数据生成审计引用。Runtime 不能通过普通工具参数伪造 Session 身份或覆盖已解析的项目连接。
 
+Available 的 `available` 数组既可返回需要 Claim 的动作，也可返回 `next_action=complete / role=null` 的无 Claim 完成动作；后者直接调用完成检查。执行、Evidence 和 Review 已结束但 completion Risk 仍开放的 Goal 不会回退成 `execute`，而会出现在同一响应的 `blocked` 数组并带具体原因和恢复条件。
+
 受信用户入口需要创建 Goal、维护关系/风险/Policy、决定 Contract/Candidate/Rewire 或导入旧数据时，单独使用 `GOALBOARD_MCP_AUDIENCE=management`。不要把 management MCP 交给自主 Runtime。
 
 服务不可用或身份不一致时 Runtime 必须停止，不能自行启动另一实例、切换数据库、替换 `board_id`、改写 URL 或使用 CLI 兜底。完整协议见 [Runtime Skill](../skills/goal-advance/SKILL.md)。

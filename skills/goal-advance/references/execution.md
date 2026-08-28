@@ -9,15 +9,16 @@ For an ordinary “继续推进” or “领一件能做的” request:
 1. call `goalboard_v1_available` with the current Runtime's real capabilities;
 2. if the user named a Goal, use it only if it is returned there;
 3. otherwise prioritize an item with `requires_parent_confirmation=true`, then choose according to the user's request, Contract, blockers, priority, dependencies, and planning rationale;
-4. call `goalboard_v1_select_goal` with the item's returned `role` so Claim and Run start atomically.
+4. when `next_action=complete`, call `goalboard_v1_complete` directly; it intentionally has `role=null` and must not create another Claim or Run;
+5. for every other action, call `goalboard_v1_select_goal` with the item's returned `role` so Claim and Run start atomically.
 
 GoalBoard does not dispatch one mandatory next task. The Runtime chooses among eligible work and explains which Goal it chose, why it fits now, and what state changed. Do not make the user choose unless there is a genuine intent or product tradeoff.
 
 When Available returns a non-null `parallel_suggestion`, proactively explain the concrete value of splitting those assignments across the returned abstract Runtime slots and ask whether the user wants that split. The suggestion is advisory only: do not start another Runtime, select or Claim any assignment, or imply that GoalBoard has dispatched work. After the user agrees, every participating Runtime must re-read Available with its real capabilities and individually call `goalboard_v1_select_goal` for its assigned Goal. If the suggestion is null, an Impact is unconfirmed, or the fresh read shows a conflict, do not claim that parallel execution is safe.
 
-`available` and `explain(role=executor)` answer whether the current execution action can be claimed. They do not certify that `complete` will pass: a Risk with `blocking_mode=completion` deliberately allows more execution while still blocking completion. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
+`available` and `explain(role=executor)` answer whether the current action can proceed; they do not certify that `complete` will pass before finished work reaches the completion phase. A Risk with `blocking_mode=completion` deliberately allows initial execution. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
 
-For a named Goal absent from Available, call `goalboard_v1_explain` and report its actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass the blocker with legacy `ready → claim → run_start`; the normal path is `available → select_goal`.
+For a named Goal absent from `available`, first inspect the same response's `blocked` list. A `completion_blocked` item has already finished execution and reviews: report its Risk or decision reason and remediation without starting executor work. For other absent Goals, call `goalboard_v1_explain` and report the actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass a blocker with legacy `ready → claim → run_start`; the normal claiming path is `available → select_goal`.
 
 If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推进.” Opening the panel itself is not permission to select it.
 
@@ -28,9 +29,11 @@ If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推�
 | `clarifying` / `clarification_pending` | Read the planning reference and continue the saved dialogue. If `requires_parent_confirmation=true`, summarize completed children and ask whether they cover the original parent outcome. |
 | `waiting_children` | Do not execute the parent. Choose an eligible child from Available. |
 | `executing` / `execution_pending` | Work only inside the selected accepted leaf Contract. |
+| `completion_pending` | Execution, Evidence, and required Reviews are already done. Call `goalboard_v1_complete` directly; do not select, Claim, or rerun the Goal. |
+| `completion_blocked` | Do not select executor work. Report the returned completion-gate reason and remediation; after that canonical gate is resolved, re-read Available and call `complete`. |
 | `reviewing` / `review_pending` | Inspect the Contract and submitted evidence; perform only the Review this Runtime may provide. |
 | `revalidating` / `revalidation_pending` | Recheck the Contract, active dependencies, Risks, and cited evidence; use `goalboard_v1_revalidate` only from the active revalidator Run. |
-| Any `*_blocked` | Call `goalboard_v1_explain`, report the concrete blocker, then choose other eligible work or ask for the missing decision. |
+| Any other `*_blocked` | Call `goalboard_v1_explain`, report the concrete blocker, then choose other eligible work or ask for the missing decision. |
 | `satisfied`, `archived`, `invalidated` | Do not claim it. Explain the state or choose other work. |
 
 A parent whose current children are complete is not silently done. If they cover the whole original result, use the planning flow to propose `accepted / closed_compound`; otherwise clarify and propose missing children.
