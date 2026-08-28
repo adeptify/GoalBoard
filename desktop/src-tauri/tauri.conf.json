@@ -50,7 +50,7 @@
     "active": true,
     "targets": ["app", "dmg"],
     "resources": ["resources/goalboard-runtime"],
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
     "macOS": {
       "minimumSystemVersion": "13.0"
     }
