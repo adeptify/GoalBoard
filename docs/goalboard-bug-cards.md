@@ -26,6 +26,7 @@
 | GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
 | GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 待审批 | 未开始 | P1 |
+| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 待审批 | 未开始 | P1 |
 
 ---
 
@@ -620,3 +621,57 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 - **工程验证**：尚未开始。需验证原 actor 可在到期前幂等续期、`expires_at/renewed_at` 和事件一致；他人、过期、释放、撤销 Claim 均拒绝；并发续租与过期物化不产生双写，Available 不会在续期后错误开放同一 Goal。
 - **产品实操**：问题已在真实 G2B 长链路中复现；续租后的同 Run 连续执行、临期提示和掉线后过期恢复均为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。需用户批准后，用超过原 30 分钟窗口或可控时钟的完整实现 + review 旅程验证一次；用户本人是否认为提示时机和续租频率不打扰，仍需用户验收。
+
+---
+
+## GB-20260829-12：Runtime 反复领取只剩人工判断的复核
+
+**来源**：CGS G2B self_verifier 消费者反馈；Review `review-ad251867-5c49-4fab-8806-f98fcb9a3d93`
+**Bug 确认**：已确认，属于 GoalBoard Review obligation 条件路由与人工等待状态缺陷；不是 CGS 误用，也不是 `inconclusive` verdict 本身的缺陷
+**修复决定**：待用户审批
+**修复状态**：未开始；当前只能由消费者识别 reasoning 后停止再次领取，并把人工验收交给用户
+
+### 1. 真实场景
+
+`cgs-g2b-editorial-decision` 的同一个 self_verifier obligation 同时覆盖工程检查条件 `cgs-g2b-handoff-trace` 和只能由王一骏本人决定的 `human_decision` 条件 `cgs-g2b-owner-decision`。Runtime 已确认工程与浏览器证据通过，因此提交 `inconclusive`，明确只剩真实 SELECT/DEFER/REJECT、本人直输和视觉验收；Run 完成、Claim 释放后，Explain 仍返回 `ready=true`，Available 又把同一 self_verifier 列为 `review_pending`。
+
+### 2. 事实与归因
+
+源码可以确定性解释并复现这条路径。`ensureReviewObligations` 会把 Goal 的全部 acceptance criterion ID 原样写进每一种 Review obligation，不区分 `decision_method`；只有独立的 `policy.human_approval=true` 才会创建 `human_approver` obligation，存在 `human_decision` criterion 本身不会创建人工门禁。`inconclusive` 按现有状态机不会满足 obligation，Explain 又只检查同角色是否仍有 pending obligation，不读取 criterion 的决策主体，也不解析上一次 reasoning，于是继续返回 ready。主要归因是 GoalBoard 的 obligation 路由与工作状态派生缺陷，不是 CGS 接入问题。保留 `inconclusive` 的可重试语义属于预期行为。
+
+### 3. 现有流程的问题
+
+Runtime 已完成所有自己有权完成的复核，却没有一个规范动作可以把工作交还给用户。它只能再次领取同一 self_verifier、再次得出 `inconclusive`、再次释放，或者依赖自身记住并解释上一条自由文本 reasoning 后擅自停止。界面仍显示普通“待复核”，既没有指出唯一剩余项由谁完成，也没有给出用户入口，导致自动化循环和用户困惑。
+
+### 4. 设计根因与初衷
+
+原设计用统一 obligation 覆盖整组验收条件，目的是让一次 Review 对完整 Goal 负责，避免复核者只挑容易的条件通过；`inconclusive` 不关闭 obligation，则是为了在证据不足时保留后续补证和重新检查的路径。`human_approval` 另设开关，用于只在明确要求时保留用户最终确认权。这些初衷合理。缺陷是“检查完整性”和“判断权限”没有同时建模：统一 scope 把 Runtime 可检查项与人类专属决定绑定给同一 Runtime 角色，而 `human_decision` 与 `human_approval` 两套表达又没有建立派生关系。
+
+### 5. 当前影响
+
+影响所有同时包含 Runtime 可判定 criterion 和 `human_decision` criterion、且开启自检或独立复核的叶子 Goal。此类 Goal 在工程复核完成后仍会持续出现在 Runtime 的可领取队列，产生重复 Claim、Run 和 Review 记录，并掩盖真正的用户待办。本次已在真实 G2B 闭环发生，直接阻断从工程复核自然转入 Owner 验收；不影响已有工程产物，但会污染审计历史并削弱“谁有权完成哪条验收”的可信度。
+
+### 6. 复杂度审查
+
+- **当前必须**：按 `decision_method` 分离 Runtime 可复核条件与 `human_decision` 条件；当 Runtime 部分已经结束而只剩人工条件时，不再向 Runtime 暴露同一 Review action，并返回结构化的人工等待原因、待办条件和用户入口。历史混合 obligation 需要在读取或物化时兼容收敛，不能要求重建 Goal。
+- **可以延后**：独立的人工任务通知中心、多人审批编排、按 criterion 提交不同 verdict、超时催办和自然语言 reasoning 分类。
+- **应当删除**：让 Runtime 通过反复 `inconclusive` 表达“我无权判断”；解析自由文本 reasoning 来猜是否只剩人工验收；把用户真实操作自动判成通过或允许 Runtime 代替用户提交 human approval。
+
+### 7. 修复必要性与优先级
+
+建议修复，P1，等待审批。它不是文案瑕疵，而是责任边界被错误路由后形成的稳定无效循环，并阻断人类拥有最终决定权的正常闭环。最小修复应依赖结构化的 criterion `decision_method` 和既有用户权限，不需要语义分析 reasoning，也不需要新增通用工作流引擎。
+
+### 8. 修复前后体验差异
+
+- **修复前**：Runtime 复核工程项 → 因人工项提交 `inconclusive` → 释放 → Available 再次显示同一 self_verifier 可领取 → 重复复核，用户看不到自己才是下一位行动者。
+- **修复后**：Runtime 只复核自己有权判断的条件并完成该部分 → Goal 明确显示“等待用户验收”，列出 SELECT/DEFER/REJECT、直输和视觉验收等剩余条件 → Available 不再给 Runtime 返回该 self_verifier action → 用户从 Web/管理入口提交真实决定后，Goal 才进入完成判定。
+
+### 9. 最小修复范围
+
+修改 Review obligation 的 criterion scope 派生、Goal 工作状态与 Available/Explain 的动作路由，并补 Web/MCP/Skill 的人工等待文案和入口说明。优先复用现有 `human_approver` 权限防线；是否新增 `waiting_for_human` 工作状态，以兼容性审查为准，但对外至少必须返回机器可读的 `review.user_approval_required`、具体 `criterion_ids` 和 `next_action`。不解析 reasoning，不自动通过人工条件，不改变普通 `inconclusive` 对 Runtime 可判定条件的重试语义。对历史混合 obligation 采用派生兼容或幂等重整；不删除既有 Review 记录，回滚不需要还原用户数据。
+
+### 10. 验收边界
+
+- **工程验证**：尚未开始。需构造同时包含 inspection 与 `human_decision` 的 Goal，先复现 self_verifier scope 混入两类条件、`inconclusive` 后 Explain 再次 ready；修复后验证 Runtime obligation 不再承载人工条件、Available 不再返回重复 self_verifier、人工待办含 criterion 与明确动作，且纯 Runtime criterion 的 `inconclusive` 仍可重试。还需覆盖历史混合 obligation 和 `policy.human_approval` 已开启时不产生重复人工门禁。
+- **产品实操**：真实 G2B 已复现修复前循环；修复后的 Web 人工待办、Runtime 停止领取、用户提交真实决定并回到完成判定均为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需用户批准后，在最终安装产物中用真实 G2B Goal 走完“工程复核结束 → 明确等待王一骏 → 本人操作与验收 → Goal 完成”，并确认不会新增重复 Claim、Run 或 Review。
