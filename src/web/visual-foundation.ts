@@ -646,9 +646,21 @@ export const VISUAL_FOUNDATION_STYLES = `
   }
   .tree-node.is-selected .tree-copy small { color: color-mix(in srgb, var(--blue-dark), var(--muted) 45%); }
   .tree-node.is-selected .goal-status { color: inherit; }
+  .tree-copy { grid-template-columns: minmax(0, 1fr) auto; column-gap: 7px; align-items: baseline; }
   .tree-copy strong { font-size: 12.5px; font-weight: 610; }
-  .tree-copy > small { display: none; }
+  .tree-copy > small {
+    display: block;
+    max-width: min(38%, 220px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 0;
+  }
   .tree-progress {
+    grid-column: 1 / -1;
     width: fit-content;
     margin-top: 3px;
     color: var(--muted);
@@ -931,7 +943,17 @@ export const VISUAL_FOUNDATION_STYLES = `
   .graph-node-copy { min-width: 0; display: grid; gap: 3px; }
   .graph-node-copy strong { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 650; line-height: 1.32; }
   .graph-node[data-graph-role="selected"] .graph-node-copy strong { font-size: 14px; }
-  .graph-node-copy small { display: none; }
+  .graph-node-copy small {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 0;
+  }
   .graph-node .goal-status { grid-column: 2; width: fit-content; min-height: 17px; padding: 0 5px; font-size: 9px; }
   .graph-node .goal-status svg { width: 10px; height: 10px; }
   .graph-node--satisfied .graph-node-mark,

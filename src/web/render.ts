@@ -631,7 +631,7 @@ function renderGoalTree(
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
         <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
-          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
+          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong><small title="Goal ID: ${escapeHtml(item.goal.goal_id)}">${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
           ${renderStatus(item.status)}
         </button>
       </div>
@@ -724,7 +724,7 @@ function renderGoalGraph(
     const searchValue = `${node.goal_id} ${node.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
     return `<button class="graph-node graph-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}" type="button" data-graph-node data-graph-role="${escapeHtml(node.role)}" data-graph-ring="${node.ring}" data-graph-angle="${node.angle}" data-graph-cluster="${escapeHtml(node.cluster)}" data-graph-side="${node.side}" data-select-goal="${escapeHtml(node.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}" data-connected-to-selected="${node.connected_to_selected}" aria-pressed="${selected}" style="--graph-x:${node.x}%;--graph-y:${node.y}%">
       <span class="graph-node-mark" aria-hidden="true"></span>
-      <span class="graph-node-copy"><strong>${escapeHtml(node.title)}</strong><small>${escapeHtml(node.goal_id)}</small></span>
+      <span class="graph-node-copy"><strong>${escapeHtml(node.title)}</strong><small title="Goal ID: ${escapeHtml(node.goal_id)}">${escapeHtml(node.goal_id)}</small></span>
       ${renderStatus(item.status)}
     </button>`;
   }).join("");

@@ -112,6 +112,20 @@ test("visual foundation keeps the Goal navigator dense and relationships progres
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-rows: auto auto minmax\(0, 1fr\) 42px/);
 });
 
+test("Goal Tree keeps each stable Goal id visible beside its title", () => {
+  const goalIdRule = VISUAL_FOUNDATION_STYLES.match(/\.tree-copy > small \{([^}]*)\}/)?.[1] ?? "";
+  assert.match(goalIdRule, /display:\s*block/);
+  assert.doesNotMatch(goalIdRule, /display:\s*none/);
+  assert.match(goalIdRule, /text-overflow:\s*ellipsis/);
+});
+
+test("Goal Graph keeps each stable Goal id visible with its node title", () => {
+  const goalIdRule = VISUAL_FOUNDATION_STYLES.match(/\.graph-node-copy small \{([^}]*)\}/)?.[1] ?? "";
+  assert.match(goalIdRule, /display:\s*block/);
+  assert.doesNotMatch(goalIdRule, /display:\s*none/);
+  assert.match(goalIdRule, /text-overflow:\s*ellipsis/);
+});
+
 test("runtime separates app chrome from a configurable terminal canvas", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /--terminal-muted: #b5b5bd;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--terminal-faint: #92929b;/);

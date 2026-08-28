@@ -901,7 +901,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /querySelector\("\[data-tree-resizer\]"\)/);
   assert.match(html, /treeResizer\??\.addEventListener\("pointermove"/);
   assert.match(html, /treeResizer\??\.addEventListener\("keydown"/);
-  assert.match(html, /tree-copy"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><small>V1<\/small>/);
+  assert.match(html, /tree-copy"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><small title="Goal ID: V1">V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-goal-section="progress"/);
   assert.match(html, /data-goal-section="now"/);
