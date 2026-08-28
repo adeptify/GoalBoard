@@ -15,15 +15,16 @@
 
 | ID | 标题 | 主要归因 | Bug 确认 | 修复决定 | 修复状态 | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- |
-| GB-20260828-01 | 当前消息已明确项目仍被重复确认 | GoalBoard Skill 授权识别缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260828-02 | 已完成执行被 Available 误导为再次执行 | GoalBoard 派生状态缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260828-03 | 项目内绝对路径被误报为项目范围外 | GoalBoard locator 设计缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260828-04 | 同一 LaunchAgent PID 被误报为端口冲突 | GoalBoard 服务归属兼容缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard 可引用性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
-| GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 工程验证通过 | P1（发布门禁） |
-| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
+| GB-20260828-01 | 当前消息已明确项目仍被重复确认 | GoalBoard Skill 授权识别缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-02 | 已完成执行被 Available 误导为再次执行 | GoalBoard 派生状态缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-03 | 项目内绝对路径被误报为项目范围外 | GoalBoard locator 设计缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-04 | 同一 LaunchAgent PID 被误报为端口冲突 | GoalBoard 服务归属兼容缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard 可引用性设计债 | 设计债 | 已批准 | 已安装 | P2 |
+| GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 已安装 | P1（发布门禁） |
+| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
+| GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 待审批 | 未开始 | P1 |
 
 ---
 
@@ -32,7 +33,7 @@
 **来源**：CGS 新 Session 消费者反馈 1
 **Bug 确认**：已确认，属于 GoalBoard Skill 的当前消息授权识别缺陷
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -76,7 +77,7 @@
 ### 10. 验收边界
 
 - **工程验证**：项目 catalog 与 MCP 的明确项目选择回归通过；正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。尚未安装新版本，也未用一个真实新 Session 完整走过“明确命名 → 直接绑定 → 读取 Goal”。
+- **产品实操**：`UNVERIFIED`。v0.1.3 已安装；尚未用一个真实新 Session 完整走过“明确命名 → 直接绑定 → 读取 Goal”。
 - **Owner 最终验收**：未通过。需在最终安装产物中完成上述主流程，并复测多候选、项目切换和未命名请求仍会确认。
 
 ---
@@ -86,7 +87,7 @@
 **来源**：CGS 新 Session 消费者反馈 2
 **Bug 确认**：已确认，属于 GoalBoard 派生状态和恢复动作表达缺陷
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -140,7 +141,7 @@ GoalBoard 原本不持久化第二套工作状态，而是从 canonical Goal、R
 **来源**：CGS 新 Session 消费者反馈 3
 **Bug 确认**：已确认，属于 GoalBoard Evidence locator 的设计缺陷；不是旧 workspace 关联污染
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -184,7 +185,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 ### 10. 验收边界
 
 - **工程验证**：回归先复现项目内绝对路径被拒绝，再验证它可被 verified 并存为 `project://contract.md`；同一测试确认项目外路径和 symlink 逃逸仍被拒绝，既有相对路径、Markdown anchor、外部 URL 和不透明 locator 语义不变。正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。尚未安装新版本，也未在真实 CGS 新 Session 用反馈中的两个原始绝对路径提交并从项目页面打开记录。
+- **产品实操**：`UNVERIFIED`。v0.1.3 已安装；尚未在真实 CGS 新 Session 用反馈中的两个原始绝对路径提交并从项目页面打开记录。
 - **Owner 最终验收**：未通过。需在最终安装产物中完成上述真实路径主流程，并再次实测项目外路径和 symlink 逃逸被拒绝。
 
 ---
@@ -194,7 +195,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 **来源**：CGS 新 Session 消费者反馈 4
 **Bug 确认**：已确认，属于 GoalBoard Web 服务归属协议的升级兼容缺陷
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；现场旧受管进程不再误报 `conflict`，完整打开入口与异 PID 安全分支尚未最终验收
 
 ### 1. 真实场景
 
@@ -238,7 +239,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 ### 10. 验收边界
 
 - **工程验证**：回归先复现“旧 health 缺身份、端口监听、同 PID 仍被判 conflict”，再验证同 PID 为 running、异 PID 仍为 conflict；服务测试 22/22，正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。源码没有安装到当前常驻服务，尚未用现场 PID 65405 的旧 health 进程验证 `service status` 和“打开 GoalBoard”完整入口，也未制造真实异 PID 监听者做安全实操。
+- **产品实操**：部分通过。v0.1.3 Core 面对现场旧受管进程时把原 `conflict` 正确降为可恢复的 `needs_repair`；受控执行 `service install` 后状态为 `running`，LaunchAgent PID、4173 监听 PID 和 `/health` PID 均为 30070。尚未从真实“打开 GoalBoard”入口走完整旅程，也未制造真实异 PID 监听者做安全实操。
 - **Owner 最终验收**：未通过。需在最终安装升级场景确认无需人工 `lsof/launchctl/curl` 即可打开，同时由受控异 PID 场景确认仍安全阻止。
 
 ---
@@ -248,7 +249,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 **来源**：用户截图直接反馈
 **Bug 确认**：已确认是 GoalBoard 可引用性设计债；Goal 内容没有丢失
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -292,7 +293,7 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 ### 10. 验收边界
 
 - **工程验证**：列表与关系图回归验证稳定 ID 以低强调、单行截断样式显示，完整值保留在悬停标题中；视觉基础和 Web renderer 测试通过。正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。尚未把源码安装到当前 GoalBoard，也未在用户截图对应的 Content Growth Studio 列表中检查真实长标题、紧凑密度、选中态和关系图拥挤程度。
+- **产品实操**：`UNVERIFIED`。v0.1.3 已安装；尚未在用户截图对应的 Content Growth Studio 列表中检查真实长标题、紧凑密度、选中态和关系图拥挤程度。
 - **Owner 最终验收**：未通过。最终视觉密度和“G2A/G2B 一眼能对应”需要用户本人在安装产物中确认。
 
 ---
@@ -302,7 +303,7 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 **来源**：CGS 新 Session 消费者反馈 5
 **Bug 确认**：已确认 GoalBoard 的连接缓存与恢复语义存在缺陷；现场调用级 Session metadata 的具体断点尚无原始日志
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -346,7 +347,7 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 ### 10. 验收边界
 
 - **工程验证**：回归先复现已绑定 Session 身份 metadata 短暂缺失时只返回普通“尚未连接”文本；修复后验证结构化恢复字段、只读 resolve 后原调用可重试、不同 Session 仍不串项目、真正未绑定仍走项目选择。正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。源码尚未安装；仍需在安装版复现“计划 Claim release → 同 Goal executor select”，确认消费者无需用户介入即可按安全指引恢复，并检查真实换 Session 仍不能继承连接缓存。
+- **产品实操**：`UNVERIFIED`。v0.1.3 已安装；仍需在安装版复现“计划 Claim release → 同 Goal executor select”，确认消费者无需用户介入即可按安全指引恢复，并检查真实换 Session 仍不能继承连接缓存。
 - **Owner 最终验收**：未通过。最终需确认真实错误文案和消费者行为不会再让用户误以为要重新授权项目。
 
 ---
@@ -356,7 +357,7 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 **来源**：本次 v0.1.3 发布前整仓门禁
 **Bug 确认**：非产品 Bug；属于 GoalBoard 测试夹具的宿主可移植性缺陷
 **修复决定**：作为本次打包的必要发布门禁修复
-**修复状态**：工程验证通过；等待正式包安装验证
+**修复状态**：已安装到 v0.1.3；CI arm64 包、内嵌 Node 与常驻服务已启动验证
 
 ### 1. 真实场景
 
@@ -400,8 +401,8 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 ### 10. 验收边界
 
 - **工程验证**：旧夹具已在本机稳定复现 `libnode.141.dylib` 缺失；最小夹具修复后目标用例 1/1 通过，同一正常本机权限下整仓门禁 261/261 通过。
-- **产品实操**：此卡本身不适用用户交互验收；最终官方 macOS 包仍必须完成安装、内嵌 Core/Node 启动和服务健康实操，不能由测试夹具通过代替。
-- **Owner 最终验收**：待本次 v0.1.3 官方包安装验证后，由 GoalBoard Owner 确认发布门禁不再误报且真实包可运行。
+- **产品实操**：此卡本身不适用用户交互验收；GitHub Actions 的 v0.1.3 arm64 ad-hoc 包已完成安装，内嵌 Core/Node 与服务健康实操通过。Developer ID 签名和 Apple 公证仍因凭证缺失而不在本次证据范围内。
+- **Owner 最终验收**：通过本次内部包发布门禁；公开分发包仍需补 Developer ID 签名与 Apple 公证后单独验收。
 
 ---
 
@@ -410,7 +411,7 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 **来源**：CGS G2B 主线消费者反馈 6
 **Bug 确认**：已确认，属于 GoalBoard 租约派生状态、物化时机与恢复动作不一致
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -464,7 +465,7 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 **来源**：CGS G2B 主线消费者反馈 7
 **Bug 确认**：确认是 GoalBoard locator 协议可发现性和恢复提示设计债；不是现有校验器误判
 **修复决定**：用户已批准
-**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
+**修复状态**：已安装到 v0.1.3；安装版 locator 组件冒烟通过，完整产品实操与最终验收未完成
 
 ### 1. 真实场景
 
@@ -508,5 +509,59 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 ### 10. 验收边界
 
 - **工程验证**：回归先复现真实项目内 `repo:` Markdown 被标为 UNVERIFIED，修复后验证文件和 anchor 成功、统一存成 `project://`、`..` 逃逸被拒绝、其他 scheme 保持 UNVERIFIED，并验证 MCP schema 直接提供相对路径、`repo:`、`project://` 和绝对路径示例。目标 V1/MCP 回归、TypeScript、Skill 校验及整仓门禁 263/263 通过。
-- **产品实操**：`UNVERIFIED`。需在最终安装产物中对真实 CGS Markdown 提交 `repo:` locator，确认一次提交即 verified，并检查 Web 能打开规范化后的项目引用。
+- **产品实操**：部分通过。安装版 0.1.3 已对真实仓库文件执行 `repo:package.json`，一次规范化为 `project://package.json` 并返回 `verified`。真实 CGS Markdown anchor 的 MCP 提交与 Web 打开旅程仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。需在最终安装包中确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。
+
+---
+
+## GB-20260829-10：升级后的旧服务配置允许 restart 但无法完成修复
+
+**来源**：v0.1.3 本机升级与安装实操
+**Bug 确认**：已确认，属于 GoalBoard Web 服务恢复动作和状态机不一致
+**修复决定**：待用户审批
+**修复状态**：未开始；现场已用 `service install` 安全绕行
+
+### 1. 真实场景
+
+用户把 GoalBoard App/Core 从 0.1.2 升级到 0.1.3。新版 `service status` 正确识别旧 LaunchAgent 归属，但因为 plist 的 PATH 仍引用旧 release，返回 `state=needs_repair`。随后执行安装结果中提供的 `service restart --confirm`，命令先完成受控停止和启动，却因 plist 没有被重写而再次得到 `needs_repair`，最终以失败退出。
+
+### 2. 事实与归因
+
+当前机器已稳定复现。0.1.3 安装前旧服务为受管且健康；Core 升级后 `status=needs_repair`；`service restart` 返回 `service.command_failed`，并自动保持原运行状态；不改其他文件而执行 `service install --confirm` 后，plist 与 receipt 被安全更新，服务进入 `running`，LaunchAgent、监听端口和 health PID 一致。源码也显示 `restart` 对 owned 的 `needs_repair` 返回 `ready`，但实现只重载现有 plist，不会写入 expected plist。主要归因是 GoalBoard 服务状态机缺陷，不是第三方进程冲突，也不是用户误用。
+
+### 3. 现有流程的问题
+
+系统先告诉用户“旧配置，可确认修复”，又允许选择一个无法完成该修复的 restart 动作。用户会经历一次可预见的失败，并需要自行猜测 `service install` 才是修复命令；自动化方还可能把失败理解为端口冲突、服务不健康或需要手工编辑 LaunchAgent。
+
+### 4. 设计根因与初衷
+
+`restart` 原本只负责在不改配置的前提下重载受管实例，避免重写或接管未知 LaunchAgent；`install` 才拥有原子写 plist/receipt、失败回滚和重新启动的权限。这一职责分离合理。缺陷是规划层把“owned”误当成 restart 的充分条件，没有把 `needs_repair` 路由到唯一能物化新配置的 install/repair 路径。
+
+### 5. 当前影响
+
+影响升级后 expected plist 发生变化、而旧 LaunchAgent 仍受管运行的用户。本次 0.1.2 → 0.1.3 必现一次；失败会延迟新 Web runtime 生效，但现有回滚保持旧服务运行，不直接损坏数据。熟悉命令的维护者可用 `service install` 绕行，普通用户和自动化消费者缺少确定恢复动作。
+
+### 6. 复杂度审查
+
+- **当前必须**：`needs_repair` 时拒绝无效 restart，并明确返回 `next_action=service_install`；安装/升级结果若检测到运行中的旧配置，直接给出同一规范修复命令。
+- **可以延后**：新增独立 `service repair` 命令、无中断双进程切换、LaunchAgent 配置版本迁移框架。
+- **应当删除**：把 `needs_repair + owned` 规划为 restart ready；让用户从一次失败中反推真正命令。
+
+### 7. 修复必要性与优先级
+
+建议修复，P1，等待审批。它位于每次升级后的服务切换主路径，当前虽有安全绕行且失败可回滚，但自动化必然多走一次错误动作。最小修复只调整动作规划和恢复提示，不需要新增服务或迁移用户数据。
+
+### 8. 修复前后体验差异
+
+- **修复前**：升级 Core → status 提示 needs_repair → 执行 restart → 可预见失败 → 猜测并改用 install → 服务才切到新版本。
+- **修复后**：升级 Core → status 明确旧配置需要物化 → 直接执行一次 service install/repair → 原子更新配置并启动新版本；普通 running 状态下 restart 行为不变。
+
+### 9. 最小修复范围
+
+修改 `planStatus`、service plan 的机器可读恢复动作，以及安装结果中的服务后续指引；补 `needs_repair + restart` 不再进入无效执行、`needs_repair + install` 成功、普通 running restart 不回归的测试。不手工编辑用户 plist，不放宽进程归属检查，不改变端口冲突策略。回滚只恢复旧动作路由。
+
+### 10. 验收边界
+
+- **工程验证**：尚未开始。需先用测试复现 restart 对 `needs_repair` 返回 ready 后失败，再验证新动作路由和回滚语义。
+- **产品实操**：现状已在 0.1.2 → 0.1.3 升级中复现，且 `service install` 绕行成功；修复后的单动作旅程仍为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需用户批准修复后，用真实旧配置升级一次，确认消费者不再经过失败 restart，并验证未知/异 PID 服务仍不会被覆盖。
