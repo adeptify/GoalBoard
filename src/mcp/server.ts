@@ -1219,6 +1219,7 @@ export class GoalBoardServer {
   runtimeConnection: GoalBoardRuntimeConnection | null;
   runtimeContextHost: GoalBoardRuntimeContextHost | null;
   private runtimeConnectionContextKey: string | null;
+  private runtimeConnectionRefreshContextKey: string | null;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
@@ -1231,6 +1232,7 @@ export class GoalBoardServer {
     // production Runtime never inherits a static project DB from environment.
     this.runtimeConnection = runtimeConnection ?? null;
     this.runtimeConnectionContextKey = runtimeConnection ? "explicit" : null;
+    this.runtimeConnectionRefreshContextKey = null;
     this.runtimeContextHost =
       runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
   }
@@ -1290,9 +1292,27 @@ export class GoalBoardServer {
     }
     if (this.runtimeConnectionContextKey !== "explicit") {
       const host = this.requireRuntimeContextHost(callContext);
-      if (this.runtimeConnectionContextKey !== runtimeContextKey(host)) {
+      const currentContextKey = runtimeContextKey(host);
+      if (this.runtimeConnectionContextKey !== currentContextKey) {
+        const invalidatedResolvedConnection = this.runtimeConnection !== null;
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        if (invalidatedResolvedConnection) {
+          this.runtimeConnectionRefreshContextKey = currentContextKey;
+        }
+      }
+      if (!this.runtimeConnection && this.runtimeConnectionRefreshContextKey === currentContextKey) {
+        throw new GoalBoardV1Error(
+          "mcp.context_refresh_required",
+          "MCP 当前调用的 Session 身份与已解析的项目连接不连续。请只读调用 goalboard_v1_context_resolve；若返回 bound，请使用原 idempotency_key 原样重试失败调用。不要调用 context_bind，也不要再次询问用户；若未返回 bound，则按 context_resolve 的 next_action 处理。",
+          {
+            next_action: "context_resolve_then_retry",
+            requires_bind: false,
+            requires_user_confirmation: false,
+            retry_same_idempotency_key: true,
+            retry_when_context_status: "bound",
+          },
+        );
       }
     }
     if (!this.runtimeConnection) {
@@ -1371,6 +1391,7 @@ export class GoalBoardServer {
       if (current.status !== "bound") {
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        this.runtimeConnectionRefreshContextKey = null;
       }
       return JSON.stringify(
         {
@@ -1410,6 +1431,7 @@ export class GoalBoardServer {
       // connection survive a new suggestion-first routing decision.
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
+      this.runtimeConnectionRefreshContextKey = null;
       return JSON.stringify(result, null, 2);
     });
   }
@@ -1449,6 +1471,7 @@ export class GoalBoardServer {
       });
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
+      this.runtimeConnectionRefreshContextKey = null;
       return JSON.stringify(result, null, 2);
     });
   }
@@ -1489,6 +1512,7 @@ export class GoalBoardServer {
       if (catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues).status !== "bound") {
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        this.runtimeConnectionRefreshContextKey = null;
       }
       return JSON.stringify(result, null, 2);
     });
@@ -1513,6 +1537,7 @@ export class GoalBoardServer {
     const connection = resolution.connection
       ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
+    this.runtimeConnectionRefreshContextKey = null;
     if (connection) {
       this.runtimeConnection = {
         projectId: connection.project_id,
@@ -2101,6 +2126,9 @@ export class GoalBoardServer {
 
 function formatMcpToolError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof GoalBoardV1Error && error.details) {
+    return `错误: ${message}\n${JSON.stringify({ code: error.code, ...error.details })}`;
+  }
   if (!(error instanceof GoalBoardProjectCatalogError)) return `错误: ${message}`;
   return `错误: ${message}\n${JSON.stringify({ code: error.code, ...error.details })}`;
 }

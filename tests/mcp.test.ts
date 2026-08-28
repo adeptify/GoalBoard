@@ -1567,7 +1567,7 @@ describe("mcp server", () => {
 
       const leakedIntoB = await call("goalboard_v1_snapshot", { board_id: first.board_id }, sessionB);
       assert.equal(leakedIntoB.result.isError, true);
-      assert.match(leakedIntoB.result.content[0]?.text ?? "", /尚未连接项目/);
+      assert.match(leakedIntoB.result.content[0]?.text ?? "", /"code":"mcp\.context_refresh_required"/);
 
       await call("goalboard_v1_context_resolve", {}, sessionB);
       const boundB = await call("goalboard_v1_context_bind", {
@@ -1581,10 +1581,96 @@ describe("mcp server", () => {
 
       const leakedBackIntoA = await call("goalboard_v1_snapshot", { board_id: second.board_id }, sessionA);
       assert.equal(leakedBackIntoA.result.isError, true);
-      assert.match(leakedBackIntoA.result.content[0]?.text ?? "", /尚未连接项目/);
+      assert.match(leakedBackIntoA.result.content[0]?.text ?? "", /"code":"mcp\.context_refresh_required"/);
       const restoredA = await call("goalboard_v1_context_resolve", {}, sessionA);
       assert.equal(restoredA.result.isError, false, restoredA.result.content[0]?.text);
       assert.match(restoredA.result.content[0]?.text ?? "", new RegExp(first.project_id));
+    } finally {
+      catalog.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies a bound Session identity gap as resolve-and-retry without requesting another bind", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-context-refresh-"));
+    const home = path.join(directory, "home", ".goalboard");
+    const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    const host = {
+      homeDirectory: home,
+      runtimeContext: {
+        runtime_id: "generic-mcp-runtime",
+        stable_work_context_id: null,
+        host_declares_stable: false,
+      },
+    };
+    const runtime = new GoalBoardServer("runtime", null, host);
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+      meta?: Record<string, unknown>,
+    ) => server.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
+    }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    const session = { threadId: "generic-session-bound" };
+    try {
+      const project = await catalog.createProject({ display_name: "Refresh Project", actor_id: "user" });
+
+      await call(runtime, "goalboard_v1_context_resolve", {}, session);
+      const bound = await call(runtime, "goalboard_v1_context_bind", {
+        project_id: project.project_id,
+        actor_id: "runtime-generic",
+        user_confirmed: true,
+      }, session);
+      assert.equal(bound.result.isError, false, bound.result.content[0]?.text);
+      const beforeGap = await call(runtime, "goalboard_v1_snapshot", { board_id: project.board_id }, session);
+      assert.equal(beforeGap.result.isError, false, beforeGap.result.content[0]?.text);
+
+      const identityGap = await call(runtime, "goalboard_v1_snapshot", { board_id: project.board_id });
+      assert.equal(identityGap.result.isError, true);
+      const errorText = identityGap.result.content[0]?.text ?? "";
+      const recovery = JSON.parse(errorText.split("\n").at(-1) ?? "{}") as Record<string, unknown>;
+      assert.equal(recovery.code, "mcp.context_refresh_required");
+      assert.equal(recovery.next_action, "context_resolve_then_retry");
+      assert.equal(recovery.requires_bind, false);
+      assert.equal(recovery.requires_user_confirmation, false);
+      assert.equal(recovery.retry_same_idempotency_key, true);
+
+      const restored = await call(runtime, "goalboard_v1_context_resolve", {}, session);
+      assert.equal(restored.result.isError, false, restored.result.content[0]?.text);
+      const restoredPayload = JSON.parse(restored.result.content[0]?.text ?? "{}") as {
+        status: string;
+        project: { project_id: string } | null;
+      };
+      assert.equal(restoredPayload.status, "bound");
+      assert.equal(restoredPayload.project?.project_id, project.project_id);
+      const retried = await call(runtime, "goalboard_v1_snapshot", { board_id: project.board_id }, session);
+      assert.equal(retried.result.isError, false, retried.result.content[0]?.text);
+
+      const freshRuntime = new GoalBoardServer("runtime", null, host);
+      const unresolvedSession = { threadId: "generic-session-unresolved" };
+      const unresolvedContext = await call(
+        freshRuntime,
+        "goalboard_v1_context_resolve",
+        {},
+        unresolvedSession,
+      );
+      const unresolvedPayload = JSON.parse(unresolvedContext.result.content[0]?.text ?? "{}") as {
+        status: string;
+      };
+      assert.notEqual(unresolvedPayload.status, "bound");
+      const trulyUnresolved = await call(
+        freshRuntime,
+        "goalboard_v1_snapshot",
+        { board_id: project.board_id },
+        unresolvedSession,
+      );
+      assert.equal(trulyUnresolved.result.isError, true);
+      assert.match(trulyUnresolved.result.content[0]?.text ?? "", /尚未连接项目/);
+      assert.doesNotMatch(trulyUnresolved.result.content[0]?.text ?? "", /context_refresh_required/);
     } finally {
       catalog.close();
       fs.rmSync(directory, { recursive: true, force: true });

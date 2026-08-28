@@ -13,6 +13,17 @@ Call `goalboard_v1_context_resolve` only after the user explicitly invokes GoalB
 
 The working directory is only a host clue used to rank projects previously associated with it. It is never a Session ID or project identity. Raw host clues, database paths, and internal project IDs stay out of normal user-facing text.
 
+## Recover from a connection-context refresh
+
+Treat `mcp.context_refresh_required` as an in-process connection refresh, not proof that the Session lost its project binding.
+
+1. Call read-only `goalboard_v1_context_resolve` once for the current Session. Do not call `context_bind` and do not ask the user to select the project again for this recovery step.
+2. If it returns `bound`, retry the failed lifecycle call unchanged. For a write, reuse the exact same `idempotency_key`; never mint a new request merely because the connection cache was refreshed.
+3. If it returns `suggested`, `unbound`, or `missing_stable_context`, do not retry the lifecycle call. Follow the normal resolution rules above because the durable context is not currently bound.
+4. If the same call still returns `mcp.context_refresh_required` after one successful `bound` resolve, stop automatic retries and report the repeated context-identity discontinuity. Do not weaken Session isolation or guess from the working directory.
+
+The structured recovery fields are authoritative for this branch: `next_action=context_resolve_then_retry`, `requires_bind=false`, `requires_user_confirmation=false`, and `retry_same_idempotency_key=true`. These fields describe the refresh step only; the subsequent `context_resolve` result decides whether normal project selection is needed.
+
 ## Recover from an older Runtime reader
 
 Treat `catalog.reader_too_old` as a Runtime/catalog version mismatch, not damaged user data. Report the returned `actual_schema_version` and `supported_schema_max` in plain language. The current Session cannot hot-reload its MCP process, so do not retry the same call unchanged.
