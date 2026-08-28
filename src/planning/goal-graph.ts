@@ -91,9 +91,23 @@ const RELATION_TYPES = new Set<GoalRelationRecord["type"]>([
 ]);
 
 function proposalRelationValues(item: ProposalItem): Record<string, unknown>[] {
-  if (item.kind !== "relation" && item.kind !== "dependency") return [];
   const payload = object(item.payload);
   if (!payload) return [];
+  if (item.kind === "candidate" && item.operation === "update") {
+    const nested = payload.proposed_relations;
+    const values = Array.isArray(nested) ? nested : nested == null ? [] : [nested];
+    const proposedGoal = object(payload.proposed_goal ?? payload.goal);
+    const goalId = String(proposedGoal?.goal_id ?? "").trim();
+    return values
+      .map(object)
+      .filter((value): value is Record<string, unknown> => value != null)
+      .map((relation) => ({
+        ...relation,
+        from_goal_id: relation.from_goal_id === "$new_goal" ? goalId : relation.from_goal_id,
+        to_goal_id: relation.to_goal_id === "$new_goal" ? goalId : relation.to_goal_id,
+      }));
+  }
+  if (item.kind !== "relation" && item.kind !== "dependency") return [];
   const nested = payload.relations ?? payload.relation;
   const values = Array.isArray(nested) ? nested : nested == null ? [payload] : [nested];
   return values.map(object).filter((value): value is Record<string, unknown> => value != null);
@@ -107,7 +121,7 @@ export function validatePlanningProposalGraph(
   const goals = new Map(currentGoals.map((goal) => [goal.goal_id, goal]));
   const changes: PlanningRelationChange[] = [];
   for (const item of items) {
-    if (item.kind === "goal" || item.kind === "contract") {
+    if (item.kind === "goal" || item.kind === "contract" || (item.kind === "candidate" && item.operation === "update")) {
       const payload = object(item.payload);
       const goal = object(payload?.goal ?? payload?.proposed_goal) ?? payload;
       const goalId = String(goal?.goal_id ?? payload?.goal_id ?? "").trim();

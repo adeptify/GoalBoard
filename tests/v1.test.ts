@@ -98,6 +98,10 @@ function goalTreeProposalItem(input: {
   payload: Record<string, unknown>;
   object_type: "goal" | "relation" | "risk" | "policy" | "candidate" | "rewire";
   object_id: string;
+  affected_objects?: Array<{
+    object_type: "goal" | "relation" | "risk" | "policy" | "candidate" | "rewire";
+    object_id: string;
+  }>;
   reason?: string;
   confidence?: number;
   source_refs?: string[];
@@ -112,7 +116,7 @@ function goalTreeProposalItem(input: {
     source_refs: input.source_refs ?? ["conversation://tree-proposal"],
     reason: input.reason ?? "根据当前澄清形成待用户确认的 Goal Tree 变更",
     confidence: input.confidence ?? 0.9,
-    affected_objects: [{ object_type: input.object_type, object_id: input.object_id }],
+    affected_objects: input.affected_objects ?? [{ object_type: input.object_type, object_id: input.object_id }],
     supersedes_item_id: input.supersedes_item_id,
   };
 }
@@ -3570,6 +3574,434 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.equal(recovered?.items.find((item) => item.item_id === "rejected-relation")?.decision?.decision, "rejected");
   assert.equal(recovered?.items.find((item) => item.item_id === "revised-future-child")?.revision_proposal_id, applied.revision_proposals[0]?.proposal_id);
   recoveredStore.close();
+});
+
+test("an existing pending Candidate can be revised and promoted atomically in one Goal Tree decision", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-candidate-planner",
+    rough_idea: "把已经记录的 Candidate 修订成正式 Goal，并一次确认它在 Goal Tree 中的位置。",
+    goal_id: "candidate-promotion-root",
+    idempotency_key: "candidate-promotion-dialogue",
+  });
+  const candidate = coordinator.submitCandidate({
+    board_id: "board-1",
+    actor_id: "runtime-candidate-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: treeGoalPayload({
+      goal_id: "candidate-promotion-child",
+      title: "原始候选工作",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    proposed_relations: [{
+      from_goal_id: "candidate-promotion-child",
+      to_goal_id: "candidate-promotion-root",
+      type: "part_of",
+      reason: "候选工作是根 Goal 的一项有限改进。",
+    }],
+    idempotency_key: "candidate-promotion-submit",
+  }).candidate;
+  const revisedGoal = {
+    ...treeGoalPayload({
+      goal_id: "candidate-promotion-child",
+      title: "修订后的候选工作",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    business_logic: "用户先在统一提案中核对最终 Contract 和父子位置；确认后才同时生成正式 Goal 并关闭原 Candidate。",
+  };
+  const relation = {
+    from_goal_id: "$new_goal",
+    to_goal_id: "candidate-promotion-root",
+    type: "part_of",
+    reason: "修订后的 Goal 仍属于当前根 Goal。",
+  };
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-candidate-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "candidate-promotion-root",
+    summary: "把已有 Candidate 修订为正式 Goal，并确认父子关系。",
+    items: [goalTreeProposalItem({
+      item_id: "promote-existing-candidate",
+      kind: "candidate",
+      operation: "update",
+      payload: {
+        candidate_id: candidate.candidate_id,
+        proposed_goal: revisedGoal,
+        proposed_relations: [relation],
+        blocking_mode: "none",
+      },
+      object_type: "candidate",
+      object_id: candidate.candidate_id,
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "candidate-promotion-child" },
+        {
+          object_type: "relation",
+          object_id: "relation:new:candidate-promotion-child:candidate-promotion-root:part_of",
+        },
+      ],
+    })],
+    idempotency_key: "candidate-promotion-proposal",
+  }).proposal;
+
+  const applied = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-candidate-planner",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://candidate-promotion",
+      message_ref: "message://candidate-promotion-confirm",
+    },
+    decisions: [{
+      item_id: "promote-existing-candidate",
+      decision: "confirm",
+      reason: "确认采用修订后的 Contract 和父子位置。",
+    }],
+    idempotency_key: "candidate-promotion-decide",
+  });
+
+  assert.deepEqual(applied.applied_item_ids, ["promote-existing-candidate"]);
+  assert.deepEqual(applied.conflict_item_ids, []);
+  const snapshot = store.snapshot("board-1");
+  const promoted = snapshot.candidates.find((entry) => entry.candidate_id === candidate.candidate_id);
+  assert.equal(promoted?.state, "approved");
+  assert.equal(promoted?.decision?.formal_goal_id, "candidate-promotion-child");
+  assert.equal(promoted?.decision?.proposal_id, proposal.proposal_id);
+  assert.deepEqual(promoted?.decision?.final_proposed_goal, revisedGoal);
+  assert.equal(store.getGoal("candidate-promotion-child")?.title, "修订后的候选工作");
+  assert.equal(
+    snapshot.goals.filter((goal) => goal.goal_id === "candidate-promotion-child").length,
+    1,
+  );
+  assert.equal(
+    snapshot.candidates.filter(
+      (entry) => entry.state === "pending" && entry.proposed_goal.goal_id === "candidate-promotion-child",
+    ).length,
+    0,
+  );
+  assert.ok(snapshot.relations.some(
+    (entry) =>
+      entry.state === "active" &&
+      entry.from_goal_id === "candidate-promotion-child" &&
+      entry.to_goal_id === "candidate-promotion-root" &&
+      entry.type === "part_of",
+  ));
+  assert.equal(snapshot.rewires.length, 0);
+  store.close();
+});
+
+test("a bootstrap Goal Tree proposal can be strictly reconciled back to its pending Candidate", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-bootstrap-planner",
+    rough_idea: "先用正式 Goal 修复 Candidate 晋升能力，再把这次启动例外对账回原 Candidate。",
+    goal_id: "candidate-bootstrap-root",
+    idempotency_key: "candidate-bootstrap-dialogue",
+  });
+  const candidate = coordinator.submitCandidate({
+    board_id: "board-1",
+    actor_id: "runtime-bootstrap-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: treeGoalPayload({
+      goal_id: "candidate-bootstrap-child",
+      title: "候选晋升启动修复",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    idempotency_key: "candidate-bootstrap-submit",
+  }).candidate;
+  const finalGoal = {
+    ...treeGoalPayload({
+      goal_id: "candidate-bootstrap-child",
+      title: "候选晋升启动修复",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    business_logic: "仅在同一 Board、稳定 goal_id 和原统一提案均可追溯时，把已创建的启动 Goal 对账回原 Candidate。",
+  };
+  const bootstrap = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-bootstrap-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "candidate-bootstrap-root",
+    summary: "创建修复统一晋升能力所需的启动 Goal。",
+    items: [goalTreeProposalItem({
+      item_id: "bootstrap-formal-goal",
+      kind: "goal",
+      operation: "create",
+      payload: finalGoal,
+      object_type: "goal",
+      object_id: "candidate-bootstrap-child",
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "candidate-bootstrap-child" },
+      ],
+    })],
+    idempotency_key: "candidate-bootstrap-goal-proposal",
+  }).proposal;
+  const bootstrapApplied = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: bootstrap.proposal_id,
+    runtime_actor_id: "runtime-bootstrap-planner",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://candidate-bootstrap",
+      message_ref: "message://candidate-bootstrap-create",
+    },
+    decisions: [{ item_id: "bootstrap-formal-goal", decision: "confirm", reason: "先创建启动 Goal。" }],
+    idempotency_key: "candidate-bootstrap-goal-decide",
+  });
+  assert.deepEqual(bootstrapApplied.applied_item_ids, ["bootstrap-formal-goal"]);
+  assert.equal(store.snapshot("board-1").candidates[0]?.state, "pending");
+
+  const relation = {
+    from_goal_id: "candidate-bootstrap-child",
+    to_goal_id: "candidate-bootstrap-root",
+    type: "part_of",
+    reason: "启动 Goal 属于当前根 Goal。",
+  };
+  const reconciliation = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-bootstrap-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "candidate-bootstrap-root",
+    summary: "将启动 Goal 严格对账回原 Candidate，并确认父子关系。",
+    items: [goalTreeProposalItem({
+      item_id: "reconcile-bootstrap-candidate",
+      kind: "candidate",
+      operation: "update",
+      payload: {
+        candidate_id: candidate.candidate_id,
+        proposed_goal: finalGoal,
+        proposed_relations: [relation],
+        formal_goal_id: "candidate-bootstrap-child",
+        materialized_by_proposal_id: bootstrap.proposal_id,
+      },
+      object_type: "candidate",
+      object_id: candidate.candidate_id,
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "candidate-bootstrap-child" },
+        {
+          object_type: "relation",
+          object_id: "relation:new:candidate-bootstrap-child:candidate-bootstrap-root:part_of",
+        },
+      ],
+    })],
+    idempotency_key: "candidate-bootstrap-reconcile-proposal",
+  }).proposal;
+  const reconciled = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: reconciliation.proposal_id,
+    runtime_actor_id: "runtime-bootstrap-planner",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://candidate-bootstrap",
+      message_ref: "message://candidate-bootstrap-reconcile",
+    },
+    decisions: [{
+      item_id: "reconcile-bootstrap-candidate",
+      decision: "confirm",
+      reason: "确认只对账已有启动 Goal，不创建第二条 Goal。",
+    }],
+    idempotency_key: "candidate-bootstrap-reconcile-decide",
+  });
+
+  assert.deepEqual(reconciled.applied_item_ids, ["reconcile-bootstrap-candidate"]);
+  assert.deepEqual(reconciled.conflict_item_ids, []);
+  const snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.candidates[0]?.state, "approved");
+  assert.equal(snapshot.candidates[0]?.decision?.formal_goal_id, "candidate-bootstrap-child");
+  assert.equal(snapshot.candidates[0]?.decision?.materialized_by_proposal_id, bootstrap.proposal_id);
+  assert.equal(snapshot.goals.filter((goal) => goal.goal_id === "candidate-bootstrap-child").length, 1);
+  assert.ok(snapshot.relations.some(
+    (entry) =>
+      entry.state === "active" &&
+      entry.from_goal_id === "candidate-bootstrap-child" &&
+      entry.to_goal_id === "candidate-bootstrap-root" &&
+      entry.type === "part_of",
+  ));
+  store.close();
+});
+
+test("Candidate bootstrap reconciliation rejects an unproven existing Goal without partial writes", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-unproven-bootstrap",
+    rough_idea: "验证任意同名 Goal 不能被收编为 Candidate 的正式结果。",
+    goal_id: "unproven-bootstrap-root",
+    idempotency_key: "unproven-bootstrap-dialogue",
+  });
+  const finalGoal = treeGoalPayload({
+    goal_id: "unproven-bootstrap-child",
+    title: "不能被任意收编的已有 Goal",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+  });
+  const candidate = coordinator.submitCandidate({
+    board_id: "board-1",
+    actor_id: "runtime-unproven-bootstrap",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: finalGoal,
+    idempotency_key: "unproven-bootstrap-candidate",
+  }).candidate;
+  coordinator.createGoal("board-1", finalGoal, {
+    actor_id: "user-1",
+    idempotency_key: "unproven-bootstrap-direct-goal",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-unproven-bootstrap",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "unproven-bootstrap-root",
+    summary: "尝试把没有原统一提案来源的已有 Goal 对账回 Candidate。",
+    items: [goalTreeProposalItem({
+      item_id: "unproven-bootstrap-reconcile",
+      kind: "candidate",
+      operation: "update",
+      payload: {
+        candidate_id: candidate.candidate_id,
+        proposed_goal: finalGoal,
+        proposed_relations: [{
+          from_goal_id: "unproven-bootstrap-child",
+          to_goal_id: "unproven-bootstrap-root",
+          type: "part_of",
+          reason: "这条关系不应在来源校验失败时写入。",
+        }],
+        formal_goal_id: "unproven-bootstrap-child",
+        materialized_by_proposal_id: "goal-tree-proposal-not-real",
+      },
+      object_type: "candidate",
+      object_id: candidate.candidate_id,
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "unproven-bootstrap-child" },
+      ],
+    })],
+    idempotency_key: "unproven-bootstrap-proposal",
+  }).proposal;
+  const result = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-unproven-bootstrap",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://unproven-bootstrap",
+      message_ref: "message://unproven-bootstrap-confirm",
+    },
+    decisions: [{
+      item_id: "unproven-bootstrap-reconcile",
+      decision: "confirm",
+      reason: "故意确认一次无来源对账，验证系统拒绝。",
+    }],
+    idempotency_key: "unproven-bootstrap-decide",
+  });
+
+  assert.deepEqual(result.applied_item_ids, []);
+  assert.deepEqual(result.conflict_item_ids, ["unproven-bootstrap-reconcile"]);
+  assert.equal(
+    result.proposal.items[0]?.conflict?.code,
+    "goal_tree_proposal.candidate_bootstrap_unproven",
+  );
+  const snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.candidates.find((entry) => entry.candidate_id === candidate.candidate_id)?.state, "pending");
+  assert.equal(snapshot.goals.filter((goal) => goal.goal_id === "unproven-bootstrap-child").length, 1);
+  assert.equal(snapshot.relations.some((relation) => relation.to_goal_id === "unproven-bootstrap-root"), false);
+  store.close();
+});
+
+test("Candidate promotion keeps the original decision when its proposal baseline becomes stale", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-stale-candidate",
+    rough_idea: "验证另一条用户决定先发生时，旧晋升提案不会生成重复 Goal。",
+    goal_id: "stale-candidate-root",
+    idempotency_key: "stale-candidate-dialogue",
+  });
+  const proposedGoal = treeGoalPayload({
+    goal_id: "stale-candidate-child",
+    title: "可能被并发决定的 Candidate",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+  });
+  const candidate = coordinator.submitCandidate({
+    board_id: "board-1",
+    actor_id: "runtime-stale-candidate",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: proposedGoal,
+    idempotency_key: "stale-candidate-submit",
+  }).candidate;
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-stale-candidate",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "stale-candidate-root",
+    summary: "晋升仍待决定的 Candidate。",
+    items: [goalTreeProposalItem({
+      item_id: "stale-candidate-promote",
+      kind: "candidate",
+      operation: "update",
+      payload: { candidate_id: candidate.candidate_id, proposed_goal: proposedGoal, proposed_relations: [] },
+      object_type: "candidate",
+      object_id: candidate.candidate_id,
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "stale-candidate-child" },
+      ],
+    })],
+    idempotency_key: "stale-candidate-proposal",
+  }).proposal;
+  coordinator.decideCandidate({
+    board_id: "board-1",
+    candidate_id: candidate.candidate_id,
+    actor_id: "user-1",
+    actor_kind: "user",
+    decision: "rejected",
+    reason: "用户在另一入口先拒绝了这条 Candidate。",
+    idempotency_key: "stale-candidate-rejected",
+  });
+  const result = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-stale-candidate",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://stale-candidate",
+      message_ref: "message://stale-candidate-confirm",
+    },
+    decisions: [{
+      item_id: "stale-candidate-promote",
+      decision: "confirm",
+      reason: "旧对话迟到的确认。",
+    }],
+    idempotency_key: "stale-candidate-decide",
+  });
+
+  assert.deepEqual(result.applied_item_ids, []);
+  assert.deepEqual(result.conflict_item_ids, ["stale-candidate-promote"]);
+  const snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.candidates.find((entry) => entry.candidate_id === candidate.candidate_id)?.state, "rejected");
+  assert.equal(snapshot.goals.some((goal) => goal.goal_id === "stale-candidate-child"), false);
+  assert.equal(snapshot.rewires.length, 0);
+  store.close();
 });
 
 test("a user can close an accepted parent without changing its Contract", () => {

@@ -6641,6 +6641,65 @@ export class GoalBoardCoordinator {
       .all(boardId, parentGoalId) as Row[];
   }
 
+  private goalTreeCandidatePromotionRelations(
+    payload: Record<string, unknown>,
+    goalId: string,
+  ): Record<string, unknown>[] {
+    if (payload.proposed_relations == null) return [];
+    if (!Array.isArray(payload.proposed_relations)) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.candidate_relations_invalid",
+        "Candidate proposed_relations 必须是关系列表",
+      );
+    }
+    return payload.proposed_relations.map((value) => {
+      const relation = this.goalTreePayloadRecord(value, "Candidate 关系");
+      return {
+        ...relation,
+        from_goal_id: String(relation.from_goal_id ?? "$new_goal").trim() === "$new_goal"
+          ? goalId
+          : String(relation.from_goal_id ?? "").trim(),
+        to_goal_id: String(relation.to_goal_id ?? "").trim() === "$new_goal"
+          ? goalId
+          : String(relation.to_goal_id ?? "").trim(),
+      };
+    });
+  }
+
+  private candidateBootstrapProvenanceExists(
+    boardId: string,
+    candidateId: string,
+    goalId: string,
+    proposalId: string,
+  ): boolean {
+    const rows = this.store.db
+      .prepare(`
+        SELECT item.kind, item.operation, item.affected_objects_json,
+          item.baseline_versions_json, item.materialized_objects_json
+        FROM goal_tree_proposals proposal
+        JOIN goal_tree_proposal_items item ON item.proposal_id = proposal.proposal_id
+        WHERE proposal.board_id = ? AND proposal.proposal_id = ? AND item.state = 'applied'
+        ORDER BY item.ordinal, item.item_id
+      `)
+      .all(boardId, proposalId) as Row[];
+    return rows.some((row) => {
+      if (asText(row.kind) !== "goal" || asText(row.operation) !== "create") return false;
+      const affected = parseJson<ProposalAffectedObject[]>(row.affected_objects_json, []);
+      const baselines = parseJson<ProposalObjectVersion[]>(row.baseline_versions_json, []);
+      const materialized = parseJson<ProposalAffectedObject[]>(row.materialized_objects_json, []);
+      return affected.some(
+        (object) => object.object_type === "candidate" && object.object_id === candidateId,
+      ) && baselines.some(
+        (baseline) =>
+          baseline.object_type === "candidate" &&
+          baseline.object_id === candidateId &&
+          baseline.exists,
+      ) && materialized.some(
+        (object) => object.object_type === "goal" && object.object_id === goalId,
+      );
+    });
+  }
+
   private goalTreeProposalMaterializationConflict(
     boardId: string,
     item: GoalTreeProposalItemRecord,
@@ -6714,25 +6773,188 @@ export class GoalBoardCoordinator {
     if (item.kind === "candidate") {
       const payload = this.goalTreePayloadRecord(item.payload, "Candidate 条目");
       const candidateId = String(payload.candidate_id ?? "").trim();
-      if (candidateId) {
-        const existing = this.store.db
-          .prepare("SELECT candidate_id FROM candidates WHERE board_id = ? AND candidate_id = ?")
-          .get(boardId, candidateId);
-        if (existing) {
+      const candidateRow = candidateId
+        ? this.store.db
+            .prepare("SELECT * FROM candidates WHERE board_id = ? AND candidate_id = ?")
+            .get(boardId, candidateId) as Row | undefined
+        : undefined;
+      if (item.operation === "create") {
+        if (candidateRow) {
           return {
             code: "goal_tree_proposal.candidate_exists",
             message: "要确认的 Candidate 已存在，需要重新决定",
             objects: [{ object_type: "candidate", object_id: candidateId }],
           };
         }
+        const goal = this.goalTreeGoalInput({ ...item, kind: "goal", payload: { goal: payload.proposed_goal ?? payload.goal ?? payload } });
+        const goalId = this.goalTreeTargetGoalId(item, goal);
+        return goalExists(goalId)
+          ? {
+              code: "goal_tree_proposal.goal_exists",
+              message: "Candidate 对应的 Goal 已存在，需要先修订提案",
+              objects: [{ object_type: "goal", object_id: goalId }],
+            }
+          : null;
+      }
+      if (item.operation !== "update") {
+        return {
+          code: "goal_tree_proposal.candidate_operation_invalid",
+          message: "已有 Candidate 只能通过 update 晋升，不能停用",
+          objects: [{ object_type: "candidate", object_id: candidateId || "candidate_id" }],
+        };
+      }
+      if (!candidateId || !candidateRow) {
+        return missingObject("candidate", candidateId || "candidate_id", "要晋升的 Candidate 不存在");
+      }
+      if (asText(candidateRow.state) !== "pending") {
+        return {
+          code: "goal_tree_proposal.candidate_not_pending",
+          message: "只有仍待用户决定的 Candidate 可以通过统一提案晋升",
+          objects: [{ object_type: "candidate", object_id: candidateId }],
+        };
+      }
+      if (
+        !payload.proposed_goal ||
+        typeof payload.proposed_goal !== "object" ||
+        Array.isArray(payload.proposed_goal) ||
+        !Array.isArray(payload.proposed_relations) ||
+        (payload.proposed_impacts != null && !Array.isArray(payload.proposed_impacts)) ||
+        (payload.proposed_risks != null && !Array.isArray(payload.proposed_risks))
+      ) {
+        return {
+          code: "goal_tree_proposal.candidate_final_revision_required",
+          message: "Candidate 晋升提案必须明确提供最终 proposed_goal 和 proposed_relations（可以是空列表）",
+          objects: [{ object_type: "candidate", object_id: candidateId }],
+        };
       }
       const goal = this.goalTreeGoalInput({ ...item, kind: "goal", payload: { goal: payload.proposed_goal ?? payload.goal ?? payload } });
       const goalId = this.goalTreeTargetGoalId(item, goal);
-      return goalExists(goalId)
+      const requestedFormalGoalId = String(payload.formal_goal_id ?? "").trim();
+      if (requestedFormalGoalId && requestedFormalGoalId !== goalId) {
+        return {
+          code: "goal_tree_proposal.candidate_formal_goal_mismatch",
+          message: "Candidate 对账引用的 formal_goal_id 必须与最终 Contract 的稳定 goal_id 一致",
+          objects: [
+            { object_type: "candidate", object_id: candidateId },
+            { object_type: "goal", object_id: requestedFormalGoalId },
+          ],
+        };
+      }
+      const originalGoal = parseJson<CreateGoalInput>(candidateRow.proposed_goal_json, {} as CreateGoalInput);
+      const originalGoalId = originalGoal.goal_id?.trim() ?? "";
+      if (originalGoalId && originalGoalId !== goalId) {
+        return {
+          code: "goal_tree_proposal.candidate_goal_id_changed",
+          message: "修订 Candidate Contract 时不能改成另一条稳定 Goal ID",
+          objects: [
+            { object_type: "candidate", object_id: candidateId },
+            { object_type: "goal", object_id: goalId },
+          ],
+        };
+      }
+      if (goal.definition_state !== "accepted") {
+        return {
+          code: "goal_tree_proposal.candidate_goal_not_accepted",
+          message: "Candidate 晋升后的正式 Goal 必须是 accepted",
+          objects: [{ object_type: "goal", object_id: goalId }],
+        };
+      }
+      const candidateBaseline = item.baseline_versions.find(
+        (baseline) => baseline.object_type === "candidate" && baseline.object_id === candidateId && baseline.exists,
+      );
+      const goalBaseline = item.baseline_versions.find(
+        (baseline) => baseline.object_type === "goal" && baseline.object_id === goalId,
+      );
+      if (!candidateBaseline || !goalBaseline) {
+        return {
+          code: "goal_tree_proposal.candidate_baseline_required",
+          message: "Candidate 晋升提案必须同时记录原 Candidate 和目标 Goal 的基准，才能安全处理并发变化",
+          objects: [
+            { object_type: "candidate", object_id: candidateId },
+            { object_type: "goal", object_id: goalId },
+          ],
+        };
+      }
+      const existingGoal = this.store.getGoal(goalId);
+      if (existingGoal) {
+        const materializedByProposalId = String(payload.materialized_by_proposal_id ?? "").trim();
+        if (
+          requestedFormalGoalId !== goalId ||
+          !materializedByProposalId ||
+          !this.candidateBootstrapProvenanceExists(boardId, candidateId, goalId, materializedByProposalId) ||
+          existingGoal.definition_state !== "accepted" ||
+          existingGoal.decomposition_state !== goal.decomposition_state ||
+          !this.acceptedGoalBusinessContractMatches(
+            existingGoal,
+            { ...goal, priority: goal.priority ?? existingGoal.priority },
+          )
+        ) {
+          return {
+            code: "goal_tree_proposal.candidate_bootstrap_unproven",
+            message: "已有正式 Goal 不能自动收编；需要同一 Board 上可追溯的原统一提案和完全一致的最终 Contract",
+            objects: [
+              { object_type: "candidate", object_id: candidateId },
+              { object_type: "goal", object_id: goalId },
+            ],
+          };
+        }
+      }
+      const relations = this.goalTreeCandidatePromotionRelations(payload, goalId);
+      for (const rawRelation of relations) {
+        const relation = this.normalizeGoalTreeRelation(
+          { ...item, kind: "relation", payload: { relations } },
+          rawRelation,
+        );
+        if (relation.action === "deactivate") {
+          const current = relation.relation_id
+            ? this.store.snapshot(boardId).relations.find(
+                (candidate) => candidate.relation_id === relation.relation_id && candidate.state === "active",
+              )
+            : this.store.snapshot(boardId).relations.find(
+                (candidate) =>
+                  candidate.from_goal_id === relation.from_goal_id &&
+                  candidate.to_goal_id === relation.to_goal_id &&
+                  candidate.type === relation.type &&
+                  candidate.state === "active",
+              );
+          if (!current) {
+            return missingObject(
+              "relation",
+              relation.relation_id ?? `${relation.from_goal_id}:${relation.to_goal_id}:${relation.type}`,
+              "Candidate 要停用的关系已不存在或不再生效",
+            );
+          }
+          continue;
+        }
+        if (relation.from_goal_id !== goalId && !goalExists(relation.from_goal_id)) {
+          missingGoalIds.add(relation.from_goal_id);
+        }
+        if (relation.to_goal_id !== goalId && !goalExists(relation.to_goal_id)) {
+          missingGoalIds.add(relation.to_goal_id);
+        }
+        const duplicate = this.store.snapshot(boardId).relations.find(
+          (candidate) =>
+            candidate.from_goal_id === relation.from_goal_id &&
+            candidate.to_goal_id === relation.to_goal_id &&
+            candidate.type === relation.type &&
+            candidate.state === "active",
+        );
+        if (duplicate) {
+          return {
+            code: "goal_tree_proposal.relation_already_active",
+            message: "Candidate 提案中的这条关系已经生效，需要基于最新事实修订",
+            objects: [{ object_type: "relation", object_id: duplicate.relation_id }],
+          };
+        }
+      }
+      return missingGoalIds.size > 0
         ? {
-            code: "goal_tree_proposal.goal_exists",
-            message: "Candidate 对应的 Goal 已存在，需要先修订提案",
-            objects: [{ object_type: "goal", object_id: goalId }],
+            code: "goal_tree_proposal.reference_unresolved",
+            message: "Candidate 关系引用了不存在的 Goal",
+            objects: [...missingGoalIds].sort().map((missingGoalId) => ({
+              object_type: "goal" as const,
+              object_id: missingGoalId,
+            })),
           }
         : null;
     }
@@ -7355,13 +7577,125 @@ export class GoalBoardCoordinator {
     reasonText: string,
     at: string,
   ): ProposalAffectedObject[] {
+    const payload = this.goalTreePayloadRecord(item.payload, "Candidate 条目");
+    if (item.operation === "update") {
+      const candidateId = String(payload.candidate_id ?? "").trim();
+      const finalProposedGoal = this.goalTreePayloadRecord(
+        payload.proposed_goal ?? payload.goal ?? payload,
+        "Candidate 最终 Goal Contract",
+      );
+      const proposedGoal = this.goalTreeGoalInput({
+        ...item,
+        kind: "goal",
+        payload: { goal: finalProposedGoal },
+      });
+      const goalId = this.goalTreeTargetGoalId(item, proposedGoal);
+      if (!candidateId) {
+        throw new GoalBoardV1Error("goal_tree_proposal.candidate_id_required", "晋升已有 Candidate 需要 candidate_id");
+      }
+      const existingCandidate = this.readCandidate(candidateId);
+      const proposedRelations = this.goalTreeCandidatePromotionRelations(payload, goalId);
+      const proposedImpacts = Array.isArray(payload.proposed_impacts)
+        ? payload.proposed_impacts.map((value) => this.goalTreePayloadRecord(value, "Candidate Impact"))
+        : existingCandidate.proposed_impacts;
+      const proposedRisks = Array.isArray(payload.proposed_risks)
+        ? payload.proposed_risks.map((value) => this.goalTreePayloadRecord(value, "Candidate Risk"))
+        : existingCandidate.proposed_risks;
+      const blockingMode = String(payload.blocking_mode ?? existingCandidate.blocking_mode);
+      if (!["none", "current_run", "dependent_claims"].includes(blockingMode)) {
+        throw new GoalBoardV1Error("goal_tree_proposal.candidate_blocking_mode_invalid", "Candidate blocking_mode 无效");
+      }
+      const existingGoal = this.store.getGoal(goalId);
+      this.validateCandidateCoordination(
+        boardId,
+        proposedGoal,
+        proposedRelations,
+        proposedImpacts,
+        proposedRisks,
+        existingGoal ? goalId : undefined,
+      );
+      const goalObject = existingGoal
+        ? { object_type: "goal" as const, object_id: goalId }
+        : this.materializeGoalTreeGoal(
+            boardId,
+            {
+              ...item,
+              kind: "goal",
+              operation: "create",
+              payload: { goal: proposedGoal },
+            },
+            actorId,
+            reasonText,
+            at,
+          );
+      const relationObjects = proposedRelations.length === 0
+        ? []
+        : this.materializeGoalTreeRelations(
+            boardId,
+            {
+              ...item,
+              kind: "relation",
+              operation: "update",
+              payload: { relations: proposedRelations },
+            },
+            actorId,
+            reasonText,
+            at,
+          );
+      const materializedByProposalId = String(payload.materialized_by_proposal_id ?? "").trim() || null;
+      const decision = {
+        decided_by: actorId,
+        reason: reasonText,
+        formal_goal_id: goalId,
+        proposal_id: item.proposal_id,
+        proposal_item_id: item.item_id,
+        final_proposed_goal: finalProposedGoal,
+        final_proposed_relations: payload.proposed_relations,
+        materialized_relations: proposedRelations,
+        final_proposed_impacts: proposedImpacts,
+        final_proposed_risks: proposedRisks,
+        blocking_mode: blockingMode,
+        promotion_mode: existingGoal ? "bootstrap_reconciliation" : "goal_tree_proposal",
+        ...(materializedByProposalId == null ? {} : { materialized_by_proposal_id: materializedByProposalId }),
+      };
+      const updated = this.store.db
+        .prepare(`
+          UPDATE candidates
+          SET state = 'approved', decision_json = ?, decided_at = ?
+          WHERE board_id = ? AND candidate_id = ? AND state = 'pending'
+        `)
+        .run(sqliteJson(decision), at, boardId, candidateId);
+      if (updated.changes !== 1) {
+        throw new GoalBoardV1Error(
+          "goal_tree_proposal.candidate_not_pending",
+          "Candidate 已不存在或不再待确认，统一晋升未写入",
+        );
+      }
+      this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId,
+        type: "candidate.approved_from_tree_proposal",
+        objectType: "candidate",
+        objectId: candidateId,
+        reason: reasonText,
+        payload: {
+          proposal_id: item.proposal_id,
+          proposal_item_id: item.item_id,
+          formal_goal_id: goalId,
+          materialized_by_proposal_id: materializedByProposalId,
+          relation_ids: relationObjects.map((relation) => relation.object_id),
+        },
+        at,
+      });
+      return [goalObject, ...relationObjects, { object_type: "candidate", object_id: candidateId }];
+    }
     if (item.operation !== "create") {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.candidate_operation_invalid",
-        "统一 Goal Tree 中的 Candidate 只能作为新的候选工作确认",
+        "统一 Goal Tree 中的 Candidate 只支持 create 或晋升已有 Candidate 的 update",
       );
     }
-    const payload = this.goalTreePayloadRecord(item.payload, "Candidate 条目");
     const candidateId = String(payload.candidate_id ?? "").trim() || `candidate-${randomUUID()}`;
     const existingCandidate = this.store.db
       .prepare("SELECT candidate_id FROM candidates WHERE board_id = ? AND candidate_id = ?")
@@ -9246,10 +9580,15 @@ export class GoalBoardCoordinator {
     relations: Array<Record<string, unknown>>,
     impacts: Array<Record<string, unknown>>,
     risks: Array<Record<string, unknown>>,
+    allowExistingGoalId?: string,
   ): void {
     this.requireBoard(boardId);
     const proposedGoalId = proposedGoal.goal_id?.trim() ?? "";
-    if (proposedGoalId && this.store.getGoal(proposedGoalId)) {
+    if (
+      proposedGoalId &&
+      this.store.getGoal(proposedGoalId) &&
+      proposedGoalId !== allowExistingGoalId
+    ) {
       throw new GoalBoardV1Error(
         "candidate.goal_exists",
         `Candidate 使用了已经存在的 Goal ID: ${proposedGoalId}`,

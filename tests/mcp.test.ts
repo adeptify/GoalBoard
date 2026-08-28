@@ -63,6 +63,9 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
     assert.ok(names.includes("goalboard_v1_goal_tree_propose"));
+    const goalTreeProposeTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_propose");
+    assert.match(goalTreeProposeTool?.description ?? "", /晋升已有 pending Candidate/);
+    assert.match(goalTreeProposeTool?.description ?? "", /kind=candidate、operation=update/);
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
     assert.ok(names.includes("goalboard_v1_planning_methods"));
@@ -893,6 +896,184 @@ describe("mcp server", () => {
       assert.equal(child?.decision?.conversation_ref, "runtime-dialogue:codex:codex-thread-from-host");
       assert.match(child?.decision?.message_ref ?? "", /^runtime-attestation:[0-9a-f]{20}$/);
       assert.doesNotMatch(child?.decision?.conversation_ref ?? "", /forged-thread-in-arguments/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("promotes an existing Candidate through the Runtime Goal Tree proposal path", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-candidate-promotion-"));
+    const databasePath = path.join(directory, "goalboard.db");
+    const connection = {
+      databasePath,
+      boardId: "candidate-promotion-board",
+      webBaseUrl: "https://goalboard.example/app/",
+    };
+    const management = new GoalBoardServer("management");
+    const runtime = new GoalBoardServer("runtime", connection, {
+      runtimeContext: {
+        runtime_id: "codex",
+        stable_work_context_id: "candidate-promotion-session",
+        host_declares_stable: true,
+      },
+    });
+    const call = async (
+      server: GoalBoardServer,
+      name: string,
+      args: Record<string, unknown>,
+      meta?: Record<string, unknown>,
+    ) =>
+      server.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
+      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+    try {
+      const initialized = await call(management, "goalboard_v1_initialize", {
+        database_path: databasePath,
+        board_id: "candidate-promotion-board",
+        title: "Candidate Promotion",
+        actor_id: "user-1",
+        idempotency_key: "candidate-promotion-init",
+      });
+      assert.equal(initialized.result.isError, false, initialized.result.content[0]?.text);
+      const dialogueResponse = await call(runtime, "goalboard_v1_draft_dialogue_start", {
+        board_id: "candidate-promotion-board",
+        actor_id: "runtime-candidate-promotion",
+        goal_id: "candidate-promotion-root",
+        rough_idea: "把已有 Candidate 在同一份 Goal Tree 提案中修订并晋升。",
+        idempotency_key: "candidate-promotion-dialogue",
+      });
+      assert.equal(dialogueResponse.result.isError, false, dialogueResponse.result.content[0]?.text);
+      const dialogue = JSON.parse(dialogueResponse.result.content[0]?.text ?? "{}") as {
+        run: { run_id: string } | null;
+      };
+      const originalGoal = {
+        goal_id: "candidate-promotion-child",
+        title: "原始 Candidate Contract",
+        outcome: "已有 Candidate 可以被用户统一核对",
+        why: "避免 Candidate 和正式 Goal 同时悬空",
+        business_logic: "先保存候选工作，之后由用户决定是否独立纳入 Goal Tree。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [{
+          criterion_id: "candidate-promotion-child-c1",
+          statement: "Candidate 可以干净晋升",
+          decision_method: "inspection",
+          pass_condition: "原 Candidate 关闭且只生成一条正式 Goal",
+        }],
+      };
+      const candidateResponse = await call(runtime, "goalboard_v1_candidate_submit", {
+        board_id: "candidate-promotion-board",
+        payload: {
+          actor_id: "runtime-candidate-promotion",
+          discovered_in_run_id: dialogue.run?.run_id,
+          proposed_goal: originalGoal,
+          idempotency_key: "candidate-promotion-submit",
+        },
+      });
+      assert.equal(candidateResponse.result.isError, false, candidateResponse.result.content[0]?.text);
+      const candidate = JSON.parse(candidateResponse.result.content[0]?.text ?? "{}") as {
+        candidate: { candidate_id: string };
+      };
+      const output = "已有 Candidate 通过统一提案成为唯一正式 Goal";
+      const finalGoal = {
+        ...originalGoal,
+        title: "统一晋升已有 Candidate",
+        outcome: output,
+        business_logic: "用户确认同一条 Candidate item 后，Goal、关系和 Candidate 决定在一个事务中一起写入。",
+        in_scope: [output],
+        out_of_scope: ["不自动开始执行正式 Goal"],
+        constraints: ["保留原 Candidate 与用户决定历史"],
+        required_inputs: ["已有 pending Candidate"],
+        promised_outputs: [output],
+        leaf_readiness: {
+          verdict: "ready",
+          primary_deliverable: output,
+          output_coverage: [{ promised_output: output, role: "primary", reason: "这是唯一独立验收结果。" }],
+          split_candidates: [],
+          rationale: "只有一条原子晋升结果。",
+          unresolved_decisions: [],
+          independent_deliverables: [],
+          acceptance_criterion_ids: ["candidate-promotion-child-c1"],
+        },
+      };
+      const proposalResponse = await call(runtime, "goalboard_v1_goal_tree_propose", {
+        board_id: "candidate-promotion-board",
+        actor_id: "runtime-candidate-promotion",
+        discovered_in_run_id: dialogue.run?.run_id,
+        root_goal_id: "candidate-promotion-root",
+        summary: "修订并晋升已有 Candidate，同时确认它属于当前根 Goal。",
+        items: [{
+          item_id: "candidate-promotion-item",
+          kind: "candidate",
+          operation: "update",
+          payload: {
+            candidate_id: candidate.candidate.candidate_id,
+            proposed_goal: finalGoal,
+            proposed_relations: [{
+              from_goal_id: "$new_goal",
+              to_goal_id: "candidate-promotion-root",
+              type: "part_of",
+              reason: "晋升后的 Goal 属于当前根 Goal。",
+            }],
+          },
+          source_refs: ["conversation://candidate-promotion"],
+          reason: "用户需要在同一个确认里核对最终 Contract 和父子关系。",
+          confidence: 1,
+          affected_objects: [
+            { object_type: "candidate", object_id: candidate.candidate.candidate_id },
+            { object_type: "goal", object_id: "candidate-promotion-child" },
+          ],
+        }],
+        idempotency_key: "candidate-promotion-proposal",
+      });
+      assert.equal(proposalResponse.result.isError, false, proposalResponse.result.content[0]?.text);
+      const proposal = JSON.parse(proposalResponse.result.content[0]?.text ?? "{}") as {
+        proposal: { proposal_id: string };
+      };
+      const appliedResponse = await call(runtime, "goalboard_v1_goal_tree_decide", {
+        board_id: "candidate-promotion-board",
+        proposal_id: proposal.proposal.proposal_id,
+        runtime_actor_id: "runtime-candidate-promotion",
+        decisions: [{
+          item_id: "candidate-promotion-item",
+          decision: "confirm",
+          reason: "用户确认采用修订后的 Candidate Contract 和关系。",
+        }],
+        user_confirmed: true,
+        confirmation_summary: "用户确认晋升这一条已有 Candidate。",
+        idempotency_key: "candidate-promotion-decide",
+      }, { threadId: "candidate-promotion-thread" });
+      assert.equal(appliedResponse.result.isError, false, appliedResponse.result.content[0]?.text);
+      const applied = JSON.parse(appliedResponse.result.content[0]?.text ?? "{}") as {
+        applied_item_ids: string[];
+        conflict_item_ids: string[];
+      };
+      assert.deepEqual(applied.applied_item_ids, ["candidate-promotion-item"]);
+      assert.deepEqual(applied.conflict_item_ids, []);
+
+      const snapshotResponse = await call(management, "goalboard_v1_snapshot", {
+        database_path: databasePath,
+        board_id: "candidate-promotion-board",
+      });
+      assert.equal(snapshotResponse.result.isError, false, snapshotResponse.result.content[0]?.text);
+      const snapshot = JSON.parse(snapshotResponse.result.content[0]?.text ?? "{}") as {
+        candidates: Array<{ candidate_id: string; state: string; decision: { formal_goal_id?: string } | null }>;
+        goals: Array<{ goal_id: string }>;
+        relations: Array<{ from_goal_id: string; to_goal_id: string; type: string; state: string }>;
+      };
+      const promoted = snapshot.candidates.find((entry) => entry.candidate_id === candidate.candidate.candidate_id);
+      assert.equal(promoted?.state, "approved");
+      assert.equal(promoted?.decision?.formal_goal_id, "candidate-promotion-child");
+      assert.equal(snapshot.goals.filter((goal) => goal.goal_id === "candidate-promotion-child").length, 1);
+      assert.equal(snapshot.candidates.filter((entry) => entry.state === "pending").length, 0);
+      assert.ok(snapshot.relations.some((relation) =>
+        relation.from_goal_id === "candidate-promotion-child" &&
+        relation.to_goal_id === "candidate-promotion-root" &&
+        relation.type === "part_of" &&
+        relation.state === "active"));
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

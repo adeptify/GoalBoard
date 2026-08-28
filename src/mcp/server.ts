@@ -447,7 +447,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {

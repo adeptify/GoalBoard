@@ -166,6 +166,16 @@ A ready leaf has no unresolved decision or independent deliverable, covers every
 
 Use one `goalboard_v1_goal_tree_propose` for the complete change set, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Include parent and child Goal/Contract changes, `part_of`, `depends_on`, Risks, Policy, Candidates, and Rewires where applicable.
 
+To promote an existing pending Candidate, do not create a second Candidate or call a separate decision path. Add one `kind=candidate`, `operation=update` item to the unified Proposal:
+
+- `payload.candidate_id` names the existing Candidate;
+- `payload.proposed_goal` is the final, possibly revised Contract and keeps the same stable `goal_id` when the Candidate already supplied one;
+- `payload.proposed_relations` contains the final relations to materialize with the Goal;
+- `affected_objects` includes at least the Candidate and target Goal so concurrent decisions or Goal creation become conflicts; and
+- after confirmation, re-read the Candidate, Goal, and relations and verify there is no duplicate pending Candidate.
+
+Only the one bootstrap case that created the same Goal before this capability existed may reconcile instead of creating another Goal. It must also provide matching `formal_goal_id` and `materialized_by_proposal_id`; GoalBoard accepts it only when an applied Goal-create item on the same Board both recorded the Candidate baseline and materialized that exact Goal, and the final Contract still matches. Never use title similarity or an arbitrary existing Goal as reconciliation evidence.
+
 When closing a decomposed parent, include its update to `definition_state=accepted` and `decomposition_state=closed_compound`; confirming children alone intentionally leaves the parent open. Child Goals may split again. Split by independently usable and reviewable outcomes, not files, technical layers, or fixed tree depth.
 
 Before asking for a decision, explain:

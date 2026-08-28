@@ -2182,7 +2182,7 @@ function proposedGoalName(
   const goalId = String(value ?? "");
   if (!goalId) return L("未指明 Goal");
   const proposed = proposal?.items
-    .filter((item) => item.kind === "goal" || item.kind === "contract")
+    .filter((item) => item.kind === "goal" || item.kind === "contract" || item.kind === "candidate")
     .map((item) => goalTreeGoalPayload(item.payload))
     .find((goal) => String(goal.goal_id ?? "") === goalId);
   if (proposed?.title) return String(proposed.title);
@@ -2197,9 +2197,17 @@ function goalTreeGoalPayload(payload: Record<string, unknown>): Record<string, u
 }
 
 function goalTreeRelationPayloads(payload: Record<string, unknown>): Record<string, unknown>[] {
-  const nested = payload.relations ?? payload.relation;
+  const nested = payload.relations ?? payload.relation ?? payload.proposed_relations;
   const values = Array.isArray(nested) ? nested : nested == null ? [payload] : [nested];
-  return values.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value));
+  const proposedGoal = goalTreeGoalPayload(payload);
+  const goalId = String(proposedGoal.goal_id ?? "").trim();
+  return values
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value))
+    .map((relation) => ({
+      ...relation,
+      from_goal_id: relation.from_goal_id === "$new_goal" ? goalId : relation.from_goal_id,
+      to_goal_id: relation.to_goal_id === "$new_goal" ? goalId : relation.to_goal_id,
+    }));
 }
 
 function goalTreeProposalItemCopy(
@@ -2302,6 +2310,32 @@ function goalTreeProposalItemCopy(
       facts: submittedPlan ? [L("具体措施：{plan}", { plan: submittedPlan })] : [],
     };
   }
+  if (item.kind === "candidate") {
+    const goal = goalTreeGoalPayload(payload);
+    const title = String(goal.title ?? goal.goal_id ?? L("未命名 Goal"));
+    const candidateId = String(payload.candidate_id ?? "").trim();
+    const relations = goalTreeRelationPayloads(payload);
+    const relationFacts = relations.map((relation) => {
+      const from = proposedGoalName(relation.from_goal_id, view, proposal);
+      const to = proposedGoalName(relation.to_goal_id, view, proposal);
+      const relationLabel = RELATION_LABELS[String(relation.type ?? "")]?.out ?? L("建立关系");
+      return L("{from} → {relation} → {to}", { from, relation: L(relationLabel), to });
+    });
+    const bootstrapProposalId = String(payload.materialized_by_proposal_id ?? "").trim();
+    return {
+      title: item.operation === "update"
+        ? L("晋升已有 Candidate 为 Goal「{title}」", { title })
+        : L("新增 Candidate Goal「{title}」", { title }),
+      detail: String(goal.outcome ?? item.reason),
+      facts: [
+        ...(candidateId ? [L("原 Candidate：{candidateId}", { candidateId })] : []),
+        ...(bootstrapProposalId
+          ? [L("对账已有 Goal，来源提案：{proposalId}", { proposalId: bootstrapProposalId })]
+          : []),
+        ...relationFacts,
+      ],
+    };
+  }
   const kindLabels: Record<string, string> = {
     policy: L("执行和检查规则"),
     candidate: L("新发现的工作"),
@@ -2349,14 +2383,19 @@ function renderGoalTreeProposalScenario(
 ): string {
   const goalItem = items.find((item) =>
     (item.kind === "goal" || item.kind === "contract") && item.operation === "create",
-  ) ?? items.find((item) => item.kind === "goal" || item.kind === "contract");
-  const relationItem = items.find((item) => item.kind === "relation" || item.kind === "dependency");
+  ) ?? items.find((item) => item.kind === "goal" || item.kind === "contract" || item.kind === "candidate");
+  const relationItem = items.find((item) =>
+    item.kind === "relation" || item.kind === "dependency" ||
+    (item.kind === "candidate" && goalTreeRelationPayloads(item.payload).length > 0),
+  );
   const goal = goalItem ? goalTreeGoalPayload(goalItem.payload) : null;
   const goalTitle = goal
     ? String(goal.title ?? proposedGoalName(goal.goal_id, view, proposal))
     : proposedGoalName(relationItem ? goalTreeRelationPayloads(relationItem.payload)[0]?.from_goal_id : proposal.root_goal_id, view, proposal);
   const goalId = goal ? String(goal.goal_id ?? "") : "";
-  const goalEffect = goalItem?.operation === "create"
+  const goalEffect = goalItem?.kind === "candidate" && goalItem.operation === "update"
+    ? L("会把已有 Candidate 晋升为 Goal「{title}」，并关闭原 Candidate 的待决定状态。", { title: goalTitle })
+    : goalItem?.operation === "create"
     ? L("会新增 Goal「{title}」。", { title: goalTitle })
     : goalItem?.operation === "deactivate"
       ? L("会停止使用 Goal「{title}」。", { title: goalTitle })

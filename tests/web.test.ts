@@ -2633,6 +2633,147 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
   }
 });
 
+test("Web shows and confirms one existing Candidate promotion without a duplicate decision", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-candidate-promotion-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "web-candidate-board",
+    title: "Web Candidate Promotion",
+    actor_id: "web-user",
+    idempotency_key: "web-candidate-init",
+  });
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "web-candidate-board",
+    actor_id: "runtime-candidate-planner",
+    goal_id: "web-candidate-root",
+    rough_idea: "把已有 Candidate 修订后纳入当前 Goal Tree。",
+    idempotency_key: "web-candidate-dialogue",
+  });
+  const output = "已有 Candidate 成为唯一正式 Goal";
+  const finalGoal = {
+    goal_id: "web-candidate-child",
+    title: "在 Web 核对并晋升已有 Candidate",
+    outcome: output,
+    why: "避免用户分别处理 Candidate、Goal 和关系",
+    business_logic: "用户在一份统一提案中确认最终 Contract 和父子关系，系统原子完成晋升。",
+    in_scope: [output],
+    out_of_scope: ["不自动开始执行"],
+    constraints: ["保留 Candidate 历史"],
+    required_inputs: ["pending Candidate"],
+    promised_outputs: [output],
+    definition_state: "accepted" as const,
+    decomposition_state: "closed_leaf" as const,
+    acceptance_criteria: [{
+      criterion_id: "web-candidate-child-c1",
+      statement: "晋升后没有重复待决定项",
+      decision_method: "inspection" as const,
+      pass_condition: "Candidate approved 且正式 Goal 只有一条",
+    }],
+    leaf_readiness: {
+      verdict: "ready",
+      primary_deliverable: output,
+      output_coverage: [{ promised_output: output, role: "primary", reason: "这是唯一独立结果。" }],
+      split_candidates: [],
+      rationale: "只有一条晋升结果。",
+      unresolved_decisions: [],
+      independent_deliverables: [],
+      acceptance_criterion_ids: ["web-candidate-child-c1"],
+    },
+  };
+  const candidate = coordinator.submitCandidate({
+    board_id: "web-candidate-board",
+    actor_id: "runtime-candidate-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    proposed_goal: { ...finalGoal, title: "晋升前的 Candidate 标题" },
+    idempotency_key: "web-candidate-submit",
+  }).candidate;
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-candidate-board",
+    actor_id: "runtime-candidate-planner",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "web-candidate-root",
+    summary: "采用修订后的 Candidate Contract 和父子关系。",
+    items: [{
+      item_id: "web-candidate-promote",
+      kind: "candidate",
+      operation: "update",
+      payload: {
+        candidate_id: candidate.candidate_id,
+        proposed_goal: finalGoal,
+        proposed_relations: [{
+          from_goal_id: "$new_goal",
+          to_goal_id: "web-candidate-root",
+          type: "part_of",
+          reason: "晋升后的 Goal 属于当前根 Goal。",
+        }],
+      },
+      source_refs: ["conversation://web-candidate-promotion"],
+      reason: "让用户一次核对最终 Goal 与位置。",
+      confidence: 1,
+      affected_objects: [
+        { object_type: "candidate", object_id: candidate.candidate_id },
+        { object_type: "goal", object_id: "web-candidate-child" },
+      ],
+    }],
+    idempotency_key: "web-candidate-proposal",
+  }).proposal;
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "web-candidate-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const decisionPage = await (await webFetch(`${origin}/decisions`)).text();
+    assert.match(decisionPage, /晋升已有 Candidate 为 Goal「在 Web 核对并晋升已有 Candidate」/);
+    assert.match(decisionPage, new RegExp(`原 Candidate：${candidate.candidate_id}`));
+    assert.match(decisionPage, /在 Web 核对并晋升已有 Candidate → 属于 → 把已有 Candidate 修订后纳入当前 Goal Tree/);
+    assert.match(decisionPage, /会把已有 Candidate 晋升为 Goal「在 Web 核对并晋升已有 Candidate」，并关闭原 Candidate 的待决定状态/);
+
+    const decision = await webFetch(
+      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          decisions: [{
+            item_id: "web-candidate-promote",
+            decision: "confirm",
+            reason: "用户在 Web 确认晋升这条 Candidate。",
+          }],
+          idempotency_key: "web-candidate-decide",
+        }),
+      },
+    );
+    assert.equal(decision.status, 200, await decision.text());
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        candidates: Array<{ candidate_id: string; state: string }>;
+        goals: Array<{ goal_id: string }>;
+        relations: Array<{ from_goal_id: string; to_goal_id: string; type: string; state: string }>;
+      };
+    };
+    assert.equal(
+      board.snapshot.candidates.find((entry) => entry.candidate_id === candidate.candidate_id)?.state,
+      "approved",
+    );
+    assert.equal(board.snapshot.goals.filter((goal) => goal.goal_id === "web-candidate-child").length, 1);
+    assert.equal(board.snapshot.candidates.filter((entry) => entry.state === "pending").length, 0);
+    assert.ok(board.snapshot.relations.some((relation) =>
+      relation.from_goal_id === "web-candidate-child" &&
+      relation.to_goal_id === "web-candidate-root" &&
+      relation.type === "part_of" &&
+      relation.state === "active"));
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("Web lets the user repair a historical Goal Tree Risk without rewriting the proposal", async () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-web-invalid-tree-risk-"));
   const databasePath = join(directory, "goalboard.db");
