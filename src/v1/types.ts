@@ -254,9 +254,29 @@ export interface EvidenceRecord {
   review_id: string | null;
   kind: "test" | "measurement" | "artifact" | "inspection" | "attestation" | "human_verdict";
   locator: string;
+  locator_status: "verified" | "unverified";
+  locator_validation_reason: string;
+  locator_checked_at: string | null;
+  /** Opaque catalog identity for the Runtime workspace used by verified project locators. */
+  locator_workspace_id: string | null;
   digest: string | null;
   captured_at: string;
   result: "passed" | "failed" | "inconclusive";
+  /** Derived from the immutable correction ledger; the Evidence row itself is never rewritten. */
+  lifecycle_state: "effective" | "superseded" | "retracted";
+  correction: EvidenceCorrectionRecord | null;
+}
+
+export interface EvidenceCorrectionRecord {
+  correction_id: string;
+  board_id: string;
+  goal_id: string;
+  target_evidence_id: string;
+  action: "supersede" | "retract";
+  replacement_evidence_id: string | null;
+  actor_id: string;
+  reason: string;
+  created_at: string;
 }
 
 export interface ReviewObligationRecord {
@@ -724,6 +744,7 @@ export interface BoardSnapshot {
   claims: ClaimRecord[];
   runs: RunRecord[];
   evidence: EvidenceRecord[];
+  evidence_corrections: EvidenceCorrectionRecord[];
   review_obligations: ReviewObligationRecord[];
   reviews: ReviewRecord[];
   candidates: CandidateGoalRecord[];
@@ -748,6 +769,7 @@ export interface GoalContractView {
   claims: ClaimRecord[];
   runs: RunRecord[];
   evidence: EvidenceRecord[];
+  evidence_corrections: EvidenceCorrectionRecord[];
   review_obligations: ReviewObligationRecord[];
   reviews: ReviewRecord[];
   candidates: CandidateGoalRecord[];

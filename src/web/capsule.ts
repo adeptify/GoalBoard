@@ -105,7 +105,7 @@ function newestRun(item: WebGoalView): RunRecord | null {
 
 function newestPassedEvidence(item: WebGoalView): EvidenceRecord | null {
   return [...item.evidence]
-    .filter((evidence) => evidence.result === "passed")
+    .filter((evidence) => evidence.result === "passed" && evidence.lifecycle_state === "effective")
     .sort((left, right) => right.captured_at.localeCompare(left.captured_at))[0] ?? null;
 }
 

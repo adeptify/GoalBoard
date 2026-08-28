@@ -89,6 +89,7 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_candidate_submit"));
     assert.ok(names.includes("goalboard_v1_dependency_propose"));
     assert.ok(names.includes("goalboard_v1_evidence_submit"));
+    assert.ok(names.includes("goalboard_v1_evidence_correct"));
     assert.ok(names.includes("goalboard_v1_review_submit"));
     assert.ok(names.includes("goalboard_v1_revalidate"));
     assert.ok(names.includes("goalboard_v1_goal_trash"));
@@ -141,6 +142,15 @@ describe("mcp server", () => {
       ["runtime"],
     );
     const revalidateTool = listedTools.find((tool) => tool.name === "goalboard_v1_revalidate");
+    const evidenceCorrectionTool = listedTools.find((tool) => tool.name === "goalboard_v1_evidence_correct");
+    assert.deepEqual(
+      (evidenceCorrectionTool?.inputSchema.properties?.payload.properties?.action as { enum: string[] }).enum,
+      ["supersede", "retract"],
+    );
+    assert.equal(
+      evidenceCorrectionTool?.inputSchema.properties?.payload.required?.includes("replacement_evidence_id"),
+      false,
+    );
     assert.ok(revalidateTool?.inputSchema.properties?.payload.properties?.evidence_refs);
     assert.ok(revalidateTool?.inputSchema.properties?.payload.required?.includes("reason"));
     assert.ok(revalidateTool?.inputSchema.properties?.payload.required?.includes("evidence_refs"));
@@ -700,6 +710,26 @@ describe("mcp server", () => {
       assert.ok(selected.claim);
       assert.ok(selected.run);
       assert.equal(selected.work_state?.work_state, "executing");
+
+      const evidenceResponse = await call(runtime, "goalboard_v1_evidence_submit", {
+        board_id: "mcp-board",
+        payload: {
+          goal_id: "goal/with space",
+          actor_id: "runtime-a",
+          run_id: selected.run!.run_id,
+          criterion_ids: ["mcp-contract"],
+          kind: "inspection",
+          locator: "https://example.com/evidence",
+          result: "passed",
+          idempotency_key: "mcp-submit-unverified-evidence",
+        },
+      });
+      assert.equal(evidenceResponse.result.isError, false, evidenceResponse.result.content[0]?.text);
+      const evidence = JSON.parse(evidenceResponse.result.content[0].text) as {
+        evidence: { locator_status: string; locator_validation_reason: string };
+      };
+      assert.equal(evidence.evidence.locator_status, "unverified");
+      assert.match(evidence.evidence.locator_validation_reason, /不会发起网络请求/);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

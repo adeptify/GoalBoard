@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { createHash } from "node:crypto";
 import {
   GoalBoardProjectCatalogError,
+  normalizeRuntimeWorkContext,
   readPersonalPlanningMethodPacks,
   type GoalBoardRuntimeContextResolution,
   type RuntimeProjectSuggestionClue,
@@ -719,7 +720,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_evidence_submit",
-    "提交与验收条件绑定的 Evidence。",
+    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor，外部或不透明 locator 保留但明确标为 UNVERIFIED。",
     {
       goal_id: V1_STRING,
       actor_id: V1_STRING,
@@ -733,6 +734,20 @@ const V1_TOOLS: McpToolDefinition[] = [
       idempotency_key: V1_STRING,
     },
     ["goal_id", "actor_id", "criterion_ids", "kind", "locator", "result", "idempotency_key"],
+  ),
+  v1PayloadTool(
+    "goalboard_v1_evidence_correct",
+    "以不可变更正记录替代或撤销当前 Runtime 自己提交的 Evidence；原记录始终保留，完成与 Review 只认当前有效 Evidence。",
+    {
+      goal_id: V1_STRING,
+      actor_id: V1_STRING,
+      target_evidence_id: V1_STRING,
+      action: { type: "string", enum: ["supersede", "retract"] },
+      replacement_evidence_id: { type: ["string", "null"] },
+      reason: V1_STRING,
+      idempotency_key: V1_STRING,
+    },
+    ["goal_id", "actor_id", "target_evidence_id", "action", "reason", "idempotency_key"],
   ),
   v1PayloadTool(
     "goalboard_v1_review_submit",
@@ -1052,6 +1067,7 @@ const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_revalidate",
   "goalboard_v1_run_report",
   "goalboard_v1_evidence_submit",
+  "goalboard_v1_evidence_correct",
   "goalboard_v1_review_submit",
   "goalboard_v1_complete",
   "goalboard_v1_goal_trash",
@@ -1870,7 +1886,21 @@ export class GoalBoardServer {
           result = coordinator.reportRun(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_evidence_submit":
-          result = coordinator.submitEvidence(this.v1Payload(arguments_));
+          {
+          const normalizedWorkspace = this.runtimeContextHost
+            ? normalizeRuntimeWorkContext(this.runtimeContextHost.runtimeContext).workspace
+            : undefined;
+          result = coordinator.submitEvidence({
+            ...this.v1Payload<Parameters<GoalBoardCoordinator["submitEvidence"]>[0]>(arguments_),
+            locator_context: {
+              project_root: normalizedWorkspace?.canonical_path ?? null,
+              workspace_id: normalizedWorkspace?.workspace_id ?? null,
+            },
+          });
+          break;
+          }
+        case "goalboard_v1_evidence_correct":
+          result = coordinator.correctEvidence(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_review_submit":
           result = coordinator.submitReview(this.v1Payload(arguments_));

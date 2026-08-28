@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -488,6 +488,8 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
     DELETE FROM schema_migrations WHERE migration_id = 11;
     ALTER TABLE risks DROP COLUMN treatment_plan;
     DELETE FROM schema_migrations WHERE migration_id = 15;
+    DROP TABLE evidence_corrections;
+    DELETE FROM schema_migrations WHERE migration_id = 17;
   `);
   store.close();
 
@@ -559,6 +561,35 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   assert.ok(
     reopened.db
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 15")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 17")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 18")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 19")
+      .get(),
+  );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 20")
+      .get(),
+  );
+  const evidenceColumns = reopened.db.pragma("table_info(evidence)") as Array<{ name: string }>;
+  for (const column of ["locator_status", "locator_validation_reason", "locator_checked_at", "locator_workspace_id", "locator_workspace_root"]) {
+    assert.ok(evidenceColumns.some((item) => item.name === column), `missing evidence.${column}`);
+  }
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_corrections'")
       .get(),
   );
   const riskColumns = reopened.db.pragma("table_info(risks)") as Array<{ name: string }>;
@@ -1889,6 +1920,343 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal.already_satisfied",
   );
   assert.equal(coordinator.queryReady({ board_id: "board-1", actor_id: "runtime-c" }).ready.length, 0);
+  store.close();
+});
+
+test("Evidence corrections preserve immutable history and only effective Evidence satisfies gates", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "evidence-correction");
+  const original = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-correction",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-correction-criterion"],
+    kind: "artifact",
+    locator: "project://contract.md#missing-anchor",
+    digest: "原始 locator 不存在，但这条历史必须保留。",
+    result: "passed",
+    idempotency_key: "evidence-correction-original",
+  }).evidence;
+  const replacement = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-correction",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-correction-criterion"],
+    kind: "artifact",
+    locator: "project://contract.md#real-anchor",
+    digest: "替代记录使用真实 locator。",
+    result: "passed",
+    idempotency_key: "evidence-correction-replacement",
+  }).evidence;
+
+  assert.throws(
+    () => coordinator.correctEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-correction",
+      actor_id: "runtime-b",
+      target_evidence_id: original.evidence_id,
+      action: "retract",
+      reason: "尝试撤销他人 Evidence",
+      idempotency_key: "evidence-correction-not-owner",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.correction_not_owner",
+  );
+
+  const corrected = coordinator.correctEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-correction",
+    actor_id: "runtime-a",
+    target_evidence_id: original.evidence_id,
+    action: "supersede",
+    replacement_evidence_id: replacement.evidence_id,
+    reason: "原 locator 不存在，改用已经提交的真实章节 anchor。",
+    idempotency_key: "evidence-correction-supersede",
+  });
+  assert.equal(corrected.replayed, false);
+  assert.equal(corrected.correction.action, "supersede");
+  assert.equal(corrected.correction.replacement_evidence_id, replacement.evidence_id);
+  assert.equal(
+    coordinator.correctEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-correction",
+      actor_id: "runtime-a",
+      target_evidence_id: original.evidence_id,
+      action: "supersede",
+      replacement_evidence_id: replacement.evidence_id,
+      reason: "原 locator 不存在，改用已经提交的真实章节 anchor。",
+      idempotency_key: "evidence-correction-supersede",
+    }).replayed,
+    true,
+  );
+
+  const snapshot = store.snapshot("board-1");
+  const preservedOriginal = snapshot.evidence.find((item) => item.evidence_id === original.evidence_id);
+  const effectiveReplacement = snapshot.evidence.find((item) => item.evidence_id === replacement.evidence_id);
+  assert.equal(preservedOriginal?.locator, "project://contract.md#missing-anchor");
+  assert.equal(preservedOriginal?.digest, "原始 locator 不存在，但这条历史必须保留。");
+  assert.equal(preservedOriginal?.lifecycle_state, "superseded");
+  assert.equal(preservedOriginal?.correction?.replacement_evidence_id, replacement.evidence_id);
+  assert.equal(effectiveReplacement?.lifecycle_state, "effective");
+  assert.deepEqual(snapshot.evidence_corrections.map((item) => item.correction_id), [corrected.correction.correction_id]);
+  assert.equal(
+    coordinator.evaluateLeafCompletion({
+      board_id: "board-1",
+      goal_id: "evidence-correction",
+      actor_id: "runtime-a",
+      idempotency_key: "evidence-correction-gate-with-replacement",
+    }).reasons.some((item) => item.code === "evidence.criterion_uncovered"),
+    false,
+  );
+
+  assert.throws(
+    () => coordinator.correctEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-correction",
+      actor_id: "runtime-a",
+      target_evidence_id: replacement.evidence_id,
+      action: "supersede",
+      replacement_evidence_id: original.evidence_id,
+      reason: "不允许建立 Evidence 更正环。",
+      idempotency_key: "evidence-correction-cycle",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.correction_cycle",
+  );
+
+  const retracted = coordinator.correctEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-correction",
+    actor_id: "runtime-a",
+    target_evidence_id: replacement.evidence_id,
+    action: "retract",
+    reason: "复核后发现替代记录仍不可信。",
+    idempotency_key: "evidence-correction-retract",
+  });
+  assert.equal(retracted.correction.action, "retract");
+  const afterRetraction = store.snapshot("board-1");
+  assert.equal(
+    afterRetraction.evidence.find((item) => item.evidence_id === replacement.evidence_id)?.lifecycle_state,
+    "retracted",
+  );
+  assert.equal(
+    coordinator.evaluateLeafCompletion({
+      board_id: "board-1",
+      goal_id: "evidence-correction",
+      actor_id: "runtime-a",
+      idempotency_key: "evidence-correction-gate-after-retraction",
+    }).reasons.some((item) => item.code === "evidence.criterion_uncovered"),
+    true,
+  );
+  store.close();
+});
+
+test("Review pass rejects superseded or retracted Evidence references", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "evidence-review-gate");
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "evidence-review-gate",
+    actor_id: "runtime-a",
+    role: "executor",
+    idempotency_key: "evidence-review-select",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: selected.run.run_id,
+    actor_id: "runtime-a",
+    state: "completed",
+    idempotency_key: "evidence-review-complete",
+  });
+  const original = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-review-gate",
+    actor_id: "runtime-a",
+    run_id: selected.run.run_id,
+    criterion_ids: ["evidence-review-gate-criterion"],
+    kind: "test",
+    locator: "command://first-run",
+    result: "passed",
+    idempotency_key: "evidence-review-original",
+  }).evidence;
+  const replacement = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-review-gate",
+    actor_id: "runtime-a",
+    run_id: selected.run.run_id,
+    criterion_ids: ["evidence-review-gate-criterion"],
+    kind: "test",
+    locator: "command://verified-run",
+    result: "passed",
+    idempotency_key: "evidence-review-replacement",
+  }).evidence;
+  coordinator.correctEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-review-gate",
+    actor_id: "runtime-a",
+    target_evidence_id: original.evidence_id,
+    action: "supersede",
+    replacement_evidence_id: replacement.evidence_id,
+    reason: "首次命令引用错误。",
+    idempotency_key: "evidence-review-supersede",
+  });
+  const obligation = store.snapshot("board-1").review_obligations.find(
+    (item) => item.goal_id === "evidence-review-gate" && item.role === "self_verifier",
+  );
+  assert.ok(obligation);
+  assert.throws(
+    () => coordinator.submitReview({
+      board_id: "board-1",
+      goal_id: "evidence-review-gate",
+      obligation_id: obligation.obligation_id,
+      actor_id: "runtime-a",
+      verdict: "pass",
+      evidence_refs: [original.evidence_id],
+      reasoning: "不能再用已被替代的 Evidence 支持通过。",
+      idempotency_key: "evidence-review-stale-pass",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "review.evidence_not_effective",
+  );
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "evidence-review-gate",
+    obligation_id: obligation.obligation_id,
+    actor_id: "runtime-a",
+    verdict: "pass",
+    evidence_refs: [replacement.evidence_id],
+    reasoning: "当前有效 Evidence 可以支持本轮通过。",
+    idempotency_key: "evidence-review-effective-pass",
+  });
+  store.close();
+});
+
+test("Evidence locator preflight verifies project Markdown anchors and marks opaque locators unverified", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "evidence-locator");
+  const projectRoot = mkdtempSync(join(tmpdir(), "goalboard-evidence-project-"));
+  writeFileSync(
+    join(projectRoot, "contract.md"),
+    "# Content Growth Studio\n\n## 平台差异化观察窗口\n\n已确认。\n\n## 重复章节\n\n## 重复章节-1\n\n## 重复章节\n",
+  );
+
+  const verified = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "artifact",
+    locator: "project://contract.md#平台差异化观察窗口",
+    result: "passed",
+    locator_context: { project_root: projectRoot, workspace_id: "workspace-source" },
+    idempotency_key: "evidence-locator-verified",
+  }).evidence;
+  assert.equal(verified.locator_status, "verified");
+  assert.equal(verified.locator_workspace_id, "workspace-source");
+  assert.equal(
+    (store.db.prepare("SELECT locator_workspace_root FROM evidence WHERE evidence_id = ?").get(verified.evidence_id) as { locator_workspace_root: string }).locator_workspace_root,
+    projectRoot,
+  );
+  assert.match(verified.locator_validation_reason, /Markdown 文件与 anchor/);
+  assert.ok(verified.locator_checked_at);
+
+  const deduplicated = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "artifact",
+    locator: "project://contract.md#重复章节-2",
+    result: "passed",
+    locator_context: { project_root: projectRoot },
+    idempotency_key: "evidence-locator-deduplicated-anchor",
+  }).evidence;
+  assert.equal(deduplicated.locator_status, "verified");
+
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: "project://contract.md#不存在的章节",
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-missing-anchor",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_anchor_missing",
+  );
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: "project://contract.md#",
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-empty-anchor",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_anchor_missing",
+  );
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: "project://missing.md",
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-missing-file",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_file_missing",
+  );
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: "/etc/passwd",
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-outside-project",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
+
+  const external = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "inspection",
+    locator: "https://example.com/review",
+    result: "passed",
+    locator_context: { project_root: projectRoot },
+    idempotency_key: "evidence-locator-external",
+  }).evidence;
+  assert.equal(external.locator_status, "unverified");
+  assert.equal(external.locator_workspace_id, null);
+  assert.match(external.locator_validation_reason, /不会发起网络请求/);
+  assert.ok(external.locator_checked_at);
+
+  const opaque = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "test",
+    locator: "command://pnpm-test",
+    result: "passed",
+    idempotency_key: "evidence-locator-opaque",
+  }).evidence;
+  assert.equal(opaque.locator_status, "unverified");
+  assert.match(opaque.locator_validation_reason, /不透明或外部 locator/);
+  assert.ok(opaque.locator_checked_at);
+  assert.equal(store.snapshot("board-1").evidence.length, 4);
   store.close();
 });
 

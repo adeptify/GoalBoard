@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { SqliteGoalBoardStore, mapSqliteClaim, sqliteJson } from "./store.js";
 import {
+  ProjectReferenceError,
+  validateEvidenceLocator,
+} from "../evidence/locator.js";
+import {
   DEFAULT_GOAL_POLICY,
   type AvailableGoal,
   type BoardSnapshot,
@@ -24,6 +28,7 @@ import {
   type DraftDialogueStartInput,
   type DraftDialogueTurnInput,
   type DraftDialogueView,
+  type EvidenceCorrectionRecord,
   type EvidenceRecord,
   type GoalPolicy,
   type GoalContractView,
@@ -2398,6 +2403,7 @@ export class GoalBoardCoordinator {
       claims: snapshot.claims.filter((item) => item.goal_id === goalId),
       runs,
       evidence: snapshot.evidence.filter((item) => item.goal_id === goalId),
+      evidence_corrections: snapshot.evidence_corrections.filter((item) => item.goal_id === goalId),
       review_obligations: snapshot.review_obligations.filter((item) => item.goal_id === goalId),
       reviews: snapshot.reviews.filter((item) => item.goal_id === goalId),
       candidates,
@@ -4295,6 +4301,8 @@ export class GoalBoardCoordinator {
     review_id?: string | null;
     kind: EvidenceRecord["kind"];
     locator: string;
+    /** Host-only validation context; Runtime and Web schemas never accept a user-supplied root. */
+    locator_context?: { project_root?: string | null; workspace_id?: string | null };
     digest?: string | null;
     result: EvidenceRecord["result"];
     idempotency_key: string;
@@ -4336,12 +4344,32 @@ export class GoalBoardCoordinator {
       }
       const evidenceId = `evidence-${randomUUID()}`;
       const now = this.clock().toISOString();
+      let locatorValidation;
+      try {
+        locatorValidation = validateEvidenceLocator(input.locator, {
+          projectRoot: input.locator_context?.project_root,
+          now,
+        });
+      } catch (error) {
+        if (!(error instanceof ProjectReferenceError)) throw error;
+        const code = /anchor 不存在/.test(error.message)
+          ? "evidence.locator_anchor_missing"
+          : /文件不存在/.test(error.message)
+            ? "evidence.locator_file_missing"
+            : /范围外|跳出项目目录|相对路径/.test(error.message)
+              ? "evidence.locator_outside_project"
+              : /根目录不可用/.test(error.message)
+                ? "evidence.locator_project_unavailable"
+                : "evidence.locator_invalid";
+        throw new GoalBoardV1Error(code, error.message);
+      }
       this.store.db
         .prepare(`
           INSERT INTO evidence (
             evidence_id, board_id, goal_id, criterion_ids_json, producer_actor_id,
-            run_id, review_id, kind, locator, digest, captured_at, result
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            run_id, review_id, kind, locator, locator_status, locator_validation_reason,
+            locator_checked_at, locator_workspace_id, locator_workspace_root, digest, captured_at, result
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           evidenceId,
@@ -4353,6 +4381,11 @@ export class GoalBoardCoordinator {
           input.review_id ?? null,
           input.kind,
           input.locator.trim(),
+          locatorValidation.status,
+          locatorValidation.reason,
+          locatorValidation.checked_at,
+          locatorValidation.status === "verified" ? input.locator_context?.workspace_id ?? null : null,
+          locatorValidation.status === "verified" ? input.locator_context?.project_root ?? null : null,
           input.digest ?? null,
           now,
           input.result,
@@ -4374,6 +4407,190 @@ export class GoalBoardCoordinator {
         input.board_id,
         input.actor_id,
         "submit_evidence",
+        input.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  correctEvidence(input: {
+    board_id: string;
+    goal_id: string;
+    actor_id: string;
+    target_evidence_id: string;
+    action: EvidenceCorrectionRecord["action"];
+    replacement_evidence_id?: string | null;
+    reason: string;
+    idempotency_key: string;
+  }): {
+    correction: EvidenceCorrectionRecord;
+    target_evidence: EvidenceRecord;
+    replacement_evidence: EvidenceRecord | null;
+    replayed: boolean;
+    observed_event_cursor: number;
+  } {
+    const hash = requestHash(input);
+    return this.store.immediate(() => {
+      const replay = this.replay<{
+        correction: EvidenceCorrectionRecord;
+        target_evidence: EvidenceRecord;
+        replacement_evidence: EvidenceRecord | null;
+        observed_event_cursor: number;
+      }>(input.board_id, input.actor_id, "correct_evidence", input.idempotency_key, hash);
+      if (replay) return { ...replay, replayed: true };
+
+      this.requireBoard(input.board_id);
+      this.requireGoalOnBoard(input.board_id, input.goal_id);
+      const reasonText = input.reason.trim();
+      if (!reasonText) {
+        throw new GoalBoardV1Error("evidence.correction_reason_required", "更正 Evidence 必须说明原因");
+      }
+      if (input.action !== "supersede" && input.action !== "retract") {
+        throw new GoalBoardV1Error("evidence.correction_action_invalid", "Evidence 更正必须是 supersede 或 retract");
+      }
+
+      const target = this.store.db
+        .prepare("SELECT * FROM evidence WHERE evidence_id = ? AND board_id = ?")
+        .get(input.target_evidence_id, input.board_id) as Row | undefined;
+      if (!target || asText(target.goal_id) !== input.goal_id) {
+        throw new GoalBoardV1Error("evidence.correction_target_invalid", "待更正的 Evidence 不属于这个 Goal");
+      }
+      if (asText(target.producer_actor_id) !== input.actor_id) {
+        throw new GoalBoardV1Error(
+          "evidence.correction_not_owner",
+          "Runtime 只能更正自己提交的 Evidence",
+        );
+      }
+      const existingCorrection = this.store.db
+        .prepare("SELECT correction_id FROM evidence_corrections WHERE target_evidence_id = ?")
+        .get(input.target_evidence_id);
+      if (existingCorrection) {
+        throw new GoalBoardV1Error(
+          "evidence.already_corrected",
+          "这条 Evidence 已有不可变更正记录，不能再次改写同一历史节点",
+        );
+      }
+
+      let replacement: Row | undefined;
+      const replacementId = input.replacement_evidence_id?.trim() || null;
+      if (input.action === "supersede") {
+        if (!replacementId) {
+          throw new GoalBoardV1Error(
+            "evidence.replacement_required",
+            "supersede 必须引用一条已经提交的替代 Evidence",
+          );
+        }
+        if (replacementId === input.target_evidence_id) {
+          throw new GoalBoardV1Error("evidence.correction_cycle", "Evidence 不能用自己替代自己");
+        }
+        replacement = this.store.db
+          .prepare("SELECT * FROM evidence WHERE evidence_id = ? AND board_id = ?")
+          .get(replacementId, input.board_id) as Row | undefined;
+        if (!replacement || asText(replacement.goal_id) !== input.goal_id) {
+          throw new GoalBoardV1Error(
+            "evidence.replacement_invalid",
+            "替代 Evidence 必须属于同一个 Board 和 Goal",
+          );
+        }
+        if (asText(replacement.producer_actor_id) !== input.actor_id) {
+          throw new GoalBoardV1Error(
+            "evidence.replacement_not_owner",
+            "Runtime 只能用自己提交的 Evidence 建立替代关系",
+          );
+        }
+
+        let cursor: string | null = replacementId;
+        const visited = new Set<string>();
+        while (cursor) {
+          if (cursor === input.target_evidence_id) {
+            throw new GoalBoardV1Error("evidence.correction_cycle", "Evidence 更正关系不能形成循环");
+          }
+          if (visited.has(cursor)) {
+            throw new GoalBoardV1Error("evidence.correction_cycle", "现有 Evidence 更正链已经形成循环");
+          }
+          visited.add(cursor);
+          const next = this.store.db
+            .prepare("SELECT action, replacement_evidence_id FROM evidence_corrections WHERE target_evidence_id = ?")
+            .get(cursor) as Row | undefined;
+          if (!next) break;
+          cursor = asText(next.action) === "supersede" && next.replacement_evidence_id != null
+            ? asText(next.replacement_evidence_id)
+            : null;
+        }
+        const replacementCorrection = this.store.db
+          .prepare("SELECT action FROM evidence_corrections WHERE target_evidence_id = ?")
+          .get(replacementId) as Row | undefined;
+        if (replacementCorrection) {
+          throw new GoalBoardV1Error(
+            "evidence.replacement_not_effective",
+            "替代 Evidence 必须是当前有效记录，不能再引用已被替代或撤销的历史",
+          );
+        }
+      } else if (replacementId) {
+        throw new GoalBoardV1Error(
+          "evidence.replacement_not_allowed",
+          "retract 只撤销当前 Evidence，不能同时指定替代记录",
+        );
+      }
+
+      const correctionId = `evidence-correction-${randomUUID()}`;
+      const now = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          INSERT INTO evidence_corrections (
+            correction_id, board_id, goal_id, target_evidence_id, action,
+            replacement_evidence_id, actor_id, reason, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          correctionId,
+          input.board_id,
+          input.goal_id,
+          input.target_evidence_id,
+          input.action,
+          replacementId,
+          input.actor_id,
+          reasonText,
+          now,
+        );
+      const eventType = input.action === "supersede" ? "evidence.superseded" : "evidence.retracted";
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: eventType,
+        objectType: "evidence_correction",
+        objectId: correctionId,
+        reason: reasonText,
+        payload: {
+          goal_id: input.goal_id,
+          target_evidence_id: input.target_evidence_id,
+          replacement_evidence_id: replacementId,
+        },
+        at: now,
+      });
+      const snapshot = this.store.snapshot(input.board_id);
+      const correction = snapshot.evidence_corrections.find((item) => item.correction_id === correctionId);
+      const targetEvidence = snapshot.evidence.find((item) => item.evidence_id === input.target_evidence_id);
+      const replacementEvidence = replacementId
+        ? snapshot.evidence.find((item) => item.evidence_id === replacementId) ?? null
+        : null;
+      if (!correction || !targetEvidence) {
+        throw new Error(`Evidence 更正写入后无法读取: ${correctionId}`);
+      }
+      const outcome = {
+        correction,
+        target_evidence: targetEvidence,
+        replacement_evidence: replacementEvidence,
+        observed_event_cursor: cursor,
+      };
+      this.remember(
+        input.board_id,
+        input.actor_id,
+        "correct_evidence",
         input.idempotency_key,
         hash,
         outcome,
@@ -4433,6 +4650,33 @@ export class GoalBoardCoordinator {
           "Review 已要求返工，必须先完成新的执行 Run 再重新复核",
         );
       }
+      const evidenceRefs = unique(input.evidence_refs ?? []);
+      if (input.verdict === "pass") {
+        for (const evidenceRef of evidenceRefs) {
+          const referenced = this.store.db
+            .prepare(`
+              SELECT evidence.board_id, evidence.goal_id, correction.correction_id
+              FROM evidence
+              LEFT JOIN evidence_corrections correction
+                ON correction.target_evidence_id = evidence.evidence_id
+              WHERE evidence.evidence_id = ?
+            `)
+            .get(evidenceRef) as Row | undefined;
+          if (!referenced) continue;
+          if (asText(referenced.board_id) !== input.board_id || asText(referenced.goal_id) !== input.goal_id) {
+            throw new GoalBoardV1Error(
+              "review.evidence_wrong_goal",
+              "Review 引用的 Evidence 不属于这个 Goal",
+            );
+          }
+          if (referenced.correction_id != null) {
+            throw new GoalBoardV1Error(
+              "review.evidence_not_effective",
+              "Review 通过只能引用当前有效 Evidence；已被替代或撤销的记录只保留为历史",
+            );
+          }
+        }
+      }
       const role = asText(obligation.role);
       if (role === "human_approver" && input.actor_kind !== "user") {
         throw new GoalBoardV1Error(
@@ -4470,7 +4714,7 @@ export class GoalBoardCoordinator {
           input.obligation_id,
           input.actor_id,
           input.verdict,
-          sqliteJson(unique(input.evidence_refs ?? [])),
+          sqliteJson(evidenceRefs),
           input.reasoning.trim(),
           now,
         );
@@ -4589,7 +4833,13 @@ export class GoalBoardCoordinator {
         }
       }
       const evidenceRows = this.store.db
-        .prepare("SELECT criterion_ids_json, result FROM evidence WHERE goal_id = ?")
+        .prepare(`
+          SELECT evidence.criterion_ids_json, evidence.result
+          FROM evidence
+          LEFT JOIN evidence_corrections correction
+            ON correction.target_evidence_id = evidence.evidence_id
+          WHERE evidence.goal_id = ? AND correction.correction_id IS NULL
+        `)
         .all(input.goal_id) as Row[];
       for (const criterion of goal.acceptance_criteria) {
         const passed = evidenceRows.some(

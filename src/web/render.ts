@@ -385,12 +385,13 @@ function isProjectReference(value: string): boolean {
   return /[./\\]/.test(reference);
 }
 
-function renderReference(value: string, label = value): string {
+function renderReference(value: string, label = value, evidenceId?: string): string {
   if (/^https?:\/\//i.test(value)) {
     return `<a class="inline-ref" href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${icon("external")}<span>${escapeHtml(label)}</span></a>`;
   }
   if (isProjectReference(value)) {
-    return `<a class="inline-ref" href="/api/project-references/${encodeURIComponent(value)}" target="_blank" rel="noreferrer" data-project-reference>${icon("external")}<span>${escapeHtml(label)}</span></a>`;
+    const evidenceQuery = evidenceId ? `?evidence_id=${encodeURIComponent(evidenceId)}` : "";
+    return `<a class="inline-ref" href="/api/project-references/${encodeURIComponent(value)}${evidenceQuery}" target="_blank" rel="noreferrer" data-project-reference>${icon("external")}<span>${escapeHtml(label)}</span></a>`;
   }
   return `<button class="inline-ref" type="button" data-copy-value="${escapeHtml(value)}" title="${L("复制引用")}">${icon("copy")}<span>${escapeHtml(label)}</span></button>`;
 }
@@ -918,9 +919,20 @@ function evidenceResultIcon(result: EvidenceRecord["result"]): GoalBoardIcon {
 }
 
 function renderEvidenceRecord(evidence: EvidenceRecord): string {
-  return `<article class="evidence-record">
+  const lifecycleLabel = evidence.lifecycle_state === "superseded"
+    ? L("已被替代")
+    : evidence.lifecycle_state === "retracted"
+      ? L("已撤销")
+      : L("当前有效");
+  const locatorLabel = evidence.locator_status === "verified" ? L("已验证") : "UNVERIFIED";
+  const correctionDetail = evidence.correction
+    ? `<small class="evidence-correction">${evidence.correction.action === "supersede" && evidence.correction.replacement_evidence_id
+      ? L("替代记录：{id}", { id: evidence.correction.replacement_evidence_id })
+      : L("这条记录不再计入完成判断")}${evidence.correction.reason ? ` · ${escapeHtml(evidence.correction.reason)}` : ""}</small>`
+    : "";
+  return `<article class="evidence-record evidence-record--${evidence.lifecycle_state}">
     <span class="evidence-result evidence-result--${evidence.result}">${icon(evidenceResultIcon(evidence.result))}</span>
-    <div><header><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="${L("复制 Evidence ID")}">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、") || L("未绑定验收项"))}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}</div>
+    <div><header><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><span class="evidence-lifecycle evidence-lifecycle--${evidence.lifecycle_state}">${escapeHtml(lifecycleLabel)}</span><span class="evidence-locator-status evidence-locator-status--${evidence.locator_status}">${escapeHtml(locatorLabel)}</span><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="${L("复制 Evidence ID")}">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator, evidence.locator, evidence.evidence_id)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、") || L("未绑定验收项"))}</small><small class="evidence-locator-reason">${escapeHtml(L(evidence.locator_validation_reason))}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}${correctionDetail}</div>
   </article>`;
 }
 
@@ -1550,7 +1562,7 @@ function renderHumanReviewScenario(item: WebGoalView): string {
   const criteria = item.goal.acceptance_criteria;
   const criterion = criteria.find((entry) => !item.passed_criteria.includes(entry.criterion_id)) ?? criteria[0];
   const linkedEvidence = criterion
-    ? item.evidence.filter((evidence) => evidence.criterion_ids.includes(criterion.criterion_id)).slice().reverse()
+    ? item.evidence.filter((evidence) => evidence.lifecycle_state === "effective" && evidence.criterion_ids.includes(criterion.criterion_id)).slice().reverse()
     : [];
   const evidence = linkedEvidence.find((entry) => entry.result === "passed") ?? linkedEvidence[0];
   const criterionPassed = Boolean(criterion && item.passed_criteria.includes(criterion.criterion_id));
@@ -1614,22 +1626,23 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
   const copy = explainDecision("review");
   const allCriteriaPassed = item.goal.acceptance_criteria.length > 0 && item.passed_criteria.length === item.goal.acceptance_criteria.length;
   const hasReliableRecommendation = allCriteriaPassed && item.goal.acceptance_criteria.every((criterion) =>
-    item.evidence.some((evidence) => evidence.result === "passed" && evidence.criterion_ids.includes(criterion.criterion_id)),
+    item.evidence.some((evidence) => evidence.lifecycle_state === "effective" && evidence.result === "passed" && evidence.criterion_ids.includes(criterion.criterion_id)),
   );
-  const evidenceChoices = item.evidence.length
-    ? item.evidence
+  const effectiveEvidence = item.evidence.filter((evidence) => evidence.lifecycle_state === "effective");
+  const evidenceChoices = effectiveEvidence.length
+    ? effectiveEvidence
         .slice()
         .reverse()
         .map(
           (evidence) =>
-            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
+            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.locator_status === "verified" ? L("已验证") : "UNVERIFIED")}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
         )
         .join("")
     : `<p class="empty-row">${L("当前还没有已提交的完成依据。你可以在下方补充外部引用。")}</p>`;
   return `<div class="decision-record human-review-list"><header class="decision-record-heading"><span class="decision-kind">${icon("user")} ${L("确认工作结果")}${renderNewDecisionBadge(pending[0]!.created_at, view, "review", pending[0]!.obligation_id)}</span></header><div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
     whyNow: L("工作结果已经提交，其他必要检查也已走到需要你确认的阶段。"),
     recommendation: hasReliableRecommendation ? L("建议确认通过") : null,
-    recommendationBasis: L("{passed}/{total} 条完成标准已有通过依据，共 {evidence} 条可查看记录。", { passed: item.passed_criteria.length, total: item.goal.acceptance_criteria.length, evidence: item.evidence.length }),
+    recommendationBasis: L("{passed}/{total} 条完成标准已有通过依据，共 {evidence} 条当前有效记录。", { passed: item.passed_criteria.length, total: item.goal.acceptance_criteria.length, evidence: effectiveEvidence.length }),
     insufficient: copy.insufficientEvidence,
     consequences: [
       { choice: L("通过"), effect: L("这项用户检查会完成；其他门槛也满足后，Goal 才会完成。") },
@@ -1698,7 +1711,7 @@ function renderFullRecords(item: WebGoalView): string {
     }</section>
     <section><h3>${L("Evidence 记录")}</h3>${
       item.evidence.length
-        ? item.evidence.map((evidence) => `<p><strong>${escapeHtml(evidence.evidence_id)}</strong><small>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、"))} · ${escapeHtml(evidence.producer_actor_id)}</small></p>`).join("")
+        ? item.evidence.map((evidence) => `<p><strong>${escapeHtml(evidence.evidence_id)}</strong><small>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.lifecycle_state === "effective" ? L("当前有效") : evidence.lifecycle_state === "superseded" ? L("已被替代") : L("已撤销"))} · ${escapeHtml(evidence.locator_status === "verified" ? L("已验证") : "UNVERIFIED")} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、"))} · ${escapeHtml(evidence.producer_actor_id)}${evidence.correction ? ` · ${escapeHtml(evidence.correction.reason)}` : ""}</small></p>`).join("")
         : `<p class="empty-row">${L("暂无 Evidence")}</p>`
     }</section>
     <section><h3>${L("Review 记录")}</h3>${
@@ -4309,6 +4322,13 @@ const MORE_STYLES = `
   .evidence-record header { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; }
   .evidence-record small, .review-row small { color: var(--muted); overflow-wrap: anywhere; }
   .evidence-record p { margin: 1px 0 0; color: #3c4652; font-size: 12px; overflow-wrap: anywhere; }
+  .evidence-record--superseded, .evidence-record--retracted { opacity: .72; }
+  .evidence-lifecycle { padding: 2px 6px; border-radius: 999px; background: var(--rail); color: var(--muted); font-size: 10px; font-weight: 650; }
+  .evidence-lifecycle--effective { background: var(--green-soft); color: var(--green); }
+  .evidence-locator-status { padding: 2px 6px; border-radius: 999px; color: var(--amber); background: var(--amber-soft); font-size: 10px; font-weight: 700; }
+  .evidence-locator-status--verified { color: var(--green); background: var(--green-soft); }
+  .evidence-locator-reason { color: var(--muted); }
+  .evidence-correction { padding-top: 3px; border-top: 1px dashed var(--line); }
   .record-id { min-width: 0; padding: 0; border: 0; background: transparent; color: var(--blue-dark); font: inherit; font-size: 10px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
   .record-id:hover { text-decoration: underline; }
   .evidence-submit { margin-top: 13px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line); }

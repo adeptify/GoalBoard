@@ -40,6 +40,9 @@ A parent whose current children are complete is not silently done. If they cover
 - Treat the accepted Contract as the boundary. Do not silently add scope, alter acceptance, or rewire dependencies.
 - Lead progress reports with the business result, current stage, next action/owner, and blocker. Engineering facts support the explanation; they do not replace it.
 - Map every claimed completion result to its acceptance criterion and traceable evidence.
+- Read the returned `locator_status` for every submitted Evidence. `verified` means GoalBoard completed a bounded, read-only project-file preflight. `unverified` is an explicit boundary, not a failure and not proof that the external or opaque locator exists; reviewers must judge it accordingly. A known-missing project file or Markdown anchor is rejected before it can become Evidence.
+- Evidence is immutable. If a submitted record is wrong, submit the corrected Evidence first and then use `goalboard_v1_evidence_correct` to supersede it, or retract it when there is no replacement. Never hide the old locator in free text or treat a corrected historical record as current proof.
+- A Runtime may correct only Evidence produced by the same actor. If another producer's Evidence is wrong, report the problem and let that producer or a trusted user-facing workflow resolve it.
 - A required human approval cannot be replaced by a Runtime review.
 
 Normal completion order:
@@ -47,6 +50,7 @@ Normal completion order:
 ```text
 run_report(state=completed | blocked | failed)
   → evidence_submit mapped to acceptance criterion IDs
+  → evidence_correct when an immutable Evidence record must be superseded or retracted
   → review_submit for each Runtime-permitted required review
   → complete
   → release

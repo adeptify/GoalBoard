@@ -295,6 +295,13 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       );
       assert.match(installedServiceStart, /service status/);
       assert.match(installedServiceStart, /临时打开 GoalBoard/);
+      const installedExecution = await readFile(
+        join(userHome, ".codex", "skills", "goal-advance", "references", "execution.md"),
+        "utf8",
+      );
+      assert.match(installedExecution, /locator_status/);
+      assert.match(installedExecution, /unverified/i);
+      assert.match(installedExecution, /goalboard_v1_evidence_correct/);
       const installedPlanning = await readFile(
         join(userHome, ".codex", "skills", "goal-advance", "references", "planning.md"),
         "utf8",
@@ -349,6 +356,19 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
         stdio: ["pipe", "pipe", "pipe"],
       }));
       await firstMcp.initialize();
+      const installedToolList = await firstMcp.request("tools/list", {});
+      const installedTools = (installedToolList.result as {
+        tools: Array<{
+          name: string;
+          description?: string;
+          inputSchema?: { properties?: Record<string, { description?: string; maximum?: number }> };
+        }>;
+      }).tools;
+      assert.ok(installedTools.some((tool) => tool.name === "goalboard_v1_evidence_correct"));
+      assert.match(
+        installedTools.find((tool) => tool.name === "goalboard_v1_evidence_submit")?.description ?? "",
+        /Markdown anchor.*UNVERIFIED/,
+      );
       const templates = await firstMcp.request("resources/templates/list", {});
       assert.deepEqual((templates.result as { resourceTemplates: unknown[] }).resourceTemplates, []);
       const unresolved = await firstMcp.call("goalboard_v1_context_resolve", {});

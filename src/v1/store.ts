@@ -9,6 +9,7 @@ import type {
   ClarificationSessionRecord,
   ClarificationTurnRecord,
   ContractProposalRecord,
+  EvidenceCorrectionRecord,
   EvidenceRecord,
   GoalTreeProposalDecisionRecord,
   GoalTreeProposalItemRecord,
@@ -314,11 +315,34 @@ export class SqliteGoalBoardStore {
           review_id TEXT,
           kind TEXT NOT NULL,
           locator TEXT NOT NULL,
+          locator_status TEXT NOT NULL DEFAULT 'unverified' CHECK (locator_status IN ('verified', 'unverified')),
+          locator_validation_reason TEXT NOT NULL DEFAULT '历史 Evidence 未进行 locator 预检',
+          locator_checked_at TEXT,
+          locator_workspace_id TEXT,
+          locator_workspace_root TEXT,
           digest TEXT,
           captured_at TEXT NOT NULL,
           result TEXT NOT NULL CHECK (result IN ('passed', 'failed', 'inconclusive'))
         );
         CREATE INDEX evidence_goal_idx ON evidence(goal_id, result);
+
+        CREATE TABLE evidence_corrections (
+          correction_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
+          target_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(evidence_id),
+          action TEXT NOT NULL CHECK (action IN ('supersede', 'retract')),
+          replacement_evidence_id TEXT REFERENCES evidence(evidence_id),
+          actor_id TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          CHECK (
+            (action = 'supersede' AND replacement_evidence_id IS NOT NULL) OR
+            (action = 'retract' AND replacement_evidence_id IS NULL)
+          )
+        );
+        CREATE INDEX evidence_corrections_goal_idx
+          ON evidence_corrections(board_id, goal_id, created_at, correction_id);
 
         CREATE TABLE review_obligations (
           obligation_id TEXT PRIMARY KEY,
@@ -588,6 +612,18 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (16, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (17, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (18, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (19, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (20, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -652,6 +688,22 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 16")
       .get();
     if (!planningMethodPacksApplied) this.migratePlanningMethodPacks();
+    const evidenceCorrectionsApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 17")
+      .get();
+    if (!evidenceCorrectionsApplied) this.migrateEvidenceCorrections();
+    const evidenceLocatorValidationApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 18")
+      .get();
+    if (!evidenceLocatorValidationApplied) this.migrateEvidenceLocatorValidation();
+    const evidenceLocatorWorkspaceApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 19")
+      .get();
+    if (!evidenceLocatorWorkspaceApplied) this.migrateEvidenceLocatorWorkspace();
+    const evidenceLocatorSourceApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 20")
+      .get();
+    if (!evidenceLocatorSourceApplied) this.migrateEvidenceLocatorSource();
   }
 
   private migrateClarifierRoles(): void {
@@ -1319,6 +1371,75 @@ export class SqliteGoalBoardStore {
     });
   }
 
+  private migrateEvidenceCorrections(): void {
+    this.immediate(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS evidence_corrections (
+          correction_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
+          target_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(evidence_id),
+          action TEXT NOT NULL CHECK (action IN ('supersede', 'retract')),
+          replacement_evidence_id TEXT REFERENCES evidence(evidence_id),
+          actor_id TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          CHECK (
+            (action = 'supersede' AND replacement_evidence_id IS NOT NULL) OR
+            (action = 'retract' AND replacement_evidence_id IS NULL)
+          )
+        );
+        CREATE INDEX IF NOT EXISTS evidence_corrections_goal_idx
+          ON evidence_corrections(board_id, goal_id, created_at, correction_id);
+      `);
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (17, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateEvidenceLocatorValidation(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "locator_status")) {
+        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_status TEXT NOT NULL DEFAULT 'unverified' CHECK (locator_status IN ('verified', 'unverified'))");
+      }
+      if (!columns.some((column) => column.name === "locator_validation_reason")) {
+        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_validation_reason TEXT NOT NULL DEFAULT '历史 Evidence 未进行 locator 预检'");
+      }
+      if (!columns.some((column) => column.name === "locator_checked_at")) {
+        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_checked_at TEXT");
+      }
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (18, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateEvidenceLocatorWorkspace(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "locator_workspace_id")) {
+        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_workspace_id TEXT");
+      }
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (19, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateEvidenceLocatorSource(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "locator_workspace_root")) {
+        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_workspace_root TEXT");
+      }
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (20, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
   eventCursor(boardId: string): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS cursor FROM events WHERE board_id = ?")
@@ -1472,6 +1593,12 @@ export class SqliteGoalBoardStore {
       | Row
       | undefined;
     if (!board) throw new Error(`Board 不存在: ${boardId}`);
+    const evidenceCorrections = (this.db
+      .prepare("SELECT * FROM evidence_corrections WHERE board_id = ? ORDER BY created_at, correction_id")
+      .all(boardId) as Row[]).map(mapEvidenceCorrection);
+    const evidenceCorrectionByTarget = new Map(
+      evidenceCorrections.map((correction) => [correction.target_evidence_id, correction]),
+    );
     return {
       board: {
         board_id: text(board.board_id),
@@ -1499,7 +1626,8 @@ export class SqliteGoalBoardStore {
         .all(boardId) as Row[]).map(mapRun),
       evidence: (this.db
         .prepare("SELECT * FROM evidence WHERE board_id = ? ORDER BY captured_at DESC, evidence_id")
-        .all(boardId) as Row[]).map(mapEvidence),
+        .all(boardId) as Row[]).map((row) => mapEvidence(row, evidenceCorrectionByTarget.get(text(row.evidence_id)) ?? null)),
+      evidence_corrections: evidenceCorrections,
       review_obligations: (this.db
         .prepare("SELECT * FROM review_obligations WHERE board_id = ? ORDER BY created_at, obligation_id")
         .all(boardId) as Row[]).map(mapReviewObligation),
@@ -1712,7 +1840,21 @@ function mapRun(row: Row): RunRecord {
   };
 }
 
-function mapEvidence(row: Row): EvidenceRecord {
+function mapEvidenceCorrection(row: Row): EvidenceCorrectionRecord {
+  return {
+    correction_id: text(row.correction_id),
+    board_id: text(row.board_id),
+    goal_id: text(row.goal_id),
+    target_evidence_id: text(row.target_evidence_id),
+    action: text(row.action) as EvidenceCorrectionRecord["action"],
+    replacement_evidence_id: optionalText(row.replacement_evidence_id),
+    actor_id: text(row.actor_id),
+    reason: text(row.reason),
+    created_at: text(row.created_at),
+  };
+}
+
+function mapEvidence(row: Row, correction: EvidenceCorrectionRecord | null = null): EvidenceRecord {
   return {
     evidence_id: text(row.evidence_id),
     board_id: text(row.board_id),
@@ -1723,9 +1865,19 @@ function mapEvidence(row: Row): EvidenceRecord {
     review_id: optionalText(row.review_id),
     kind: text(row.kind) as EvidenceRecord["kind"],
     locator: text(row.locator),
+    locator_status: (text(row.locator_status) || "unverified") as EvidenceRecord["locator_status"],
+    locator_validation_reason: text(row.locator_validation_reason) || "历史 Evidence 未进行 locator 预检",
+    locator_checked_at: optionalText(row.locator_checked_at),
+    locator_workspace_id: optionalText(row.locator_workspace_id),
     digest: optionalText(row.digest),
     captured_at: text(row.captured_at),
     result: text(row.result) as EvidenceRecord["result"],
+    lifecycle_state: correction?.action === "supersede"
+      ? "superseded"
+      : correction?.action === "retract"
+        ? "retracted"
+        : "effective",
+    correction,
   };
 }
 

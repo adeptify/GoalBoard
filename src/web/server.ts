@@ -80,6 +80,10 @@ import {
 } from "./i18n.js";
 import { goalPresentationState } from "./human-language.js";
 import { buildCapsuleSnapshot, renderCapsuleShell } from "./capsule.js";
+import {
+  ProjectReferenceError,
+  readProjectReference,
+} from "../evidence/locator.js";
 
 export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
 
@@ -175,82 +179,6 @@ function rowJson<T>(value: unknown, fallback: T): T {
 function uniqueTextArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))];
-}
-
-const MAX_PROJECT_REFERENCE_BYTES = 512 * 1024;
-
-class ProjectReferenceError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ProjectReferenceError";
-  }
-}
-
-function isWithinDirectory(candidate: string, directory: string): boolean {
-  const relative = path.relative(directory, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function projectReferenceSegments(locator: string): string[] {
-  const value = locator.trim();
-  const encodedPath = value.startsWith("project://") ? value.slice("project://".length) : value;
-  if (!value) throw new ProjectReferenceError(400, "项目内引用不能为空");
-  if (value.startsWith("project://") && /^[/\\]/.test(encodedPath)) {
-    throw new ProjectReferenceError(400, "项目内引用必须是相对路径");
-  }
-  if (!value.startsWith("project://") && /^[a-z][a-z0-9+.-]*:/i.test(value)) {
-    throw new ProjectReferenceError(400, "只有项目内相对路径可以在 GoalBoard 中打开");
-  }
-  if (path.isAbsolute(encodedPath) || encodedPath.includes("\0")) {
-    throw new ProjectReferenceError(400, "项目内引用必须是安全的相对路径");
-  }
-  const segments = encodedPath
-    .replaceAll("\\", "/")
-    .split("/")
-    .filter((segment) => segment && segment !== ".");
-  if (!segments.length || segments.some((segment) => segment === "..")) {
-    throw new ProjectReferenceError(400, "项目内引用不能跳出项目目录");
-  }
-  return segments;
-}
-
-function readProjectReference(projectRoot: string, locator: string): { content: Buffer; fileName: string } {
-  const root = path.resolve(projectRoot);
-  let realRoot: string;
-  try {
-    realRoot = fs.realpathSync(root);
-  } catch {
-    throw new ProjectReferenceError(404, "项目引用根目录不可用");
-  }
-  const candidate = path.resolve(realRoot, ...projectReferenceSegments(locator));
-  if (!isWithinDirectory(candidate, realRoot)) {
-    throw new ProjectReferenceError(400, "项目内引用不能跳出项目目录");
-  }
-  let realFile: string;
-  try {
-    realFile = fs.realpathSync(candidate);
-  } catch {
-    throw new ProjectReferenceError(404, "项目内引用文件不存在");
-  }
-  if (!isWithinDirectory(realFile, realRoot)) {
-    throw new ProjectReferenceError(400, "项目内引用不能通过链接跳出项目目录");
-  }
-  const stat = fs.statSync(realFile);
-  if (!stat.isFile()) throw new ProjectReferenceError(400, "项目内引用必须指向普通文件");
-  if (stat.size > MAX_PROJECT_REFERENCE_BYTES) {
-    throw new ProjectReferenceError(413, "项目内引用文件过大，不能在 GoalBoard 中打开");
-  }
-  const content = fs.readFileSync(realFile);
-  if (content.includes(0) || content.toString("utf8").includes("\uFFFD")) {
-    throw new ProjectReferenceError(415, "GoalBoard 只能打开项目内的文本引用");
-  }
-  return {
-    content,
-    fileName: (path.basename(realFile) || "evidence.txt").replace(/[\r\n"]/g, ""),
-  };
 }
 
 function webRiskFacts(
@@ -391,7 +319,11 @@ export function buildGoalBoardWebView(
     );
     const passedCriteria = new Set<string>();
     for (const evidence of snapshot.evidence) {
-      if (evidence.goal_id !== goal.goal_id || evidence.result !== "passed") continue;
+      if (
+        evidence.goal_id !== goal.goal_id ||
+        evidence.result !== "passed" ||
+        evidence.lifecycle_state !== "effective"
+      ) continue;
       for (const criterionId of evidence.criterion_ids) passedCriteria.add(criterionId);
     }
     const pendingReviews = snapshot.review_obligations
@@ -408,6 +340,9 @@ export function buildGoalBoardWebView(
     const claims = snapshot.claims.filter((item) => item.goal_id === goal.goal_id);
     const runs = snapshot.runs.filter((item) => item.goal_id === goal.goal_id);
     const evidence = snapshot.evidence.filter((item) => item.goal_id === goal.goal_id);
+    const evidenceCorrectionIds = snapshot.evidence_corrections
+      .filter((item) => item.goal_id === goal.goal_id)
+      .map((item) => item.correction_id);
     const reviewObligations = snapshot.review_obligations.filter(
       (item) => item.goal_id === goal.goal_id,
     );
@@ -451,6 +386,7 @@ export function buildGoalBoardWebView(
       ...claims.map((item) => item.claim_id),
       ...runs.map((item) => item.run_id),
       ...evidence.map((item) => item.evidence_id),
+      ...evidenceCorrectionIds,
       ...reviewObligations.map((item) => item.obligation_id),
       ...reviews.map((item) => item.review_id),
       ...contractProposalIds,
@@ -1940,7 +1876,29 @@ async function handleGoalBoardWebRequest(
         if (request.method === "GET" && projectReferenceMatch) {
           try {
             const reference = decodeURIComponent(projectReferenceMatch[1]);
-            const opened = readProjectReference(options.projectRoot ?? process.cwd(), reference);
+            const evidenceId = url.searchParams.get("evidence_id")?.trim() || null;
+            let projectRoot = options.projectRoot;
+            if (evidenceId) {
+              const evidence = readWebView().snapshot.evidence.find((item) => item.evidence_id === evidenceId);
+              if (!evidence || evidence.locator !== reference) {
+                throw new ProjectReferenceError(404, "找不到匹配的 Evidence 项目引用");
+              }
+              if (evidence.locator_status !== "verified") {
+                throw new ProjectReferenceError(409, "只有已验证的项目内 Evidence 引用可以直接打开");
+              }
+              const source = store.db
+                .prepare("SELECT locator_workspace_root FROM evidence WHERE evidence_id = ? AND board_id = ?")
+                .get(evidenceId, options.boardId) as { locator_workspace_root?: unknown } | undefined;
+              if (typeof source?.locator_workspace_root === "string" && source.locator_workspace_root.trim()) {
+                projectRoot = source.locator_workspace_root;
+              } else if (!projectRoot) {
+                throw new ProjectReferenceError(409, "这条历史 Evidence 没有记录原始工作区；请提交新的验证记录并替代它");
+              }
+            }
+            if (!projectRoot) {
+              throw new ProjectReferenceError(409, "项目引用没有可确认的原始工作区");
+            }
+            const opened = readProjectReference(projectRoot, reference);
             response.writeHead(200, {
               "content-type": "text/plain; charset=utf-8",
               "cache-control": "no-store",
@@ -2547,6 +2505,7 @@ async function handleGoalBoardWebRequest(
               criterion_ids: criterionIds,
               kind: kind as Parameters<GoalBoardCoordinator["submitEvidence"]>[0]["kind"],
               locator,
+              locator_context: { project_root: options.projectRoot ?? null },
               digest: digest || null,
               result: result as Parameters<GoalBoardCoordinator["submitEvidence"]>[0]["result"],
               idempotency_key: String(body.idempotency_key ?? `web-evidence-${randomUUID()}`),

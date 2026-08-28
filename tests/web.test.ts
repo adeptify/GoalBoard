@@ -9,7 +9,7 @@ import { Script } from "node:vm";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
-import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
+import { GoalBoardProjectCatalog, normalizeRuntimeWorkContext } from "../src/projects/catalog.js";
 import { RuntimeIntegrationService } from "../src/install/runtime-integration.js";
 import { GoalBoardWebServiceManager } from "../src/install/web-service.js";
 import { GoalBoardServer } from "../src/mcp/server.js";
@@ -5235,12 +5235,32 @@ test("Web records manual Evidence, safely opens project references, and exposes 
         locator: "https://example.com/manual-evidence",
       }),
     });
-    assert.equal(externalEvidence.status, 201, await externalEvidence.text());
+    assert.equal(externalEvidence.status, 201, await externalEvidence.clone().text());
+    const externalResult = (await externalEvidence.json()) as { evidence: { evidence_id: string } };
+
+    const correctionStore = new SqliteGoalBoardStore(databasePath);
+    const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
+    correctionCoordinator.correctEvidence({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "EVIDENCE-WEB",
+      actor_id: "web-user",
+      target_evidence_id: submittedResult.evidence.evidence_id,
+      action: "supersede",
+      replacement_evidence_id: externalResult.evidence.evidence_id,
+      reason: "项目内 locator 已失效，使用仍可访问的外部检查记录替代。",
+      idempotency_key: "evidence-web-supersede",
+    });
+    correctionStore.close();
 
     const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       goals: Array<{
         goal: { goal_id: string };
-        evidence: Array<{ evidence_id: string }>;
+        evidence: Array<{
+          evidence_id: string;
+          lifecycle_state: string;
+          locator_status: string;
+          locator_validation_reason: string;
+        }>;
         passed_criteria: string[];
         events: Array<{ type: string }>;
       }>;
@@ -5248,6 +5268,18 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     const evidenceGoal = board.goals.find((item) => item.goal.goal_id === "EVIDENCE-WEB");
     assert.ok(evidenceGoal);
     assert.ok(evidenceGoal.evidence.some((item) => item.evidence_id === submittedResult.evidence.evidence_id));
+    assert.equal(
+      evidenceGoal.evidence.find((item) => item.evidence_id === submittedResult.evidence.evidence_id)?.lifecycle_state,
+      "superseded",
+    );
+    assert.equal(
+      evidenceGoal.evidence.find((item) => item.evidence_id === submittedResult.evidence.evidence_id)?.locator_status,
+      "verified",
+    );
+    assert.equal(
+      evidenceGoal.evidence.find((item) => item.evidence_id === externalResult.evidence.evidence_id)?.locator_status,
+      "unverified",
+    );
     assert.deepEqual(evidenceGoal.passed_criteria, ["EVIDENCE-WEB-C1"]);
     for (const type of ["evidence.submitted", "risk.created", "relation.added", "policy.added"]) {
       assert.ok(evidenceGoal.events.some((event) => event.type === type), `missing ${type}`);
@@ -5259,7 +5291,16 @@ test("Web records manual Evidence, safely opens project references, and exposes 
       await webFetch(`${origin}/api/goals/EVIDENCE-WEB/records?view=current`)
     ).text();
     assert.match(goalRecords, new RegExp(submittedResult.evidence.evidence_id));
-    assert.match(goalRecords, /href="\/api\/project-references\/notes%2Fevidence\.txt"/);
+    assert.match(goalRecords, /已被替代/);
+    assert.match(goalRecords, /项目内 locator 已失效/);
+    assert.match(goalRecords, new RegExp(externalResult.evidence.evidence_id));
+    assert.match(goalRecords, /已验证/);
+    assert.match(goalRecords, /UNVERIFIED/);
+    assert.match(goalRecords, /不会发起网络请求/);
+    assert.match(
+      goalRecords,
+      new RegExp(`href="/api/project-references/notes%2Fevidence\\.txt\\?evidence_id=${submittedResult.evidence.evidence_id}"`),
+    );
     assert.match(goalRecords, /data-project-reference/);
     assert.match(goalRecords, /href="https:\/\/example\.com\/manual-evidence"/);
     assert.match(goalRecords, /evidence\.submitted/);
@@ -5267,7 +5308,9 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.match(goalRecords, /relation\.added/);
     assert.match(goalRecords, /policy\.added/);
 
-    const opened = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}`);
+    const opened = await webFetch(
+      `${origin}/api/project-references/${encodeURIComponent("notes/evidence.txt")}?evidence_id=${submittedResult.evidence.evidence_id}`,
+    );
     assert.equal(opened.status, 200, await opened.clone().text());
     assert.match(opened.headers.get("content-type") ?? "", /text\/plain/);
     assert.match(await opened.text(), /用户手工检查/);
@@ -5290,6 +5333,114 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     const large = await webFetch(`${origin}/api/project-references/${encodeURIComponent("notes/large.txt")}`);
     assert.equal(large.status, 413);
     assert.match(await large.text(), /文件过大/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web opens a verified Evidence locator from its recorded Runtime workspace, not an arbitrary project membership", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const sourceWorkspace = join(fixture.homeDirectory, "source-workspace");
+  const unrelatedWorkspace = join(fixture.homeDirectory, "newer-unrelated-workspace");
+  mkdirSync(sourceWorkspace, { recursive: true });
+  mkdirSync(unrelatedWorkspace, { recursive: true });
+  writeFileSync(join(sourceWorkspace, "contract.md"), "# Correct source\n\nRuntime verified this file.\n");
+  writeFileSync(join(unrelatedWorkspace, "contract.md"), "# Wrong source\n\nWeb must not open this file.\n");
+
+  const sourceContext = {
+    runtime_id: "codex",
+    stable_work_context_id: "locator-source-session",
+    host_declares_stable: true,
+    workspace: { canonical_path: sourceWorkspace, realpath_verified: true },
+  };
+  const unrelatedContext = {
+    runtime_id: "codex",
+    stable_work_context_id: "locator-unrelated-session",
+    host_declares_stable: true,
+    workspace: { canonical_path: unrelatedWorkspace, realpath_verified: true },
+  };
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
+  try {
+    catalog.bindRuntimeContext({
+      context: sourceContext,
+      project_id: fixture.alpha.project_id,
+      actor_id: "runtime-codex",
+      user_confirmed: true,
+    });
+    catalog.bindRuntimeContext({
+      context: unrelatedContext,
+      project_id: fixture.alpha.project_id,
+      actor_id: "runtime-codex",
+      user_confirmed: true,
+    });
+  } finally {
+    catalog.close();
+  }
+
+  const store = new SqliteGoalBoardStore(fixture.alpha.database_path);
+  let evidenceId: string;
+  try {
+    const coordinator = new GoalBoardCoordinator(store);
+    coordinator.createGoal(
+      fixture.alpha.board_id,
+      {
+        goal_id: "LOCATOR-WORKSPACE",
+        title: "从原始 Runtime 工作区打开 Evidence",
+        outcome: "Web 使用提交 Evidence 时记录的工作区身份",
+        why: "同一项目可关联多个工作区，不能任意选择另一个目录。",
+        business_logic: "工作区身份是不透明路由信息，不向浏览器暴露文件系统路径。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [{
+          criterion_id: "LOCATOR-WORKSPACE-C1",
+          statement: "打开原始工作区中的文件",
+          decision_method: "inspection",
+          pass_condition: "内容来自提交 Evidence 的 Runtime 工作区",
+          required_evidence: ["artifact"],
+        }],
+      },
+      { actor_id: "test-user", idempotency_key: "locator-workspace-goal" },
+    );
+    const normalized = normalizeRuntimeWorkContext(sourceContext);
+    assert.ok(normalized.workspace);
+    evidenceId = coordinator.submitEvidence({
+      board_id: fixture.alpha.board_id,
+      goal_id: "LOCATOR-WORKSPACE",
+      actor_id: "runtime-codex",
+      criterion_ids: ["LOCATOR-WORKSPACE-C1"],
+      kind: "artifact",
+      locator: "project://contract.md",
+      result: "passed",
+      locator_context: {
+        project_root: sourceWorkspace,
+        workspace_id: normalized.workspace.workspace_id,
+      },
+      idempotency_key: "locator-workspace-evidence",
+    }).evidence.evidence_id;
+  } finally {
+    store.close();
+  }
+
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const prefix = `/projects/${encodeURIComponent(fixture.alpha.project_id)}`;
+    const records = await (
+      await webFetch(`${origin}${prefix}/api/goals/LOCATOR-WORKSPACE/records?view=current`)
+    ).text();
+    assert.match(records, new RegExp(`evidence_id=${evidenceId}`));
+    const opened = await webFetch(
+      `${origin}${prefix}/api/project-references/${encodeURIComponent("project://contract.md")}?evidence_id=${evidenceId}`,
+    );
+    assert.equal(opened.status, 200, await opened.clone().text());
+    const content = await opened.text();
+    assert.match(content, /Correct source/);
+    assert.doesNotMatch(content, /Wrong source/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
