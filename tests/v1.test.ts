@@ -1571,6 +1571,126 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   store.close();
 });
 
+test("Contract presents an expired Claim and its Run as one recoverable lifecycle", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "lease-contract");
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-contract",
+    actor_id: "runtime-expired-contract",
+    role: "executor",
+    lease_seconds: 10,
+    idempotency_key: "lease-contract-select",
+  });
+  const cursorBeforeRead = store.eventCursor("board-1");
+
+  setNow("2026-08-15T00:00:11.000Z");
+  const contract = coordinator.readGoalContract("board-1", "lease-contract");
+
+  assert.equal(contract.work_state.work_state, "execution_pending");
+  assert.equal(contract.work_state.next_action, "execute");
+  assert.equal(contract.work_state.active_claim, null);
+  assert.equal(contract.work_state.active_run, null);
+  assert.equal(contract.work_state.reasons[0]?.code, "lease.expired");
+  assert.equal(contract.work_state.reasons[0]?.severity, "info");
+  assert.equal(contract.work_state.reasons[0]?.facts?.next_action, "select_goal");
+  const projectedClaim = contract.claims.find((item) => item.claim_id === selected.claim!.claim_id);
+  const projectedRun = contract.runs.find((item) => item.run_id === selected.run!.run_id);
+  assert.equal(projectedClaim?.state, "expired");
+  assert.equal(projectedClaim?.released_at, selected.claim!.expires_at);
+  assert.equal(projectedRun?.state, "abandoned");
+  assert.equal(projectedRun?.ended_at, selected.claim!.expires_at);
+  assert.equal(store.eventCursor("board-1"), cursorBeforeRead, "Contract 读取不能写入生命周期事件");
+
+  const canonical = store.snapshot("board-1");
+  assert.equal(canonical.claims.find((item) => item.claim_id === selected.claim!.claim_id)?.state, "active");
+  assert.equal(canonical.runs.find((item) => item.run_id === selected.run!.run_id)?.state, "started");
+  store.close();
+});
+
+test("expired Run reports and releases materialize once and direct the Runtime to select again", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "lease-report");
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-report",
+    actor_id: "runtime-expired-report",
+    role: "executor",
+    lease_seconds: 10,
+    idempotency_key: "lease-report-select",
+  });
+  setNow("2026-08-15T00:00:11.000Z");
+
+  const reportsExpiredLease = (idempotencyKey: string) => assert.throws(
+    () => coordinator.reportRun({
+      board_id: "board-1",
+      run_id: selected.run!.run_id,
+      actor_id: "runtime-expired-report",
+      state: "completed",
+      idempotency_key: idempotencyKey,
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error
+      && error.code === "run.claim_expired"
+      && error.details?.next_action === "select_goal"
+      && error.details?.requires_user_confirmation === false,
+  );
+  reportsExpiredLease("lease-report-complete");
+  reportsExpiredLease("lease-report-complete-retry");
+
+  let snapshot = store.snapshot("board-1");
+  const expiredClaim = snapshot.claims.find((item) => item.claim_id === selected.claim!.claim_id);
+  const abandonedRun = snapshot.runs.find((item) => item.run_id === selected.run!.run_id);
+  assert.equal(expiredClaim?.state, "expired");
+  assert.equal(expiredClaim?.released_at, selected.claim!.expires_at);
+  assert.equal(abandonedRun?.state, "abandoned");
+  assert.equal(abandonedRun?.ended_at, selected.claim!.expires_at);
+  assert.deepEqual(
+    store.db.prepare("SELECT type, COUNT(*) AS count FROM events WHERE type IN ('lease.expired', 'run.abandoned') GROUP BY type ORDER BY type").all(),
+    [
+      { type: "lease.expired", count: 1 },
+      { type: "run.abandoned", count: 1 },
+    ],
+  );
+
+  createLeaf(coordinator, "lease-release");
+  const releaseTarget = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-release",
+    actor_id: "runtime-expired-release",
+    role: "executor",
+    lease_seconds: 10,
+    idempotency_key: "lease-release-select",
+  });
+  setNow("2026-08-15T00:00:22.000Z");
+  assert.throws(
+    () => coordinator.releaseClaim({
+      board_id: "board-1",
+      claim_id: releaseTarget.claim!.claim_id,
+      actor_id: "runtime-expired-release",
+      reason: "尝试释放已经过期的租约",
+      idempotency_key: "lease-release-after-expiry",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error
+      && error.code === "claim.lease_expired"
+      && error.details?.next_action === "select_goal"
+      && error.details?.requires_user_confirmation === false,
+  );
+  snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.claims.find((item) => item.claim_id === releaseTarget.claim!.claim_id)?.state, "expired");
+  assert.equal(snapshot.runs.find((item) => item.run_id === releaseTarget.run!.run_id)?.state, "abandoned");
+
+  const recovered = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-report",
+    actor_id: "runtime-recovered-report",
+    role: "executor",
+    idempotency_key: "lease-report-recover",
+  });
+  assert.equal(recovered.allowed, true);
+  assert.equal(recovered.work_state?.work_state, "executing");
+  store.close();
+});
+
 test("lease omission uses the resolved policy while over-limit Draft startup leaves no residue", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "lease-default");
