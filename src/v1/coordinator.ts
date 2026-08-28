@@ -4451,7 +4451,7 @@ export class GoalBoardCoordinator {
           input.run_id ?? null,
           input.review_id ?? null,
           input.kind,
-          input.locator.trim(),
+          locatorValidation.normalized_locator,
           locatorValidation.status,
           locatorValidation.reason,
           locatorValidation.checked_at,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -2137,6 +2137,21 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     "# Content Growth Studio\n\n## 平台差异化观察窗口\n\n已确认。\n\n## 重复章节\n\n## 重复章节-1\n\n## 重复章节\n",
   );
 
+  const absoluteVerified = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "artifact",
+    locator: join(projectRoot, "contract.md"),
+    result: "passed",
+    locator_context: { project_root: projectRoot, workspace_id: "workspace-absolute" },
+    idempotency_key: "evidence-locator-absolute-project-file",
+  }).evidence;
+  assert.equal(absoluteVerified.locator_status, "verified");
+  assert.equal(absoluteVerified.locator, "project://contract.md");
+  assert.equal(absoluteVerified.locator_workspace_id, "workspace-absolute");
+
   const verified = coordinator.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
@@ -2226,6 +2241,24 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
   );
+  const outsideFile = join(projectRoot, "..", "goalboard-evidence-outside.txt");
+  writeFileSync(outsideFile, "outside");
+  const escapingLink = join(projectRoot, "outside-link.txt");
+  symlinkSync(outsideFile, escapingLink);
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: escapingLink,
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-absolute-symlink-escape",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
 
   const external = coordinator.submitEvidence({
     board_id: "board-1",
@@ -2256,7 +2289,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(opaque.locator_status, "unverified");
   assert.match(opaque.locator_validation_reason, /不透明或外部 locator/);
   assert.ok(opaque.locator_checked_at);
-  assert.equal(store.snapshot("board-1").evidence.length, 4);
+  assert.equal(store.snapshot("board-1").evidence.length, 5);
   store.close();
 });
 
