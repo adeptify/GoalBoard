@@ -435,7 +435,7 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
       assert.deepEqual(catalog.resolveRuntimeContext(codexEntry), {
         status: "unbound",
         reason: "unknown_context",
-        next_action: "ask_user_to_select_or_create",
+        next_action: "use_explicit_existing_selection_or_ask_user_to_select_or_create",
         context: { runtime_id: "codex", stable_work_context_id: "workspace-entry-01" },
         project: null,
         connection: null,
@@ -671,7 +671,10 @@ test("a fresh Runtime Session receives host suggestions but needs confirmation, 
       const suggested = catalog.resolveRuntimeContext(firstSession, clues);
       assert.equal(suggested.status, "suggested");
       assert.equal(suggested.reason, null);
-      assert.equal(suggested.next_action, "ask_user_to_confirm_suggestion");
+      assert.equal(
+        suggested.next_action,
+        "use_explicit_existing_selection_or_ask_user_to_confirm_suggestion",
+      );
       assert.equal(suggested.project, null);
       assert.equal(suggested.connection, null);
       assert.deepEqual(suggested.suggested_projects.map((project) => project.project_id), [

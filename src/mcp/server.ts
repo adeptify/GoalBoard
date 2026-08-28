@@ -273,7 +273,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可领取并推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；这表示当前动作具备领取条件，不表示 complete 的验收或 completion Risk 门禁已经通过，执行前后仍需读取 risk_summary/Contract。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成；初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {
@@ -937,7 +937,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_resolve",
     description:
-      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；未绑定时返回当前对话应让用户选择或创建项目的结果。返回 suggested 时必须向用户展示候选项目名和通用原因并询问是否绑定；返回 unbound 时必须展示项目列表并询问选择或新建；任何情况下都不要自动绑定或猜测项目。",
+      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；本工具只读，候选、目录和历史本身都不授权绑定。若用户当前消息已经明确要求用 GoalBoard 连接或推进一个已命名项目，且返回的现有项目中只有一个与该指代无歧义匹配，Skill 应直接调用 context_bind，不要让用户重复确认；否则，suggested 时展示候选并询问，unbound 时展示项目列表并询问选择或新建。仅提到项目、含糊表达或宿主线索都不能当成选择。",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1219,6 +1219,7 @@ export class GoalBoardServer {
   runtimeConnection: GoalBoardRuntimeConnection | null;
   runtimeContextHost: GoalBoardRuntimeContextHost | null;
   private runtimeConnectionContextKey: string | null;
+  private runtimeConnectionRefreshContextKey: string | null;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
@@ -1231,6 +1232,7 @@ export class GoalBoardServer {
     // production Runtime never inherits a static project DB from environment.
     this.runtimeConnection = runtimeConnection ?? null;
     this.runtimeConnectionContextKey = runtimeConnection ? "explicit" : null;
+    this.runtimeConnectionRefreshContextKey = null;
     this.runtimeContextHost =
       runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
   }
@@ -1290,9 +1292,27 @@ export class GoalBoardServer {
     }
     if (this.runtimeConnectionContextKey !== "explicit") {
       const host = this.requireRuntimeContextHost(callContext);
-      if (this.runtimeConnectionContextKey !== runtimeContextKey(host)) {
+      const currentContextKey = runtimeContextKey(host);
+      if (this.runtimeConnectionContextKey !== currentContextKey) {
+        const invalidatedResolvedConnection = this.runtimeConnection !== null;
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        if (invalidatedResolvedConnection) {
+          this.runtimeConnectionRefreshContextKey = currentContextKey;
+        }
+      }
+      if (!this.runtimeConnection && this.runtimeConnectionRefreshContextKey === currentContextKey) {
+        throw new GoalBoardV1Error(
+          "mcp.context_refresh_required",
+          "MCP 当前调用的 Session 身份与已解析的项目连接不连续。请只读调用 goalboard_v1_context_resolve；若返回 bound，请使用原 idempotency_key 原样重试失败调用。不要调用 context_bind，也不要再次询问用户；若未返回 bound，则按 context_resolve 的 next_action 处理。",
+          {
+            next_action: "context_resolve_then_retry",
+            requires_bind: false,
+            requires_user_confirmation: false,
+            retry_same_idempotency_key: true,
+            retry_when_context_status: "bound",
+          },
+        );
       }
     }
     if (!this.runtimeConnection) {
@@ -1371,6 +1391,7 @@ export class GoalBoardServer {
       if (current.status !== "bound") {
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        this.runtimeConnectionRefreshContextKey = null;
       }
       return JSON.stringify(
         {
@@ -1410,6 +1431,7 @@ export class GoalBoardServer {
       // connection survive a new suggestion-first routing decision.
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
+      this.runtimeConnectionRefreshContextKey = null;
       return JSON.stringify(result, null, 2);
     });
   }
@@ -1449,6 +1471,7 @@ export class GoalBoardServer {
       });
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
+      this.runtimeConnectionRefreshContextKey = null;
       return JSON.stringify(result, null, 2);
     });
   }
@@ -1489,6 +1512,7 @@ export class GoalBoardServer {
       if (catalog.resolveRuntimeContext(host.runtimeContext, host.projectSuggestionClues).status !== "bound") {
         this.runtimeConnection = null;
         this.runtimeConnectionContextKey = null;
+        this.runtimeConnectionRefreshContextKey = null;
       }
       return JSON.stringify(result, null, 2);
     });
@@ -1513,6 +1537,7 @@ export class GoalBoardServer {
     const connection = resolution.connection
       ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
+    this.runtimeConnectionRefreshContextKey = null;
     if (connection) {
       this.runtimeConnection = {
         projectId: connection.project_id,
@@ -2101,6 +2126,9 @@ export class GoalBoardServer {
 
 function formatMcpToolError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof GoalBoardV1Error && error.details) {
+    return `错误: ${message}\n${JSON.stringify({ code: error.code, ...error.details })}`;
+  }
   if (!(error instanceof GoalBoardProjectCatalogError)) return `错误: ${message}`;
   return `错误: ${message}\n${JSON.stringify({ code: error.code, ...error.details })}`;
 }

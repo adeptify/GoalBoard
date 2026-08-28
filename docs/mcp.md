@@ -20,11 +20,11 @@ GOALBOARD_MCP_AUDIENCE="runtime" \
 
 这个 MCP 进程启动时仍是“未连接项目”状态，不会打开某个 Board。统一 Skill 先调用 `goalboard_v1_context_resolve`：
 
-> **Codex 与通用 Runtime 的回退**：Codex CLI/桌面的 stdio MCP 启动环境不会注入 `CODEX_THREAD_ID`，官方已将该需求标记为不计划修复（[openai/codex#19937](https://github.com/openai/codex/issues/19937)，NOT_PLANNED）。较新的 Codex app-server 调用路径可以在单次工具调用的 `_meta.threadId` 中带入 thread；GoalBoard 会在存在时使用它。没有 Session 信号时仍可用工作目录找到历史候选并让用户选择，但目录不充当 Session ID，新对话默认会再次询问。
+> **Codex 与通用 Runtime 的回退**：Codex CLI/桌面的 stdio MCP 启动环境不会注入 `CODEX_THREAD_ID`，官方已将该需求标记为不计划修复（[openai/codex#19937](https://github.com/openai/codex/issues/19937)，NOT_PLANNED）。较新的 Codex app-server 调用路径可以在单次工具调用的 `_meta.threadId` 中带入 thread；GoalBoard 会在存在时使用它。没有 Session 信号时仍可用工作目录找到历史候选，但目录不充当 Session ID；当前消息没有明确选择项目时，新对话默认会再次询问。
 
 - `bound`：返回唯一 `project_id`、`board_id` 和固定数据库连接；之后普通 GoalBoard MCP 调用只能使用该 `board_id`。
-- `suggested`：新 Session 有 workspace 历史或其他宿主线索。结果只含候选项目和不泄露原始路径的通用原因，没有项目连接；当前 Runtime 必须在同一对话问用户是否关联。
-- `unbound`：返回 `missing_stable_context` 或 `unknown_context` 以及 `ask_user_to_select_or_create`，不连接任何项目。
+- `suggested`：新 Session 有 workspace 历史或其他宿主线索。结果只含候选项目和不泄露原始路径的通用原因，没有项目连接。若当前用户消息已经明确要求用 GoalBoard 连接或推进一个已命名项目，且返回的现有项目中只有一个无歧义匹配，Skill 直接调用 `context_bind`；否则才展示候选并询问。
+- `unbound`：返回 `missing_stable_context` 或 `unknown_context`，不连接任何项目；同样先复用当前消息中对一个现有项目的明确选择，否则展示项目列表并询问选择或新建。
 - 用户明确拒绝某个 `suggested` 候选时，Skill 调用 `goalboard_v1_context_reject_suggestion` 并传入 `user_confirmed=true`。它只在这个 Session 不再提示该候选，随后可返回另一个候选或显式的项目列表／新建路径；不会解绑、删除或影响其他 Session。
 - 用户在当前对话明确选定已存在项目后，Skill 调用 `goalboard_v1_context_bind` 并传入 `user_confirmed=true`。普通选择只影响本 Session（若可识别）并记录 workspace 历史；只有用户另行明确要求以后自动进入时才传 `binding_scope=workspace_default`。同一 scope 从别的项目切换时还需 `rebind_confirmed=true`。
 - 用户在当前对话明确要求新建一个命名项目后，Skill 调用 `goalboard_v1_context_create_and_bind` 并传入 `user_confirmed=true`、项目名称和幂等键。它只在 `~/.goalboard` 创建项目 DB 并绑定；失败不会留下孤儿项目。
@@ -35,6 +35,8 @@ GOALBOARD_MCP_AUDIENCE="runtime" \
 Web 是可选查看和用户确认界面。GoalBoard 不会为解析关联而要求启动 Web；普通 Web 启动后先显示项目列表，用户选择的只是当前浏览项目。项目设置可管理已经确认过的 Session 关联和 workspace 的多个成员项目，并显式设置默认或解除关联；不会展示完整目录路径。项目创建、Runtime 配置和旧 DB 迁移也都先展示影响或要求单独确认。
 
 Runtime audience 只暴露工作入口解析/显式绑定、读取、Available/原子选择/Run、Contract/Candidate/Dependency Proposal、Goal Tree Proposal/Decision、重新验证、Evidence、Runtime Review、完成检查和释放。`goal-tree-decide` 不是 Runtime 自己随意改树的权限：只有用户刚刚在当前对话明确决定后，Runtime 才能传 `user_confirmed=true`、确认摘要和具体决定；GoalBoard 结合宿主 Session 元数据生成审计引用。Runtime 不能通过普通工具参数伪造 Session 身份或覆盖已解析的项目连接。
+
+Available 的 `available` 数组既可返回需要 Claim 的动作，也可返回 `next_action=complete / role=null` 的无 Claim 完成动作；后者直接调用完成检查。执行、Evidence 和 Review 已结束但 completion Risk 仍开放的 Goal 不会回退成 `execute`，而会出现在同一响应的 `blocked` 数组并带具体原因和恢复条件。
 
 受信用户入口需要创建 Goal、维护关系/风险/Policy、决定 Contract/Candidate/Rewire 或导入旧数据时，单独使用 `GOALBOARD_MCP_AUDIENCE=management`。不要把 management MCP 交给自主 Runtime。
 

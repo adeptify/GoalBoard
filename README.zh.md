@@ -157,6 +157,7 @@ pnpm desktop:start:macos
 - [MCP 接入](docs/mcp.md)
 - [CLI 与开发](docs/cli-and-development.md)
 - [Runtime Skill](skills/goal-advance/SKILL.md)
+- [GoalBoard Bug 卡台账](docs/goalboard-bug-cards.md)
 
 ## License
 

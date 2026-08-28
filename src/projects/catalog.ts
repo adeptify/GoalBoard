@@ -187,7 +187,10 @@ export interface GoalBoardProjectConnection {
 export interface GoalBoardRuntimeContextResolution {
   status: "bound" | "suggested" | "unbound";
   reason: "missing_stable_context" | "unknown_context" | null;
-  next_action: "continue" | "ask_user_to_confirm_suggestion" | "ask_user_to_select_or_create";
+  next_action:
+    | "continue"
+    | "use_explicit_existing_selection_or_ask_user_to_confirm_suggestion"
+    | "use_explicit_existing_selection_or_ask_user_to_select_or_create";
   context: NormalizedRuntimeWorkContext;
   project: GoalBoardProjectSelection | null;
   connection: GoalBoardProjectConnection | null;
@@ -2650,7 +2653,7 @@ function suggestedResolution(
   return {
     status: "suggested",
     reason: null,
-    next_action: "ask_user_to_confirm_suggestion",
+    next_action: "use_explicit_existing_selection_or_ask_user_to_confirm_suggestion",
     context,
     project: null,
     connection: null,
@@ -2667,7 +2670,7 @@ function unboundResolution(
   return {
     status: "unbound",
     reason,
-    next_action: "ask_user_to_select_or_create",
+    next_action: "use_explicit_existing_selection_or_ask_user_to_select_or_create",
     context,
     project: null,
     connection: null,

@@ -107,6 +107,20 @@ const WORK_STATE_COPY: Record<GoalPresentationState, WorkStateCopy> = {
     howToContinue: "查看具体原因，完成前置工作或处理等待你的决定。",
     actionKind: "resolve_blocker",
   },
+  completion_pending: {
+    label: "待完成",
+    meaning: "执行、完成依据和所需复核都已完成，不需要重新执行。",
+    nextAction: "运行完成判定",
+    howToContinue: "让 Runtime 直接重试完成判定；不要重新领取或重复执行这条 Goal。",
+    actionKind: "start",
+  },
+  completion_blocked: {
+    label: "完成受阻",
+    meaning: "工作和复核已经完成，但仍有完成门禁没有解除。",
+    nextAction: "处理完成门禁",
+    howToContinue: "查看具体风险或决定，按恢复条件处理后再运行完成判定；不要重新执行。",
+    actionKind: "resolve_blocker",
+  },
   review_pending: {
     label: "待复核",
     meaning: "工作结果已经提交，但还没有完成所需检查。",

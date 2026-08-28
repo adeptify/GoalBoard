@@ -157,6 +157,7 @@ Each architecture ships separately because GoalBoard's SQLite and PTY native add
 - [MCP Integration](docs/mcp.en.md)
 - [CLI & Development](docs/cli-and-development.en.md)
 - [Runtime Skill](skills/goal-advance/SKILL.md)
+- [GoalBoard Bug Card Ledger (Chinese)](docs/goalboard-bug-cards.md)
 
 ## License
 

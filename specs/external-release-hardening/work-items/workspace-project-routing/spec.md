@@ -15,8 +15,9 @@
   历史 membership；default 必须由用户单独明确设置。
 - 有 thread 元数据时允许 Session override；没有 thread 时只使用 workspace default，不创建
   机器级伪身份。
-- 每次无法识别的新 Session 都展示 workspace 历史候选并询问，即使只有一个候选也不自动连接。
-  只有用户另行明确设置 workspace default 后，之后的新 Session 才自动恢复 default。
+- 每次无法识别的新 Session 都返回 workspace 历史候选；目录或候选本身不授权连接，即使只有一个
+  候选也不自动连接。当前用户消息已经明确选择一个无歧义匹配的现有项目时，可以在解析后直接绑定；
+  否则必须询问。只有用户另行明确设置 workspace default 后，之后的新 Session 才自动恢复 default。
 - 迁移现有 Session bindings：保留审计历史，能关联到 canonical workspace 的才生成 membership，
   不能证明的保持历史、不自动猜测。
 - UI/Skill 支持查看 workspace 已关联项目、设置默认、仅当前 Session 切换和解除关联。

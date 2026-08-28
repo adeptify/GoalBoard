@@ -13,7 +13,7 @@ export type ClaimRole =
   | "cross_reviewer"
   | "adversarial_reviewer"
   | "revalidator";
-export type GoalWorkAction = "clarify" | "execute" | "review" | "revalidate";
+export type GoalWorkAction = "clarify" | "execute" | "review" | "revalidate" | "complete";
 export type GoalWorkState =
   | "clarification_pending"
   | "clarifying"
@@ -22,6 +22,8 @@ export type GoalWorkState =
   | "execution_pending"
   | "executing"
   | "execution_blocked"
+  | "completion_pending"
+  | "completion_blocked"
   | "review_pending"
   | "reviewing"
   | "review_blocked"
@@ -699,7 +701,9 @@ export interface GoalWorkStateView {
   reasons: DecisionReason[];
 }
 
-export interface AvailableGoal extends ReadyGoal {
+export interface AvailableGoal extends Omit<ReadyGoal, "role"> {
+  /** Null means this action does not require a new Claim or Run. */
+  role: ClaimRole | null;
   work_state: GoalWorkState;
   next_action: GoalWorkAction;
   review_obligation_id: string | null;
@@ -712,6 +716,16 @@ export interface AvailableGoal extends ReadyGoal {
     longest_downstream_chain: number;
     rationale: string;
   };
+}
+
+/** A Goal that is not claimable because its finished work is waiting on a completion gate. */
+export interface BlockedAvailableGoal {
+  goal: GoalRecord;
+  work_state: "completion_blocked";
+  next_action: null;
+  reasons: DecisionReason[];
+  priority_hint: number;
+  risk_summary: string[];
 }
 
 export interface ParallelRuntimeAssignment {

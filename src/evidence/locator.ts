@@ -17,6 +17,7 @@ export interface EvidenceLocatorValidation {
   status: "verified" | "unverified";
   reason: string;
   checked_at: string;
+  normalized_locator: string;
 }
 
 function isWithinDirectory(candidate: string, directory: string): boolean {
@@ -37,6 +38,28 @@ function splitProjectLocator(locator: string): { path: string; anchor: string | 
     }
   }
   return { path: locatorPath, anchor };
+}
+
+function normalizeAbsoluteProjectLocator(projectRoot: string, locator: string): string {
+  const { path: locatorPath, anchor } = splitProjectLocator(locator);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(path.resolve(projectRoot));
+  } catch {
+    throw new ProjectReferenceError(404, "项目引用根目录不可用");
+  }
+  let realFile: string;
+  try {
+    realFile = fs.realpathSync(locatorPath);
+  } catch {
+    throw new ProjectReferenceError(404, "项目内引用文件不存在");
+  }
+  if (!isWithinDirectory(realFile, realRoot)) {
+    throw new ProjectReferenceError(400, "Evidence locator 不能指向当前项目范围外的本地文件");
+  }
+  const relativePath = path.relative(realRoot, realFile).split(path.sep).join("/");
+  const anchorSuffix = anchor === null ? "" : `#${encodeURIComponent(anchor)}`;
+  return `project://${relativePath}${anchorSuffix}`;
 }
 
 export function projectReferenceSegments(locator: string): string[] {
@@ -158,17 +181,27 @@ export function validateEvidenceLocator(
       status: "unverified",
       reason: "外部 URL 已保留，但 GoalBoard 不会发起网络请求或保证长期可用性",
       checked_at: checkedAt,
+      normalized_locator: value,
     };
   }
-  if (/^file:\/\//i.test(value) || path.isAbsolute(value) || /^[a-z]:[\\/]/i.test(value)) {
+  if (/^file:\/\//i.test(value) || /^[a-z]:[\\/]/i.test(value)) {
     throw new ProjectReferenceError(400, "Evidence locator 不能指向项目范围外的本地文件");
   }
-  const isOpaqueProtocol = /^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith("project://");
+  let normalizedLocator = value;
+  if (path.isAbsolute(splitProjectLocator(value).path)) {
+    if (!options.projectRoot) {
+      throw new ProjectReferenceError(404, "项目引用根目录不可用");
+    }
+    normalizedLocator = normalizeAbsoluteProjectLocator(options.projectRoot, value);
+  }
+  const isOpaqueProtocol =
+    /^[a-z][a-z0-9+.-]*:/i.test(normalizedLocator) && !normalizedLocator.startsWith("project://");
   if (isOpaqueProtocol) {
     return {
       status: "unverified",
       reason: "不透明或外部 locator 已保留为 UNVERIFIED；GoalBoard 不会调用自定义协议",
       checked_at: checkedAt,
+      normalized_locator: normalizedLocator,
     };
   }
   if (!options.projectRoot) {
@@ -176,10 +209,11 @@ export function validateEvidenceLocator(
       status: "unverified",
       reason: "当前入口没有可用的项目目录，项目内 locator 尚未验证",
       checked_at: checkedAt,
+      normalized_locator: normalizedLocator,
     };
   }
 
-  const reference = readProjectReference(options.projectRoot, value);
+  const reference = readProjectReference(options.projectRoot, normalizedLocator);
   if (reference.anchor !== null) {
     if (!/\.(?:md|markdown)$/i.test(reference.realFile)) {
       throw new ProjectReferenceError(400, "只有 Markdown 文件可以校验章节 anchor");
@@ -192,11 +226,13 @@ export function validateEvidenceLocator(
       status: "verified",
       reason: "项目内 Markdown 文件与 anchor 已完成只读预检",
       checked_at: checkedAt,
+      normalized_locator: normalizedLocator,
     };
   }
   return {
     status: "verified",
     reason: "项目内文本文件已完成只读预检",
     checked_at: checkedAt,
+    normalized_locator: normalizedLocator,
   };
 }

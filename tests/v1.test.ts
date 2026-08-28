@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -2137,6 +2137,21 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     "# Content Growth Studio\n\n## 平台差异化观察窗口\n\n已确认。\n\n## 重复章节\n\n## 重复章节-1\n\n## 重复章节\n",
   );
 
+  const absoluteVerified = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "artifact",
+    locator: join(projectRoot, "contract.md"),
+    result: "passed",
+    locator_context: { project_root: projectRoot, workspace_id: "workspace-absolute" },
+    idempotency_key: "evidence-locator-absolute-project-file",
+  }).evidence;
+  assert.equal(absoluteVerified.locator_status, "verified");
+  assert.equal(absoluteVerified.locator, "project://contract.md");
+  assert.equal(absoluteVerified.locator_workspace_id, "workspace-absolute");
+
   const verified = coordinator.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
@@ -2226,6 +2241,24 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
   );
+  const outsideFile = join(projectRoot, "..", "goalboard-evidence-outside.txt");
+  writeFileSync(outsideFile, "outside");
+  const escapingLink = join(projectRoot, "outside-link.txt");
+  symlinkSync(outsideFile, escapingLink);
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: escapingLink,
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-absolute-symlink-escape",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
 
   const external = coordinator.submitEvidence({
     board_id: "board-1",
@@ -2256,7 +2289,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(opaque.locator_status, "unverified");
   assert.match(opaque.locator_validation_reason, /不透明或外部 locator/);
   assert.ok(opaque.locator_checked_at);
-  assert.equal(store.snapshot("board-1").evidence.length, 4);
+  assert.equal(store.snapshot("board-1").evidence.length, 5);
   store.close();
 });
 
@@ -7020,6 +7053,245 @@ test("unified Available lets the Runtime choose across clarification, execution,
   });
   assert.equal(reviewSelection.work_state?.work_state, "reviewing");
   assert.equal(reviewSelection.run?.role, "self_verifier");
+  store.close();
+});
+
+test("a completion Risk after finished work stays out of executor Available and exposes recovery", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "completion-risk-handoff", 40);
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "completion-risk-handoff-risk",
+      goal_ids: ["completion-risk-handoff"],
+      description: "真实样本覆盖仍需用户确认",
+      probability: "medium",
+      impact: "Goal 可能在覆盖不足时被错误完成",
+      affected_surfaces: ["research-samples"],
+      trigger: "样本覆盖结论尚未确认",
+      treatment: "mitigate",
+      treatment_plan: "由用户确认覆盖结论后更新 Risk 状态",
+      blocking_mode: "completion",
+      revisit_condition: "确认代表性样本已经覆盖约定来源",
+      owner: "user",
+    },
+    { actor_id: "user-1", idempotency_key: "completion-risk-handoff-add-risk" },
+  );
+
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "completion-risk-handoff-execute",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    output_refs: ["artifact://completion-risk-handoff"],
+    idempotency_key: "completion-risk-handoff-execute-complete",
+  });
+  const evidence = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["completion-risk-handoff-criterion"],
+    kind: "test",
+    locator: "command://completion-risk-handoff-test",
+    result: "passed",
+    idempotency_key: "completion-risk-handoff-evidence",
+  }).evidence;
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "执行与证据已完成，交给自检",
+    idempotency_key: "completion-risk-handoff-execute-release",
+  });
+
+  const obligation = store
+    .snapshot("board-1")
+    .review_obligations.find(
+      (item) => item.goal_id === "completion-risk-handoff" && item.role === "self_verifier",
+    )!;
+  const review = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-reviewer",
+    role: "self_verifier",
+    idempotency_key: "completion-risk-handoff-review",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    obligation_id: obligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    verdict: "pass",
+    evidence_refs: [evidence.evidence_id],
+    reasoning: "执行产物与通过证据一致，当前只剩 completion Risk 决定",
+    idempotency_key: "completion-risk-handoff-review-pass",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: review.run!.run_id,
+    actor_id: "runtime-reviewer",
+    state: "completed",
+    idempotency_key: "completion-risk-handoff-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: review.claim!.claim_id,
+    actor_id: "runtime-reviewer",
+    reason: "自检通过，等待完成门禁处理",
+    idempotency_key: "completion-risk-handoff-review-release",
+  });
+
+  const historyBefore = store.snapshot("board-1");
+  const state = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+  });
+  assert.equal(state.work_state, "completion_blocked");
+  assert.equal(state.next_action, null);
+  assert.deepEqual(state.reasons.map((item) => item.code), ["risk.blocks_completion"]);
+  assert.equal(state.reasons[0]?.remediation, "确认代表性样本已经覆盖约定来源");
+
+  const menu = coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-next" });
+  assert.equal(menu.available.some((item) => item.goal.goal_id === "completion-risk-handoff"), false);
+  assert.deepEqual(
+    menu.blocked.map((item) => [
+      item.goal.goal_id,
+      item.work_state,
+      item.next_action,
+      item.reasons.map((reason) => reason.code),
+    ]),
+    [["completion-risk-handoff", "completion_blocked", null, ["risk.blocks_completion"]]],
+  );
+
+  const explained = coordinator.explainGoal({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-next",
+    role: "executor",
+  });
+  assert.equal(explained.ready, false);
+  assert.deepEqual(explained.reasons.map((item) => item.code), ["risk.blocks_completion"]);
+
+  const duplicateExecution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-next",
+    role: "executor",
+    idempotency_key: "completion-risk-handoff-duplicate-execution",
+  });
+  assert.equal(duplicateExecution.allowed, false);
+  assert.deepEqual(duplicateExecution.reasons.map((item) => item.code), ["risk.blocks_completion"]);
+  const historyAfter = store.snapshot("board-1");
+  assert.equal(historyAfter.claims.length, historyBefore.claims.length);
+  assert.equal(historyAfter.runs.length, historyBefore.runs.length);
+  assert.equal(historyAfter.evidence.length, historyBefore.evidence.length);
+
+  store.db
+    .prepare("UPDATE risks SET state = 'resolved' WHERE risk_id = ?")
+    .run("completion-risk-handoff-risk");
+  const recoveredState = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+  });
+  assert.equal(recoveredState.work_state, "completion_pending");
+  assert.equal(recoveredState.next_action, "complete");
+  assert.deepEqual(recoveredState.reasons, []);
+
+  const recoveredMenu = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-after-risk-resolution",
+  });
+  assert.deepEqual(
+    recoveredMenu.available
+      .filter((item) => item.goal.goal_id === "completion-risk-handoff")
+      .map((item) => [item.next_action, item.role, item.why_now]),
+    [["complete", null, "执行、证据和复核已经完成；现在应直接重试完成判定，不要开始新的执行"]],
+  );
+  assert.equal(
+    recoveredMenu.blocked.some((item) => item.goal.goal_id === "completion-risk-handoff"),
+    false,
+  );
+
+  const recoveredExplanation = coordinator.explainGoal({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-after-risk-resolution",
+    role: "executor",
+  });
+  assert.equal(recoveredExplanation.ready, false);
+  assert.deepEqual(recoveredExplanation.reasons.map((item) => item.code), ["goal.ready_to_complete"]);
+
+  const duplicateAfterRecovery = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-after-risk-resolution",
+    role: "executor",
+    idempotency_key: "completion-risk-handoff-duplicate-after-recovery",
+  });
+  assert.equal(duplicateAfterRecovery.allowed, false);
+  assert.deepEqual(duplicateAfterRecovery.reasons.map((item) => item.code), ["goal.ready_to_complete"]);
+  const historyBeforeCompletion = store.snapshot("board-1");
+  assert.equal(historyBeforeCompletion.claims.length, historyBefore.claims.length);
+  assert.equal(historyBeforeCompletion.runs.length, historyBefore.runs.length);
+  assert.equal(historyBeforeCompletion.evidence.length, historyBefore.evidence.length);
+
+  coordinator.correctEvidence({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-executor",
+    target_evidence_id: evidence.evidence_id,
+    action: "retract",
+    reason: "完成前发现原证据不再可信",
+    idempotency_key: "completion-risk-handoff-retract-evidence",
+  });
+  const retractedEvidenceState = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+  });
+  assert.equal(retractedEvidenceState.work_state, "execution_pending");
+  assert.equal(
+    coordinator
+      .queryAvailable({ board_id: "board-1", actor_id: "runtime-after-evidence-retraction" })
+      .available.some(
+        (item) => item.goal.goal_id === "completion-risk-handoff" && item.next_action === "complete",
+      ),
+    false,
+  );
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["completion-risk-handoff-criterion"],
+    kind: "test",
+    locator: "command://completion-risk-handoff-replacement-test",
+    result: "passed",
+    idempotency_key: "completion-risk-handoff-replacement-evidence",
+  });
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-handoff" }).work_state,
+    "completion_pending",
+  );
+
+  const completed = coordinator.evaluateLeafCompletion({
+    board_id: "board-1",
+    goal_id: "completion-risk-handoff",
+    actor_id: "runtime-after-risk-resolution",
+    idempotency_key: "completion-risk-handoff-complete",
+  });
+  assert.equal(completed.satisfied, true);
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-handoff" }).work_state,
+    "satisfied",
+  );
   store.close();
 });
 

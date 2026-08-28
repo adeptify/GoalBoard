@@ -61,6 +61,8 @@ export interface GoalBoardWebServiceManagerOptions {
   runCommand?: (file: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
   /** Returns true only when the endpoint belongs to the expected managed process. */
   healthCheck?: (expectedProcessId?: number) => Promise<boolean>;
+  /** Compatibility proof for legacy health payloads: the endpoint has no identity and the listener PID matches exactly. */
+  legacyInstanceCheck?: (expectedProcessId: number) => Promise<boolean>;
   /** Returns true when another process is already accepting connections on the Web port. */
   portCheck?: () => Promise<boolean>;
   /** Tests may remove the real launchd transition wait without changing retry behavior. */
@@ -104,6 +106,7 @@ export class GoalBoardWebServiceManager {
   private readonly nodeExecutablePath: string;
   private readonly runCommand: NonNullable<GoalBoardWebServiceManagerOptions["runCommand"]>;
   private readonly healthCheck: NonNullable<GoalBoardWebServiceManagerOptions["healthCheck"]>;
+  private readonly legacyInstanceCheck: NonNullable<GoalBoardWebServiceManagerOptions["legacyInstanceCheck"]>;
   private readonly portCheck: NonNullable<GoalBoardWebServiceManagerOptions["portCheck"]>;
   private readonly transitionDelayMilliseconds: number;
   private readonly plans = new Map<string, PreparedServicePlan>();
@@ -123,6 +126,7 @@ export class GoalBoardWebServiceManager {
     this.stderrLog = path.join(this.homeDirectory, "logs", "web-service.error.log");
     this.runCommand = options.runCommand ?? runCommand;
     this.healthCheck = options.healthCheck ?? goalBoardWebHealthCheck;
+    this.legacyInstanceCheck = options.legacyInstanceCheck ?? goalBoardLegacyWebInstanceCheck;
     this.portCheck = options.portCheck ?? goalBoardWebPortCheck;
     this.transitionDelayMilliseconds = Math.max(0, options.transitionDelayMilliseconds ?? 250);
   }
@@ -181,7 +185,8 @@ export class GoalBoardWebServiceManager {
     const status = await this.launchctl(["print", this.serviceTarget()]);
     const processId = launchAgentProcessId(status);
     const running = processId != null;
-    const healthyOwnedInstance = processId != null && await this.healthCheck(processId);
+    const healthyOwnedInstance = processId != null
+      && (await this.healthCheck(processId) || await this.legacyInstanceCheck(processId));
     if (!launcherAvailable) {
       return this.detection("unavailable", true, true, running, command, "GoalBoard Web 启动器缺失；可移除服务或先修复 GoalBoard 安装");
     }
@@ -662,6 +667,40 @@ async function goalBoardWebHealthCheck(expectedProcessId?: number): Promise<bool
     return body.status === "ok"
       && (expectedProcessId == null
         || (body.service_process_id ?? body.process_id) === expectedProcessId);
+  } catch {
+    return false;
+  }
+}
+
+async function goalBoardLegacyWebInstanceCheck(expectedProcessId: number): Promise<boolean> {
+  try {
+    const response = await fetch("http://127.0.0.1:4173/health", {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as {
+      status?: unknown;
+      process_id?: unknown;
+      service_process_id?: unknown;
+    };
+    if (body.status !== "ok" || body.process_id != null || body.service_process_id != null) {
+      return false;
+    }
+    const listener = await runCommand("/usr/sbin/lsof", [
+      "-nP",
+      "-iTCP:4173",
+      "-sTCP:LISTEN",
+      "-Fp",
+    ]);
+    if (listener.code !== 0) return false;
+    const processIds = new Set(
+      listener.stdout
+        .split(/\r?\n/)
+        .filter((line) => /^p\d+$/.test(line))
+        .map((line) => Number(line.slice(1))),
+    );
+    return processIds.size === 1 && processIds.has(expectedProcessId);
   } catch {
     return false;
   }
