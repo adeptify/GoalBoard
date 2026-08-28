@@ -1,6 +1,6 @@
 # GoalBoard Bug 卡台账
 
-更新时间：2026-08-28
+更新时间：2026-08-29
 
 这份台账记录本轮已经分析过的 GoalBoard 体验问题，无论最终是否确认是真 Bug。它是产品判断与验收记录，不以“代码已经改动”代替“产品已经可用”。
 
@@ -22,6 +22,7 @@
 | GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard 可引用性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
 | GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 工程验证通过 | P1（发布门禁） |
+| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 待审批 | 未开始 | P1 |
 
 ---
 
@@ -400,3 +401,57 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 - **工程验证**：旧夹具已在本机稳定复现 `libnode.141.dylib` 缺失；最小夹具修复后目标用例 1/1 通过，同一正常本机权限下整仓门禁 261/261 通过。
 - **产品实操**：此卡本身不适用用户交互验收；最终官方 macOS 包仍必须完成安装、内嵌 Core/Node 启动和服务健康实操，不能由测试夹具通过代替。
 - **Owner 最终验收**：待本次 v0.1.3 官方包安装验证后，由 GoalBoard Owner 确认发布门禁不再误报且真实包可运行。
+
+---
+
+## GB-20260829-08：租约过期后 Contract 同时显示失效与 active/started
+
+**来源**：CGS G2B 主线消费者反馈 6
+**Bug 确认**：已确认，属于 GoalBoard 租约派生状态、物化时机与恢复动作不一致
+**修复决定**：待用户审批；不进入已经送审的 v0.1.3
+**修复状态**：未开始
+
+### 1. 真实场景
+
+executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。顶层 `work_state.active_claim=null`、`active_run=null`、`work_state=execution_pending`，但明细 `claims[]` 中旧 Claim 仍为 `state=active`，对应 `runs[]` 中旧 Run 仍为 `state=started`。消费者无法判断应继续上报旧 Run、先释放，还是直接重新领取。
+
+### 2. 事实与归因
+
+源码可确定性复现。`deriveGoalWorkState` 会按 `expires_at > now` 过滤 Claim，所以顶层已经视租约失效；原始 Contract 明细直接返回数据库记录，而 `expirePastClaims` 只在下一次 `claimGoal` 时把旧 Claim 物化为 `expired` 并把 Run 终结为 `abandoned`。更严重的是，`reportRun` 在新领取发生前没有检查 Claim 是否已经超时，旧执行者仍可能提交 `completed`；如果另一执行者先领取，旧 Run 又会先被自动 abandoned。结果取决于调用顺序。主要归因是 GoalBoard 生命周期一致性 Bug，不是 CGS 误用；保留历史 Claim/Run 本身是预期行为，错误在于失效语义和写权限没有在所有接口上统一。
+
+### 3. 现有流程的问题
+
+同一份 Contract 同时告诉消费者“现在没有 active 工作”和“旧 Claim/Run 仍 active/started”，却没有标出哪个状态具有执行权威，也没有确定的 `next_action`。消费者若先 report，可能在租约外提交完成；若先 select，系统会悄然把旧 Run abandoned 并创建新 Run；若先 release，又是在操作一个按顶层已经失效的 Claim。多出的不是单纯一次点击，而是三个会产生不同历史结果的错误分支。
+
+### 4. 设计根因与初衷
+
+租约是为了让失联 Runtime 不会永久占用 Goal；超过 `expires_at` 后，新执行者应能领取。原设计采用惰性物化：派生可用性按当前时间忽略过期 Claim，真正有下一位领取者时再一次性写入 `claim=expired`、`run=abandoned` 和事件，避免后台计时器和无业务调用的数据库写入。这个初衷减少了服务复杂度，但 Contract 展示、旧执行者写权限和下一次领取没有共享同一个“有效租约”判断边界。
+
+### 5. 当前影响
+
+影响所有执行时间超过 lease 的澄清、执行、复核或重验证 Run；短任务不触发。它会阻断消费者的确定性恢复，并可能产生租约外完成、重复 Run 或表面上的孤儿 started Run。当前已有一条真实 CGS 记录，且源码路径可稳定证明；影响不是主观摩擦，而是同一历史可能因调用先后得到不同终态。
+
+### 6. 复杂度审查
+
+- **当前必须**：所有 Contract/Available 展示和 lifecycle 写入共享同一有效租约判断；过期 Claim/Run 对消费者统一呈现为失效，并明确旧 Run 不可再提交业务终态；重新领取时原子终结旧生命周期；错误给出可机器执行的恢复动作。
+- **可以延后**：后台定时清扫、租约即将到期提醒、自动续租、通用任务心跳、跨进程租约监控面板。
+- **应当删除**：让消费者根据 `expires_at` 自己猜 active 是否有效；允许旧执行者在租约外抢先提交完成；为了清理历史而要求用户手工 release 已失效 Claim。
+
+### 7. 修复必要性与优先级
+
+建议修复，P1，等待审批。它直接影响写权限和同一 Goal 的唯一执行者语义，风险高于普通展示不一致。无需引入后台服务；应以读取时规范化展示、写入前统一租约屏障和明确恢复错误为最小闭环。
+
+### 8. 修复前后体验差异
+
+- **修复前**：租约过期 → Contract 顶层说没有 active，明细仍说 active/started → Runtime 猜测 report、release 或 select → 不同调用顺序得到 completed 或 abandoned 等不同结果。
+- **修复后**：租约过期 → Contract 明确旧 Claim 已失效、旧 Run 已中断且没有写权限，`next_action=select_goal` → 原执行者若继续 report，收到“租约已过期，不要重绑；重新 select”这一确定恢复动作 → 新领取原子接管，不留下 started 孤儿记录。
+
+### 9. 最小修复范围
+
+拟修改 Contract 的时间派生展示、`reportRun`/`releaseClaim`/`selectGoal` 共用的租约有效性屏障和结构化错误；补充“读取过期、旧执行者先 report、新执行者先 select、并发顺序、幂等重试”的回归。首版不增加后台 timer，不删除历史记录，不自动续租，不改变默认 lease 时长或新执行者领取权限。若回滚，仅恢复旧惰性物化逻辑，不需要数据迁移；已经写入的 `expired/abandoned` 是现有合法状态。
+
+### 10. 验收边界
+
+- **工程验证**：未开始。需先用可控时钟复现 Contract 冲突与租约外 `reportRun`，再验证所有读取/写入顺序得到一致终态、事件只写一次且 idempotency 不变。
+- **产品实操**：`UNVERIFIED`。需在最终安装产物中用短 lease 的真实 Goal 覆盖“自然过期后读取、旧执行者上报、另一执行者接管”，确认消费者无需猜测或询问用户。
+- **Owner 最终验收**：未开始。需要用户审批修复后，再依据最终包的实际恢复路径验收；当前分析不能算作已修复。
