@@ -379,7 +379,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_draft_dialogue_start",
     description:
-      "用户在当前 Runtime 输入粗略想法后，原子创建最小 Draft、clarifier Claim 和 Run；不会把推断写成 canonical Contract。",
+      "初始化待澄清 Goal 的自然语言对话：无 goal_id 时原子创建最小 Draft、Claim 和 Run；已有 Goal 时保持原 Goal，并复用当前 Runtime 已选择的 clarifier Run。",
     inputSchema: {
       type: "object",
       properties: {
@@ -429,7 +429,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_draft_dialogue_resume",
     description:
-      "在新 Session 中读取已持久化的 Draft 澄清进度；若没有活跃 Run，当前 Runtime 原子恢复 clarifier Claim 和 Run。",
+      "在新 Session 中读取已持久化的 Goal 澄清进度；若没有活跃 Run，当前 Runtime 原子恢复 clarifier Claim 和 Run。",
     inputSchema: {
       type: "object",
       properties: {

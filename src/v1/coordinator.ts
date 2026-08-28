@@ -2419,10 +2419,10 @@ export class GoalBoardCoordinator {
   }
 
   /**
-   * The Runtime-facing entry point for a user's rough idea. It creates the
-   * smallest possible Draft and the clarifier Claim/Run in one transaction;
-   * dialogue notes stay outside the canonical Contract until the user later
-   * decides a proposal.
+   * The Runtime-facing entry point for clarification. With no goal_id it
+   * creates the smallest possible Draft and clarifier Claim/Run. For an
+   * existing clarification-eligible Goal it keeps that Goal and reuses a
+   * clarifier Run already selected by the same Runtime when present.
    */
   startDraftDialogue(
     input: DraftDialogueStartInput,
@@ -2455,10 +2455,10 @@ export class GoalBoardCoordinator {
       const existingGoal = input.goal_id?.trim()
         ? this.store.snapshot(input.board_id).goals.find((goal) => goal.goal_id === goalId) ?? null
         : null;
-      if (existingGoal && existingGoal.definition_state !== "draft") {
+      if (existingGoal && !this.goalNeedsClarification(existingGoal)) {
         throw new GoalBoardV1Error(
-          "draft_dialogue.goal_not_draft",
-          "只能为仍待澄清的 Draft 开始自然语言对话",
+          "draft_dialogue.goal_not_clarifiable",
+          "只能为仍待澄清的 Goal 开始自然语言对话",
         );
       }
       if (
@@ -2469,7 +2469,7 @@ export class GoalBoardCoordinator {
       ) {
         throw new GoalBoardV1Error(
           "draft_dialogue.already_open",
-          "这条 Draft 已有可恢复的澄清对话；请使用 draft_dialogue_resume 而不是创建第二份会话",
+          "这条 Goal 已有可恢复的澄清对话；请使用 draft_dialogue_resume 而不是创建第二份会话",
         );
       }
       const goal = existingGoal ?? this.createGoal(
@@ -2490,20 +2490,43 @@ export class GoalBoardCoordinator {
           reason: "用户在当前 Runtime 中提交了粗略想法，开始自然语言澄清",
         },
       ).goal;
-      const selected = this.selectGoalAndStart({
+      const currentWorkState = this.getGoalWorkState({
         board_id: input.board_id,
         goal_id: goal.goal_id,
-        actor_id: actorId,
-        role: "clarifier",
-        capabilities: input.capabilities ?? [],
-        goal_mode_attestation: input.goal_mode_attestation ?? false,
-        lease_seconds: input.lease_seconds,
-        idempotency_key: `draft-dialogue-run:${input.idempotency_key}`,
       });
-      if (!selected.allowed || !selected.claim || !selected.run) {
+      let claim = currentWorkState.active_claim;
+      let run = currentWorkState.active_run;
+      if (run) {
+        if (run.role !== "clarifier" || run.actor_id !== actorId) {
+          throw new GoalBoardV1Error(
+            "draft_dialogue.active_elsewhere",
+            "这条 Goal 正由另一个 Runtime 推进，不能静默接管其工作",
+          );
+        }
+      } else {
+        const selected = this.selectGoalAndStart({
+          board_id: input.board_id,
+          goal_id: goal.goal_id,
+          actor_id: actorId,
+          role: "clarifier",
+          capabilities: input.capabilities ?? [],
+          goal_mode_attestation: input.goal_mode_attestation ?? false,
+          lease_seconds: input.lease_seconds,
+          idempotency_key: `draft-dialogue-run:${input.idempotency_key}`,
+        });
+        if (!selected.allowed || !selected.claim || !selected.run) {
+          throw new GoalBoardV1Error(
+            "draft_dialogue.claim_denied",
+            selected.reasons.map((item) => item.message).join("；") || "当前 Goal 暂时不能进入澄清",
+          );
+        }
+        claim = selected.claim;
+        run = selected.run;
+      }
+      if (!claim || !run) {
         throw new GoalBoardV1Error(
           "draft_dialogue.claim_denied",
-          selected.reasons.map((item) => item.message).join("；") || "当前 Draft 暂时不能进入澄清",
+          "当前 Goal 的澄清工作缺少有效 Claim 或 Run",
         );
       }
 
@@ -2522,8 +2545,8 @@ export class GoalBoardCoordinator {
           sessionId,
           input.board_id,
           goal.goal_id,
-          selected.claim.claim_id,
-          selected.run.run_id,
+          claim.claim_id,
+          run.run_id,
           roughIdea,
           actorId,
           now,
@@ -2542,7 +2565,7 @@ export class GoalBoardCoordinator {
           sessionId,
           input.board_id,
           goal.goal_id,
-          selected.run.run_id,
+          run.run_id,
           actorId,
           roughIdea,
           now,
@@ -2555,12 +2578,12 @@ export class GoalBoardCoordinator {
         objectType: "clarification_session",
         objectId: sessionId,
         reason: existingGoal
-          ? "当前 Runtime 为已有 Draft 开始自然语言澄清"
+          ? "当前 Runtime 为已有待澄清 Goal 开始自然语言澄清"
           : "当前 Runtime 根据用户粗略想法创建 Draft 并开始澄清",
         payload: {
           goal_id: goal.goal_id,
-          claim_id: selected.claim.claim_id,
-          run_id: selected.run.run_id,
+          claim_id: claim.claim_id,
+          run_id: run.run_id,
           initial_turn_id: initialTurnId,
           created_draft: !existingGoal,
         },
@@ -2717,7 +2740,7 @@ export class GoalBoardCoordinator {
   }
 
   /**
-   * Reopen a persisted Draft conversation in the current Runtime. If the
+   * Reopen a persisted Goal clarification in the current Runtime. If the
    * earlier Run has ended, this atomically takes a new clarifier Claim/Run;
    * an active run held elsewhere remains a real blocker rather than being
    * silently stolen.
@@ -2746,15 +2769,18 @@ export class GoalBoardCoordinator {
 
       const session = this.requireOpenClarificationSession(input.board_id, input.goal_id);
       const goal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      if (goal.definition_state !== "draft") {
-        throw new GoalBoardV1Error("draft_dialogue.not_draft", "只有 Draft 可以恢复澄清对话");
+      if (!this.goalNeedsClarification(goal)) {
+        throw new GoalBoardV1Error(
+          "draft_dialogue.not_clarifiable",
+          "只有仍待澄清的 Goal 可以恢复自然语言对话",
+        );
       }
       const current = this.readDraftDialogueView(input.board_id, input.goal_id, session.session_id);
       if (current.run && current.run.role === "clarifier") {
         if (current.run.actor_id !== actorId) {
           throw new GoalBoardV1Error(
             "draft_dialogue.active_elsewhere",
-            "这条 Draft 正由另一个 Runtime 澄清，不能静默抢占；请等待其释放或过期",
+            "这个 Goal 正由另一个 Runtime 澄清，不能静默抢占；请等待其释放或过期",
           );
         }
         const now = this.clock().toISOString();
@@ -2784,7 +2810,7 @@ export class GoalBoardCoordinator {
       if (!selected.allowed || !selected.claim || !selected.run) {
         throw new GoalBoardV1Error(
           "draft_dialogue.resume_denied",
-          selected.reasons.map((item) => item.message).join("；") || "当前 Draft 不能恢复澄清",
+          selected.reasons.map((item) => item.message).join("；") || "当前 Goal 不能恢复澄清",
         );
       }
       const now = this.clock().toISOString();
@@ -2802,7 +2828,7 @@ export class GoalBoardCoordinator {
         type: "clarification.resumed",
         objectType: "clarification_session",
         objectId: session.session_id,
-        reason: "当前 Runtime 从持久化 Draft 澄清记录恢复工作",
+        reason: "当前 Runtime 从持久化 Goal 澄清记录恢复工作",
         payload: { goal_id: input.goal_id, claim_id: selected.claim.claim_id, run_id: selected.run.run_id },
         at: now,
       });
@@ -5957,7 +5983,7 @@ export class GoalBoardCoordinator {
     const snapshot = this.store.snapshot(boardId);
     const dialogue = snapshot.clarification_sessions.find((item) => item.session_id === sessionId);
     if (!dialogue || dialogue.goal_id !== goalId) {
-      throw new GoalBoardV1Error("draft_dialogue.not_found", "找不到这条 Draft 澄清记录");
+      throw new GoalBoardV1Error("draft_dialogue.not_found", "找不到这条 Goal 澄清记录");
     }
     const goal = snapshot.goals.find((item) => item.goal_id === goalId);
     if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${goalId}`);
@@ -5984,7 +6010,7 @@ export class GoalBoardCoordinator {
     if (!session) {
       throw new GoalBoardV1Error(
         "draft_dialogue.not_found",
-        "这个 Draft 没有可恢复的澄清记录；请先通过粗略想法初始化",
+        "这个 Goal 没有可恢复的澄清记录；请先使用 draft_dialogue_start 初始化",
       );
     }
     return session;
@@ -6048,18 +6074,18 @@ export class GoalBoardCoordinator {
         WHERE r.board_id = ? AND r.goal_id = ? AND r.run_id = ?
       `)
       .get(boardId, goalId, runId) as Row | undefined;
-    if (!row) throw new GoalBoardV1Error("draft_dialogue.run_not_found", "找不到这条 Draft 澄清 Run");
+    if (!row) throw new GoalBoardV1Error("draft_dialogue.run_not_found", "找不到这条 Goal 澄清 Run");
     if (asText(row.run_actor_id) !== actorId || asText(row.claim_actor_id) !== actorId) {
       throw new GoalBoardV1Error("draft_dialogue.run_not_owner", "只有当前澄清 Runtime 可以写入本轮对话进展");
     }
     if (asText(row.run_role) !== "clarifier") {
-      throw new GoalBoardV1Error("draft_dialogue.clarifier_required", "只有 clarifier Run 可以记录 Draft 澄清");
+      throw new GoalBoardV1Error("draft_dialogue.clarifier_required", "只有 clarifier Run 可以记录 Goal 澄清");
     }
     if (asText(row.run_state) !== "started") {
-      throw new GoalBoardV1Error("draft_dialogue.run_not_active", "这条澄清 Run 已不在进行中，请先恢复 Draft");
+      throw new GoalBoardV1Error("draft_dialogue.run_not_active", "这条澄清 Run 已不在进行中，请先恢复 Goal 澄清对话");
     }
     if (asText(row.claim_state) !== "active" || asText(row.claim_expires_at) <= this.clock().toISOString()) {
-      throw new GoalBoardV1Error("draft_dialogue.claim_not_active", "澄清 Claim 已释放、撤销或过期，请先恢复 Draft");
+      throw new GoalBoardV1Error("draft_dialogue.claim_not_active", "澄清 Claim 已释放、撤销或过期，请先恢复 Goal 澄清对话");
     }
     return { claim_id: asText(row.claim_id) };
   }
@@ -8229,11 +8255,7 @@ export class GoalBoardCoordinator {
       return this.workStateWithoutRun(base, activeClaim, latestClaimRun);
     }
 
-    const needsClarification =
-      goal.definition_state !== "accepted" ||
-      goal.decomposition_state === "abstract" ||
-      goal.decomposition_state === "frontier_open" ||
-      goal.acceptance_criteria.length === 0;
+    const needsClarification = this.goalNeedsClarification(goal);
     if (needsClarification) {
       if (activeRun?.role === "clarifier") return this.workStateFromRun(base, activeRun);
       const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "clarifier", now, snapshot);
@@ -8458,6 +8480,15 @@ export class GoalBoardCoordinator {
             left.started_at.localeCompare(right.started_at) || left.run_id.localeCompare(right.run_id),
         )
         .at(-1)?.state ?? null
+    );
+  }
+
+  private goalNeedsClarification(goal: GoalRecord): boolean {
+    return (
+      goal.definition_state !== "accepted" ||
+      goal.decomposition_state === "abstract" ||
+      goal.decomposition_state === "frontier_open" ||
+      goal.acceptance_criteria.length === 0
     );
   }
 
@@ -8779,11 +8810,7 @@ export class GoalBoardCoordinator {
       );
     }
     if (input.role === "clarifier") {
-      const needsClarification =
-        goal.definition_state !== "accepted" ||
-        goal.decomposition_state === "abstract" ||
-        goal.decomposition_state === "frontier_open" ||
-        goal.acceptance_criteria.length === 0;
+      const needsClarification = this.goalNeedsClarification(goal);
       if (!needsClarification) {
         reasons.push(
           reason(

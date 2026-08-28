@@ -2440,6 +2440,87 @@ test("current Runtime can begin clarification for an existing Draft without crea
   store.close();
 });
 
+test("accepted frontier Goal initializes dialogue on its selected clarifier Run", () => {
+  const { store, coordinator } = fixture();
+  createAcceptedCompoundParent(coordinator, "accepted-frontier-dialogue", "frontier_open");
+  const goalCountBeforeStart = store.snapshot("board-1").goals.length;
+
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "accepted-frontier-dialogue",
+    actor_id: "runtime-frontier-clarifier",
+    role: "clarifier",
+    idempotency_key: "accepted-frontier-dialogue-select",
+  });
+  assert.equal(selected.allowed, true);
+  assert.equal(selected.work_state?.work_state, "clarifying");
+
+  const started = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    goal_id: "accepted-frontier-dialogue",
+    actor_id: "runtime-frontier-clarifier",
+    rough_idea: "继续拆清这条已接受但尚未完成分解的 Goal，不创建重复 Draft。",
+    idempotency_key: "accepted-frontier-dialogue-start",
+  });
+
+  assert.equal(started.goal.goal_id, "accepted-frontier-dialogue");
+  assert.equal(started.goal.definition_state, "accepted");
+  assert.equal(started.goal.decomposition_state, "frontier_open");
+  assert.equal(store.snapshot("board-1").goals.length, goalCountBeforeStart);
+  assert.equal(started.claim?.claim_id, selected.claim?.claim_id);
+  assert.equal(started.run?.run_id, selected.run?.run_id);
+  assert.equal(started.turns.length, 1);
+
+  const continued = coordinator.recordDraftDialogueTurn({
+    board_id: "board-1",
+    goal_id: "accepted-frontier-dialogue",
+    run_id: selected.run!.run_id,
+    actor_id: "runtime-frontier-clarifier",
+    user_message: "当前先补齐一个仍缺失的子结果。",
+    current_understanding: "这条 Goal 的既有 Contract 保持不变，只继续澄清未闭合的分解边界。",
+    next_question: "这个缺失结果完成后，父 Goal 是否就能收口？",
+    idempotency_key: "accepted-frontier-dialogue-turn",
+  });
+  assert.equal(continued.turns.length, 2);
+  assert.equal(store.getGoal("accepted-frontier-dialogue")?.definition_state, "accepted");
+  store.close();
+});
+
+test("accepted frontier Goal resumes its persisted clarification in a new Run", () => {
+  const { store, coordinator } = fixture();
+  createAcceptedCompoundParent(coordinator, "accepted-frontier-resume", "frontier_open");
+  const started = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    goal_id: "accepted-frontier-resume",
+    actor_id: "runtime-frontier-first",
+    rough_idea: "继续澄清尚未闭合的子 Goal 边界。",
+    idempotency_key: "accepted-frontier-resume-start",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: started.claim!.claim_id,
+    actor_id: "runtime-frontier-first",
+    reason: "切换到下一次 Runtime Session 继续澄清",
+    idempotency_key: "accepted-frontier-resume-release",
+  });
+
+  const resumed = coordinator.resumeDraftDialogue({
+    board_id: "board-1",
+    goal_id: "accepted-frontier-resume",
+    actor_id: "runtime-frontier-second",
+    idempotency_key: "accepted-frontier-resume-next-session",
+  });
+
+  assert.equal(resumed.goal.definition_state, "accepted");
+  assert.equal(resumed.goal.decomposition_state, "frontier_open");
+  assert.equal(resumed.dialogue.session_id, started.dialogue.session_id);
+  assert.notEqual(resumed.run?.run_id, started.run?.run_id);
+  assert.equal(resumed.run?.actor_id, "runtime-frontier-second");
+  assert.equal(resumed.work_state.work_state, "clarifying");
+  assert.equal(store.snapshot("board-1").goals.length, 1);
+  store.close();
+});
+
 test("a denied Draft dialogue start rolls back its draft, claim, run, and dialogue session together", () => {
   const { store, coordinator } = fixture();
   coordinator.setPolicy(

@@ -2,15 +2,17 @@
 
 Read this reference when starting or resuming a rough idea, decomposing or rewiring complex work, closing a compound parent, or applying a changed requirement. Its outcome is a user-readable, professionally grounded Goal Tree Proposal—not a mechanical checklist.
 
-## Start or resume the same Draft
+## Start or resume the same Goal clarification
 
 For a new rough idea, call `goalboard_v1_draft_dialogue_start` with the user's words. It creates only the smallest `draft / abstract` Goal plus the clarifier Claim and Run. Runtime interpretations are not canonical facts.
 
-For a named existing Draft, read `goalboard_v1_contract`:
+For a named existing Goal returned by Available with `role=clarifier`, read `goalboard_v1_contract`. This includes a Draft and an accepted Goal whose decomposition is still `abstract` or `frontier_open`:
 
 - resume an open clarification session with `goalboard_v1_draft_dialogue_resume`;
-- otherwise start clarification on that same `goal_id` with `draft_dialogue_start` rather than creating a duplicate;
+- otherwise start clarification on that same `goal_id` with `draft_dialogue_start` rather than creating a duplicate; after `available → select_goal`, start reuses that same Runtime's active clarifier Run;
 - if another Runtime owns an active dialogue, report the conflict instead of taking it over.
+
+Starting or resuming clarification never downgrades an accepted Contract to Draft. For an accepted open frontier, dialogue facts support a Goal Tree Proposal that adds or closes decomposition; they do not rewrite the accepted Contract directly.
 
 Tell the user that the idea was saved and ask the single question most likely to change the outcome, boundary, acceptance direction, relationship, or decomposition.
 

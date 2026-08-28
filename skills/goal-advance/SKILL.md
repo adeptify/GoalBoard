@@ -96,7 +96,7 @@ Always follow the latest returned `work_state`:
 |---|---|
 | Resolve and manage the current project | `context_list_projects`, `context_resolve`, `context_reject_suggestion`, `context_bind`, `context_create_and_bind`, `context_unbind`, `project_delete` |
 | Read work and blockers | `snapshot`, `contract`, `available`, `explain` |
-| Start or resume Draft planning | `draft_dialogue_start`, `draft_dialogue_turn`, `draft_dialogue_resume`, `planning_methods`, `planning_analyze_change`, `planning_graph_check` |
+| Start or resume Goal clarification | `draft_dialogue_start`, `draft_dialogue_turn`, `draft_dialogue_resume`, `planning_methods`, `planning_analyze_change`, `planning_graph_check` |
 | Propose and decide Goal Tree changes | `goal_tree_propose`, `goal_tree_read`, `goal_tree_check`, `goal_tree_decide` |
 | Atomically start and report work | `select_goal`, `run_report`, `evidence_submit`, `review_submit`, `complete`, `release`, `revalidate` |
 | Recoverably trash or restore a Goal | `goal_trash`, `goal_trash_list`, `goal_restore` |
