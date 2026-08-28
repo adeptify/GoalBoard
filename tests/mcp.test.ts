@@ -111,6 +111,13 @@ describe("mcp server", () => {
     const candidateTool = listedTools.find((tool) => tool.name === "goalboard_v1_candidate_submit");
     assert.ok(candidateTool?.inputSchema.properties?.payload.properties?.proposed_goal);
     assert.ok(candidateTool?.inputSchema.properties?.payload.required?.includes("idempotency_key"));
+    const evidenceTool = listedTools.find((tool) => tool.name === "goalboard_v1_evidence_submit");
+    const evidenceLocator = evidenceTool?.inputSchema.properties?.payload.properties?.locator as
+      | { description?: string }
+      | undefined;
+    assert.match(evidenceLocator?.description ?? "", /repo:docs\/review\.md#checks/);
+    assert.match(evidenceLocator?.description ?? "", /project:\/\/docs\/review\.md#checks/);
+    assert.match(evidenceLocator?.description ?? "", /当前 canonical workspace 内的绝对路径/);
     const proposalTool = listedTools.find(
       (tool) => tool.name === "goalboard_v1_contract_propose",
     );

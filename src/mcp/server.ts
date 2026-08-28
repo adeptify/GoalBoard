@@ -728,7 +728,11 @@ const V1_TOOLS: McpToolDefinition[] = [
       run_id: { type: ["string", "null"] },
       review_id: { type: ["string", "null"] },
       kind: { type: "string", enum: ["test", "measurement", "artifact", "inspection", "attestation", "human_verdict"] },
-      locator: V1_STRING,
+      locator: {
+        type: "string",
+        description:
+          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；HTTP 与其他不透明协议保留为 UNVERIFIED。",
+      },
       digest: { type: ["string", "null"] },
       result: { type: "string", enum: ["passed", "failed", "inconclusive"] },
       idempotency_key: V1_STRING,

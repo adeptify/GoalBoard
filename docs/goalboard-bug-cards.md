@@ -22,8 +22,8 @@
 | GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard 可引用性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
 | GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 工程验证通过 | P1（发布门禁） |
-| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 待审批 | 未开始 | P1 |
-| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 待审批 | 未开始 | P2 |
+| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
+| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
 
 ---
 
@@ -409,8 +409,8 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 
 **来源**：CGS G2B 主线消费者反馈 6
 **Bug 确认**：已确认，属于 GoalBoard 租约派生状态、物化时机与恢复动作不一致
-**修复决定**：待用户审批；不进入已经送审的 v0.1.3
-**修复状态**：未开始
+**修复决定**：用户已批准
+**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -440,7 +440,7 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 
 ### 7. 修复必要性与优先级
 
-建议修复，P1，等待审批。它直接影响写权限和同一 Goal 的唯一执行者语义，风险高于普通展示不一致。无需引入后台服务；应以读取时规范化展示、写入前统一租约屏障和明确恢复错误为最小闭环。
+已批准修复，P1。它直接影响写权限和同一 Goal 的唯一执行者语义，风险高于普通展示不一致。修复没有引入后台服务，而是用读取时规范化展示、写入前统一租约屏障和明确恢复错误形成最小闭环。
 
 ### 8. 修复前后体验差异
 
@@ -449,13 +449,13 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 
 ### 9. 最小修复范围
 
-拟修改 Contract 的时间派生展示、`reportRun`/`releaseClaim`/`selectGoal` 共用的租约有效性屏障和结构化错误；补充“读取过期、旧执行者先 report、新执行者先 select、并发顺序、幂等重试”的回归。首版不增加后台 timer，不删除历史记录，不自动续租，不改变默认 lease 时长或新执行者领取权限。若回滚，仅恢复旧惰性物化逻辑，不需要数据迁移；已经写入的 `expired/abandoned` 是现有合法状态。
+已修改 Contract 的时间派生展示、`reportRun`/`releaseClaim` 的租约有效性屏障和结构化错误，并沿用 `selectGoal` 现有的原子接管。只读 Contract 把已超时但尚未物化的记录投影为 `expired/abandoned`，不写事件；第一次 lifecycle 写入按真实 `expires_at` 物化且只生成一组事件。首版没有增加后台 timer、删除历史记录、自动续租或改变默认 lease 时长。回滚可恢复旧惰性物化逻辑，不需要数据迁移。
 
 ### 10. 验收边界
 
-- **工程验证**：未开始。需先用可控时钟复现 Contract 冲突与租约外 `reportRun`，再验证所有读取/写入顺序得到一致终态、事件只写一次且 idempotency 不变。
+- **工程验证**：可控时钟回归先复现 Contract 明细 `active/started` 与租约外 `reportRun` 可成功；修复后验证 Contract 只读投影、report/release 结构化恢复、`expired/abandoned` 只物化一次、结束时间取真实 `expires_at`、另一 Runtime 可重新 select。V1 回归 80/80 与 TypeScript 检查通过。
 - **产品实操**：`UNVERIFIED`。需在最终安装产物中用短 lease 的真实 Goal 覆盖“自然过期后读取、旧执行者上报、另一执行者接管”，确认消费者无需猜测或询问用户。
-- **Owner 最终验收**：未开始。需要用户审批修复后，再依据最终包的实际恢复路径验收；当前分析不能算作已修复。
+- **Owner 最终验收**：未通过。需依据最终安装包的实际恢复路径验收；工程回归不能代替产品实操。
 
 ---
 
@@ -463,8 +463,8 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 
 **来源**：CGS G2B 主线消费者反馈 7
 **Bug 确认**：确认是 GoalBoard locator 协议可发现性和恢复提示设计债；不是现有校验器误判
-**修复决定**：待用户审批；不进入已经送审的 v0.1.3
-**修复状态**：未开始
+**修复决定**：用户已批准
+**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -494,7 +494,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 
 ### 7. 修复必要性与优先级
 
-建议修复，P2，等待审批。当前已有三种安全格式和人工 correction 绕行，不是闭环硬阻塞；但 locator 是验收可信度基础，格式错误只能在写入后发现且 Evidence 不可变，修复收益明确。优先采用“接受 `repo:` 作为窄输入别名、仍只存 `project://`”的最小方案，不新增第二套 canonical 协议。
+已批准修复，P2。当前虽已有三种安全格式和人工 correction 绕行，不是闭环硬阻塞；但 locator 是验收可信度基础，格式错误只能在写入后发现且 Evidence 不可变，修复收益明确。实现只接受 `repo:` 作为窄输入别名，仍只存 `project://`，没有新增第二套 canonical 协议。
 
 ### 8. 修复前后体验差异
 
@@ -503,10 +503,10 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 
 ### 9. 最小修复范围
 
-拟修改 Evidence locator 的输入规范化、MCP `locator` 字段说明、Skill 使用说明和结构化验证结果；仅接受形如 `repo:<安全相对路径>` 的当前项目别名，复用现有 realpath、范围和 Markdown anchor 校验，并统一存成 `project://`。不支持 `file:`，不访问网络，不打开其他自定义协议，不自动修改历史 Evidence。回滚时移除输入别名即可，已经规范化存储的记录仍是现有合法格式。
+已修改 Evidence locator 的输入规范化、MCP `locator` 字段说明和 Skill 使用说明；仅接受形如 `repo:<安全相对路径>` 的当前项目别名，复用现有 realpath、范围和 Markdown anchor 校验，并统一存成 `project://`。没有支持 `file:`、访问网络、打开其他自定义协议或自动修改历史 Evidence。回滚时移除输入别名即可，已经规范化存储的记录仍是现有合法格式。
 
 ### 10. 验收边界
 
-- **工程验证**：未开始。需补 `repo:` 文件/anchor 成功、缺失 anchor、`..` 逃逸、symlink 逃逸、其他 scheme 保持 UNVERIFIED、MCP schema 示例和 canonical 持久化回归。
+- **工程验证**：回归先复现真实项目内 `repo:` Markdown 被标为 UNVERIFIED，修复后验证文件和 anchor 成功、统一存成 `project://`、`..` 逃逸被拒绝、其他 scheme 保持 UNVERIFIED，并验证 MCP schema 直接提供相对路径、`repo:`、`project://` 和绝对路径示例。目标 V1/MCP 回归、TypeScript、Skill 校验及整仓门禁 263/263 通过。
 - **产品实操**：`UNVERIFIED`。需在最终安装产物中对真实 CGS Markdown 提交 `repo:` locator，确认一次提交即 verified，并检查 Web 能打开规范化后的项目引用。
-- **Owner 最终验收**：未开始。需要用户审批后，确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。
+- **Owner 最终验收**：未通过。需在最终安装包中确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。

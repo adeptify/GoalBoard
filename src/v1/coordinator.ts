@@ -2408,7 +2408,34 @@ export class GoalBoardCoordinator {
     const snapshot = this.store.snapshot(boardId);
     const goal = snapshot.goals.find((item) => item.goal_id === goalId);
     if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${goalId}`);
-    const runs = snapshot.runs.filter((item) => item.goal_id === goalId);
+    const now = this.clock().toISOString();
+    const expiredClaims = new Map(
+      snapshot.claims
+        .filter((item) => item.goal_id === goalId && item.state === "active" && item.expires_at <= now)
+        .map((item) => [item.claim_id, item]),
+    );
+    const claims = snapshot.claims
+      .filter((item) => item.goal_id === goalId)
+      .map((item) => expiredClaims.has(item.claim_id)
+        ? {
+            ...item,
+            state: "expired" as const,
+            released_at: item.expires_at,
+            release_reason: "领取租约已到期",
+          }
+        : item);
+    const runs = snapshot.runs
+      .filter((item) => item.goal_id === goalId)
+      .map((item) => {
+        const expiredClaim = expiredClaims.get(item.claim_id);
+        if (!expiredClaim || !["started", "blocked"].includes(item.state)) return item;
+        return {
+          ...item,
+          state: "abandoned" as const,
+          block_reason: "领取租约已到期，当前 Run 自动中断",
+          ended_at: expiredClaim.expires_at,
+        };
+      });
     const runIds = new Set(runs.map((item) => item.run_id));
     const candidates = snapshot.candidates.filter(
       (item) => item.discovered_in_run_id != null && runIds.has(item.discovered_in_run_id),
@@ -2427,14 +2454,14 @@ export class GoalBoardCoordinator {
       observed_event_cursor: snapshot.cursor,
       goal_path: `/goals/${encodeURIComponent(goalId)}`,
       goal,
-      work_state: this.deriveGoalWorkState(boardId, goal, snapshot, this.clock().toISOString()),
+      work_state: this.deriveGoalWorkState(boardId, goal, snapshot, now),
       relations: snapshot.relations.filter(
         (item) => item.from_goal_id === goalId || item.to_goal_id === goalId,
       ),
       impacts: snapshot.impacts.filter((item) => item.goal_id === goalId),
       risks: snapshot.risks.filter((item) => riskIds.has(item.risk_id)),
       resolved_policy: this.resolvePolicy(boardId, goalId),
-      claims: snapshot.claims.filter((item) => item.goal_id === goalId),
+      claims,
       runs,
       evidence: snapshot.evidence.filter((item) => item.goal_id === goalId),
       evidence_corrections: snapshot.evidence_corrections.filter((item) => item.goal_id === goalId),
@@ -3840,6 +3867,51 @@ export class GoalBoardCoordinator {
       actor_id: input.actor_id,
       reason: input.reason,
     });
+    const replay = this.replay<{ claim: ClaimRecord; observed_event_cursor: number }>(
+      input.board_id,
+      input.actor_id,
+      "release_claim",
+      input.idempotency_key,
+      hash,
+    );
+    if (replay) return { ...replay, replayed: true };
+    const leaseRecovery = this.store.immediate(() => {
+      this.requireBoard(input.board_id);
+      const row = this.store.db
+        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
+        .get(input.claim_id, input.board_id) as Row | undefined;
+      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
+      if (asText(row.actor_id) !== input.actor_id) {
+        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以释放 Claim");
+      }
+      const at = this.clock().toISOString();
+      if (asText(row.state) === "active" && asText(row.expires_at) <= at) {
+        this.expirePastClaims(input.board_id, at, input.actor_id);
+        return {
+          goal_id: asText(row.goal_id),
+          claim_id: input.claim_id,
+        };
+      }
+      if (asText(row.state) === "expired") {
+        return {
+          goal_id: asText(row.goal_id),
+          claim_id: input.claim_id,
+        };
+      }
+      return null;
+    });
+    if (leaseRecovery) {
+      throw new GoalBoardV1Error(
+        "claim.lease_expired",
+        "Claim 租约已过期，旧 Runtime 不需要再释放；请重新领取 Goal",
+        {
+          ...leaseRecovery,
+          next_action: "select_goal",
+          requires_user_confirmation: false,
+          retry_same_idempotency_key: false,
+        },
+      );
+    }
     return this.store.immediate(() => {
       const replay = this.replay<{ claim: ClaimRecord; observed_event_cursor: number }>(
         input.board_id,
@@ -4275,6 +4347,58 @@ export class GoalBoardCoordinator {
     idempotency_key: string;
   }): { run: RunRecord; replayed: boolean; observed_event_cursor: number } {
     const hash = requestHash(input);
+    const replay = this.replay<{ run: RunRecord; observed_event_cursor: number }>(
+      input.board_id,
+      input.actor_id,
+      "report_run",
+      input.idempotency_key,
+      hash,
+    );
+    if (replay) return { ...replay, replayed: true };
+    const leaseRecovery = this.store.immediate(() => {
+      const row = this.store.db
+        .prepare(`
+          SELECT r.actor_id, r.goal_id, r.claim_id,
+                 c.state AS claim_state, c.expires_at AS claim_expires_at
+          FROM runs r
+          JOIN claims c ON c.claim_id = r.claim_id
+          WHERE r.run_id = ? AND r.board_id = ?
+        `)
+        .get(input.run_id, input.board_id) as Row | undefined;
+      if (!row) throw new GoalBoardV1Error("run.not_found", `Run 不存在: ${input.run_id}`);
+      if (asText(row.actor_id) !== input.actor_id) {
+        throw new GoalBoardV1Error("run.not_owner", "只有执行者可以报告这个 Run");
+      }
+      const at = this.clock().toISOString();
+      if (asText(row.claim_state) === "active" && asText(row.claim_expires_at) <= at) {
+        this.expirePastClaims(input.board_id, at, input.actor_id);
+        return {
+          goal_id: asText(row.goal_id),
+          claim_id: asText(row.claim_id),
+          run_id: input.run_id,
+        };
+      }
+      if (asText(row.claim_state) === "expired") {
+        return {
+          goal_id: asText(row.goal_id),
+          claim_id: asText(row.claim_id),
+          run_id: input.run_id,
+        };
+      }
+      return null;
+    });
+    if (leaseRecovery) {
+      throw new GoalBoardV1Error(
+        "run.claim_expired",
+        "Run 对应的 Claim 租约已过期，旧 Runtime 不能再报告终态；请重新领取 Goal",
+        {
+          ...leaseRecovery,
+          next_action: "select_goal",
+          requires_user_confirmation: false,
+          retry_same_idempotency_key: false,
+        },
+      );
+    }
     return this.store.immediate(() => {
       const replay = this.replay<{ run: RunRecord; observed_event_cursor: number }>(
         input.board_id,
@@ -8609,6 +8733,47 @@ export class GoalBoardCoordinator {
     const activeClaim = activeRun
       ? activeClaimById.get(activeRun.claim_id) ?? null
       : activeClaims.at(-1) ?? null;
+    const expiredClaim = snapshot.claims
+      .filter(
+        (claim) =>
+          claim.goal_id === goal.goal_id &&
+          claim.state === "active" &&
+          claim.expires_at <= now,
+      )
+      .sort((left, right) => left.claimed_at.localeCompare(right.claimed_at))
+      .at(-1) ?? null;
+    const expiredRun = expiredClaim
+      ? snapshot.runs
+          .filter(
+            (run) =>
+              run.claim_id === expiredClaim.claim_id &&
+              ["started", "blocked"].includes(run.state),
+          )
+          .sort((left, right) => left.started_at.localeCompare(right.started_at))
+          .at(-1) ?? null
+      : null;
+    const leaseRecoveryReason: DecisionReason | null = expiredClaim && expiredRun
+      ? {
+          code: "lease.expired",
+          severity: "info",
+          subject_type: "claim",
+          subject_id: expiredClaim.claim_id,
+          message: "上一轮领取租约已到期，旧 Run 不再具有写权限",
+          facts: {
+            claim_id: expiredClaim.claim_id,
+            run_id: expiredRun.run_id,
+            expired_at: expiredClaim.expires_at,
+            next_action: "select_goal",
+          },
+          remediation: "直接重新领取这条 Goal；无需释放旧 Claim，也不要继续报告旧 Run。",
+        }
+      : null;
+    const phaseReasons = (blockingReasons: DecisionReason[]): DecisionReason[] =>
+      blockingReasons.length > 0
+        ? blockingReasons
+        : leaseRecoveryReason
+          ? [leaseRecoveryReason]
+          : [];
     const latestClaimRun = activeClaim
       ? snapshot.runs
           .filter((run) => run.claim_id === activeClaim.claim_id)
@@ -8652,7 +8817,7 @@ export class GoalBoardCoordinator {
         ...base,
         work_state: reasons.length > 0 ? "clarification_blocked" : "clarification_pending",
         next_action: "clarify",
-        reasons,
+        reasons: phaseReasons(reasons),
       };
     }
 
@@ -8694,7 +8859,7 @@ export class GoalBoardCoordinator {
         ...base,
         work_state: reasons.length > 0 ? "revalidation_blocked" : "revalidation_pending",
         next_action: "revalidate",
-        reasons,
+        reasons: phaseReasons(reasons),
       };
     }
 
@@ -8717,7 +8882,7 @@ export class GoalBoardCoordinator {
         ...base,
         work_state: reasons.length > 0 ? "review_blocked" : "review_pending",
         next_action: "review",
-        reasons,
+        reasons: phaseReasons(reasons),
       };
     }
 
@@ -8749,7 +8914,7 @@ export class GoalBoardCoordinator {
       ...base,
       work_state: reasons.length > 0 ? "execution_blocked" : "execution_pending",
       next_action: "execute",
-      reasons,
+      reasons: phaseReasons(reasons),
     };
   }
 
@@ -9726,7 +9891,7 @@ export class GoalBoardCoordinator {
   private expirePastClaims(boardId: string, now: string, actorId: string): void {
     const expired = this.store.db
       .prepare(`
-        SELECT claim_id, goal_id FROM claims
+        SELECT claim_id, goal_id, expires_at FROM claims
         WHERE board_id = ? AND state = 'active' AND expires_at <= ?
         ORDER BY claim_id
       `)
@@ -9734,15 +9899,16 @@ export class GoalBoardCoordinator {
     if (expired.length === 0) return;
     for (const claim of expired) {
       const claimId = asText(claim.claim_id);
+      const expiredAt = asText(claim.expires_at);
       this.store.db
         .prepare("UPDATE claims SET state = 'expired', released_at = ?, release_reason = ? WHERE claim_id = ?")
-        .run(now, "领取租约已到期", claimId);
+        .run(expiredAt, "领取租约已到期", claimId);
       this.abandonActiveRunsForClaim(
         boardId,
         claimId,
         actorId,
         "领取租约已到期，当前 Run 自动中断",
-        now,
+        expiredAt,
       );
       this.store.appendEvent({
         eventId: randomUUID(),
@@ -9752,7 +9918,7 @@ export class GoalBoardCoordinator {
         objectType: "claim",
         objectId: claimId,
         reason: "领取期限已到",
-        payload: { goal_id: asText(claim.goal_id) },
+        payload: { goal_id: asText(claim.goal_id), expired_at: expiredAt },
         at: now,
       });
     }
