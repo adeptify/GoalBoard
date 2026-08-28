@@ -24,7 +24,8 @@
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 已安装 | P1（发布门禁） |
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
-| GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已实现，工程验证通过，待产品实操 | P1 |
+| GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 待审批 | 未开始 | P1 |
 
 ---
 
@@ -519,7 +520,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 **来源**：v0.1.3 本机升级与安装实操
 **Bug 确认**：已确认，属于 GoalBoard Web 服务恢复动作和状态机不一致
 **修复决定**：用户已批准，P1 修复
-**修复状态**：已实现并通过工程验证；待安装最终包完成修复后产品实操
+**修复状态**：已合入远端 `main`，包含在 0.1.4 双架构包中；arm64 App、Core 和服务已安装
 
 ### 1. 真实场景
 
@@ -563,5 +564,59 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 ### 10. 验收边界
 
 - **工程验证**：通过。新增回归先确认旧实现把 `needs_repair + restart` 错误规划为 `ready`；修复后该计划返回 `conflict`、`next_action=service_install`、零 launchctl 修改，随后 `service install` 可恢复为 `running`。普通 running restart、外部端口冲突、失败回滚、安装升级指引均在整仓 264/264 测试与 TypeScript 检查中通过。
-- **产品实操**：现状已在 0.1.2 → 0.1.3 升级中复现，且 `service install` 绕行成功；修复后的单动作旅程仍为 `UNVERIFIED`。
-- **Owner 最终验收**：未通过。需用最终安装包制造真实旧配置并走一次升级恢复，确认消费者无需经过失败 restart；未知/异 PID 服务的保护已有工程回归，但真实冲突实操仍为 `UNVERIFIED`。
+- **产品实操**：通过主场景。真实 0.1.3 常驻服务 PID 30070 保持运行时安装 0.1.4 Core，`status` 返回 `needs_repair`；`service restart --json` 一次返回 `status=conflict / next_action=service_install / changes=[]`，PID 未变化。随后一次 `service install --confirm --json` 进入 `running`；新 LaunchAgent PID、4173 监听 PID 和 `/health` PID 均为 37994，plist PATH 已指向 `goalboard-0.1.4/runtime`。真实未知/异 PID 监听者场景仍为 `UNVERIFIED`，对应保护由工程回归覆盖。
+- **Owner 最终验收**：通过 GB10 已批准的主闭环。用户不再经历一次必然失败的 restart；正常 restart、未知进程保护和回滚边界没有改变。最终用户主观验收尚未发生，不把 Owner 验收升级为用户验收。
+
+---
+
+## GB-20260829-11：活跃长任务无续租入口，执行中静默过期
+
+**来源**：CGS G2B executor + Grok 实现 + Codex 独立 review 消费者反馈
+**Bug 确认**：已确认，属于 GoalBoard 租约续期与剩余时间可见性的设计缺陷；不是 GB08 的过期后展示冲突重复项
+**修复决定**：待用户审批
+**修复状态**：未开始；当前只能在过期后重新 `select_goal`，生成新的 Claim 和 Run
+
+### 1. 真实场景
+
+消费者领取 `cgs-g2b-editorial-decision` 的 executor Claim 后，委托 Grok 实现，再由 Codex 做独立代码和浏览器 review。整个链路一直有编辑、测试和 review 进展，但超过 `resolved_policy.max_lease_seconds=1800` 后，原 Claim 和 Run 因墙上时间到期失去写权限，Available 又把同一 Goal 显示为 `execution_pending`。原 Run 为 `run-b5cc5419-0564-44ca-826b-dd459282179a`。
+
+### 2. 事实与归因
+
+真实 CGS 流程已发生。当前实现只在领取时写一次 `expires_at`；Claim schema 虽保留 `renewed_at`，但 Coordinator、MCP Runtime surface、Skill 和 Web 都没有续租操作，也没有任何代码写入该字段。Skill 要求省略 `lease_seconds` 以采用动态策略，显式值只能缩短，不能超过当前 `max_lease_seconds`。到期后 Available 按规范把 Goal 重新开放，GB08 已让旧 Claim/Run 清楚投影为 expired/abandoned；因此“过期后怎么恢复”已经修复，本卡缺陷是“持续有真实进展的工作在过期前没有续期和预警路径”。主要归因是 GoalBoard 生命周期设计缺口，不是 CGS 误用，也不是代理停工。
+
+### 3. 现有流程的问题
+
+消费者只能在领取时获得一个固定截止时间，之后没有续租、心跳或临近到期的明确动作。长任务在用户可见层仍然持续推进，GoalBoard 却会静默撤销原 Run 的写权限。为了继续登记 Evidence 和 Review，消费者必须重新领取并创建新 Run；实现产出属于旧 Run，验收记录属于新 Run，连续性被人为切断。更认真地做独立 review 反而更容易跨过租约，形成“执行越完整，历史越割裂”的反向激励。
+
+### 4. 设计根因与初衷
+
+有限租约用于防止 Runtime 崩溃、Session 消失或任务被遗弃后永久占住 Goal，也用于限制多个执行者长期争夺同一写面；默认上限避免消费者通过一次超长 Claim 绕过失活恢复。这一安全边界合理。缺陷是系统只实现了“到期释放”，没有实现租约模型的另一半——原领取者以可审计的活跃信号续期，也没有在 Contract/UI/Runtime 中把剩余时间转成恢复动作。数据库中的 `renewed_at` 表明数据模型已为续期留位，但产品闭环没有完成。
+
+### 5. 当前影响
+
+影响任何超过 30 分钟的实现、构建、委托和独立 review 链路；对需要真实浏览器验收、跨代理协作或慢测试的 Goal 并非罕见边缘情况。到期不会直接丢失仓库产物或已提交 Evidence，但会阻断原 Run 的后续写入、把同一项工作重新显示为待执行，并强迫产生额外 Claim/Run。它不阻断用新 Run 绕行的最终闭环，却降低归属可追溯性并增加重复领取风险。
+
+### 6. 复杂度审查
+
+- **当前必须**：增加仅限原 actor、仅对仍 active 且未过期 Claim 生效的幂等续租；每次续期仍受 Claim 已解析策略约束并记录事件；Contract/Runtime 至少返回剩余时间和临近到期的 `next_action=renew_claim`；Skill 在长耗时委托、构建或 review 的进度检查点调用续租。过期后仍不得复活旧 Claim。
+- **可以延后**：后台守护进程自动心跳、根据任务类型预测租期、跨 Runtime 的 Claim 转交、把多个 Run 自动拼成一个逻辑 Run。
+- **应当删除**：单纯提高默认 1800 秒来掩盖问题；让消费者预先猜一个更长租期；用重新 `select_goal` 悄悄替代仍有效的 Claim 或把已过期 Run 复活。
+
+### 7. 修复必要性与优先级
+
+建议修复，P1，等待审批。它已经在正常的高质量执行路径中发生，并直接损害 Claim/Run 作为工作归属和审计边界的可信度。最小修复是显式、owner-only、可审计的续租和到期前提示，不需要新增常驻心跳服务，也不应放宽过期后的写权限。
+
+### 8. 修复前后体验差异
+
+- **修复前**：领取 Goal → 持续实现和 review → 无提示跨过 30 分钟 → Goal 再次显示待执行 → 重新领取并产生新 Run → 产出与验收历史分裂。
+- **修复后**：领取 Goal → Contract/UI 显示剩余租期 → 长耗时步骤的原 Runtime 在进度检查点执行一次续租 → 同一 Claim/Run 继续承载实现、Evidence 和 Review；若真的失联并过期，仍沿 GB08 的确定恢复路径创建新 Run。
+
+### 9. 最小修复范围
+
+新增 Claim 续租输入/结果、Coordinator 原子校验与 `claim.renewed` 事件、Runtime MCP 工具和 Skill 路由，并在 Contract/Web 的 active work 中显示剩余时间与临期动作。复用现有 `renewed_at` 字段，不改默认 `max_lease_seconds`，不新增数据库真相模型，不做自动后台心跳，不允许换 actor、过期复活或超过已解析策略的单次续期。兼容方式是纯新增 API 和展示字段；回滚后旧客户端仍按原 `expires_at` 工作。
+
+### 10. 验收边界
+
+- **工程验证**：尚未开始。需验证原 actor 可在到期前幂等续期、`expires_at/renewed_at` 和事件一致；他人、过期、释放、撤销 Claim 均拒绝；并发续租与过期物化不产生双写，Available 不会在续期后错误开放同一 Goal。
+- **产品实操**：问题已在真实 G2B 长链路中复现；续租后的同 Run 连续执行、临期提示和掉线后过期恢复均为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需用户批准后，用超过原 30 分钟窗口或可控时钟的完整实现 + review 旅程验证一次；用户本人是否认为提示时机和续租频率不打扰，仍需用户验收。
