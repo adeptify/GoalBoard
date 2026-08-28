@@ -60,9 +60,9 @@ function printInstallResult(result: GoalBoardHomeInstallResult): void {
   console.log(`Web：${result.launchers.web}`);
   console.log(result.next_steps.message);
   console.log(`可选打开 Web：${displayCommand(result.next_steps.web_command)}`);
-  console.log(`可选启用常驻 Web：${displayCommand(result.next_steps.service_install_command)}`);
-  if (result.status === "refreshed") {
-    console.log(`若常驻 Web 正在运行，请确认重启：${displayCommand(result.next_steps.service_restart_command)}`);
+  console.log(`可选启用常驻 Web，或修复 needs_repair：${displayCommand(result.next_steps.service_install_command)}`);
+  if (["upgraded", "refreshed", "repaired"].includes(result.status)) {
+    console.log(`仅当配置无需修复、只需加载新内容时确认重启：${displayCommand(result.next_steps.service_restart_command)}`);
   }
 }
 
@@ -72,6 +72,7 @@ function printServicePlan(plan: GoalBoardWebServicePlan): void {
   console.log(`LaunchAgent：${plan.detection.plist_path}`);
   console.log(`命令：${displayCommand(plan.detection.command)}`);
   console.log(`日志：${plan.detection.stdout_log} / ${plan.detection.stderr_log}`);
+  if (plan.next_action === "service_install") console.log("下一步：goalboard service install --confirm");
   for (const change of plan.changes) console.log(`- ${change.operation}: ${change.target}`);
   if (plan.status === "ready") console.log(`未执行。确认后重新运行并加 --confirm：${plan.confirmation}`);
 }

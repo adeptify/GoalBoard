@@ -39,6 +39,7 @@ export interface GoalBoardWebServicePlan {
   plan_id: string;
   action: GoalBoardWebServiceAction;
   status: "ready" | "no_change" | "unsupported" | "conflict";
+  next_action: "service_install" | null;
   detection: GoalBoardWebServiceDetection;
   changes: Array<{ operation: "create" | "start" | "stop" | "restart" | "remove"; target: string }>;
   confirmation: string;
@@ -242,6 +243,11 @@ export class GoalBoardWebServiceManager {
       plan_id: `web-service-plan-${randomUUID()}`,
       action,
       status,
+      next_action: status === "conflict"
+          && detection.state === "needs_repair"
+          && (action === "start" || action === "restart")
+        ? "service_install"
+        : null,
       detection,
       changes: serviceChanges(action, detection, status, this.plistPath),
       confirmation: confirmationFor(action),
@@ -606,7 +612,10 @@ function planStatus(
     return detection.state === "running" ? "no_change" : "ready";
   }
   if (action === "stop") return detection.running ? "ready" : "no_change";
-  if (action === "restart") return detection.owned ? "ready" : "conflict";
+  if (action === "restart") {
+    if (detection.state === "needs_repair") return "conflict";
+    return detection.owned ? "ready" : "conflict";
+  }
   return detection.state === "absent" ? "no_change" : detection.owned ? "ready" : "conflict";
 }
 
@@ -631,6 +640,13 @@ function confirmationFor(action: GoalBoardWebServiceAction): string {
 }
 
 function planMessage(action: GoalBoardWebServiceAction, status: GoalBoardWebServicePlan["status"], detection: GoalBoardWebServiceDetection): string {
+  if (
+    status === "conflict"
+    && detection.state === "needs_repair"
+    && (action === "start" || action === "restart")
+  ) {
+    return `${detection.message}；${action} 只会重载旧配置，无法完成修复。请改用 goalboard service install --confirm 原子更新配置`;
+  }
   if (status === "unsupported" || status === "conflict") return detection.message;
   if (status === "no_change") return `无需操作：${detection.message}`;
   return `准备${({ install: "安装并启动", start: "启动", stop: "停止", restart: "重启", remove: "移除" } as const)[action]} GoalBoard Web 常驻服务`;

@@ -199,6 +199,9 @@ test("upgrade failure rolls back the new release and leaves project data and cur
 
     const upgraded = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: sourceTwo });
     assert.equal(upgraded.status, "upgraded");
+    assert.match(upgraded.next_steps.message, /needs_repair/);
+    assert.match(upgraded.next_steps.message, /service_install_command/);
+    assert.match(upgraded.next_steps.message, /service_restart_command/);
     assert.equal(
       (JSON.parse(await readFile(join(home, "config", "installation.json"), "utf8")) as { version: string }).version,
       "2.0.0",
