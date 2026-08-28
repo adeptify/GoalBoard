@@ -422,12 +422,13 @@ test("only the bundled Web launcher exports its LaunchAgent process identity", a
   });
 });
 
-test("a bundled Node runtime produces standalone launchers without a system Node PATH", async () => {
+test("bundled Node launchers use the installed runtime when PATH has no Node", async () => {
   await withTemporaryDirectory(async (directory) => {
     const source = await fixtureSource(directory, "1.0.0");
     const bundledNode = join(source, "runtime", "node");
     await mkdir(join(source, "runtime"), { recursive: true });
-    await copyFile(process.execPath, bundledNode);
+    const hostNode = `'${process.execPath.replaceAll("'", `'\"'\"'`)}'`;
+    await writeFile(bundledNode, `#!/bin/sh\nexec ${hostNode} \"$@\"\n`);
     await chmod(bundledNode, 0o755);
     const home = join(directory, "home", ".goalboard");
     const result = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
