@@ -330,6 +330,22 @@ describe("mcp server", () => {
     assert.match(serviceStart, /service health.*navigation target.*separate/is);
   });
 
+  it("Runtime keeps finite Goals separate from recurring operation and feeds operational Evidence into Candidates", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const planning = fs.readFileSync(path.join(skillRoot, "references/planning.md"), "utf8");
+    const execution = fs.readFileSync(path.join(skillRoot, "references/execution.md"), "utf8");
+
+    for (const text of [skill, planning]) {
+      assert.match(text, /Goal.*finite.*acceptable.*Done/is);
+      assert.match(text, /recurring operation.*Evidence.*Candidate Improvement Goal/is);
+      assert.match(text, /permanently unmet Goal.*cyclic `depends_on`/is);
+    }
+    assert.match(execution, /recurring operation.*does not reopen.*completed capability Goal/is);
+    assert.match(execution, /operational Evidence.*Candidate Improvement Goal/is);
+    assert.match(execution, /user.*decides.*canonical Goal/is);
+  });
+
   it("Runtime recovery guidance treats a newer catalog as a stale Session, not damaged data", () => {
     const skillRoot = path.join(ROOT, "skills/goal-advance");
     const connection = fs.readFileSync(path.join(skillRoot, "references/project-connection.md"), "utf8");

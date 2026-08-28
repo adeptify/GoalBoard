@@ -83,7 +83,14 @@ test("planning methods resolve project over personal over cold-start built-ins",
     assert.match(pack.instructions, /depends_on/);
     assert.match(pack.instructions, /用户提出新要求时/);
     assert.match(pack.instructions, /没有循环/);
+    assert.match(pack.instructions, /Goal.*有限.*可验收.*最终能完成/s);
+    assert.match(pack.instructions, /持续运行.*Evidence.*Candidate Improvement Goal/s);
+    assert.match(pack.instructions, /永久未完成 Goal.*循环 depends_on/s);
   }
+  const operations = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-operations-organization")!;
+  assert.ok(operations.steps.some((step) => /首次能力建设.*持续运行/.test(step)));
+  assert.ok(operations.completion_checks.some((check) => /持续运行.*Goal.*完成/.test(check)));
+  assert.ok(operations.failure_modes.some((mode) => /永久未完成 Goal/.test(mode)));
   const builtIn = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
   const personal = normalizePlanningMethodPack({ ...builtIn, name: "个人软件开发方法" }, "personal", null, "2026-08-22T01:00:00.000Z");
   const project = normalizePlanningMethodPack({ ...personal, name: "项目软件开发方法" }, "project", null, "2026-08-22T02:00:00.000Z");

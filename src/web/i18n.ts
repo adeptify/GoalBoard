@@ -1818,6 +1818,8 @@ Object.assign(EN, {
   "关联与规则记录": "Relationship and rule records",
   "关系、风险、影响范围和生效规则的只读记录": "Read-only records of relationships, risks, affected areas, and active rules",
   "先记录你的想法，再补全目标说明并拆成可执行工作。": "Record your idea first, then complete the goal description and split it into executable work.",
+  "Goal 应描述一项有限、可验收、最终能完成的改变。": "A Goal should describe one finite, acceptable change that can ultimately be completed.",
+  "能力建立后的重复运行产生 Evidence；发现问题后再提出有限的改进 Goal，不必把原 Goal 永久留在未完成状态。": "Recurring use after the capability is established produces Evidence; when it reveals a problem, propose a finite improvement Goal instead of leaving the original Goal permanently unfinished.",
   "它会怎样运转 ": "How it works ",
   "已退回": "Sent back",
   "目标、范围和完成标准已成为正式依据；满足其他条件后可以开始。": "The goal, scope, and completion criteria are now official. Work can start once the remaining conditions are met.",

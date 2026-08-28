@@ -29,6 +29,12 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 6. **Execute from derived state.** Choose an eligible leaf, work inside its accepted Contract, submit evidence and permitted reviews, complete it, and release the Claim.
 7. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
 
+## Keep Goals finite and operations recurring
+
+A Goal is a finite, acceptable change that can reach Done. Building a capability, workflow, or tool for the first time can be a Goal. Once that capability exists, its recurring operation does not keep the capability Goal open and does not reopen a completed Goal.
+
+Recurring operation produces Evidence. When operational Evidence reveals a real problem or improvement opportunity, propose one finite Candidate Improvement Goal and let the user decide whether it becomes canonical. Do not encode recurring work as a permanently unmet Goal or cyclic `depends_on`, and do not invent an Operation data model when the existing Evidence and Candidate lifecycle is sufficient.
+
 ## Route the current request
 
 Read only the references needed for the current route:

@@ -823,6 +823,8 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-open-create aria-label="新建目标"/);
   assert.match(html, /data-create-dialog/);
   assert.match(html, /它属于哪个更大的 Goal？/);
+  assert.match(html, /Goal 应描述一项有限、可验收、最终能完成的改变/);
+  assert.match(html, /重复运行产生 Evidence；发现问题后再提出有限的改进 Goal/);
   assert.match(html, /只决定 Tree 中放在哪里，不要求上级 Goal 先完成/);
   assert.match(html, /开始前必须等哪些 Goal 完成？/);
   assert.match(html, /这会成为领取和完成的硬门禁/);

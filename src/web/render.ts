@@ -3688,6 +3688,7 @@ function renderCreateDialog(view: GoalBoardWebView): string {
     <form method="dialog" class="dialog-shell" data-create-form>
       <header><div><span class="dialog-icon">${icon("plus")}</span><div><h2 id="create-dialog-title">${L("新建目标")}</h2><p>${L("先记录你的想法，再补全目标说明并拆成可执行工作。")}</p></div></div><button class="icon-button" type="button" data-close-create aria-label="${L("关闭")}">${icon("x")}</button></header>
       <div class="dialog-body">
+        <aside class="goal-lifecycle-hint">${icon("info")}<span><strong>${L("Goal 应描述一项有限、可验收、最终能完成的改变。")}</strong><small>${L("能力建立后的重复运行产生 Evidence；发现问题后再提出有限的改进 Goal，不必把原 Goal 永久留在未完成状态。")}</small></span></aside>
         <div class="field-row field-row--split"><label><span>Goal ID <small>${L("可选")}</small></span><input name="goal_id" autocomplete="off" placeholder="${L("例如 GOAL-AUTHORING")}"></label><label><span>${L("优先级")}</span><input name="priority" type="number" min="0" max="100" value="50"></label></div>
         <label><span>${L("目标名称")}</span><input name="title" required maxlength="120" placeholder="${L("一句话说明要完成什么")}"></label>
         <label><span>${L("要得到的结果 ")}<small>${L("可稍后补")}</small></span><textarea name="outcome" rows="2" placeholder="${L("完成后，用户或系统获得什么可观察结果")}"></textarea></label>
@@ -4917,6 +4918,10 @@ const MORE_STYLES = `
   .dialog-icon--danger { color: var(--red); background: var(--red-soft); }
   .create-dialog h2 { margin: 0; font-size: 19px; }
   .create-dialog header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+  .goal-lifecycle-hint { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--rail); }
+  .goal-lifecycle-hint > svg { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
+  .goal-lifecycle-hint span { display: grid; gap: 2px; }
+  .goal-lifecycle-hint small { color: var(--muted); }
   .dialog-body { padding: 18px 20px 22px; overflow: auto; display: grid; gap: 13px; }
   .dialog-body label { display: grid; gap: 5px; }
   .dialog-body label > span, .dialog-body legend { font-weight: 650; }

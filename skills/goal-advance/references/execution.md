@@ -54,6 +54,8 @@ For review, test the Contract and evidence rather than repeating the executor re
 
 An observed mismatch is Goal information when it can make a completion claim false: a code Bug, unusable design, incorrect content, broken operating process, weak research evidence, or another task-specific failure.
 
+A recurring operation uses an already established capability; it does not reopen that completed capability Goal. Preserve operational Evidence from the run. When the Evidence shows an independently deliverable improvement, submit a finite Candidate Improvement Goal; the user still decides whether it becomes a canonical Goal. Do not create a backward `depends_on` from the completed capability to its recurring use.
+
 Read the affected Contract and current Goal Tree, then choose the smallest truthful action:
 
 - If an acceptance criterion is not met, do not submit passing Evidence or call `complete`. Submit failed/inconclusive Evidence when a traceable check exists.

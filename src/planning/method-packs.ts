@@ -117,6 +117,11 @@ ${instructionList(source.steps, "先明确可验收结果，再按产出消费�
 
 规划不是把上面的步骤机械变成一串 Goal。先用这些步骤把问题想完整，再把每个能独立交付、独立验收的结果设为 Goal；同一 Goal 不要混入多个主要结果。
 
+## 有限 Goal 与持续运行
+Goal 必须描述一项有限、可验收、最终能完成的改变。首次建立能力、流程或工具可以是 Goal；能力建立后的持续运行属于 recurring operation，不应为了保持循环可见而把能力 Goal 留成永久未完成 Goal，也不应把业务循环写成循环 depends_on。
+
+持续运行产生可追溯 Evidence。Evidence 暴露真实问题或改进机会时，提交一条有限的 Candidate Improvement Goal，由用户决定是否晋升；不要自动创建或批准新的 canonical Goal。本轮规划只需沿用现有 Evidence 与 Candidate 能力，不要为了表达重复运行新增调度器或 Operation 数据模型。
+
 ## 拆分时必须回答
 ${coverage || "1. 最终结果是什么，谁会消费它，凭什么确认完成？"}
 
@@ -159,7 +164,7 @@ function builtin(input: Omit<PlanningMethodPack, "scope" | "version" | "enabled"
   const pack = {
     ...fields,
     scope: "built_in" as const,
-    version: 2,
+    version: 3,
     enabled: true,
     created_at: BUILTIN_AT,
     updated_at: BUILTIN_AT,
@@ -281,10 +286,10 @@ export const BUILTIN_PLANNING_METHOD_PACKS: readonly PlanningMethodPack[] = [
   builtin({
     method_id: "work-operate-process", kind: "work_type", name: "运营与流程", summary: "围绕角色、触发、交接、例外和度量建立可运行流程。",
     applies_to: ["运营机制", "组织流程", "重复性工作"], domain_tags: ["operations", "process"],
-    steps: ["定义触发和服务对象", "明确角色、交接和权限", "设计正常流与例外流", "建立度量和复盘"],
+    steps: ["定义触发和服务对象", "明确角色、交接和权限", "设计正常流与例外流", "区分首次能力建设与能力建立后的持续运行", "建立度量、Evidence 与有限改进入口"],
     required_coverage: [coverage("roles_responsibilities", "角色与职责", "谁发起、执行、批准和兜底？"), coverage("exception_handling", "例外处理", "失败、超时和冲突怎样恢复？"), coverage("measurement", "衡量方式", "如何知道流程有效且值得继续？")],
-    dependency_rules: [dependency("workflow-after-ownership", "流程执行依赖角色、权限和交接责任已经明确。", "workflow depends_on roles and permissions"), dependency("improvement-after-measurement", "流程改进依赖真实运行记录和结果度量，而不是主观印象。", "improvement depends_on operational evidence"), ...COMMON_DEPENDENCIES], evidence_requirements: ["真实流程记录", "例外案例", "结果指标"], completion_checks: ["交接无隐含责任", "异常有恢复入口"],
-    failure_modes: ["只画正常流程", "套用全职团队责任制", "没有可观察结果"], source_refs: ["GoalBoard planning-engine spec"], confidence: 0.93,
+    dependency_rules: [dependency("workflow-after-ownership", "流程执行依赖角色、权限和交接责任已经明确。", "workflow depends_on roles and permissions"), dependency("improvement-after-measurement", "流程改进依赖真实运行记录和结果度量，而不是主观印象。", "improvement depends_on operational evidence"), ...COMMON_DEPENDENCIES], evidence_requirements: ["真实流程记录", "例外案例", "结果指标"], completion_checks: ["交接无隐含责任", "异常有恢复入口", "能力建设 Goal 可完成，持续运行另行产生 Evidence"],
+    failure_modes: ["只画正常流程", "套用全职团队责任制", "没有可观察结果", "把持续运行写成永久未完成 Goal"], source_refs: ["GoalBoard planning-engine spec"], confidence: 0.93,
   }),
   builtin({
     method_id: "work-content-communication", kind: "work_type", name: "内容与传播", summary: "从受众和传播时刻出发，建立主张、证据、载体和反馈闭环。",
@@ -367,10 +372,10 @@ export const BUILTIN_PLANNING_METHOD_PACKS: readonly PlanningMethodPack[] = [
   builtin({
     method_id: "domain-operations-organization", kind: "domain", name: "运营与组织流程", summary: "把角色、权限、工具、例外和度量连成可持续运行闭环。",
     applies_to: ["组织流程", "服务运营", "跨角色协作"], domain_tags: ["operations", "organization"],
-    steps: ["定义服务结果与触发", "配置角色、权限和工具", "设计交接与例外", "运行、度量并改进"],
+    steps: ["定义服务结果与触发", "配置角色、权限和工具", "设计交接与例外", "区分首次能力建设与持续运行", "运行、记录 Evidence 并提出有限改进"],
     required_coverage: [coverage("roles_responsibilities", "角色与职责", "真实投入条件下谁负责什么？"), coverage("permissions", "权限与授权", "哪些动作需要谁批准？"), coverage("tools_workflow", "工具与工作流", "事实在哪记录，怎样交接？"), coverage("exception_handling", "例外处理", "阻塞、冲突和失败如何处理？"), coverage("measurement", "衡量方式", "如何观察效率、质量和结果？")],
-    dependency_rules: [dependency("workflow-after-ownership", "工作流和工具配置依赖角色、权限和真实投入边界已经确认。", "workflow depends_on roles and permissions"), dependency("improvement-after-measurement", "改进动作依赖真实运行、异常记录和结果度量。", "improvement depends_on operational evidence"), ...COMMON_DEPENDENCIES], evidence_requirements: ["角色确认", "真实流程演练", "结果指标"], completion_checks: ["流程能在现实投入下运转", "异常有明确负责人和恢复动作"],
-    failure_modes: ["照搬大公司流程", "责任与投入不匹配", "记录系统和实际工作脱节"], source_refs: ["GoalBoard planning-engine spec"], confidence: 0.93,
+    dependency_rules: [dependency("workflow-after-ownership", "工作流和工具配置依赖角色、权限和真实投入边界已经确认。", "workflow depends_on roles and permissions"), dependency("improvement-after-measurement", "改进动作依赖真实运行、异常记录和结果度量。", "improvement depends_on operational evidence"), ...COMMON_DEPENDENCIES], evidence_requirements: ["角色确认", "真实流程演练", "结果指标"], completion_checks: ["流程能在现实投入下运转", "异常有明确负责人和恢复动作", "持续运行不阻止能力建设 Goal 完成"],
+    failure_modes: ["照搬大公司流程", "责任与投入不匹配", "记录系统和实际工作脱节", "把重复运行写成永久未完成 Goal"], source_refs: ["GoalBoard planning-engine spec"], confidence: 0.93,
   }),
   builtin({
     method_id: "domain-app-product", kind: "domain", name: "通用 App", summary: "兼容历史 app task context 的产品完整性检查。",

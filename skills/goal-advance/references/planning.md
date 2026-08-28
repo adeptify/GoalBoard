@@ -36,6 +36,12 @@ On resume, show only the latest useful checkpoint: what was confirmed, what rema
 
 Use the loop for a new compound Goal, a Goal with several independently reviewable outputs, any relation change, or a requirement change that can affect more than one Goal. Do not use it for ordinary execution of an unchanged accepted leaf.
 
+### Keep the change finite; keep the operation recurring
+
+A Goal is a finite, acceptable change that can reach Done. The initial ability to run a workflow can be a Goal; later recurring operation is ongoing use of that completed ability, not another reason to keep it unmet.
+
+Recurring operation produces Evidence. When that Evidence exposes a concrete issue, propose a finite Candidate Improvement Goal and let the user decide whether to make it canonical. Never model the loop as a permanently unmet Goal or cyclic `depends_on`. `depends_on` still means one finite result is consumed by another; it does not mean “after every run, start the earlier Goal again.” Reuse existing Evidence and Candidate semantics instead of adding an Operation state model unless a separately confirmed product need requires one.
+
 ### 1. Recover the planning problem
 
 Return to the user's original outcome instead of the most recently discussed topic. Identify:
