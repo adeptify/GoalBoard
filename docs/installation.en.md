@@ -58,13 +58,17 @@ This project is clearly marked `regenerable_demo` in the catalog, separate from 
 
 ## Starting Web: persistent or temporary
 
-In a Runtime already connected to the GoalBoard Skill, the recommended instruction is:
+In a Runtime already connected to the GoalBoard Skill, you can say:
 
 > Start GoalBoard
 
-The Runtime first does a read-only `goalboard service status` check instead of launching a foreground process that easily disappears with the Session. On macOS, if the persistent service is not installed, it first explains that this modifies a user-level LaunchAgent, starts at login, and keeps running after the terminal closes; it installs only after explicit confirmation. If stopped, it starts the service; if already running, it only returns the address; if the existing config is outdated, it explains the repair before confirming. Service commands report success only after the page is healthy and reachable.
+The Runtime first does a read-only `goalboard service status` check and does not guess the desired lifetime. On macOS, if no persistent service exists and the user only says “start/open GoalBoard”, the Runtime presents one choice between temporary foreground use, which ends with the current terminal or Session, and login-persistent use, which installs GoalBoard's owned user LaunchAgent, survives terminal closure, and starts after login. It follows the explicit choice without a repeated confirmation; before that choice it starts no Web process and writes no system configuration.
 
-If you only want a temporary process for the current terminal, say explicitly:
+An explicit request for temporary use is already foreground-start authority, so the Runtime explains the lifetime and proceeds. An explicit request to enable login persistence is already first-install authority, so it explains the LaunchAgent effect and proceeds. Repairing an old configuration is a separate mutation: the Runtime still explains which owned configuration will be rewritten and restarted and obtains repair-specific authority. Unknown same-name services and port conflicts are never overwritten, adopted, or stopped. A service command reports success only after the reachable page belongs to the current owned instance.
+
+“Use GoalBoard to continue this project”, “advance this Goal”, and “connect or open a project/Goal” stay in the Runtime Goal flow and do not start Web. Web is never a prerequisite for connection, clarification, execution, or review. If the user accepts a contextual visualization offer while the service is absent, the Runtime uses the same one choice between temporary and login-persistent use.
+
+For a temporary process tied to the current terminal, say directly:
 
 > Open GoalBoard temporarily
 

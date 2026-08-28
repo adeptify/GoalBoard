@@ -1,6 +1,6 @@
 # Starting GoalBoard Web from a Runtime
 
-Use this reference only when the user explicitly asks to start or open GoalBoard Web. Service management is independent of Goal lifecycle; never use these commands to read or modify Goals, projects, bindings, Claims, Runs, or Evidence.
+Use this reference only when the user explicitly asks to start or open the GoalBoard page/Web UI, or accepts a separate visualization offer. Service management is independent of Goal lifecycle; never use these commands to read or modify Goals, projects, bindings, Claims, Runs, or Evidence.
 
 ## 1. Inspect before acting
 
@@ -12,20 +12,32 @@ Run the installed, read-only status command first:
 
 If the launcher does not exist, say GoalBoard itself is not installed or is incomplete and point the user to the normal installation flow. Do not silently use a repository checkout, another database, or a different GoalBoard home.
 
-## 2. Route an ordinary “启动 GoalBoard” request
+## 2. Interpret the user's opening intent once
+
+This route is only for opening the GoalBoard page or Web UI. “使用 GoalBoard 继续这个项目”, “推进这个 Goal”, “连接项目”, and “打开这个 Goal” are Goal work, not Web startup requests; use the Runtime MCP flow without inspecting or starting Web.
+
+After the read-only status check, preserve the user's actual choice:
+
+- If the user only says “启动 GoalBoard” or “打开 GoalBoard” and the service is `absent`, offer one real choice between temporary foreground use and login-persistent use: “当前可以本次临时打开（关闭终端或 Session 后停止），也可以启用登录常驻（会安装 GoalBoard 管理的用户级 LaunchAgent，关闭终端后仍运行并在登录后启动）。你想选哪一种？” Before the user chooses, do not run either startup path or write system configuration. The user's choice is the authorization for that path; do not ask the same decision again.
+- An explicit request for temporary foreground use already authorizes the foreground launcher. Explain that closing the terminal or Runtime Session stops it, then run that path without another “确定吗”.
+- An explicit request to enable login persistence already authorizes a first install when the service is `absent`. Explain that GoalBoard will install its owned user-level LaunchAgent, keep running after the terminal closes, and start after login; then run the confirmed install without repeating the choice.
+- Natural language is sufficient when it clearly identifies the current path. Do not require the user to copy a fixed phrase. “先临时开一下”, “这次随终端关闭”, “启用登录后自动启动”, and equivalent wording carry the same path-specific authority.
+- Accepting a contextual visualization offer authorizes opening Web, but does not choose temporary versus persistent lifetime. If the service is `absent`, ask the same single choice above.
+
+## 3. Route the returned service state
 
 Use the returned `state` exactly:
 
 | State | Runtime action |
 |---|---|
-| `running` | Do not restart. Say the page is already available and return `http://127.0.0.1:4173`. |
-| `absent` | Say: “这会安装 GoalBoard 的 macOS 用户级常驻后台服务。关闭终端后页面仍会运行，登录后会自动启动。要现在安装并启动吗？” Run `service install --confirm` only after an explicit yes in this conversation. |
-| `stopped` | The user's explicit “启动” already authorizes starting the existing owned service. Run `service start --confirm`; return the address only after success. |
-| `unhealthy` | Explain that the process exists but the page is unavailable. Run `service restart --confirm` under the user's explicit start request; return the address only after the health check succeeds. |
-| `needs_repair` | Explain that GoalBoard's owned LaunchAgent uses an old or incomplete configuration and that repair will rewrite that owned configuration and restart it. Obtain explicit confirmation, then run `service install --confirm`. |
+| `running` | Do not restart. Say the page is already available, then choose the navigation target in section 5. |
+| `absent` | Follow the intent rules above: ask one temporary/persistent choice for an ordinary open request, or execute an already-explicit temporary or first-install choice after explaining its effect. |
+| `stopped` | An explicit request to open or start the existing owned persistent service authorizes `service start --confirm`; return the address only after success. An explicit temporary request follows the foreground rules below instead. |
+| `unhealthy` | Explain that the owned process exists but the page is unavailable. An explicit open/start request authorizes `service restart --confirm`; return the address only after its owned health check succeeds. |
+| `needs_repair` | `needs_repair` is a separate configuration rewrite: explain which owned LaunchAgent configuration will be rewritten and restarted, then obtain repair-specific authority before `service install --confirm`. A prior ordinary-open or first-install choice does not authorize that repair. If the user explicitly asked to repair the persistent service, explain the effect and execute without repeating the same decision. |
 | `unavailable` | Explain the returned missing-launcher or incomplete-install message. Recommend repairing the GoalBoard installation; do not fall back to an unknown binary or service. |
-| `conflict` | Explain that the same LaunchAgent name is unknown or user-modified and GoalBoard will not overwrite it. Stop and let the user resolve ownership; do not force install or start. |
-| `unsupported` | Say that this operating system currently has no GoalBoard system-level persistent-service integration. Do not claim background startup. Ask whether the user wants to “临时打开 GoalBoard” in the foreground. |
+| `conflict` | Explain that the same LaunchAgent name or configured port is occupied by an unowned or user-modified process/configuration and GoalBoard will not overwrite, adopt, stop, or replace it. Stop and let the user resolve ownership. |
+| `unsupported` | Say that this operating system currently has no GoalBoard system-level persistent-service integration. Do not claim background startup. An explicit temporary request follows the foreground route; otherwise ask once whether the user wants that temporary option. |
 
 The persistent commands are:
 
@@ -35,9 +47,9 @@ The persistent commands are:
 "$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm --json
 ```
 
-Do not run `install --confirm` for `absent` or `needs_repair` until the required confirmation is present in the current conversation. Do not reinterpret “试试看”, silence, or an unrelated earlier approval as confirmation.
+For `absent`, a clear initial request for login persistence or the user's answer to the temporary/persistent choice is the required path-specific authority for `install --confirm`; do not ask it twice. For `needs_repair`, obtain separate repair authority unless the user already asked for that repair. Do not reinterpret “试试看”, silence, an unrelated earlier approval, or authority for another path as confirmation.
 
-## 3. Route an explicit temporary request
+## 4. Run the foreground path
 
 “临时打开 GoalBoard” means foreground operation. First inspect status so a healthy persistent service is not given a competing process on the same port.
 
@@ -49,9 +61,9 @@ Do not run `install --confirm` for `absent` or `needs_repair` until the required
 "$HOME/.goalboard/bin/goalboard-web" --home "$HOME/.goalboard"
 ```
 
-Before launching, say plainly that closing the terminal or Runtime Session stops this temporary page. Keep the process in the foreground. Do not add `nohup`, `&`, `disown`, a background shell, or a claim that it will survive logout.
+Before launching, say plainly that closing the terminal or Runtime Session stops this temporary page. This is an explanation, not a repeated confirmation when the user already chose temporary use. Keep the process in the foreground. Do not add `nohup`, `&`, `disown`, a background shell, or a claim that it will survive logout.
 
-## 4. Open the relevant project or Goal
+## 5. Open the relevant project or Goal
 
 Service health and the navigation target are separate decisions. After the page is healthy, but before opening it, make a read-only `goalboard_v1_context_resolve` call unless the user explicitly asked to browse all projects.
 
@@ -62,7 +74,7 @@ Service health and the navigation target are separate decisions. After the page 
 - Opening a project or Goal changes only Web focus. It does not bind or switch the Runtime project, create a Claim, start a Run, advance a Goal, or authorize any Goal lifecycle write.
 - If context resolution itself fails, report that failure instead of claiming that a guessed page is the current project.
 
-## 5. Explain failures without switching paths
+## 6. Explain failures without switching paths
 
 - If a service command fails, report its human-readable error and the returned stderr log path. Do not return the page address as though startup succeeded.
 - If health readiness times out, say the process started but the page did not become usable, and point to `~/.goalboard/logs/web-service.error.log`.

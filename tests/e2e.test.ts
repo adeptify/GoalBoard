@@ -295,6 +295,15 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       );
       assert.match(installedServiceStart, /service status/);
       assert.match(installedServiceStart, /临时打开 GoalBoard/);
+      assert.match(installedServiceStart, /one real choice between temporary foreground use and login-persistent use/);
+      assert.match(installedServiceStart, /do not ask the same decision again/);
+      const installedSkill = await readFile(
+        join(userHome, ".codex", "skills", "goal-advance", "SKILL.md"),
+        "utf8",
+      );
+      assert.match(installedSkill, /Never require a fixed phrase or verbatim repetition/);
+      assert.match(installedSkill, /Offer visualization only when it helps/);
+      assert.match(installedSkill, /Omit `lease_seconds` by default/);
       const installedExecution = await readFile(
         join(userHome, ".codex", "skills", "goal-advance", "references", "execution.md"),
         "utf8",
@@ -369,6 +378,16 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
         installedTools.find((tool) => tool.name === "goalboard_v1_evidence_submit")?.description ?? "",
         /Markdown anchor.*UNVERIFIED/,
       );
+      for (const toolName of [
+        "goalboard_v1_select_goal",
+        "goalboard_v1_draft_dialogue_start",
+        "goalboard_v1_draft_dialogue_resume",
+        "goalboard_v1_claim",
+      ]) {
+        const lease = installedTools.find((tool) => tool.name === toolName)?.inputSchema?.properties?.lease_seconds;
+        assert.match(lease?.description ?? "", /动态策略.*max_lease_seconds/);
+        assert.equal(lease?.maximum, undefined);
+      }
       const templates = await firstMcp.request("resources/templates/list", {});
       assert.deepEqual((templates.result as { resourceTemplates: unknown[] }).resourceTemplates, []);
       const unresolved = await firstMcp.call("goalboard_v1_context_resolve", {});

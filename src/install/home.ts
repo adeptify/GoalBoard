@@ -754,6 +754,12 @@ function launcherSource(
 exec ${serviceEnvironment}${shellQuote(nodePath)} ${shellQuote(entryPath)} "$@"
 `;
   }
+  const childEnvironment = entry === "web"
+    ? `{
+    ...process.env,
+    GOALBOARD_WEB_SERVICE_PROCESS_ID: String(process.pid),
+  }`
+    : "process.env";
   return `${LEGACY_LAUNCHER_HEADER}
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -765,7 +771,7 @@ const installation = JSON.parse(readFileSync(path.join(homeDirectory, "config", 
 const entry = path.resolve(homeDirectory, installation.release_path, "${target}");
 const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
   cwd: path.dirname(entry),
-  env: process.env,
+  env: ${childEnvironment},
   stdio: "inherit",
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {

@@ -11,8 +11,8 @@ Use GoalBoard only after the user explicitly invokes it for the current work. St
 
 - Use only host-provided `goalboard_v1_*` Runtime MCP tools for project and Goal lifecycle work. Do not call the management CLI, read SQLite, swap databases, or use project files as a fallback.
 - Never infer or silently bind a project from Git, a directory, repository name, conversation text, or host clue. Suggestions are questions for the user, not authority.
-- Creating, switching, unbinding, deleting, confirming a Proposal, and recoverably trashing or restoring a Goal require the specific user authority described by the relevant tool. Do not turn vague approval into another operation.
-- Web is optional. Starting it does not select a project or authorize Goal changes. Use the service CLI only for an explicit request to start or open Web.
+- Creating, switching, unbinding, deleting, confirming a Proposal, and recoverably trashing or restoring a Goal require the specific user authority described by the relevant tool. Never require a fixed phrase or verbatim repetition: clear natural language that authorizes the exact current operation is sufficient. Do not turn vague approval into another operation.
+- Web is optional. Starting it does not select a project or authorize Goal changes. Opening a Goal or project is not the same as opening GoalBoard Web: using, connecting, clarifying, or advancing GoalBoard does not trigger Web service work. Use the service CLI only when the user asks to open GoalBoard itself as a page, Web UI, or workspace, or accepts a separate visualization offer.
 - `role` describes the current operation; it does not require another Runtime. Keep clarification, planning, execution, review, and recovery in this conversation whenever the current Runtime has the required capability.
 - Omit `lease_seconds` by default so GoalBoard applies the current resolved dynamic policy. Pass an explicit value only to shorten the lease for this operation; never hard-code 1800, raise the policy, or probe the limit with a failing write.
 - A Goal opened beside a Desktop Runtime is context, not a Claim. Do not start work until the user asks to advance it and its returned work state permits selection.
@@ -34,6 +34,14 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 A Goal is a finite, acceptable change that can reach Done. Building a capability, workflow, or tool for the first time can be a Goal. Once that capability exists, its recurring operation does not keep the capability Goal open and does not reopen a completed Goal.
 
 Recurring operation produces Evidence. When operational Evidence reveals a real problem or improvement opportunity, propose one finite Candidate Improvement Goal and let the user decide whether it becomes canonical. Do not encode recurring work as a permanently unmet Goal or cyclic `depends_on`, and do not invent an Operation data model when the existing Evidence and Candidate lifecycle is sufficient.
+
+## Offer visualization only when it helps
+
+After reading the current GoalBoard state, a Runtime may offer visualization when it would materially reduce review effort: multiple Goal Tree branches, dependencies, multiple pending decisions, or a complex review. Name the concrete value from the current state rather than promoting Web generically, for example: “There are two parallel Goals and five pending changes; visualization may make them easier to check. Open it?”
+
+- Offer at most once in the current Session. Do not offer during a simple single-Goal flow, when the user is already in Web, after it was already offered, or after the user declined. A refusal means continue completely in the current Runtime without Web and do not ask again in this Session.
+- Only an explicit yes to the current offer authorizes the Runtime to open or start Web. The offer itself is read-only. If the user agrees, read [references/service-start.md](references/service-start.md); a first persistent install or a repair still follows the lifetime and configuration authority rules there.
+- Offering or opening visualization does not bind or switch a project, create a Goal, Claim work, start a Run, or authorize a Goal Tree decision. Harness and terminal flows remain fully usable without Web.
 
 ## Route the current request
 

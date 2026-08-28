@@ -340,6 +340,30 @@ describe("mcp server", () => {
     for (const content of Object.values(references)) assert.doesNotMatch(content, /GOALBOARD_DATABASE/);
   });
 
+  it("Runtime Web first-open instructions preserve one choice and authorization boundaries", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const serviceStart = fs.readFileSync(path.join(skillRoot, "references/service-start.md"), "utf8");
+    const installationZh = fs.readFileSync(path.join(ROOT, "docs/installation.md"), "utf8");
+    const installationEn = fs.readFileSync(path.join(ROOT, "docs/installation.en.md"), "utf8");
+
+    assert.match(skill, /Opening a Goal or project is not the same as opening GoalBoard Web/);
+    assert.match(skill, /using, connecting, clarifying, or advancing GoalBoard does not trigger Web service work/);
+
+    assert.match(serviceStart, /one real choice between temporary foreground use and login-persistent use/);
+    assert.match(serviceStart, /Before the user chooses, do not run either startup path or write system configuration/);
+    assert.match(serviceStart, /The user's choice is the authorization for that path; do not ask the same decision again/);
+    assert.match(serviceStart, /An explicit request for temporary foreground use already authorizes the foreground launcher/);
+    assert.match(serviceStart, /An explicit request to enable login persistence already authorizes a first install/);
+    assert.match(serviceStart, /`needs_repair` is a separate configuration rewrite/);
+    assert.match(serviceStart, /does not authorize that repair/);
+
+    assert.match(installationZh, /一次说明.*临时打开.*登录常驻/s);
+    assert.match(installationZh, /明确选择.*不再重复确认/s);
+    assert.match(installationEn, /one choice.*temporary.*login-persistent/s);
+    assert.match(installationEn, /explicit choice.*without a repeated confirmation/s);
+  });
+
   it("Runtime opens Web at the bound project or active Goal without changing Runtime state", () => {
     const serviceStart = fs.readFileSync(
       path.join(ROOT, "skills/goal-advance/references/service-start.md"),
@@ -353,6 +377,35 @@ describe("mcp server", () => {
     assert.match(serviceStart, /do not construct.*project.*Goal URL/is);
     assert.match(serviceStart, /does not bind or switch.*Claim.*Run.*advance.*Goal/is);
     assert.match(serviceStart, /service health.*navigation target.*separate/is);
+  });
+
+  it("Runtime offers contextual visualization once without making Web a prerequisite", () => {
+    const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
+
+    assert.match(skill, /multiple Goal Tree branches, dependencies, multiple pending decisions, or a complex review/);
+    assert.match(skill, /name the concrete value.*current state/i);
+    assert.match(skill, /at most once in the current Session/);
+    assert.match(skill, /simple single-Goal flow.*already in Web.*already offered.*declined/s);
+    assert.match(skill, /Only an explicit yes.*open or start Web/s);
+    assert.match(skill, /does not bind or switch a project.*create a Goal.*Claim.*Run.*Goal Tree decision/s);
+    assert.match(skill, /continue completely in the current Runtime without Web/);
+  });
+
+  it("Runtime accepts clear operation-specific authority without a magic phrase", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const protocol = fs.readFileSync(path.join(skillRoot, "references/protocol.md"), "utf8");
+    const connection = fs.readFileSync(path.join(skillRoot, "references/project-connection.md"), "utf8");
+
+    assert.match(skill, /Never require a fixed phrase or verbatim repetition/);
+    assert.match(protocol, /clear natural language.*one pending operation.*current conversation/is);
+    assert.match(protocol, /“可以，就创建并关联这个项目”/);
+    assert.match(protocol, /“按刚才确认的名称创建”/);
+    assert.match(protocol, /“确认这份 Goal Tree 提案”/);
+    assert.match(protocol, /does not transfer across operations, tasks, or Sessions/);
+    assert.match(protocol, /“好的”, “继续”, “你决定”.*ambiguous/s);
+    assert.match(connection, /Do not ask the user to copy a fixed confirmation phrase/);
+    assert.match(connection, /already clearly authorized the named create-and-bind operation.*do not ask again/s);
   });
 
   it("Runtime keeps finite Goals separate from recurring operation and feeds operational Evidence into Candidates", () => {

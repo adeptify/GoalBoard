@@ -31,6 +31,7 @@ GoalBoard owns the version diagnosis and the no-data-loss recovery instructions.
 
 - Existing project: call `goalboard_v1_context_bind(project_id, actor_id, user_confirmed=true)` after the user explicitly selects it.
 - New project: obtain a user-facing name, repeat it back, then call `goalboard_v1_context_create_and_bind(display_name, user_confirmed=true, idempotency_key)`.
+- Do not ask the user to copy a fixed confirmation phrase. If the Runtime has already repeated the project name and explained the create-and-bind operation, and the user already clearly authorized the named create-and-bind operation in the current reply, do not ask again. If the name, whether to create, or whether to bind remains unclear, ask one short confirmation question.
 - Switch: when the current work entry is already bound elsewhere, ask a separate switch question before `rebind_confirmed=true`.
 - Workspace default: ordinary selection records workspace history but never becomes a default. Use `binding_scope=workspace_default` only after the user separately asks and confirms that future Sessions in this directory should enter that project automatically.
 - Reject suggestion: after an explicit “not this candidate,” call `goalboard_v1_context_reject_suggestion` only when the resolved context contains a stable Session identity. Without one, acknowledge the answer without pretending it was persisted.
