@@ -46,6 +46,7 @@ import {
   type GoalWorkStateView,
   type ImpactAccess,
   type ImpactBindingRecord,
+  type ParallelExecutionSuggestion,
   type ReadyGoal,
   type RevalidationDecision,
   type ReviewRecord,
@@ -135,6 +136,7 @@ export interface AvailableQuery {
 export interface AvailableQueryResult {
   observed_event_cursor: number;
   available: AvailableGoal[];
+  parallel_suggestion: ParallelExecutionSuggestion | null;
 }
 
 export interface GoalTreeProposalListQuery {
@@ -2299,7 +2301,11 @@ export class GoalBoardCoordinator {
         left.goal.goal_id.localeCompare(right.goal.goal_id) ||
         left.role.localeCompare(right.role),
     );
-    return { observed_event_cursor: snapshot.cursor, available };
+    return {
+      observed_event_cursor: snapshot.cursor,
+      available,
+      parallel_suggestion: this.parallelExecutionSuggestion(available),
+    };
   }
 
   /** Read the canonical work state that Web, MCP and CLI should present. */
@@ -9122,6 +9128,58 @@ export class GoalBoardCoordinator {
     if (existingAccess === "read" && requested.access === "write") return Boolean(existingSnapshot);
     if (existingAccess === "write" && requested.access === "read") return Boolean(requested.input_snapshot);
     return false;
+  }
+
+  private parallelExecutionSuggestion(
+    available: AvailableGoal[],
+  ): ParallelExecutionSuggestion | null {
+    const selected: Array<{ item: AvailableGoal; surfaces: ImpactBindingRecord[] }> = [];
+    for (const item of available) {
+      if (item.role !== "executor" || item.next_action !== "execute") continue;
+      const surfaces = item.relevant_surfaces.filter((impact) => impact.state === "confirmed");
+      if (surfaces.length === 0) continue;
+      if (
+        selected.some(
+          (existing) => !this.impactSetsAllowParallel(existing.surfaces, surfaces),
+        )
+      ) {
+        continue;
+      }
+      selected.push({ item, surfaces });
+    }
+    if (selected.length < 2) return null;
+    return {
+      kind: "safe_parallel_execution",
+      advisory_only: true,
+      assignments: selected.map(({ item }, index) => ({
+        runtime_slot: index === 0 ? "current_runtime" : `additional_runtime_${index}`,
+        goal_id: item.goal.goal_id,
+        title: item.goal.title,
+        role: "executor",
+        required_capabilities: item.resolved_policy.required_capabilities,
+      })),
+    };
+  }
+
+  private impactSetsAllowParallel(
+    existing: ImpactBindingRecord[],
+    requested: ImpactBindingRecord[],
+  ): boolean {
+    for (const requestedImpact of requested) {
+      for (const existingImpact of existing) {
+        if (existingImpact.surface !== requestedImpact.surface) continue;
+        if (
+          !this.isImpactPairSafe(
+            existingImpact.access,
+            existingImpact.input_snapshot,
+            requestedImpact,
+          )
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   private goalImpacts(

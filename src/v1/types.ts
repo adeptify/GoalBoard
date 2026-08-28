@@ -694,6 +694,20 @@ export interface AvailableGoal extends ReadyGoal {
   };
 }
 
+export interface ParallelRuntimeAssignment {
+  runtime_slot: "current_runtime" | `additional_runtime_${number}`;
+  goal_id: string;
+  title: string;
+  role: "executor";
+  required_capabilities: string[];
+}
+
+export interface ParallelExecutionSuggestion {
+  kind: "safe_parallel_execution";
+  advisory_only: true;
+  assignments: ParallelRuntimeAssignment[];
+}
+
 export interface BoardSnapshot {
   board: {
     board_id: string;

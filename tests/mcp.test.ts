@@ -521,7 +521,7 @@ describe("mcp server", () => {
     }
   });
 
-  it("serves one filtered V1 Goal Contract with a stable Web URL", async () => {
+  it("serves a stable Goal Contract and the Available safe-parallel suggestion", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-v1-"));
     const databasePath = path.join(directory, "goalboard.db");
     const management = new GoalBoardServer("management");
@@ -563,6 +563,7 @@ describe("mcp server", () => {
           business_logic: "Runtime 读取一个 Goal 的全部工作约束，再决定是否认领。",
           definition_state: "accepted",
           decomposition_state: "closed_leaf",
+          priority: 20,
           acceptance_criteria: [
             {
               criterion_id: "mcp-contract",
@@ -592,6 +593,52 @@ describe("mcp server", () => {
       assert.equal(contract.goal_url, "https://goalboard.example/goals/goal%2Fwith%20space");
       assert.deepEqual(contract.relations, []);
 
+      const secondGoal = await call(management, "goalboard_v1_create_goal", {
+        database_path: databasePath,
+        board_id: "mcp-board",
+        actor_id: "user-1",
+        idempotency_key: "create-mcp-parallel-goal",
+        goal: {
+          goal_id: "parallel-guide",
+          title: "更新并行执行指南",
+          outcome: "Runtime 获得可独立检查的使用说明",
+          why: "验证 MCP 能把安全并行建议完整返回给 Runtime。",
+          business_logic: "这条 Goal 只更新独立文档，不修改另一个 Goal 的代码范围。",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+          priority: 10,
+          acceptance_criteria: [
+            {
+              criterion_id: "parallel-guide-contract",
+              statement: "并行执行指南可检查",
+              decision_method: "inspection",
+              pass_condition: "指南说明 Runtime 分配边界",
+            },
+          ],
+        },
+      });
+      assert.equal(secondGoal.result.isError, false, secondGoal.result.content[0]?.text);
+      for (const [goalId, surface, idempotencyKey] of [
+        ["goal/with space", "src/runtime/contract.ts", "mcp-primary-impact"],
+        ["parallel-guide", "docs/runtime-guide.md", "mcp-parallel-impact"],
+      ]) {
+        const impact = await call(management, "goalboard_v1_impact_add", {
+          database_path: databasePath,
+          board_id: "mcp-board",
+          payload: {
+            impact: {
+              goal_id: goalId,
+              surface,
+              access: "write",
+              reason: "确认两个 Goal 的独立修改范围",
+            },
+            actor_id: "user-1",
+            idempotency_key: idempotencyKey,
+          },
+        });
+        assert.equal(impact.result.isError, false, impact.result.content[0]?.text);
+      }
+
       const availableResponse = await call(runtime, "goalboard_v1_available", {
         board_id: "mcp-board",
         actor_id: "runtime-a",
@@ -599,10 +646,36 @@ describe("mcp server", () => {
       assert.equal(availableResponse.result.isError, false, availableResponse.result.content[0]?.text);
       const available = JSON.parse(availableResponse.result.content[0].text) as {
         available: Array<{ goal: { goal_id: string }; next_action: string; role: string }>;
+        parallel_suggestion: {
+          kind: string;
+          advisory_only: boolean;
+          assignments: Array<{ runtime_slot: string; goal_id: string; role: string }>;
+        } | null;
       };
       assert.deepEqual(available.available.map((item) => [item.goal.goal_id, item.next_action, item.role]), [
         ["goal/with space", "execute", "executor"],
+        ["parallel-guide", "execute", "executor"],
       ]);
+      assert.deepEqual(available.parallel_suggestion, {
+        kind: "safe_parallel_execution",
+        advisory_only: true,
+        assignments: [
+          {
+            runtime_slot: "current_runtime",
+            goal_id: "goal/with space",
+            title: "测试稳定页面地址",
+            role: "executor",
+            required_capabilities: [],
+          },
+          {
+            runtime_slot: "additional_runtime_1",
+            goal_id: "parallel-guide",
+            title: "更新并行执行指南",
+            role: "executor",
+            required_capabilities: [],
+          },
+        ],
+      });
 
       const selectedResponse = await call(runtime, "goalboard_v1_select_goal", {
         board_id: "mcp-board",

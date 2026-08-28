@@ -6340,6 +6340,130 @@ test("unified Available lets the Runtime choose across clarification, execution,
   store.close();
 });
 
+test("Available suggests separate Runtime slots for confirmed pairwise-safe executor Goals", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "parallel-primary", 30);
+  createLeaf(coordinator, "parallel-secondary", 20);
+  coordinator.setPolicy(
+    "board-1",
+    {
+      goal_id: "parallel-primary",
+      policy: { required_capabilities: ["filesystem_write"] },
+      reason: "这个 Goal 需要修改本地文件",
+    },
+    { actor_id: "user-1", idempotency_key: "parallel-primary-policy" },
+  );
+  coordinator.setPolicy(
+    "board-1",
+    {
+      goal_id: "parallel-secondary",
+      policy: { required_capabilities: ["shell"] },
+      reason: "这个 Goal 需要运行命令",
+    },
+    { actor_id: "user-1", idempotency_key: "parallel-secondary-policy" },
+  );
+  coordinator.addImpact(
+    "board-1",
+    {
+      goal_id: "parallel-primary",
+      surface: "src/runtime/selection.ts",
+      access: "write",
+      reason: "修改 Runtime 选择逻辑",
+    },
+    { actor_id: "user-1", idempotency_key: "parallel-primary-impact" },
+  );
+  coordinator.addImpact(
+    "board-1",
+    {
+      goal_id: "parallel-secondary",
+      surface: "docs/runtime-guide.md",
+      access: "write",
+      reason: "更新 Runtime 使用说明",
+    },
+    { actor_id: "user-1", idempotency_key: "parallel-secondary-impact" },
+  );
+
+  const result = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-current",
+    capabilities: ["filesystem_write", "shell"],
+  });
+
+  assert.deepEqual(result.parallel_suggestion, {
+    kind: "safe_parallel_execution",
+    advisory_only: true,
+    assignments: [
+      {
+        runtime_slot: "current_runtime",
+        goal_id: "parallel-primary",
+        title: "完成 parallel-primary",
+        role: "executor",
+        required_capabilities: ["filesystem_write"],
+      },
+      {
+        runtime_slot: "additional_runtime_1",
+        goal_id: "parallel-secondary",
+        title: "完成 parallel-secondary",
+        role: "executor",
+        required_capabilities: ["shell"],
+      },
+    ],
+  });
+  store.close();
+});
+
+test("Available suppresses a parallel suggestion for conflicting executor Goal impacts", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "parallel-writer-a", 30);
+  createLeaf(coordinator, "parallel-writer-b", 20);
+  for (const goalId of ["parallel-writer-a", "parallel-writer-b"]) {
+    coordinator.addImpact(
+      "board-1",
+      {
+        goal_id: goalId,
+        surface: "src/runtime/shared.ts",
+        access: "write",
+        reason: "修改同一个 Runtime 模块",
+      },
+      { actor_id: "user-1", idempotency_key: `${goalId}-impact` },
+    );
+  }
+
+  const result = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-current",
+  });
+
+  assert.equal(result.available.length, 2);
+  assert.equal(result.parallel_suggestion, null);
+  store.close();
+});
+
+test("Available does not claim safe parallelism when an executor Goal lacks confirmed impacts", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "parallel-bounded", 30);
+  createLeaf(coordinator, "parallel-unbounded", 20);
+  coordinator.addImpact(
+    "board-1",
+    {
+      goal_id: "parallel-bounded",
+      surface: "src/runtime/bounded.ts",
+      access: "write",
+      reason: "已确认这条 Goal 的修改范围",
+    },
+    { actor_id: "user-1", idempotency_key: "parallel-bounded-impact" },
+  );
+
+  const result = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-current",
+  });
+
+  assert.equal(result.available.length, 2);
+  assert.equal(result.parallel_suggestion, null);
+  store.close();
+});
+
 test("needs_changes reopens execution until a newer executor run completes", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "review-rework");
