@@ -1,498 +1,218 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-22T14:18:57+08:00",
-  "title": "Design System: GoalBoard Quiet Intent Workspace",
+  "generatedAt": "2026-08-28T01:56:28+08:00",
+  "title": "Design System: GoalBoard Calm Desktop",
   "extensions": {
     "colorMeta": {
-      "light-page": {
-        "role": "neutral",
-        "displayName": "Light Cool Page",
-        "canonical": "#f2f3f5",
-        "tonalRamp": ["oklch(15% 0.006 265)", "oklch(27% 0.006 265)", "oklch(39% 0.006 265)", "oklch(51% 0.006 265)", "oklch(63% 0.006 265)", "oklch(75% 0.006 265)", "oklch(87% 0.006 265)", "oklch(95% 0.006 265)"]
+      "accent": {
+        "role": "primary",
+        "displayName": "Cobalt Focus",
+        "canonical": "#5068b7",
+        "tonalRamp": ["#11162b", "#1d2850", "#2d3e78", "#40549a", "#657bc4", "#91a3da", "#c2cbeb", "#eef1fb"]
       },
-      "light-paper": {
+      "app-canvas": {
         "role": "neutral",
-        "displayName": "Light Paper",
+        "displayName": "App Canvas",
+        "canonical": "#f3f3f5",
+        "tonalRamp": ["#202023", "#3d3d42", "#5c5c62", "#7c7c84", "#9d9da5", "#bebec5", "#dedee2", "#f3f3f5"]
+      },
+      "goal-canvas": {
+        "role": "neutral",
+        "displayName": "Goal Canvas",
         "canonical": "#ffffff",
-        "tonalRamp": ["oklch(15% 0 0)", "oklch(27% 0 0)", "oklch(39% 0 0)", "oklch(51% 0 0)", "oklch(63% 0 0)", "oklch(75% 0 0)", "oklch(87% 0 0)", "oklch(95% 0 0)"]
+        "tonalRamp": ["#242427", "#444448", "#66666b", "#89898f", "#adadb2", "#d0d0d4", "#ececee", "#ffffff"]
       },
-      "light-ink": {
+      "navigator": {
         "role": "neutral",
-        "displayName": "Light Graphite Ink",
-        "canonical": "#1a1c21",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
+        "displayName": "Navigator Gray",
+        "canonical": "#f1f1f3",
+        "tonalRamp": ["#1d1d20", "#3b3b40", "#5a5a60", "#797980", "#9999a0", "#babac0", "#dcdce0", "#f1f1f3"]
       },
-      "light-ink-soft": {
+      "ink": {
         "role": "neutral",
-        "displayName": "Light Soft Graphite",
-        "canonical": "#3f4652",
-        "tonalRamp": ["oklch(15% 0.018 265)", "oklch(27% 0.018 265)", "oklch(39% 0.018 265)", "oklch(51% 0.018 265)", "oklch(63% 0.018 265)", "oklch(75% 0.018 265)", "oklch(87% 0.018 265)", "oklch(95% 0.018 265)"]
+        "displayName": "Desktop Ink",
+        "canonical": "#19191b",
+        "tonalRamp": ["#19191b", "#343438", "#515156", "#6e6e74", "#8d8d94", "#adadb3", "#ceced2", "#f0f0f2"]
       },
-      "light-muted": {
+      "terminal": {
         "role": "neutral",
-        "displayName": "Light Muted Graphite",
-        "canonical": "#6c7380",
-        "tonalRamp": ["oklch(15% 0.018 265)", "oklch(27% 0.018 265)", "oklch(39% 0.018 265)", "oklch(51% 0.018 265)", "oklch(63% 0.018 265)", "oklch(75% 0.018 265)", "oklch(87% 0.018 265)", "oklch(95% 0.018 265)"]
+        "displayName": "Terminal Canvas Dark",
+        "canonical": "#101012",
+        "tonalRamp": ["#101012", "#202023", "#343438", "#515156", "#73737b", "#96969f", "#c6c6cc", "#f0f0f2"]
       },
-      "light-faint": {
+      "terminal-light": {
         "role": "neutral",
-        "displayName": "Light Faint Graphite",
-        "canonical": "#9aa0aa",
-        "tonalRamp": ["oklch(15% 0.012 265)", "oklch(27% 0.012 265)", "oklch(39% 0.012 265)", "oklch(51% 0.012 265)", "oklch(63% 0.012 265)", "oklch(75% 0.012 265)", "oklch(87% 0.012 265)", "oklch(95% 0.012 265)"]
-      },
-      "light-line": {
-        "role": "neutral",
-        "displayName": "Light Hairline",
-        "canonical": "#e5e7eb",
-        "tonalRamp": ["oklch(15% 0.006 265)", "oklch(27% 0.006 265)", "oklch(39% 0.006 265)", "oklch(51% 0.006 265)", "oklch(63% 0.006 265)", "oklch(75% 0.006 265)", "oklch(87% 0.006 265)", "oklch(95% 0.006 265)"]
-      },
-      "light-line-strong": {
-        "role": "neutral",
-        "displayName": "Light Strong Hairline",
-        "canonical": "#d7dae0",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "light-rail": {
-        "role": "neutral",
-        "displayName": "Light Quiet Rail",
-        "canonical": "#f5f6f8",
-        "tonalRamp": ["oklch(15% 0.006 265)", "oklch(27% 0.006 265)", "oklch(39% 0.006 265)", "oklch(51% 0.006 265)", "oklch(63% 0.006 265)", "oklch(75% 0.006 265)", "oklch(87% 0.006 265)", "oklch(95% 0.006 265)"]
-      },
-      "light-mineral-blue": {
-        "role": "primary",
-        "displayName": "Light Mineral Blue",
-        "canonical": "#4f6ff7",
-        "tonalRamp": ["oklch(15% 0.18 270)", "oklch(27% 0.18 270)", "oklch(39% 0.18 270)", "oklch(51% 0.18 270)", "oklch(63% 0.18 270)", "oklch(75% 0.18 270)", "oklch(87% 0.18 270)", "oklch(95% 0.18 270)"]
-      },
-      "light-mineral-blue-strong": {
-        "role": "primary",
-        "displayName": "Light Strong Mineral Blue",
-        "canonical": "#3654d8",
-        "tonalRamp": ["oklch(15% 0.17 270)", "oklch(27% 0.17 270)", "oklch(39% 0.17 270)", "oklch(51% 0.17 270)", "oklch(63% 0.17 270)", "oklch(75% 0.17 270)", "oklch(87% 0.17 270)", "oklch(95% 0.17 270)"]
-      },
-      "light-mineral-blue-soft": {
-        "role": "primary",
-        "displayName": "Light Mineral Blue Wash",
-        "canonical": "#eef1ff",
-        "tonalRamp": ["oklch(15% 0.04 270)", "oklch(27% 0.04 270)", "oklch(39% 0.04 270)", "oklch(51% 0.04 270)", "oklch(63% 0.04 270)", "oklch(75% 0.04 270)", "oklch(87% 0.04 270)", "oklch(95% 0.04 270)"]
-      },
-      "light-green": {
-        "role": "secondary",
-        "displayName": "Light Operational Green",
-        "canonical": "#2b8a57",
-        "tonalRamp": ["oklch(15% 0.11 155)", "oklch(27% 0.11 155)", "oklch(39% 0.11 155)", "oklch(51% 0.11 155)", "oklch(63% 0.11 155)", "oklch(75% 0.11 155)", "oklch(87% 0.11 155)", "oklch(95% 0.11 155)"]
-      },
-      "light-green-soft": {
-        "role": "secondary",
-        "displayName": "Light Green Wash",
-        "canonical": "#edf8f1",
-        "tonalRamp": ["oklch(15% 0.035 155)", "oklch(27% 0.035 155)", "oklch(39% 0.035 155)", "oklch(51% 0.035 155)", "oklch(63% 0.035 155)", "oklch(75% 0.035 155)", "oklch(87% 0.035 155)", "oklch(95% 0.035 155)"]
-      },
-      "light-amber": {
-        "role": "secondary",
-        "displayName": "Light Review Amber",
-        "canonical": "#a76513",
-        "tonalRamp": ["oklch(15% 0.11 75)", "oklch(27% 0.11 75)", "oklch(39% 0.11 75)", "oklch(51% 0.11 75)", "oklch(63% 0.11 75)", "oklch(75% 0.11 75)", "oklch(87% 0.11 75)", "oklch(95% 0.11 75)"]
-      },
-      "light-amber-soft": {
-        "role": "secondary",
-        "displayName": "Light Amber Wash",
-        "canonical": "#fff6e7",
-        "tonalRamp": ["oklch(15% 0.035 75)", "oklch(27% 0.035 75)", "oklch(39% 0.035 75)", "oklch(51% 0.035 75)", "oklch(63% 0.035 75)", "oklch(75% 0.035 75)", "oklch(87% 0.035 75)", "oklch(95% 0.035 75)"]
-      },
-      "light-red": {
-        "role": "tertiary",
-        "displayName": "Light Blocker Red",
-        "canonical": "#bf4545",
-        "tonalRamp": ["oklch(15% 0.13 25)", "oklch(27% 0.13 25)", "oklch(39% 0.13 25)", "oklch(51% 0.13 25)", "oklch(63% 0.13 25)", "oklch(75% 0.13 25)", "oklch(87% 0.13 25)", "oklch(95% 0.13 25)"]
-      },
-      "light-red-soft": {
-        "role": "tertiary",
-        "displayName": "Light Red Wash",
-        "canonical": "#fff0f0",
-        "tonalRamp": ["oklch(15% 0.035 25)", "oklch(27% 0.035 25)", "oklch(39% 0.035 25)", "oklch(51% 0.035 25)", "oklch(63% 0.035 25)", "oklch(75% 0.035 25)", "oklch(87% 0.035 25)", "oklch(95% 0.035 25)"]
-      },
-      "light-terminal": {
-        "role": "neutral",
-        "displayName": "Light Theme Terminal Graphite",
-        "canonical": "#11141a",
-        "tonalRamp": ["oklch(15% 0.01 265)", "oklch(27% 0.01 265)", "oklch(39% 0.01 265)", "oklch(51% 0.01 265)", "oklch(63% 0.01 265)", "oklch(75% 0.01 265)", "oklch(87% 0.01 265)", "oklch(95% 0.01 265)"]
-      },
-      "light-terminal-ink": {
-        "role": "neutral",
-        "displayName": "Light Theme Terminal Ink",
-        "canonical": "#eef1f5",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "dark-page": {
-        "role": "neutral",
-        "displayName": "Dark Cool Page",
-        "canonical": "#111318",
-        "tonalRamp": ["oklch(15% 0.006 265)", "oklch(27% 0.006 265)", "oklch(39% 0.006 265)", "oklch(51% 0.006 265)", "oklch(63% 0.006 265)", "oklch(75% 0.006 265)", "oklch(87% 0.006 265)", "oklch(95% 0.006 265)"]
-      },
-      "dark-paper": {
-        "role": "neutral",
-        "displayName": "Dark Paper",
-        "canonical": "#191c22",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "dark-ink": {
-        "role": "neutral",
-        "displayName": "Dark Graphite Ink",
-        "canonical": "#f1f3f6",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "dark-ink-soft": {
-        "role": "neutral",
-        "displayName": "Dark Soft Graphite",
-        "canonical": "#c7ccd4",
-        "tonalRamp": ["oklch(15% 0.014 265)", "oklch(27% 0.014 265)", "oklch(39% 0.014 265)", "oklch(51% 0.014 265)", "oklch(63% 0.014 265)", "oklch(75% 0.014 265)", "oklch(87% 0.014 265)", "oklch(95% 0.014 265)"]
-      },
-      "dark-muted": {
-        "role": "neutral",
-        "displayName": "Dark Muted Graphite",
-        "canonical": "#9ba2ae",
-        "tonalRamp": ["oklch(15% 0.016 265)", "oklch(27% 0.016 265)", "oklch(39% 0.016 265)", "oklch(51% 0.016 265)", "oklch(63% 0.016 265)", "oklch(75% 0.016 265)", "oklch(87% 0.016 265)", "oklch(95% 0.016 265)"]
-      },
-      "dark-faint": {
-        "role": "neutral",
-        "displayName": "Dark Faint Graphite",
-        "canonical": "#747c89",
-        "tonalRamp": ["oklch(15% 0.016 265)", "oklch(27% 0.016 265)", "oklch(39% 0.016 265)", "oklch(51% 0.016 265)", "oklch(63% 0.016 265)", "oklch(75% 0.016 265)", "oklch(87% 0.016 265)", "oklch(95% 0.016 265)"]
-      },
-      "dark-line": {
-        "role": "neutral",
-        "displayName": "Dark Hairline",
-        "canonical": "#2a2e36",
-        "tonalRamp": ["oklch(15% 0.01 265)", "oklch(27% 0.01 265)", "oklch(39% 0.01 265)", "oklch(51% 0.01 265)", "oklch(63% 0.01 265)", "oklch(75% 0.01 265)", "oklch(87% 0.01 265)", "oklch(95% 0.01 265)"]
-      },
-      "dark-line-strong": {
-        "role": "neutral",
-        "displayName": "Dark Strong Hairline",
-        "canonical": "#363b45",
-        "tonalRamp": ["oklch(15% 0.012 265)", "oklch(27% 0.012 265)", "oklch(39% 0.012 265)", "oklch(51% 0.012 265)", "oklch(63% 0.012 265)", "oklch(75% 0.012 265)", "oklch(87% 0.012 265)", "oklch(95% 0.012 265)"]
-      },
-      "dark-rail": {
-        "role": "neutral",
-        "displayName": "Dark Quiet Rail",
-        "canonical": "#15181e",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "dark-mineral-blue": {
-        "role": "primary",
-        "displayName": "Dark Mineral Blue",
-        "canonical": "#7189ff",
-        "tonalRamp": ["oklch(15% 0.16 270)", "oklch(27% 0.16 270)", "oklch(39% 0.16 270)", "oklch(51% 0.16 270)", "oklch(63% 0.16 270)", "oklch(75% 0.16 270)", "oklch(87% 0.16 270)", "oklch(95% 0.16 270)"]
-      },
-      "dark-mineral-blue-strong": {
-        "role": "primary",
-        "displayName": "Dark Strong Mineral Blue",
-        "canonical": "#9bafff",
-        "tonalRamp": ["oklch(15% 0.13 270)", "oklch(27% 0.13 270)", "oklch(39% 0.13 270)", "oklch(51% 0.13 270)", "oklch(63% 0.13 270)", "oklch(75% 0.13 270)", "oklch(87% 0.13 270)", "oklch(95% 0.13 270)"]
-      },
-      "dark-mineral-blue-soft": {
-        "role": "primary",
-        "displayName": "Dark Mineral Blue Wash",
-        "canonical": "#242c4b",
-        "tonalRamp": ["oklch(15% 0.06 270)", "oklch(27% 0.06 270)", "oklch(39% 0.06 270)", "oklch(51% 0.06 270)", "oklch(63% 0.06 270)", "oklch(75% 0.06 270)", "oklch(87% 0.06 270)", "oklch(95% 0.06 270)"]
-      },
-      "dark-green": {
-        "role": "secondary",
-        "displayName": "Dark Operational Green",
-        "canonical": "#61c58b",
-        "tonalRamp": ["oklch(15% 0.1 155)", "oklch(27% 0.1 155)", "oklch(39% 0.1 155)", "oklch(51% 0.1 155)", "oklch(63% 0.1 155)", "oklch(75% 0.1 155)", "oklch(87% 0.1 155)", "oklch(95% 0.1 155)"]
-      },
-      "dark-green-soft": {
-        "role": "secondary",
-        "displayName": "Dark Green Wash",
-        "canonical": "#183326",
-        "tonalRamp": ["oklch(15% 0.04 155)", "oklch(27% 0.04 155)", "oklch(39% 0.04 155)", "oklch(51% 0.04 155)", "oklch(63% 0.04 155)", "oklch(75% 0.04 155)", "oklch(87% 0.04 155)", "oklch(95% 0.04 155)"]
-      },
-      "dark-amber": {
-        "role": "secondary",
-        "displayName": "Dark Review Amber",
-        "canonical": "#e0a553",
-        "tonalRamp": ["oklch(15% 0.1 75)", "oklch(27% 0.1 75)", "oklch(39% 0.1 75)", "oklch(51% 0.1 75)", "oklch(63% 0.1 75)", "oklch(75% 0.1 75)", "oklch(87% 0.1 75)", "oklch(95% 0.1 75)"]
-      },
-      "dark-amber-soft": {
-        "role": "secondary",
-        "displayName": "Dark Amber Wash",
-        "canonical": "#382b18",
-        "tonalRamp": ["oklch(15% 0.04 75)", "oklch(27% 0.04 75)", "oklch(39% 0.04 75)", "oklch(51% 0.04 75)", "oklch(63% 0.04 75)", "oklch(75% 0.04 75)", "oklch(87% 0.04 75)", "oklch(95% 0.04 75)"]
-      },
-      "dark-red": {
-        "role": "tertiary",
-        "displayName": "Dark Blocker Red",
-        "canonical": "#f07575",
-        "tonalRamp": ["oklch(15% 0.12 25)", "oklch(27% 0.12 25)", "oklch(39% 0.12 25)", "oklch(51% 0.12 25)", "oklch(63% 0.12 25)", "oklch(75% 0.12 25)", "oklch(87% 0.12 25)", "oklch(95% 0.12 25)"]
-      },
-      "dark-red-soft": {
-        "role": "tertiary",
-        "displayName": "Dark Red Wash",
-        "canonical": "#3a2024",
-        "tonalRamp": ["oklch(15% 0.045 25)", "oklch(27% 0.045 25)", "oklch(39% 0.045 25)", "oklch(51% 0.045 25)", "oklch(63% 0.045 25)", "oklch(75% 0.045 25)", "oklch(87% 0.045 25)", "oklch(95% 0.045 25)"]
-      },
-      "dark-terminal": {
-        "role": "neutral",
-        "displayName": "Dark Theme Terminal Graphite",
-        "canonical": "#0c0f14",
-        "tonalRamp": ["oklch(15% 0.01 265)", "oklch(27% 0.01 265)", "oklch(39% 0.01 265)", "oklch(51% 0.01 265)", "oklch(63% 0.01 265)", "oklch(75% 0.01 265)", "oklch(87% 0.01 265)", "oklch(95% 0.01 265)"]
-      },
-      "dark-terminal-ink": {
-        "role": "neutral",
-        "displayName": "Dark Theme Terminal Ink",
-        "canonical": "#eef1f5",
-        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(27% 0.008 265)", "oklch(39% 0.008 265)", "oklch(51% 0.008 265)", "oklch(63% 0.008 265)", "oklch(75% 0.008 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"]
-      },
-      "rewire-violet": {
-        "role": "tertiary",
-        "displayName": "Rewire Violet",
-        "canonical": "#6b4eb6",
-        "tonalRamp": ["oklch(15% 0.12 300)", "oklch(27% 0.12 300)", "oklch(39% 0.12 300)", "oklch(51% 0.12 300)", "oklch(63% 0.12 300)", "oklch(75% 0.12 300)", "oklch(87% 0.12 300)", "oklch(95% 0.12 300)"]
+        "displayName": "Terminal Canvas Light",
+        "canonical": "#fbfbfc",
+        "tonalRamp": ["#202023", "#45454b", "#65656e", "#85858d", "#a5a5ac", "#c6c6cb", "#e5e5e8", "#fbfbfc"]
       }
     },
     "typographyMeta": {
       "display": {
-        "displayName": "Goal Display",
-        "purpose": "Selected Goal title at the top of Focus."
-      },
-      "decision-display": {
-        "displayName": "Decision Display",
-        "purpose": "User-owned Decision Center heading only."
+        "displayName": "Selected Goal",
+        "purpose": "The selected Goal title and no other recurring element."
       },
       "headline": {
-        "displayName": "Section Headline",
-        "purpose": "Major Goal document and decision sections."
+        "displayName": "Action Headline",
+        "purpose": "The next action and important section statements."
       },
       "body": {
-        "displayName": "Operational Body",
-        "purpose": "Contracts, explanations, ledgers, and Runtime context."
+        "displayName": "Workbench Body",
+        "purpose": "Readable explanations and Goal document content."
       },
       "label": {
         "displayName": "Control Label",
-        "purpose": "Toolbar actions, tabs, form labels, and compact controls."
-      },
-      "micro": {
-        "displayName": "Trace Metadata",
-        "purpose": "Goal IDs, statuses, counts, and timestamps."
+        "purpose": "Tabs, statuses, metadata, and compact controls."
       }
     },
     "shadows": [
       {
-        "name": "floating-light",
-        "value": "0 18px 48px rgba(23, 27, 35, .14)",
-        "purpose": "Temporary menus and dialogs in Light only."
+        "name": "transient-light",
+        "value": "0 18px 48px rgba(25, 25, 31, .12)",
+        "purpose": "Menus and dialogs above the Light workspace."
       },
       {
-        "name": "floating-dark",
-        "value": "0 20px 56px rgba(0, 0, 0, .32)",
-        "purpose": "Temporary menus and dialogs in Dark only."
-      },
-      {
-        "name": "selected-path-edge",
-        "value": "inset 2px 0 0 var(--blue)",
-        "purpose": "Flat Navigator selection."
-      },
-      {
-        "name": "terminal-inner-edge",
-        "value": "inset 0 1px 0 rgba(255,255,255,.025)",
-        "purpose": "Minimal definition inside the terminal well."
+        "name": "transient-dark",
+        "value": "0 22px 58px rgba(0, 0, 0, .38)",
+        "purpose": "Menus and dialogs above the Dark workspace."
       }
     ],
     "motion": [
       {
-        "name": "short-state",
-        "value": "160ms ease",
-        "purpose": "Theme picker and compact state feedback."
+        "name": "control-feedback",
+        "value": "160ms ease-out",
+        "purpose": "Hover, focus, and pressed feedback without decorative motion."
       },
       {
-        "name": "reduced-motion",
-        "value": "none",
-        "purpose": "Remove nonessential transition when the user prefers reduced motion."
+        "name": "section-reveal",
+        "value": "480ms cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "Reveal the selected body in the shared Focus detail stage while selector cards remain stationary; removed under reduced motion."
       }
     ],
     "breakpoints": [
-      {
-        "name": "internal-density",
-        "value": "1180px"
-      },
-      {
-        "name": "shell-compact",
-        "value": "1120px"
-      },
-      {
-        "name": "toolbar-priority",
-        "value": "900px"
-      },
-      {
-        "name": "exclusive-surfaces",
-        "value": "760px"
-      },
-      {
-        "name": "document-stack",
-        "value": "660px"
-      }
+      { "name": "narrow", "value": "760px" },
+      { "name": "intermediate", "value": "1080px" },
+      { "name": "wide-runtime", "value": "1180px" }
     ]
   },
   "components": [
     {
-      "name": "Primary Action",
+      "name": "Primary Button",
       "kind": "button",
-      "refersTo": "primary-action",
-      "description": "The one available next action in Goal Focus or a committed form footer.",
-      "html": "<button class=\"ds-primary-action\" type=\"button\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12h14\"></path><path d=\"m13 6 6 6-6 6\"></path></svg><span>查看最新进展</span></button>",
-      "css": ".ds-primary-action { min-height: 40px; padding: 0 15px; border: 1px solid var(--blue); border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: #fff; background: var(--blue); font: 700 13px/1.5 var(--font); cursor: pointer; transition: background .16s ease, border-color .16s ease; } .ds-primary-action svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; } .ds-primary-action:hover { border-color: var(--blue-dark); background: var(--blue-dark); } .ds-primary-action:active { transform: translateY(1px); } .ds-primary-action:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
+      "refersTo": "button-primary",
+      "description": "The single high-priority action within a Goal section.",
+      "html": "<button class=\"ds-primary\">进入子 Goal</button>",
+      "css": ".ds-primary { min-height: 38px; padding: 0 14px; border: 1px solid #202023; border-radius: 8px; background: #202023; color: #fbfbfc; font: 680 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; transition: opacity 160ms ease-out, transform 160ms ease-out; } .ds-primary:hover { opacity: .9; transform: translateY(-1px); } .ds-primary:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
     },
     {
       "name": "Goal Search",
       "kind": "input",
-      "description": "The single Navigator search field; it composes with status filtering without resetting Tree state.",
-      "html": "<label class=\"ds-goal-search\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"8\"></circle><path d=\"m21 21-4.3-4.3\"></path></svg><input type=\"search\" placeholder=\"在当前 Goal Tree 内搜索\"><kbd>⌘F</kbd></label>",
-      "css": ".ds-goal-search { position: relative; display: flex; align-items: center; color: var(--muted); font: 13px/1.5 var(--font); } .ds-goal-search > svg { position: absolute; left: 9px; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; } .ds-goal-search input { width: 100%; height: 30px; padding: 0 42px 0 29px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--paper); font: inherit; } .ds-goal-search kbd { position: absolute; right: 7px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; color: var(--faint); background: var(--paper); font: 10px/17px var(--font); } .ds-goal-search input:hover { border-color: var(--line-strong); } .ds-goal-search input:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
+      "refersTo": "search-field",
+      "description": "A quiet white field inside the cool navigator.",
+      "html": "<input class=\"ds-search\" type=\"search\" placeholder=\"在当前 Goal Tree 内搜索\">",
+      "css": ".ds-search { width: 280px; height: 34px; padding: 0 12px; border: 1px solid #d9d9de; border-radius: 8px; background: #ffffff; color: #19191b; font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; box-shadow: none; } .ds-search::placeholder { color: #62626b; opacity: 1; } .ds-search:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
     },
     {
-      "name": "Selected Goal Tree Node",
+      "name": "Project Context Controls",
       "kind": "nav",
-      "refersTo": "tree-node-selected",
-      "description": "The current Goal path in Navigator: soft mineral wash, strong text, and one inset edge.",
-      "html": "<a class=\"ds-tree-node\" href=\"#\"><span><strong>建立克制一致的视觉系统</strong><small>gbui-visual-foundation</small></span><em><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 3l14 9-14 9V3z\"></path></svg>执行中</em></a>",
-      "css": ".ds-tree-node { min-height: 31px; padding: 3px 7px; border-radius: 5px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--blue-dark); background: var(--blue-soft); box-shadow: inset 2px 0 0 var(--blue); font: 12px/1.35 var(--font); text-decoration: none; } .ds-tree-node > span { min-width: 0; display: grid; } .ds-tree-node strong, .ds-tree-node small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-tree-node strong { font-weight: 620; } .ds-tree-node small { color: color-mix(in srgb, var(--blue-dark), var(--muted) 45%); font-size: 10px; letter-spacing: .025em; } .ds-tree-node em { min-height: 19px; padding: 1px 5px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; background: color-mix(in srgb, currentColor 8%, transparent); font-size: 10px; font-style: normal; font-weight: 650; white-space: nowrap; } .ds-tree-node svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; } .ds-tree-node:hover { background: color-mix(in srgb, var(--blue-soft) 82%, var(--paper)); } .ds-tree-node:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
+      "description": "Two icon-only Lucide controls sit in the project-title row, keeping project switching and project settings distinct from the global system gear without consuming a second row.",
+      "html": "<nav class=\"ds-project-controls\"><a href=\"#\" aria-label=\"切换项目\" title=\"切换项目\">⇄</a><a href=\"#\" aria-label=\"打开当前项目设置\" title=\"项目设置\">☷</a></nav>",
+      "css": ".ds-project-controls { display: flex; gap: 3px; } .ds-project-controls a { width: 28px; min-height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #62626b; display: inline-flex; align-items: center; justify-content: center; font: 620 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; text-decoration: none; } .ds-project-controls a:hover { color: #19191b; background: #e9e9ec; } .ds-project-controls a:focus-visible { outline: 2px solid #5068b7; outline-offset: 1px; }"
     },
     {
-      "name": "Goal Detail Tabs",
+      "name": "Selected Goal Row",
       "kind": "nav",
-      "description": "The five stable task panels inside Goal Focus, with one active panel and conventional keyboard semantics.",
-      "html": "<nav class=\"ds-goal-tabs\" role=\"tablist\" aria-label=\"Goal 详情\"><button role=\"tab\" aria-selected=\"true\">概览</button><button role=\"tab\" aria-selected=\"false\">完成要求</button><button role=\"tab\" aria-selected=\"false\">进展与阻塞</button><button role=\"tab\" aria-selected=\"false\">关联与约束</button><button role=\"tab\" aria-selected=\"false\">完整记录</button></nav>",
-      "css": ".ds-goal-tabs { min-width: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; align-items: stretch; overflow-x: auto; background: var(--paper); font: 600 12px/1.5 var(--font); } .ds-goal-tabs button { position: relative; min-height: 40px; padding: 0 11px; border: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; font: inherit; white-space: nowrap; cursor: pointer; } .ds-goal-tabs button::after { content: \"\"; position: absolute; left: 11px; right: 11px; bottom: -1px; height: 1px; background: transparent; } .ds-goal-tabs button:hover { color: var(--ink); background: color-mix(in srgb, var(--blue-soft) 42%, transparent); } .ds-goal-tabs button[aria-selected=\"true\"] { color: var(--blue-dark); } .ds-goal-tabs button[aria-selected=\"true\"]::after { background: var(--blue); } .ds-goal-tabs button:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: -3px; }"
+      "refersTo": "goal-row-selected",
+      "description": "The selected Goal is the only white item inside the navigator; its status remains a bounded semantic tag.",
+      "html": "<button class=\"ds-goal-row\"><strong>让用户打开页面就看懂下一步</strong><span class=\"ds-status\">◉ 待执行</span></button>",
+      "css": ".ds-goal-row { width: 300px; min-height: 38px; padding: 5px 7px; border: 0; border-radius: 6px; background: #ffffff; color: #19191b; box-shadow: 0 1px 2px rgba(24,24,30,.08), inset 0 0 0 1px #e7e7ea; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 9px; font: 620 13px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; text-align: left; } .ds-goal-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-status { min-height: 22px; padding: 1px 7px; border: 1px solid #b5bdd4; border-radius: 6px; background: #f1f3fa; color: #344b9b; display: inline-flex; align-items: center; font: 680 10.5px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; } .ds-goal-row:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
     },
     {
-      "name": "Goal Status Tag",
-      "kind": "chip",
-      "refersTo": "status-tag",
-      "description": "A compact icon-and-word state; the color reinforces meaning but never replaces the label.",
-      "html": "<span class=\"ds-goal-status\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 3l14 9-14 9V3z\"></path></svg>执行中</span>",
-      "css": ".ds-goal-status { min-height: 19px; padding: 1px 5px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; color: var(--blue-dark); background: color-mix(in srgb, currentColor 8%, transparent); font: 650 10px/1.5 var(--font); white-space: nowrap; } .ds-goal-status svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }"
+      "name": "Detail Tabs",
+      "kind": "nav",
+      "description": "Flat text navigation with one underline and no segmented container.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"ds-tab ds-tab-active\">当前</button><button class=\"ds-tab\">上下文</button><button class=\"ds-tab\">进展</button></nav>",
+      "css": ".ds-tabs { min-height: 48px; border-bottom: 1px solid #e7e7ea; display: flex; align-items: stretch; gap: 22px; } .ds-tab { position: relative; padding: 0; border: 0; background: transparent; color: #62626b; font: 610 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; } .ds-tab-active { color: #19191b; box-shadow: inset 0 -2px 0 #19191b; } .ds-tab:hover { color: #19191b; } .ds-tab:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
     },
     {
-      "name": "Theme Picker",
+      "name": "Focus Section Deck",
+      "kind": "disclosure",
+      "description": "A shared two-layer deck for Context, Progress, Relationships, and Record. Equal-width summary cards form a stable selector row, with the tallest unabridged summary setting row height; exactly one preserved body appears in the full-width stage below.",
+      "html": "<section class=\"ds-section-deck\"><div class=\"ds-section-row\"><article class=\"ds-section-card\"><button aria-expanded=\"false\">目标说明</button></article><article class=\"ds-section-card is-active\"><button aria-expanded=\"true\">完成要求</button></article></div><div class=\"ds-section-stage\">完成标准与工作边界</div></section>",
+      "css": ".ds-section-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); align-items: stretch; gap: 10px; } .ds-section-card { min-width: 0; border: 1px solid #e7e7ea; border-radius: 10px; background: #f6f6f7; overflow: hidden; } .ds-section-card.is-active { border-color: #91a3da; background: #fff; box-shadow: inset 0 -2px 0 #5068b7; } .ds-section-card button { width: 100%; height: 100%; min-height: 84px; padding: 13px; border: 0; background: transparent; align-items: start; text-align: left; } .ds-section-card small { max-height: none; overflow: visible; } .ds-section-stage { margin-top: 12px; min-height: 120px; padding: 22px; border-radius: 12px; background: #f6f6f7; box-shadow: inset 0 0 0 1px #e7e7ea; } @media (max-width: 700px) { .ds-section-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } } @media (max-width: 430px) { .ds-section-row { grid-template-columns: 1fr; } } @media (prefers-reduced-motion: reduce) { .ds-section-card, .ds-section-stage { transition: none; } }"
+    },
+    {
+      "name": "Relationship Record",
+      "kind": "list-item",
+      "description": "A stable information row for Goal relationships: bounded type, readable Goal facts, compact lifecycle state, and an aligned secondary action. Long metadata stays plain text rather than becoming full-width pills.",
+      "html": "<div class=\"ds-relation\"><span class=\"ds-relation-kind\">包含</span><span class=\"ds-relation-copy\"><strong>让项目事实成为共同底座</strong><small>PLATFORM · 属于当前 Goal</small><small>建立原因：共同组成完整体验</small></span><span class=\"ds-relation-state\">生效</span><button>解除</button></div>",
+      "css": ".ds-relation { min-width: 0; display: grid; grid-template-columns: 54px minmax(0, 1fr) auto 48px; align-items: start; gap: 12px; border-bottom: 1px solid #e7e7ea; color: #19191b; } .ds-relation-kind, .ds-relation-state { width: fit-content; margin-top: 14px; padding: 2px 7px; border: 1px solid #d9d9de; border-radius: 8px; color: #62626b; font: 650 9px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; } .ds-relation-copy { min-width: 0; padding: 14px 0; display: grid; gap: 4px; } .ds-relation-copy strong { font-size: 12px; } .ds-relation-copy small { padding: 0; border: 0; border-radius: 0; background: transparent; color: #73737b; font-size: 10px; overflow-wrap: anywhere; } .ds-relation > button { align-self: stretch; border: 0; border-left: 1px solid #e7e7ea; background: transparent; color: #73737b; }"
+    },
+    {
+      "name": "Goal Action Row",
       "kind": "custom",
-      "refersTo": "theme-menu",
-      "description": "Local Light, Dark, and System presentation preference with an explicit selected state.",
-      "html": "<div class=\"ds-theme-menu\" role=\"group\" aria-label=\"外观\"><button type=\"button\" aria-pressed=\"false\">浅色</button><button type=\"button\" aria-pressed=\"false\">深色</button><button type=\"button\" aria-pressed=\"true\">跟随系统<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m5 12 4 4L19 6\"></path></svg></button></div>",
-      "css": ".ds-theme-menu { width: 166px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 8px; display: grid; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); font: 600 12px/1.5 var(--font); } .ds-theme-menu button { width: 100%; min-height: 34px; padding: 0 8px; border: 0; border-radius: 5px; display: grid; grid-template-columns: minmax(0, 1fr) 15px; align-items: center; gap: 8px; color: var(--muted); background: transparent; font: inherit; text-align: left; cursor: pointer; } .ds-theme-menu button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; } .ds-theme-menu button:hover { color: var(--ink); background: var(--rail); } .ds-theme-menu button[aria-pressed=\"true\"] { color: var(--blue-dark); background: var(--blue-soft); } .ds-theme-menu button:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
+      "description": "A compact bounded Next Step surface in the main work column. The label sits above one shared left edge for headline, explanation, guidance, and action; no decorative arrow reserves space.",
+      "html": "<section class=\"ds-action-row\"><header><strong>下一步</strong></header><div><h3>选择一个可以开始的子 Goal</h3><p>这项工作由子 Goal 共同完成。</p><button aria-label=\"进入子 Goal「让项目事实成为共同底座」\">进入子 Goal</button></div></section>",
+      "css": ".ds-action-row { width: 600px; padding: 20px 22px 22px; border: 1px solid #e7e7ea; border-radius: 10px; background: #f6f6f7; color: #19191b; font-family: -apple-system, BlinkMacSystemFont, sans-serif; } .ds-action-row header strong { color: #62626b; font-size: 12px; } .ds-action-row h3 { margin: 13px 0 0; font-size: 16px; letter-spacing: -.015em; } .ds-action-row p { margin: 4px 0 14px; color: #62626b; font-size: 11px; } .ds-action-row button { width: fit-content; max-width: 11rem; min-height: 34px; padding: 0 12px; border: 0; border-radius: 8px; background: #202023; color: #fbfbfc; font-weight: 680; white-space: nowrap; }"
     },
     {
-      "name": "Decision Record",
+      "name": "Settings Navigation Item",
+      "kind": "nav",
+      "description": "A selected system setting inside the continuous gray settings rail.",
+      "html": "<a class=\"ds-settings-link\" href=\"#\"><strong>界面与语言</strong><small>语言、主题、终端与界面密度</small></a>",
+      "css": ".ds-settings-link { width: 210px; min-height: 58px; padding: 10px 12px; border-radius: 6px; background: #ffffff; color: #19191b; box-shadow: inset 0 0 0 1px #e7e7ea; display: grid; align-content: center; gap: 2px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-decoration: none; } .ds-settings-link strong { font-size: 13px; } .ds-settings-link small { color: #73737b; font-size: 10px; } .ds-settings-link:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
+    },
+    {
+      "name": "Preference Option",
       "kind": "card",
-      "description": "A continuous user-owned decision record ordered by question, timing, evidence, and consequences rather than dashboard metrics.",
-      "html": "<article class=\"ds-decision-record\"><header><span>需要你决定</span><small>Candidate</small></header><div><h3>要把这个候选 Goal 加入 Goal Tree 吗？</h3><p>现在决定，是因为它会改变当前 Goal 的范围与后续验收。</p><dl><div><dt>建议</dt><dd>先确认它能否独立交付；证据不足时明确保留判断。</dd></div><div><dt>选择后</dt><dd>加入后成为新的权威 Goal；暂不加入则保留现有结构。</dd></div></dl></div><footer><button type=\"button\">暂不加入</button><button class=\"ds-decision-primary\" type=\"button\">加入 Goal Tree</button></footer></article>",
-      "css": ".ds-decision-record { border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; color: var(--ink); background: var(--paper); font: 13px/1.5 var(--font); } .ds-decision-record > header { min-height: 40px; padding: 8px 13px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; color: var(--blue-dark); background: color-mix(in srgb, var(--paper) 86%, var(--rail)); font-size: 11px; font-weight: 750; } .ds-decision-record > header small { color: var(--muted); } .ds-decision-record > div { padding: 12px 14px; } .ds-decision-record h3 { margin: 0; font-size: 17px; line-height: 1.4; } .ds-decision-record p { margin: 4px 0 12px; color: var(--muted); } .ds-decision-record dl { margin: 0; border-top: 1px solid var(--line); } .ds-decision-record dl div { padding: 9px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 12px; } .ds-decision-record dt { color: var(--muted); font-size: 11px; font-weight: 650; } .ds-decision-record dd { margin: 0; } .ds-decision-record footer { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; } .ds-decision-record footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--paper); font: 650 12px/1.5 var(--font); cursor: pointer; } .ds-decision-record footer .ds-decision-primary { color: #fff; border-color: var(--blue); background: var(--blue); } .ds-decision-record footer button:hover { border-color: var(--blue); } .ds-decision-record footer .ds-decision-primary:hover { background: var(--blue-dark); } .ds-decision-record button:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
+      "description": "A bounded choice used only for mutually exclusive settings.",
+      "html": "<button class=\"ds-preference\"><strong>紧凑</strong><small>减少 Goal 行和正文留白</small><span>✓</span></button>",
+      "css": ".ds-preference { width: 230px; min-height: 84px; padding: 12px; border: 1px solid #d9d9de; border-radius: 10px; background: #f1f1f3; color: #19191b; display: grid; grid-template-columns: minmax(0,1fr) auto; align-content: center; gap: 3px 12px; text-align: left; font-family: -apple-system, BlinkMacSystemFont, sans-serif; } .ds-preference strong { font-size: 13px; } .ds-preference small { color: #73737b; font-size: 10px; } .ds-preference span { grid-column: 2; grid-row: 1 / 3; align-self: center; color: #344b9b; } .ds-preference:focus-visible { outline: 2px solid #5068b7; outline-offset: 2px; }"
     },
     {
-      "name": "Goal-bound Runtime Dock",
+      "name": "Runtime Surface",
       "kind": "custom",
-      "refersTo": "runtime-terminal",
-      "description": "A dark execution viewport whose chrome continuously names the Goal that owns the terminal.",
-      "html": "<section class=\"ds-runtime\"><header><span>当前终端归属</span><strong>建立克制一致的视觉系统</strong><em>执行中</em></header><nav><button type=\"button\">推进这个 Goal</button><button type=\"button\">复制命令</button></nav><div class=\"ds-runtime-terminal\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m5 7 5 5-5 5\"></path><path d=\"M12 17h7\"></path></svg><strong>还没有终端</strong><span>添加终端后，在这个 Goal 上打开常用 Runtime。</span></div></section>",
-      "css": ".ds-runtime { padding: 9px 10px 10px; display: grid; grid-template-rows: auto auto minmax(260px, 1fr); gap: 7px; color: var(--ink); background: var(--rail); font: 13px/1.5 var(--font); } .ds-runtime > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; color: var(--muted); } .ds-runtime > header span { grid-column: 1 / -1; font-size: 10px; font-weight: 650; } .ds-runtime > header strong { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-runtime > header em { color: var(--blue-dark); font-style: normal; font-weight: 650; } .ds-runtime nav { display: flex; gap: 6px; } .ds-runtime nav button { min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--ink); background: var(--paper); font: 600 12px/1.5 var(--font); cursor: pointer; } .ds-runtime nav button:hover { color: var(--blue-dark); background: var(--blue-soft); } .ds-runtime-terminal { min-height: 260px; border: 1px solid #2e3440; border-radius: 7px; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--terminal-ink); background: var(--terminal); box-shadow: inset 0 1px 0 rgba(255,255,255,.025); text-align: center; } .ds-runtime-terminal svg { width: 20px; height: 20px; padding: 4px; border-radius: 5px; fill: none; stroke: currentColor; stroke-width: 1.7; background: rgba(255,255,255,.06); } .ds-runtime-terminal span { max-width: 34ch; color: #89919f; } .ds-runtime button:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: 2px; }"
-    },
-    {
-      "name": "Mobile Surface Switch",
-      "kind": "nav",
-      "refersTo": "mobile-surface-switch",
-      "description": "The narrow companion's exclusive Goals, Focus, and Runtime navigation.",
-      "html": "<nav class=\"ds-mobile-switch\" role=\"tablist\" aria-label=\"移动端视图\"><button role=\"tab\" aria-selected=\"true\">目标</button><button role=\"tab\" aria-selected=\"false\">当前</button><button role=\"tab\" aria-selected=\"false\">运行</button></nav>",
-      "css": ".ds-mobile-switch { height: 40px; padding: 5px 8px; gap: 3px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--rail); font: 620 11px/1.5 var(--font); } .ds-mobile-switch button { position: relative; min-height: 29px; border: 0; border-radius: 0; color: var(--muted); background: transparent; font: inherit; cursor: pointer; } .ds-mobile-switch button::after { content: \"\"; position: absolute; left: 28%; right: 28%; bottom: -5px; height: 2px; border-radius: 1px; background: transparent; } .ds-mobile-switch button:hover { color: var(--ink); } .ds-mobile-switch button[aria-selected=\"true\"] { color: var(--blue-dark); } .ds-mobile-switch button[aria-selected=\"true\"]::after { background: var(--blue); } .ds-mobile-switch button:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), transparent 28%); outline-offset: -3px; }"
+      "description": "Runtime application chrome follows GoalBoard's current theme. Only the bounded terminal canvas uses the independently selectable terminal palette.",
+      "html": "<section class=\"ds-runtime\"><div class=\"ds-runtime-guide\"><strong>这个上层 Goal 不直接使用终端</strong><p>请选择具体的子 Goal，再从那里打开终端。</p><a href=\"#\">打开这个子 Goal</a></div><div class=\"ds-terminal\">Terminal</div></section>",
+      "css": ".ds-runtime { width: 460px; min-height: 280px; padding: 20px; background: #ffffff; color: #19191b; font-family: -apple-system, BlinkMacSystemFont, sans-serif; } .ds-runtime-guide { padding-bottom: 18px; border-bottom: 1px solid #e7e7ea; } .ds-runtime-guide strong { font-size: 15px; } .ds-runtime-guide p { margin: 6px 0 16px; color: #62626b; font-size: 12px; } .ds-runtime-guide a { color: #344b9b; font-size: 12px; text-decoration: none; } .ds-terminal { min-height: 150px; margin-top: 14px; padding: 14px; border: 1px solid #303036; border-radius: 8px; background: #101012; color: #f0f0f2; font: 12px/1.5 ui-monospace, monospace; }"
     }
   ],
   "narrative": {
-    "northStar": "Quiet Intent Workspace",
-    "overview": "GoalBoard should feel like a quiet place where intent stays legible while work moves between people and AI Runtimes. It is the cross-Runtime truth source for long-running Goals, not a Dashboard and not an Agent Orchestration console. The selected Goal is the continuous thread: users locate it in Navigator, understand and decide in Focus, then act through its Goal-bound Runtime without losing ownership or context.\n\nThe world combines graphite and cool-paper materials, one mineral-blue current path, dense native system type, Lucide line icons, one-pixel seams, restrained 4–8px corners, and a dark terminal well. Wide workstation and narrow Harness-companion layouts are two responsive expressions of the same world. Light, Dark, and Follow System are first-class presentation preferences and do not change domain truth.\n\nThis document carbonizes the shipped visual foundation, Navigator, action-led Focus, responsive Runtime workbench, and the read-only Goal Graph. The approved promotional workstation screenshots remain separate acceptance artifacts; they must not be mistaken for permission to replace real GoalBoard behavior with a decorative mock.",
+    "northStar": "Calm Desktop",
+    "overview": "GoalBoard is a high-frequency workbench, not a dashboard. Its visual system makes one selected Goal continuous across a cool-gray Project and Goal navigator, an independent Hero above a separate Focus work surface, and a Runtime whose application chrome follows GoalBoard while the terminal canvas has an independent palette. The design is quiet because the frame is structural: sibling surfaces use only faint lines and breathing room, shadows are absent, and hierarchy comes from typography, stable selectors, alignment, and whitespace.",
     "keyCharacteristics": [
-      "One selected Goal remains continuous across Navigator, Focus, and Runtime.",
-      "A quiet 48px app bar sits above a seam-built three-pane workstation.",
-      "Cool rail, paper, and graphite surfaces create hierarchy without dashboard cards.",
-      "Mineral blue marks current path and available action; semantic colors remain sparse.",
-      "Native system typography and Lucide line icons keep the interface compact and familiar.",
-      "Light, Dark, and System themes preserve identical structure and meaning.",
-      "Narrow layouts expose Goals, Focus, and Runtime one at a time through an underline switch.",
-      "Cursor-driven refresh preserves selection, reading position, open controls, and in-progress input."
+      "Continuous desktop regions with separate inset Goal Hero and work surfaces.",
+      "Cool monochrome surfaces with a restrained cobalt focus color.",
+      "Goal overview organized as a primary work column and a compact supporting context rail.",
+      "One reusable stationary selector row and shared detail stage across Context, Progress, Relationships, and Record.",
+      "Compact information density in navigation, with calm reading density in the selected Goal.",
+      "Runtime application chrome follows GoalBoard; only the terminal canvas becomes a distinct execution environment."
     ],
     "rules": [
-      {
-        "name": "The Mineral Path Rule",
-        "body": "Mineral blue marks the selected path and an available action; it does not flood whole work surfaces.",
-        "section": "colors"
-      },
-      {
-        "name": "The Semantic Pairing Rule",
-        "body": "Green, amber, violet, and red always travel with readable text and, where helpful, a Lucide icon; color is never the only status carrier.",
-        "section": "colors"
-      },
-      {
-        "name": "The Theme Parity Rule",
-        "body": "Light, Dark, and Follow System change presentation only. They preserve hierarchy, component state, focus visibility, and Goal meaning.",
-        "section": "colors"
-      },
-      {
-        "name": "The Native Tool Rule",
-        "body": "Do not add a brand font merely to make GoalBoard look designed; precision, density, and hierarchy carry the identity.",
-        "section": "typography"
-      },
-      {
-        "name": "The Human-First Reading Rule",
-        "body": "Keep Outcome, Why, business logic, decisions, and failure explanations as readable sentences; protocol nouns and opaque IDs are supporting metadata.",
-        "section": "typography"
-      },
-      {
-        "name": "The Selected Goal Thread Rule",
-        "body": "Selecting a Goal changes Focus while preserving the Goal-owned Runtime relationship; Navigator, Focus, and Runtime always name the same context explicitly when they offer an action.",
-        "section": "layout"
-      },
-      {
-        "name": "The Stable Workspace Rule",
-        "body": "Cursor-driven refresh atomically replaces authoritative Goal content while preserving selection, collapsed branches, filters, scroll, mobile surface, resizer widths, disclosures, URL history, and valid in-progress form state. Focused live forms defer background replacement; a successful submission forces one authoritative refresh without a white frame.",
-        "section": "layout"
-      },
-      {
-        "name": "The Single Decision Door Rule",
-        "body": "`/decisions` is the only full user-decision surface. Goal detail may show a count and deep link, but it never duplicates the complete decision form or implies that a Runtime can approve its own proposal.",
-        "section": "layout"
-      },
-      {
-        "name": "The Seam-First Rule",
-        "body": "Use tonal layering and 1px seams for persistent structure; reserve shadow for a temporary surface that truly overlaps the workspace.",
-        "section": "elevation"
-      },
-      {
-        "name": "The Small-Radius Rule",
-        "body": "Ordinary interface geometry stays within the shipped 4–8px range; larger radii require a new, explicit product reason.",
-        "section": "shapes"
-      }
+      { "name": "The One Accent Rule", "body": "Cobalt appears only for focus, links, progress, and selected intent. It never becomes a decorative field or a general-purpose card tint.", "section": "colors" },
+      { "name": "The Semantic Color Rule", "body": "Green, amber, and red always describe real application state and appear with text, never as decoration.", "section": "colors" },
+      { "name": "The Bounded State Rule", "body": "Every Goal state is an icon-and-text tag with a semantic border and quiet tint; it never relies on color alone or becomes an unbounded word at the edge of a row.", "section": "components" },
+      { "name": "The Native Clarity Rule", "body": "Do not introduce display fonts or monospace styling for atmosphere. Monospace remains limited to commands, identifiers, and measured values.", "section": "typography" },
+      { "name": "The Continuous Region Rule", "body": "Navigator, Goal canvas, and Runtime remain structural regions. Goal Hero and work content are sibling inset surfaces separated by visible canvas space; neither uses a drop shadow or nested ornamental frame. Compact may tighten vertical rhythm but keeps at least 18px of horizontal safety inside overview cards.", "section": "layout" },
+      { "name": "The One Active Section Rule", "body": "Each Focus detail tab exposes one stable equal-width selector row and one shared full-width detail stage. Selection never moves sibling cards; deep links reveal the owning stage before scrolling.", "section": "components" },
+      { "name": "The Content Before Controls Rule", "body": "Project utilities fit inside the title row and Goal actions use short stable labels; layout never concedes a row or a content column to dynamic button copy.", "section": "layout" },
+      { "name": "The Runtime Boundary Rule", "body": "Goal ownership, tabs, guidance, child choices, and controls are application UI. Only the real terminal canvas uses terminal colors, selected locally as Follow interface, Light, or Dark.", "section": "layout" },
+      { "name": "The Transient Elevation Rule", "body": "If a surface remains on screen as part of the workspace, it stays flat. Only content temporarily placed above the workspace may cast a shadow.", "section": "elevation" }
     ],
     "dos": [
-      "Do keep the selected Goal explicit across Navigator, Focus, and Runtime.",
-      "Do preserve Goal Tree selection, collapsed branches, filters, scroll, mobile surface, resizer widths, disclosures, and valid form input across live refresh.",
-      "Do keep the five Goal Detail tabs stable, keyboard operable, single-panel, and deep-link aware.",
-      "Do keep `/decisions` as the sole full decision surface and lead each decision with the user's question, timing, evidence, and consequences.",
-      "Do keep Runtime tabs bound to their owner Goal and route non-executable parents to concrete child Goals.",
-      "Do pair every semantic color with readable state text and, where useful, one Lucide icon.",
-      "Do use the same semantic hierarchy and behavior in Light, Dark, and Follow System.",
-      "Do let the document-container rule stack complex fields at 660px and the shell switch surfaces at 760px.",
-      "Do use 1px seams, opaque tonal surfaces, compact system type, and restrained 4–8px corners.",
-      "Do keep pending and recent decision outcomes grounded in canonical events, Evidence, and user reasons."
+      "Do establish hierarchy with proportion, alignment, and whitespace before adding a container.",
+      "Do keep one selected Goal visually continuous across Navigator, Focus, and Runtime.",
+      "Do preserve the cool-neutral palette and reserve cobalt for interaction and focus.",
+      "Do test Light, Dark, Standard, Compact, Runtime-open, narrow states, and both terminal palettes together.",
+      "Do keep every mobile workspace surface full width and free of horizontal viewport escapes.",
+      "Do let users scan section summaries before expanding one body, and reveal the correct card before honoring a deep link."
     ],
     "donts": [
-      "Don't turn GoalBoard into a Dashboard, Kanban, or Agent Orchestration control room.",
-      "Don't fragment continuous Goal truth into a grid of decorative cards.",
-      "Don't use gradients, glass surfaces, decorative glow, heavy persistent shadows, or oversized radii.",
-      "Don't use mineral blue as ambient decoration; reserve it for current path, focus, links, and available action.",
-      "Don't use color alone for Ready, Blocked, Risk, Review, connection, or completion state.",
-      "Don't mix icon families, emoji, or unlabeled glyphs into the Lucide line language.",
-      "Don't duplicate full decisions inside Goal detail or expose internal protocol nouns as the only explanation.",
-      "Don't rebind, reopen, write to, or close a Runtime terminal from the wrong Goal or an execution-ineligible parent.",
-      "Don't show Goals, Focus, and Runtime simultaneously below 760px.",
-      "Don't treat the approved workstation screenshots as global page templates or replace the shipped Navigator, Focus, Graph, or Runtime behaviors with decorative mock content."
+      "Don't reintroduce a centered brand ornament, a floating Goal paper card, or large rounded persistent panes.",
+      "Don't turn detail tabs, view switches, and every filter into segmented pills.",
+      "Don't stack unrelated detail sections into one unbroken page or give every nested content block another decorative border.",
+      "Don't make status colors decorative or rely on color without text.",
+      "Don't copy YouMind's product IA, content cards, branding, or imagery."
     ]
   }
 }

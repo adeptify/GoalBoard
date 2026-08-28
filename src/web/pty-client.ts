@@ -78,7 +78,64 @@ if (pane) {
   const routePrefix = document.body.dataset.routePrefix || "";
   const route = (pathname: string) => routePrefix + pathname;
 
+  const terminalPalette = () => document.documentElement.dataset.resolvedTerminalTheme === "light"
+    ? {
+        background: "#fbfbfc",
+        foreground: "#202023",
+        cursor: "#202023",
+        cursorAccent: "#fbfbfc",
+        selectionBackground: "#dce4f8",
+        selectionInactiveBackground: "#eceefa",
+        black: "#252528",
+        red: "#a64e51",
+        green: "#347759",
+        yellow: "#936b2d",
+        blue: "#5068b7",
+        magenta: "#8157a2",
+        cyan: "#36787f",
+        white: "#d7d7dc",
+        brightBlack: "#6a6a73",
+        brightRed: "#b95c5f",
+        brightGreen: "#43886a",
+        brightYellow: "#a47a38",
+        brightBlue: "#6078c8",
+        brightMagenta: "#9569b5",
+        brightCyan: "#478b92",
+        brightWhite: "#ffffff",
+      }
+    : {
+        background: "#101012",
+        foreground: "#f0f0f2",
+        cursor: "#f0f0f2",
+        cursorAccent: "#101012",
+        selectionBackground: "#33405b",
+        selectionInactiveBackground: "#282b34",
+        black: "#202023",
+        red: "#e08386",
+        green: "#78b391",
+        yellow: "#d0a15b",
+        blue: "#91a7f2",
+        magenta: "#c594d8",
+        cyan: "#75b7be",
+        white: "#d8d8dd",
+        brightBlack: "#73737c",
+        brightRed: "#ee9a9d",
+        brightGreen: "#91c7a7",
+        brightYellow: "#dfb773",
+        brightBlue: "#acbdf6",
+        brightMagenta: "#d8abe8",
+        brightCyan: "#91cbd0",
+        brightWhite: "#ffffff",
+      };
+
   const sessions = new Map<string, { term: Terminal; fit: FitAddon; wrapper: HTMLElement; hasOutput: boolean }>();
+  const applyTerminalPalette = () => {
+    const palette = terminalPalette();
+    sessions.forEach(({ term }) => {
+      term.options.theme = palette;
+    });
+  };
+  window.addEventListener("goalboard:terminal-theme-change", applyTerminalPalette);
   const alive = new Set<string>();
   const pendingSpawns = new Map<string, { resolve: (value: PtyServerMessage) => void; reject: (error: Error) => void }>();
   const spawnTail = new Map<string, Promise<unknown>>();
@@ -438,13 +495,7 @@ if (pane) {
       macOptionIsMeta: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", Consolas, "Liberation Mono", "Courier New", monospace',
       cursorBlink: true,
-      theme: {
-        background: "#1b2129",
-        foreground: "#e8edf2",
-        cursor: "#e8edf2",
-        cursorAccent: "#1b2129",
-        selectionBackground: "#2d3946",
-      },
+      theme: terminalPalette(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

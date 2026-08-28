@@ -1245,13 +1245,20 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/settings") {
-          response.writeHead(302, { location: "/settings/projects", "cache-control": "no-store" });
+          response.writeHead(302, {
+            location: isDesktopShellRequest(request, url) ? "/settings/appearance?desktop=1" : "/settings/appearance",
+            "cache-control": "no-store",
+          });
           response.end();
           return;
         }
         const globalPlanningMatch = url.pathname.match(/^\/settings\/planning(?:\/([^/]+))?(?:\/(edit))?$/);
         if (request.method === "GET" && globalPlanningMatch) {
           const methods = resolvePlanningMethodPacks(readPersonalPlanningMethodPacks(serverOptions.homeDirectory));
+          const contextProjectId = url.searchParams.get("project");
+          const contextProject = contextProjectId
+            ? resolved.projects.find((project) => project.project_id === contextProjectId) ?? null
+            : null;
           const methodId = globalPlanningMatch[1] ? decodeURIComponent(globalPlanningMatch[1]) : null;
           const method = methodId && methodId !== "new"
             ? methods.find((item) => item.method_id === methodId) ?? null
@@ -1271,11 +1278,11 @@ async function handleGoalBoardWebRequest(
                 method,
                 methodId === "new" ? "new" : globalPlanningMatch[2] === "edit" ? "edit" : "detail",
                 "personal",
-                null,
+                contextProject,
                 controlToken,
                 isDesktopShellRequest(request, url),
               )
-            : renderGoalBoardPlanningLibrary(methods, null, controlToken, isDesktopShellRequest(request, url)));
+            : renderGoalBoardPlanningLibrary(methods, contextProject, controlToken, isDesktopShellRequest(request, url)));
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/settings/planning-methods") {
@@ -1304,11 +1311,15 @@ async function handleGoalBoardWebRequest(
           }
           return;
         }
-        const settingsPageMatch = url.pathname.match(/^\/settings\/(runtimes|projects|diagnostics)$/);
+        const settingsPageMatch = url.pathname.match(/^\/settings\/(appearance|runtimes|projects|diagnostics)$/);
         if (request.method === "GET" && settingsPageMatch) {
           const section = settingsPageMatch[1] as WebSettingsSection;
           const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
           const projects = catalogSettings.projects;
+          const contextProjectId = url.searchParams.get("project");
+          const contextProject = contextProjectId
+            ? projects.find((project) => project.project_id === contextProjectId) ?? null
+            : null;
           const runtimes = section === "runtimes" ? await runtimeIntegrations.detectAll() : [];
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
@@ -1318,7 +1329,7 @@ async function handleGoalBoardWebRequest(
           });
           response.end(renderGoalBoardSettings({
             section,
-            context_project: null,
+            context_project: contextProject,
             runtimes,
             projects,
             connections: catalogSettings.connections,
