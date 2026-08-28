@@ -51,7 +51,18 @@ Do not run `install --confirm` for `absent` or `needs_repair` until the required
 
 Before launching, say plainly that closing the terminal or Runtime Session stops this temporary page. Keep the process in the foreground. Do not add `nohup`, `&`, `disown`, a background shell, or a claim that it will survive logout.
 
-## 4. Explain failures without switching paths
+## 4. Open the relevant project or Goal
+
+Service health and the navigation target are separate decisions. After the page is healthy, but before opening it, make a read-only `goalboard_v1_context_resolve` call unless the user explicitly asked to browse all projects.
+
+- If the current request has an explicit current Goal, read its Contract and open the returned `goal_url`.
+- If there is no explicit current Goal and resolution is `bound`, open the returned connection `project_url`.
+- If resolution is unbound or suggested, the bound target is unavailable, or the user explicitly asks to browse all projects, open the Web root so the project picker remains available.
+- Use only official URLs returned by GoalBoard. Do not construct a project or Goal URL from IDs, database paths, repository names, or browser history.
+- Opening a project or Goal changes only Web focus. It does not bind or switch the Runtime project, create a Claim, start a Run, advance a Goal, or authorize any Goal lifecycle write.
+- If context resolution itself fails, report that failure instead of claiming that a guessed page is the current project.
+
+## 5. Explain failures without switching paths
 
 - If a service command fails, report its human-readable error and the returned stderr log path. Do not return the page address as though startup succeeded.
 - If health readiness times out, say the process started but the page did not become usable, and point to `~/.goalboard/logs/web-service.error.log`.

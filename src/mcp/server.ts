@@ -1479,8 +1479,19 @@ export class GoalBoardServer {
     host: GoalBoardRuntimeContextHost,
   ): string {
     const webBaseUrl = host.webBaseUrl ?? "http://127.0.0.1:4173";
+    let projectUrl: string | null = null;
+    if (resolution.connection) {
+      try {
+        projectUrl = new URL(
+          `/projects/${encodeURIComponent(resolution.connection.project_id)}`,
+          webBaseUrl,
+        ).toString();
+      } catch {
+        throw new GoalBoardV1Error("web.url_invalid", `无效的 GoalBoard Web 地址: ${webBaseUrl}`);
+      }
+    }
     const connection = resolution.connection
-      ? { ...resolution.connection, web_base_url: webBaseUrl }
+      ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
     if (connection) {
       this.runtimeConnection = {

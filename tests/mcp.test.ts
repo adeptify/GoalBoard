@@ -315,6 +315,21 @@ describe("mcp server", () => {
     for (const content of Object.values(references)) assert.doesNotMatch(content, /GOALBOARD_DATABASE/);
   });
 
+  it("Runtime opens Web at the bound project or active Goal without changing Runtime state", () => {
+    const serviceStart = fs.readFileSync(
+      path.join(ROOT, "skills/goal-advance/references/service-start.md"),
+      "utf8",
+    );
+
+    assert.match(serviceStart, /before opening.*read-only `goalboard_v1_context_resolve`/is);
+    assert.match(serviceStart, /explicit current Goal.*`goal_url`/is);
+    assert.match(serviceStart, /resolution is `bound`.*`project_url`/is);
+    assert.match(serviceStart, /unbound.*unavailable.*browse all projects.*root/is);
+    assert.match(serviceStart, /do not construct.*project.*Goal URL/is);
+    assert.match(serviceStart, /does not bind or switch.*Claim.*Run.*advance.*Goal/is);
+    assert.match(serviceStart, /service health.*navigation target.*separate/is);
+  });
+
   it("Runtime recovery guidance treats a newer catalog as a stale Session, not damaged data", () => {
     const skillRoot = path.join(ROOT, "skills/goal-advance");
     const connection = fs.readFileSync(path.join(skillRoot, "references/project-connection.md"), "utf8");
@@ -947,13 +962,23 @@ describe("mcp server", () => {
       assert.equal(boundResponse.result.isError, false, boundResponse.result.content[0]?.text);
       const bound = JSON.parse(boundResponse.result.content[0]?.text ?? "{}") as {
         status: string;
-        connection: { project_id: string; board_id: string; database_path: string; web_base_url: string };
+        connection: {
+          project_id: string;
+          board_id: string;
+          database_path: string;
+          web_base_url: string;
+          project_url: string;
+        };
       };
       assert.equal(bound.status, "bound");
       assert.equal(bound.connection.project_id, first.project_id);
       assert.equal(bound.connection.board_id, first.board_id);
       assert.equal(bound.connection.database_path, first.database_path);
       assert.equal(bound.connection.web_base_url, "https://goalboard.example/app/");
+      assert.equal(
+        bound.connection.project_url,
+        `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}`,
+      );
       assert.equal(runtime.runtimeConnection?.projectId, first.project_id);
 
       const contractResponse = await call(runtime, "goalboard_v1_contract", {
@@ -979,11 +1004,24 @@ describe("mcp server", () => {
       assert.equal(restoredResponse.result.isError, false, restoredResponse.result.content[0]?.text);
       const restored = JSON.parse(restoredResponse.result.content[0]?.text ?? "{}") as {
         status: string;
-        connection: { project_id: string; board_id: string };
+        connection: { project_id: string; board_id: string; project_url: string };
       };
       assert.equal(restored.status, "bound");
       assert.equal(restored.connection.project_id, first.project_id);
       assert.equal(restored.connection.board_id, first.board_id);
+      assert.equal(
+        restored.connection.project_url,
+        `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}`,
+      );
+
+      const beforeFocus = await call(newSession, "goalboard_v1_snapshot", { board_id: first.board_id });
+      const focusedGoal = await call(newSession, "goalboard_v1_contract", {
+        board_id: first.board_id,
+        goal_id: "project scoped goal",
+      });
+      const afterFocus = await call(newSession, "goalboard_v1_snapshot", { board_id: first.board_id });
+      assert.equal(focusedGoal.result.isError, false, focusedGoal.result.content[0]?.text);
+      assert.equal(afterFocus.result.content[0]?.text, beforeFocus.result.content[0]?.text);
 
       const deniedRebind = await call(newSession, "goalboard_v1_context_bind", {
         project_id: second.project_id,
