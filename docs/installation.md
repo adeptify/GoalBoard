@@ -35,9 +35,15 @@ git pull --ff-only
 pnpm install --frozen-lockfile
 pnpm install:local
 
-# 正在使用常驻 Web 时，明确重启到刚安装的 release
+# 正在使用常驻 Web 时先检查：旧配置只能用 install 原子修复
+"$HOME/.goalboard/bin/goalboard" service status --home "$HOME/.goalboard" --json
+"$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard" --confirm
+
+# 仅当配置无需修复、只需加载新内容时才 restart
 "$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm
 ```
+
+`status=needs_repair` 时直接执行 `service install`，不要先尝试 `restart`。`install` 会重写 GoalBoard 自己拥有的 plist 和 receipt、受控重启并在失败时回滚；未知 LaunchAgent 或外部端口监听者仍不会被接管。
 
 更新 MCP 或 Skill 后也要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
 

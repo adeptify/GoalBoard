@@ -35,9 +35,15 @@ git pull --ff-only
 pnpm install --frozen-lockfile
 pnpm install:local
 
-# When the persistent Web service is in use, explicitly restart it onto the new release
+# Check a persistent Web service first; only install can atomically repair stale configuration
+"$HOME/.goalboard/bin/goalboard" service status --home "$HOME/.goalboard" --json
+"$HOME/.goalboard/bin/goalboard" service install --home "$HOME/.goalboard" --confirm
+
+# Restart only when the configuration is current and the process merely needs to load new content
 "$HOME/.goalboard/bin/goalboard" service restart --home "$HOME/.goalboard" --confirm
 ```
+
+When status returns `needs_repair`, run `service install` directly instead of trying `restart` first. Install rewrites only GoalBoard-owned plist and receipt files, performs a controlled restart, and rolls back on failure; it still never takes over an unknown LaunchAgent or an external port listener.
 
 After updating MCP or the Skill, also open a new Runtime Session, because an already-running Session does not reload tools. To make the built-in demo use the new example content, run `goalboard demo reset --confirm` separately; it clears changes inside the demo but never touches user projects.
 

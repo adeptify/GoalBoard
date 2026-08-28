@@ -414,6 +414,43 @@ test("install does not report success when final owned-instance verification is 
   }
 });
 
+test("needs_repair rejects restart and points to the configuration-writing install action", async () => {
+  const item = await fixture();
+  try {
+    const install = await item.manager.prepare("install");
+    await item.manager.confirm({ plan_id: install.plan_id, decision: "confirmed" });
+    await makeOwnedConfigNeedRepair(item);
+    const mutationsBefore = item.commands.filter((command) =>
+      ["bootstrap", "kickstart", "bootout"].includes(command[1]!),
+    ).length;
+
+    const restart = await item.manager.prepare("restart");
+
+    assert.equal(restart.detection.state, "needs_repair");
+    assert.equal(restart.status, "conflict");
+    assert.equal(restart.next_action, "service_install");
+    assert.deepEqual(restart.changes, []);
+    assert.match(restart.message, /service install/);
+    assert.match(restart.message, /restart/);
+    await assert.rejects(
+      () => item.manager.confirm({ plan_id: restart.plan_id, decision: "confirmed" }),
+      (error: unknown) => error instanceof GoalBoardWebServiceError
+        && error.code === "service.conflict",
+    );
+    assert.equal(
+      item.commands.filter((command) => ["bootstrap", "kickstart", "bootout"].includes(command[1]!)).length,
+      mutationsBefore,
+    );
+
+    const repair = await item.manager.prepare("install");
+    assert.equal(repair.status, "ready");
+    assert.equal(repair.next_action, null);
+    assert.equal((await item.manager.confirm({ plan_id: repair.plan_id, decision: "confirmed" })).detection.state, "running");
+  } finally {
+    await rm(item.directory, { recursive: true, force: true });
+  }
+});
+
 test("a failed owned repair restores the prior files and running state", async () => {
   for (const previouslyRunning of [false, true]) {
     const item = await fixture();
@@ -519,6 +556,7 @@ test("stop, start, restart, and remove have distinct owned behavior", async () =
     assert.equal((await item.manager.confirm({ plan_id: start.plan_id, decision: "confirmed" })).status, "started");
     const bootstrapCountBeforeRestart = item.commands.filter((command) => command[1] === "bootstrap").length;
     const restart = await item.manager.prepare("restart");
+    assert.equal(restart.next_action, null);
     item.setBootoutTransitionPrintCount(4);
     item.setBootstrapInProgressCount(8);
     assert.equal((await item.manager.confirm({ plan_id: restart.plan_id, decision: "confirmed" })).status, "restarted");

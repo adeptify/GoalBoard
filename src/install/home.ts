@@ -267,7 +267,7 @@ export async function installGoalBoardHome(
       launchers,
       next_steps: {
         message:
-          `GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入、项目设置和 Web 常驻服务必须通过后续单独的显式流程完成。接入 Codex / Claude Code 后需要新开 Session，因为 Runtime 只在 Session 启动时读取 MCP 与 Skill 清单，当前对话不会动态出现新工具。重开后说「继续用 GoalBoard」；GoalBoard 会展示当前目录以前用过的项目并请你确认，不会把普通选择偷偷设成目录默认。${status === "refreshed" ? " 如果常驻 Web 服务正在运行，请显式执行 service restart，让它切换到刚刷新的 release；安装器不会静默终止未知进程。" : ""}`,
+          `GoalBoard 只完成了本体安装；没有创建项目，也没有修改 Runtime 配置或用户项目文件。Runtime 接入、项目设置和 Web 常驻服务必须通过后续单独的显式流程完成。接入 Codex / Claude Code 后需要新开 Session，因为 Runtime 只在 Session 启动时读取 MCP 与 Skill 清单，当前对话不会动态出现新工具。重开后说「继续用 GoalBoard」；GoalBoard 会展示当前目录以前用过的项目并请你确认，不会把普通选择偷偷设成目录默认。${status === "unchanged" ? "" : " 如果此前已启用常驻 Web 服务，请先执行 service status；返回 needs_repair 时执行 service_install_command，不要先执行 service_restart_command；返回 running 或 unhealthy 且仅需加载新内容时，才执行 service_restart_command。安装器不会静默终止未知进程。"}`,
         web_command: [launchers.web, "--home", homeDirectory],
         service_install_command: [launchers.cli, "service", "install", "--home", homeDirectory, "--confirm"],
         service_restart_command: [launchers.cli, "service", "restart", "--home", homeDirectory, "--confirm"],
