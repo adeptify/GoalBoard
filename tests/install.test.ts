@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, copyFile, lstat, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -382,6 +382,27 @@ test("all installed launchers keep running after the installation source is dele
   });
 });
 
+test("installed MCP launcher preserves the Runtime caller workspace", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const home = join(directory, "home", ".goalboard");
+    const runtimeWorkspace = join(directory, "runtime-workspace");
+    await mkdir(runtimeWorkspace, { recursive: true });
+    await writeFile(
+      join(source, "dist", "mcp", "server.js"),
+      "console.log(JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD }));\n",
+    );
+
+    const installed = await installGoalBoardHome({ homeDirectory: home, sourceDirectory: source });
+    const output = await execFileAsync(process.execPath, [installed.launchers.mcp], { cwd: runtimeWorkspace });
+
+    assert.deepEqual(JSON.parse(output.stdout.trim()), {
+      cwd: await realpath(runtimeWorkspace),
+      pwd: await realpath(runtimeWorkspace),
+    });
+  });
+});
+
 test("only the bundled Web launcher exports its LaunchAgent process identity", async () => {
   await withTemporaryDirectory(async (directory) => {
     const source = await fixtureSource(directory, "1.0.0");
@@ -400,6 +421,7 @@ test("only the bundled Web launcher exports its LaunchAgent process identity", a
     assert.doesNotMatch(await readFile(result.launchers.mcp, "utf8"), /GOALBOARD_WEB_SERVICE_PROCESS_ID/);
   });
 });
+
 test("a bundled Node runtime produces standalone launchers without a system Node PATH", async () => {
   await withTemporaryDirectory(async (directory) => {
     const source = await fixtureSource(directory, "1.0.0");

@@ -390,9 +390,14 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       }
       const templates = await firstMcp.request("resources/templates/list", {});
       assert.deepEqual((templates.result as { resourceTemplates: unknown[] }).resourceTemplates, []);
-      const unresolved = await firstMcp.call("goalboard_v1_context_resolve", {});
+      const unresolved = await firstMcp.call("goalboard_v1_context_resolve", {}) as {
+        status: string;
+        connection: null;
+        context: { workspace: { canonical_path: string } };
+      };
       assert.equal(unresolved.status, "unbound");
       assert.equal(unresolved.connection, null);
+      assert.equal(unresolved.context.workspace.canonical_path, await realpath(directory));
       const bound = await firstMcp.call("goalboard_v1_context_bind", {
         project_id: created.project.project_id,
         actor_id: "runtime-codex",
