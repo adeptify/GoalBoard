@@ -45,13 +45,14 @@ When a request crosses routes, read each relevant reference, but keep one conver
 
 For every complex decomposition or relation change, use this loop before proposing anything:
 
-1. Recover the user's original outcome. Identify the work types, professional themes, usable deliverables, operating context, uncertainty, and risks actually present.
+1. Recover the user's original outcome. Identify the work types, professional domains, industries, situational overlays, usable deliverables, operating context, uncertainty, and risks actually present.
 2. Call `goalboard_v1_planning_methods`. Start with every project-required method, then add every available method whose distinct professional checks materially apply.
 3. Read every selected `methods[].instructions` body completely. Treat them as complementary planning Skills, not serial templates.
 4. Map each relevant theme to the result it provides, the theme that consumes it, and the concrete use. If a consumer needs a provider result whose theme is uncovered, scan the library again and add that method.
-5. Repeat selection and mapping until no required provider theme and no material professional check is uncovered.
-6. Evaluate every selected dependency rule. When real output consumption exists, create `consumer depends_on provider` and name both the provider output and consumer use. Otherwise keep the work parallel and state which consumption is absent.
-7. Check the complete result chain, leaf readiness, missing decisions, false dependencies, and graph validity. Only then prepare the complete Proposal.
+5. For any complex project that expects parallel work, establish or verify a right-sized root SSOT, divide vertical outcome units from horizontal shared units, and give each unit one canonical SSOT with unique ownership, inputs, outputs, consumers, evidence, and Impact surfaces. Reuse trustworthy artifacts and keep unit detail out of the root. For technical work, apply the repository and module rules in the planning reference.
+6. Repeat selection and mapping until no required provider theme and no material professional check is uncovered.
+7. Evaluate every selected dependency rule. When real output consumption exists, create `consumer depends_on provider` and name both the provider output and consumer use. When a stable provider contract plus a test double, fixture, or compatibility layer lets both implementations proceed safely, keep provider and consumer implementation Goals parallel and make integration depend on both.
+8. Check the complete result chain, unit ownership, overlapping write/decision surfaces, leaf readiness, missing decisions, false dependencies, and graph validity. Only then prepare the complete Proposal.
 
 Related themes, chronology, hierarchy, shared files, or shared ownership alone never create a hard dependency. During ordinary execution of an accepted leaf, do not reload methods unless scope, requirements, or dependencies changed.
 

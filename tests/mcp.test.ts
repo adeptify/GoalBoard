@@ -69,6 +69,9 @@ describe("mcp server", () => {
     assert.match(planningMethodsTool?.description ?? "", /methods\[\].*instructions/);
     assert.match(planningMethodsTool?.description ?? "", /提供者产出与消费者用途/);
     assert.ok(names.includes("goalboard_v1_planning_method_save"));
+    const planningMethodSaveTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_method_save");
+    const planningMethodKind = planningMethodSaveTool?.inputSchema.properties?.method.properties?.kind as { enum?: string[] } | undefined;
+    assert.deepEqual(planningMethodKind?.enum, ["meta", "work_type", "domain", "industry", "overlay", "custom"]);
     assert.ok(names.includes("goalboard_v1_planning_analyze_change"));
     assert.ok(names.includes("goalboard_v1_planning_graph_check"));
     assert.ok(names.includes("goalboard_v1_goal_tree_decide"));
@@ -219,6 +222,9 @@ describe("mcp server", () => {
     assert.match(references["project-connection"], /Recoverable Goal trash/);
     assert.match(references.planning, /Stop only when no required provider theme/);
     assert.match(references.planning, /consumer_goal depends_on provider_goal/);
+    assert.match(references.planning, /work type describes the shape of work/);
+    assert.match(references.planning, /vertical outcome unit/);
+    assert.match(references.planning, /horizontal shared unit/);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references["service-start"], /service status --home "\$HOME\/\.goalboard" --json/);
@@ -236,6 +242,7 @@ describe("mcp server", () => {
     assert.match(skill, /Treat a user correction as new authority/);
     assert.match(planning, /Persist before asking the next question/);
     assert.match(planning, /selected planning themes and why they apply/);
+    assert.match(planning, /Establish right-sized SSOTs and orthogonal work units/);
     assert.match(planning, /Exactly one output is primary/);
     assert.match(planning, /confirm the whole named Proposal, reject it, or revise named items/);
     assert.match(planning, /replan the affected subgraph/);
@@ -300,7 +307,7 @@ describe("mcp server", () => {
         method: "tools/call",
         params: { name, arguments: args },
       }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
-    const method = (methodId: string, name: string, kind: "work_type" | "domain") => ({
+    const method = (methodId: string, name: string, kind: "work_type" | "domain" | "industry" | "overlay") => ({
       method_id: methodId,
       kind,
       name,
@@ -339,6 +346,8 @@ describe("mcp server", () => {
       for (const pack of [
         method("work-build", "构建与改变", "work_type"),
         method("domain-software", "软件开发", "domain"),
+        method("industry-education", "教育", "industry"),
+        method("overlay-minors", "未成年人", "overlay"),
       ]) {
         const saved = await call(runtime, "goalboard_v1_planning_method_save", {
           board_id: "planning-composition-board",
@@ -361,14 +370,14 @@ describe("mcp server", () => {
           completion_checks: string[];
         };
       };
-      assert.deepEqual(result.composition.method_pack_ids, ["work-build", "domain-software"]);
+      assert.deepEqual(result.composition.method_pack_ids, ["work-build", "domain-software", "industry-education", "overlay-minors"]);
       assert.deepEqual(
         result.composition.method_paths.map((path) => path.method_id),
         result.composition.method_pack_ids,
       );
       assert.ok(result.composition.method_paths.every((path) => path.instructions.includes("depends_on")));
-      assert.equal(result.composition.required_coverage.length, 2);
-      assert.equal(result.composition.completion_checks.length, 2);
+      assert.equal(result.composition.required_coverage.length, 4);
+      assert.equal(result.composition.completion_checks.length, 4);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

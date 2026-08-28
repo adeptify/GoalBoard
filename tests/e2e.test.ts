@@ -293,6 +293,13 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       );
       assert.match(installedPlanning, /The planning loop/);
       assert.match(installedPlanning, /consumer_goal depends_on provider_goal/);
+      assert.match(installedPlanning, /vertical outcome unit/);
+      const installedIndustryMethod = await readFile(
+        join(userHome, ".codex", "skills", "goal-advance", "methods", "industries", "industry-education.md"),
+        "utf8",
+      );
+      assert.match(installedIndustryMethod, /method_id: industry-education/);
+      assert.match(installedIndustryMethod, /## 必须覆盖/);
 
       const claudePlanResponse = await securePost(origin, token, "/api/settings/runtimes/claude-code/plan", { action: "connect" });
       assert.equal(claudePlanResponse.status, 200);

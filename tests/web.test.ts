@@ -1521,6 +1521,10 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(workPlanningPage, /尚未建立项目规划组合/);
     assert.match(workPlanningPage, /添加规划方法/);
     assert.match(workPlanningPage, /data-adopt-planning-method="domain-software-development"/);
+    assert.match(workPlanningPage, /data-adopt-planning-method="industry-education"/);
+    assert.match(workPlanningPage, /data-adopt-planning-method="overlay-minors"/);
+    assert.match(workPlanningPage, /data-planning-filter="industry"/);
+    assert.match(workPlanningPage, /data-planning-filter="overlay"/);
     assert.match(workPlanningPage, /加入组合/);
     const workPlanningNavigation = workPlanningPage.slice(
       workPlanningPage.indexOf('<nav class="settings-navigation'),
@@ -1584,7 +1588,13 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(planningLibrary, /class="planning-card"/);
     assert.match(planningLibrary, /陌生领域方法包生成/);
     assert.match(planningLibrary, /软件开发/);
+    assert.match(planningLibrary, /医疗健康/);
+    assert.match(planningLibrary, /AI 人工复核/);
     assert.match(planningLibrary, /data-planning-filter="work_type"/);
+    assert.match(planningLibrary, /data-planning-filter="industry"/);
+    assert.match(planningLibrary, /data-planning-filter="overlay"/);
+    assert.match(planningLibrary, /行业方法/);
+    assert.match(planningLibrary, /场景叠加层/);
     assert.doesNotMatch(planningLibrary, /class="planning-layout"|class="planning-editor"|<form class="planning-edit-form"/);
     const planningNavigation = planningLibrary.slice(
       planningLibrary.indexOf('<nav class="settings-navigation'),
@@ -1599,8 +1609,9 @@ test("Web settings use shared Runtime and project services for confirmed setup f
       `${origin}/settings/planning/domain-software-development?project=${fixture.alpha.project_id}`,
     )).text();
     assert.match(planningDetail, /Runtime 方法说明/);
-    assert.match(planningDetail, /技术方案设计/);
-    assert.match(planningDetail, /技术基础能力建设/);
+    assert.match(planningDetail, /项目级 SSOT/);
+    assert.match(planningDetail, /横纵模块地图/);
+    assert.match(planningDetail, /并发写入边界/);
     assert.match(planningDetail, /规划路径/);
     assert.match(planningDetail, /拆分时必须回答/);
     assert.match(planningDetail, /依赖判断/);
@@ -1614,6 +1625,8 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(planningEditor, /<form class="planning-edit-form"[^>]*data-planning-edit-form/);
     assert.match(planningEditor, /保存到我的方法库/);
     assert.match(planningEditor, /name="instructions"/);
+    assert.match(planningEditor, /option value="industry"/);
+    assert.match(planningEditor, /option value="overlay"/);
     assert.match(planningEditor, /Runtime 方法正文/);
     assert.match(planningEditor, /data-coverage-row/);
     assert.match(planningEditor, /data-dependency-row/);

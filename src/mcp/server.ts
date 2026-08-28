@@ -92,7 +92,7 @@ const PLANNING_METHOD_PACK = {
   type: "object",
   properties: {
     method_id: V1_STRING,
-    kind: { type: "string", enum: ["meta", "work_type", "domain", "custom"] },
+    kind: { type: "string", enum: ["meta", "work_type", "domain", "industry", "overlay", "custom"] },
     name: V1_STRING,
     summary: V1_STRING,
     instructions: V1_STRING,

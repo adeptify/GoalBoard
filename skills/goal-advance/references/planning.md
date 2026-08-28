@@ -41,7 +41,7 @@ Use the loop for a new compound Goal, a Goal with several independently reviewab
 Return to the user's original outcome instead of the most recently discussed topic. Identify:
 
 - kinds of work being performed;
-- professional domains and themes involved;
+- work types, professional domains, industries, and situational overlays involved;
 - usable deliverables and their consumers;
 - operating context and real usage flow;
 - uncertainty, risks, evidence standards, and delivery obligations.
@@ -52,6 +52,7 @@ Call `goalboard_v1_planning_methods`.
 
 - Every `composition.method_pack_ids` entry is a user-configured project floor and must be included.
 - Add every other method whose distinct professional check materially applies to the current task.
+- Use method kinds as orthogonal lenses: a work type describes the shape of work, a domain supplies professional practice, an industry supplies industry objects and lifecycle, and an overlay adds a cross-industry risk or operating constraint. Select only the layers that materially change the plan.
 - If the composition is empty, select all methods justified by the task; there may be one or many.
 - Compare selected coverage with all available method summaries. An unselected method that contributes a material uncovered check must be added.
 - If no domain method fits, use `meta-domain-pack-builder` to research domain objects, lifecycle, professional artifacts, evidence, dependencies, and failures. Save a user-confirmed project method before using it to split the real Goal.
@@ -77,7 +78,74 @@ Examples are recall cues, not a fixed product/software/data bundle:
 - roles and permissions can support operational workflows;
 - a validated playable loop can support game systems and content production.
 
-### 4. Turn only real consumption into dependency
+### 4. Establish right-sized SSOTs and orthogonal work units
+
+Use this section whenever a complex project expects multiple people, Runtimes, vendors, or Work Items to proceed concurrently. The SSOT is the smallest canonical artifact that lets every unit make compatible decisions without copying the whole project. It can be a project brief, research protocol, campaign charter, content bible, service playbook, financial model, architecture contract, or another artifact appropriate to the work—not necessarily a repository file.
+
+First establish or verify one root SSOT containing only shared facts: intended outcome, non-goals, global constraints, authoritative decisions and evidence, unit index, cross-unit contracts, convergence rules, and open decisions. Keep detailed unit facts in their unit SSOTs. Reuse a trustworthy current artifact instead of creating a duplicate truth source.
+
+Build the work map on two axes:
+
+- a **vertical outcome unit** owns one independently usable, reviewable result for a real consumer;
+- a **horizontal shared unit** owns one method, asset, dataset, policy, standard, platform, or service consumed by at least two vertical units.
+
+Examples: a growth launch may use vertical channel outcomes with horizontal positioning and measurement; a research program may use vertical research questions with horizontal sample, source, and analysis rules; a content operation may use vertical stories or formats with horizontal editorial standards and asset production; a service operation may use vertical service journeys with horizontal permissions, training, and measurement. These are prompts for discovering ownership, not templates to copy.
+
+After shared constraints and the unit map are stable, unit SSOT Goals may proceed in parallel. Each unit SSOT names its outcome and consumer, responsibilities and non-responsibilities, unique decisions and assets, inputs and outputs, shared contracts, evidence, exceptions, convergence point, and read/write/decide/exclusive Impact surfaces.
+
+Reject or rework the map when two units author the same fact, own the same decision or mutable asset, need bidirectional internal knowledge, form a dependency cycle, or plan overlapping write/decide/exclusive surfaces. Separate documents do not prove orthogonality. A horizontal unit with only one consumer is usually supporting work inside that vertical unit.
+
+Derive execution so that SSOT work creates concurrency rather than a project-wide document gate:
+
+- the root SSOT or verified delta precedes decisions that change shared boundaries;
+- unit SSOTs proceed in parallel after the map is stable;
+- execution depends on its own unit SSOT and only the provider outputs it truly consumes;
+- independent units remain parallel and converge in an integration, synthesis, launch, approval, or operating checkpoint that consumes their results;
+- a local, already-bounded task reuses current SSOTs and updates only the affected unit.
+
+Record SSOT artifacts as promised outputs and required inputs of their Goals. A document is complete only when it has a readable reference and the intended consumer can use it; writing the file does not complete the downstream project result.
+
+### 5. Apply the technical SSOT specialization
+
+Use this section for a new or materially changed technical project, multi-module migration or refactor, or any plan that expects several Runtimes or Work Items to execute concurrently. For a local repair inside one already-defined module, reuse current trustworthy documents and only verify the affected contract. If the repair reveals a cross-module contract or ownership change, return to the full section.
+
+First establish or verify a repository project SSOT. It is the canonical project/architecture contract, not a second GoalBoard:
+
+- GoalBoard remains canonical for Goals, Relations, decisions, work state, Evidence, and Review;
+- the repository project and module SSOTs own product, architecture, boundary, and public-contract facts;
+- code, tests, migrations, and runtime evidence prove implemented behavior.
+
+The project SSOT names the outcome, non-goals, global invariants, authoritative state and decision locations, module index, cross-module contracts, delivery/recovery rules, and verification sources. Keep module-specific facts in their module SSOTs instead of copying them into the root document. If current documents already do this, cite and reuse them; do not create a parallel document for appearance's sake.
+
+Build the module map on two axes:
+
+- a **vertical module** owns one observable end-to-end user or caller outcome and can be accepted through a real path;
+- a **horizontal module** provides a stable shared capability or contract used by multiple vertical modules.
+
+UI, API, database, frontend/backend folders, files, or team assignments are not modules by themselves. A horizontal module without real multiple consumers is usually an implementation detail of a vertical result. Every important state, mutable dataset, public contract, and decision surface has one authoritative module; another module may consume it only through the named contract.
+
+After the global invariants and module map are stable, module SSOT Goals may proceed in parallel. Each module SSOT states:
+
+- its outcome, consumers, responsibilities, and explicit non-responsibilities;
+- the state, data, decisions, and public contracts it alone owns;
+- inputs, outputs, APIs/events, compatibility promises, and provider/consumer use;
+- read, write, decide, and exclusive Impact surfaces;
+- primary path, errors, migration, recovery, tests, acceptance, sources, and open decisions.
+
+Before deriving implementation Goals, perform an orthogonality review. Reject or rework the map when two modules author the same fact, own the same state or contract, require bidirectional internal knowledge, form a dependency cycle, or plan overlapping write/decide/exclusive surfaces. Separate files do not prove orthogonality; unique authority, stable contracts, one-way consumption, and non-conflicting writes do.
+
+Derive execution so that documentation creates concurrency instead of a project-wide serial gate:
+
+- project SSOT or its verified delta precedes module-boundary decisions;
+- module SSOTs can run in parallel after the module map is stable;
+- a module implementation depends on its own module SSOT and only the provider contracts it consumes;
+- after a provider contract is stable, provider and consumer implementations remain parallel when a test double, fixture, or compatibility layer gives the consumer an independent verification path;
+- integration and end-to-end acceptance depend on both runnable implementations;
+- when a consumer truly cannot start or finish without the provider's actual result, keep that implementation dependency and explain it.
+
+Record module SSOTs as promised outputs and required inputs of their Goals. Include declared Impact surfaces in a Contract or Candidate proposal when that workflow supports them. Otherwise explain the surfaces to the user and require confirmation through GoalBoard's existing Web/management entry before treating the Goals as safely parallel; the Runtime must not bypass its tool boundary or claim the unregistered work concurrently. A project or module SSOT is complete only with a readable artifact reference and verification evidence; writing documentation does not complete the software result.
+
+### 6. Turn only real consumption into dependency
 
 Evaluate every dependency rule in every selected method.
 
@@ -88,7 +156,7 @@ Evaluate every dependency rule in every selected method.
 
 Planning direction and execution order are different views of the same relation: product decisions may inform technical planning, while feature implementation waits for the technical result it consumes.
 
-### 5. Check the complete result, not a topic checklist
+### 7. Check the complete result, not a topic checklist
 
 Every complex result accounts for the parts that materially apply:
 
@@ -128,7 +196,7 @@ decomposition_review: {
 
 Use `complete` and `closed_compound` only when every selected check is accounted for and no descendant remains `abstract` or `frontier_open`. A staged pause stays open, lists `open_goal_ids`, and records one next clarification action.
 
-### 6. Prove each leaf is one executable result
+### 8. Prove each leaf is one executable result
 
 Every proposed `accepted / closed_leaf` includes:
 
@@ -156,7 +224,7 @@ Exactly one output is primary. Supporting outputs are required for the same acce
 
 A ready leaf has no unresolved decision or independent deliverable, covers every promised output and acceptance criterion exactly, and states scope, non-goals, required inputs, outputs, and evidence. Otherwise keep it open for clarification rather than submitting a pseudo-leaf.
 
-### 7. Propose, check, explain, and decide
+### 9. Propose, check, explain, and decide
 
 Use one `goalboard_v1_goal_tree_propose` for the complete change set, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Include parent and child Goal/Contract changes, `part_of`, `depends_on`, Risks, Policy, Candidates, and Rewires where applicable.
 
