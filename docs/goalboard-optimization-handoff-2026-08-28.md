@@ -4,7 +4,7 @@
 
 本轮不再使用 GoalBoard 推进 GoalBoard 自身优化。已经满足的 7 个 Goal 已从原脏工作树中拆成 7 个顺序提交，位于分支 `codex/split-completed-goal-fixes`，共同基线为 `63e1246`。后续应以 Git 提交、代码评审和测试结果推进，不再把 GoalBoard 账本状态当作执行入口。
 
-当前没有推送、合并、安装或发布；也没有清理原工作树中尚未完成的改动。
+本文生成时还没有推送、合并、安装或发布；也没有清理原工作树中尚未完成的改动。后续 landing 状态以 Git 远端和 PR 记录为准。
 
 ## 已修好的 Goal 与对应提交
 
@@ -57,10 +57,10 @@
 5. 再从“仍留在工作树”的工作簇中一次只选一个最小闭环，单独审查、实现和提交。
 6. 3 条 pending Candidate 属于账本治理，不属于 Git 合并动作。除非用户以后明确要求，否则不要再通过 GoalBoard 推进或代替用户作 Candidate 决定。
 
-## 当前 Git 边界
+## 拆分完成时的 Git 边界
 
 - 工作树：`/Users/oreal/.codex/worktrees/eea6/goalboard`
 - 分支：`codex/split-completed-goal-fixes`
 - 拆分基线：`63e1246`
 - 修复提交范围：`1feac8d..6435a74`（共 7 个提交）
-- 未执行：push、merge、rebase、安装、发布、剩余改动清理
+- 本文生成时未执行：push、merge、rebase、安装、发布、剩余改动清理
