@@ -35,9 +35,8 @@ import {
   htmlLang,
   dateTimeLocale,
   listJoin,
-  renderLocaleSwitch,
+  localeSwitchHref,
   clientI18nScript,
-  LOCALE_SWITCH_STYLES,
 } from "./i18n.js";
 import { appendDesktopQueryToLocalHrefs, withDesktopQuery } from "./desktop-shell.js";
 import { buildGoalGraphLayout } from "./goal-graph.js";
@@ -174,7 +173,7 @@ export interface WebProjectNavigation {
   data_class?: "user" | "migrated_user" | "regenerable_demo";
 }
 
-export type WebSettingsSection = "runtimes" | "projects" | "diagnostics";
+export type WebSettingsSection = "appearance" | "runtimes" | "projects" | "diagnostics";
 
 export interface WebSettingsProject extends WebProjectNavigation {
   database_path: string;
@@ -625,7 +624,7 @@ function renderGoalTree(
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
         <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
-          <span class="tree-copy"><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
+          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
           ${renderStatus(item.status)}
         </button>
       </div>
@@ -781,7 +780,7 @@ function relationRow(
   return `<div class="relation-record relation-record--${escapeHtml(relation.state)}" id="relation-${escapeHtml(relation.relation_id)}" data-relation-id="${escapeHtml(relation.relation_id)}">
     <button class="relation-row" type="button" data-select-goal="${escapeHtml(relatedId)}" aria-label="${L("打开")} ${escapeHtml(relatedName)}">
       <span class="relation-kind">${escapeHtml(outgoing ? labels.out : labels.in)}</span>
-      <span class="relation-copy"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">${L("建立原因：")}${escapeHtml(relation.reason)}${deactivated ? ` · ${L("解除原因：")}${escapeHtml(deactivated.reason)}` : ""}</small></span>
+      <span class="relation-copy"><span class="relation-heading"><strong>${escapeHtml(relatedName)}</strong><small class="relation-goal-id">${escapeHtml(relatedId)}</small></span><small class="relation-path">${escapeHtml(path)}</small><small class="relation-reason">${L("建立原因：")}${escapeHtml(relation.reason)}${deactivated ? ` · ${L("解除原因：")}${escapeHtml(deactivated.reason)}` : ""}</small></span>
       <span class="relation-state relation-state--${escapeHtml(relation.state)}">${escapeHtml(stateLabel)}</span>
       ${icon("chevron-right")}
     </button>
@@ -1508,7 +1507,7 @@ function renderPolicyEditor(
   return `<div class="policy-workbench">
     <section class="policy-effective"><header><span class="policy-effective-icon">${icon("shield")}</span><div><h3>${L("当前最终生效规则")}</h3><p>${L("项目默认和当前 Goal 的额外要求已经合并，实际会按下面的结果执行。")}</p></div></header><dl><div><dt>${L("按 Goal 工作")}</dt><dd><strong>${escapeHtml(L(mode.label))}</strong><small>${escapeHtml(L(mode.description))}</small></dd></div><div><dt>${L("执行者自检")}</dt><dd><strong>${policy.self_verification ? L("需要") : L("不需要")}</strong><small>${policy.self_verification ? L("提交前必须验证") : L("不设自检门槛")}</small></dd></div><div><dt>${L("独立检查")}</dt><dd><strong>${policy.cross_reviewers + policy.adversarial_reviewers} ${L("人")}</strong><small>${L("独立复核")} ${policy.cross_reviewers} · ${L("反例检查")} ${policy.adversarial_reviewers}</small></dd></div><div><dt>${L("用户确认")}</dt><dd><strong>${policy.human_approval ? L("需要") : L("不需要")}</strong><small>${policy.human_approval ? L("用户拥有最终确认权") : L("无需用户最终确认")}</small></dd></div><div><dt>${L("一次领取最长")}</dt><dd><strong>${policy.max_lease_seconds} ${L("秒")}</strong><small>${escapeHtml(policyLeaseDescription(policy.max_lease_seconds))}</small></dd></div><div><dt>${L("需要的能力")}</dt><dd><strong>${escapeHtml(policy.required_capabilities.join(currentLocale() === "en" ? ", " : "、") || L("无"))}</strong><small>${policy.required_capabilities.length ? L("执行工具必须全部声明") : L("不限制能力标签")}</small></dd></div></dl></section>
     <div class="policy-inheritance" aria-label="${L("工作规则继承关系")}"><span><small>${L("01 · 项目默认")}</small><strong>${projectBinding ? L("项目基线已设置") : L("使用系统默认")}</strong></span>${icon("arrow")}<span><small>${L("02 · 当前 Goal")}</small><strong>${goalBinding ? L("已增加单独规则") : L("完全继承项目")}</strong></span>${icon("arrow")}<span><small>${L("结果")}</small><strong>${L("最终生效门槛")}</strong></span></div>
-    ${options.editProject ? renderPolicyForm(item, "project_default", projectPolicy, projectBinding) : `<p class="policy-scope-note">${icon("folder")}<span><strong>${L("项目默认规则在项目设置中维护")}</strong><small>${L("这里显示合并后的结果；当前 Goal 只能增加自己的要求。")}</small></span><a href="__SETTINGS__">${L("打开项目设置")}</a></p>`}
+    ${options.editProject ? renderPolicyForm(item, "project_default", projectPolicy, projectBinding) : `<p class="policy-scope-note">${icon("folder")}<span><strong>${L("项目默认规则在项目设置中维护")}</strong><small>${L("这里显示合并后的结果；当前 Goal 只能增加自己的要求。")}</small></span><a href="__PROJECT_SETTINGS__">${L("打开项目设置")}</a></p>`}
     ${options.editGoal ? renderPolicyForm(item, "goal", goalPolicy, goalBinding, item.goal.goal_id, Boolean(goalBinding), projectPolicy) : ""}
   </div>`;
 }
@@ -3288,6 +3287,51 @@ function subsectionHeading(iconName: GoalBoardIcon, title: string, description =
   }</div></header>`;
 }
 
+interface FocusSectionCardOptions {
+  key: string;
+  iconName: GoalBoardIcon;
+  title: string;
+  description: string;
+  body: string;
+  active?: boolean;
+  count?: number | null;
+  cardClass?: string;
+  cardId?: string;
+  cardAttributes?: string;
+  bodyClass?: string;
+  triggerAttributes?: string;
+  bodyAttributes?: string;
+}
+
+function renderFocusSectionCard(options: FocusSectionCardOptions): string {
+  const active = options.active === true;
+  const cardId = options.cardId ? ` id="${escapeHtml(options.cardId)}"` : "";
+  const cardClass = options.cardClass ? ` ${options.cardClass}` : "";
+  const count = options.count == null ? "" : `<small class="focus-section-card-count">${options.count}</small>`;
+  return `<article${cardId} class="focus-section-card${cardClass}${active ? " is-active" : ""}" data-focus-section-card="${escapeHtml(options.key)}" ${options.cardAttributes ?? ""}>
+    <button class="focus-section-card-trigger" type="button" aria-expanded="${active ? "true" : "false"}" data-focus-section-trigger="${escapeHtml(options.key)}" ${options.triggerAttributes ?? ""}>
+      <span class="focus-section-card-icon">${icon(options.iconName)}</span>
+      <span class="focus-section-card-copy"><strong>${escapeHtml(options.title)}</strong><small>${escapeHtml(options.description)}</small></span>
+      ${count}<span class="focus-section-card-caret">${icon("chevron-right")}</span>
+    </button>
+  </article>`;
+}
+
+function renderFocusSectionBody(options: FocusSectionCardOptions): string {
+  const active = options.active === true;
+  const bodyClass = `${options.cardClass ? ` ${options.cardClass}` : ""}${options.bodyClass ? ` ${options.bodyClass}` : ""}`;
+  return `<div class="focus-section-card-reveal${bodyClass}${active ? " is-active" : ""}" data-focus-section-body="${escapeHtml(options.key)}" aria-hidden="${active ? "false" : "true"}"${active ? "" : " inert"} ${options.bodyAttributes ?? ""}>
+    <div class="focus-section-card-content">${options.body}</div>
+  </div>`;
+}
+
+function renderFocusSectionDeck(cards: FocusSectionCardOptions[], label: string, className = "", attributes = ""): string {
+  return `<section class="focus-section-deck${className ? ` ${className}` : ""}" aria-label="${escapeHtml(label)}" data-focus-section-deck>
+    <div class="focus-section-card-row" data-focus-section-card-row ${attributes}>${cards.map(renderFocusSectionCard).join("")}</div>
+    <div class="focus-section-stage" data-focus-section-stage>${cards.map(renderFocusSectionBody).join("")}</div>
+  </section>`;
+}
+
 function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): string {
   const goalId = item.goal.goal_id;
   const decisions = countGoalDecisions(view, goalId);
@@ -3297,28 +3341,29 @@ function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): str
   const explanation = explainWorkState(item.status);
   if (explanation.actionKind === "none") return "";
   if (explanation.actionKind === "clarify") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-edit>${icon("clipboard")}<span>${escapeHtml(explanation.nextAction)}</span></button>`;
+    return `<button class="goal-primary-action" type="button" data-open-goal-edit aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("clipboard")}<span>${L("开始澄清")}</span></button>`;
   }
   if (explanation.actionKind === "close_parent") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-tui>${icon("terminal")}<span>${escapeHtml(explanation.nextAction)}</span></button>`;
+    return `<button class="goal-primary-action" type="button" data-open-goal-tui aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("terminal")}<span>${L("查看完成结果")}</span></button>`;
   }
   if (explanation.actionKind === "choose_child") {
     const children = sortGoals(partOfChildViews(goalId, view));
     const target = children.find((child) => !goalWorkSatisfied(child)) ?? children[0];
     return target
-      ? `<a class="goal-primary-action" href="/goals/${encodeURIComponent(target.goal.goal_id)}">${icon("tree")}<span>${L("进入子 Goal「{title}」", { title: target.goal.title })}</span></a>`
-      : `<a class="goal-primary-action" href="#completion-${escapeHtml(goalId)}">${icon("tree")}<span>${escapeHtml(explanation.nextAction)}</span></a>`;
+      ? `<a class="goal-primary-action" href="/goals/${encodeURIComponent(target.goal.goal_id)}" aria-label="${escapeHtml(L("进入子 Goal「{title}」", { title: target.goal.title }))}" title="${escapeHtml(target.goal.title)}">${icon("tree")}<span>${L("进入子 Goal")}</span></a>`
+      : `<a class="goal-primary-action" href="#completion-${escapeHtml(goalId)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("tree")}<span>${L("查看完整要求与边界")}</span></a>`;
   }
   if (explanation.actionKind === "start") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-tui>${icon("terminal")}<span>${L("在这条 Goal 下打开终端")}</span></button>`;
+    return `<button class="goal-primary-action" type="button" data-open-goal-tui aria-label="${L("在这条 Goal 下打开终端")}" title="${L("在这条 Goal 下打开终端")}">${icon("terminal")}<span>${L("打开 Runtime")}</span></button>`;
   }
   if (explanation.actionKind === "archive" && !item.goal.archived_at) {
-    return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}">${icon("archive")}<span>${L("归档这条已完成的 Goal")}</span></button>`;
+    return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}" aria-label="${L("归档这条已完成的 Goal")}" title="${L("归档这条已完成的 Goal")}">${icon("archive")}<span>${L("归档 Goal")}</span></button>`;
   }
   const target = explanation.actionKind === "resolve_blocker" || explanation.actionKind === "view_progress" || explanation.actionKind === "review" || explanation.actionKind === "revalidate"
     ? `#progress-${goalId}`
     : `#completion-${goalId}`;
-  return `<a class="goal-primary-action" href="${escapeHtml(target)}">${icon(explanation.actionKind === "resolve_blocker" ? "blocked" : "arrow")}<span>${escapeHtml(explanation.nextAction)}</span></a>`;
+  const actionLabel = explanation.actionKind === "review" || explanation.actionKind === "revalidate" ? L("开始检查") : L("查看进展");
+  return `<a class="goal-primary-action" href="${escapeHtml(target)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon(explanation.actionKind === "resolve_blocker" ? "blocked" : "arrow")}<span>${actionLabel}</span></a>`;
 }
 
 function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
@@ -3331,8 +3376,8 @@ function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
   const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisions ? L("先完成等待你的决定") : explanation.nextAction);
   const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisions ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
   return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
-    <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2>${renderStatus(item.status)}</header>
-    <div class="goal-now-body"><span class="goal-now-mark" aria-hidden="true">${icon("arrow")}</span><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
+    <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2></header>
+    <div class="goal-now-body"><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
     ${blockers.length
       ? `<div class="goal-now-blockers"><strong>${L("当前阻塞")}</strong><ul>${blockers.map((reason) => `<li>${escapeHtml(reason.message)}${reason.remediation ? `<small>${L("可以这样处理：")}${escapeHtml(reason.remediation)}</small>` : ""}</li>`).join("")}</ul></div>`
       : ""}
@@ -3366,22 +3411,28 @@ function renderGoalFocusOverview(item: WebGoalView, view: GoalBoardWebView): str
     [L("最近更新"), formatDate(item.goal.updated_at)],
   ];
   return `${renderDraftGaps(item)}
-    ${renderGoalNow(item, view)}
-    <section class="goal-focus-criteria" aria-labelledby="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">
-      <header><div><h2 id="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">${L("完成要求")}</h2><p>${criteria.length ? L("这些条件决定这条 Goal 是否真的完成。") : L("还没有可以判断完成的条件。")}</p></div><strong>${passed}/${criteria.length}</strong></header>
-      ${preview.length
-        ? `<ul>${preview.map((criterion) => {
-            const isPassed = passedCriteria.has(criterion.criterion_id);
-            return `<li><span class="check-box${isPassed ? " is-checked" : ""}">${isPassed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong>${criterion.pass_condition !== criterion.statement ? `<small>${escapeHtml(criterion.pass_condition)}</small>` : ""}</span></li>`;
-          }).join("")}</ul>`
-        : `<p class="empty-row empty-row--warning">${L("补全完成标准后，执行和复核才有共同依据。")}</p>`}
-      <a href="#acceptance-${escapeHtml(item.goal.goal_id)}">${remaining ? L("查看全部 {count} 条要求", { count: criteria.length }) : L("查看完整要求与边界")}${icon("arrow")}</a>
-    </section>
-    <section class="goal-focus-context" aria-labelledby="goal-focus-context-${escapeHtml(item.goal.goal_id)}">
-      <header><h2 id="goal-focus-context-${escapeHtml(item.goal.goal_id)}">${L("上下文")}</h2><p>${L("这条 Goal 当前最需要记住的事实。")}</p></header>
-      <dl>${contextRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
-    </section>
-    ${renderCompanionRuntime(item)}`;
+    <div class="goal-focus-layout">
+      <div class="goal-focus-main">
+        ${renderGoalNow(item, view)}
+        <section class="goal-focus-criteria" aria-labelledby="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">
+          <header><div><h2 id="goal-focus-criteria-${escapeHtml(item.goal.goal_id)}">${L("完成要求")}</h2><p>${criteria.length ? L("这些条件决定这条 Goal 是否真的完成。") : L("还没有可以判断完成的条件。")}</p></div><strong>${passed}/${criteria.length}</strong></header>
+          ${preview.length
+            ? `<ul>${preview.map((criterion) => {
+                const isPassed = passedCriteria.has(criterion.criterion_id);
+                return `<li><span class="check-box${isPassed ? " is-checked" : ""}">${isPassed ? icon("check") : ""}</span><span><strong>${escapeHtml(criterion.statement)}</strong>${criterion.pass_condition !== criterion.statement ? `<small>${escapeHtml(criterion.pass_condition)}</small>` : ""}</span></li>`;
+              }).join("")}</ul>`
+            : `<p class="empty-row empty-row--warning">${L("补全完成标准后，执行和复核才有共同依据。")}</p>`}
+          <a href="#acceptance-${escapeHtml(item.goal.goal_id)}">${remaining ? L("查看全部 {count} 条要求", { count: criteria.length }) : L("查看完整要求与边界")}${icon("arrow")}</a>
+        </section>
+      </div>
+      <aside class="goal-focus-aside" aria-label="${L("上下文")}">
+        <section class="goal-focus-context" aria-labelledby="goal-focus-context-${escapeHtml(item.goal.goal_id)}">
+          <header><h2 id="goal-focus-context-${escapeHtml(item.goal.goal_id)}">${L("上下文")}</h2><p>${L("这条 Goal 当前最需要记住的事实。")}</p></header>
+          <dl>${contextRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+        </section>
+        ${renderCompanionRuntime(item)}
+      </aside>
+    </div>`;
 }
 
 function renderCompanionRuntime(item: WebGoalView): string {
@@ -3390,12 +3441,12 @@ function renderCompanionRuntime(item: WebGoalView): string {
   const total = item.goal.acceptance_criteria.length;
   const passed = displayedPassedCriterionIds(item).length;
   const progress = total ? Math.round((passed / total) * 100) : 0;
-  const runtime = claim?.actor_id ?? run?.actor_id ?? L("尚未绑定");
+  const runtime = claim?.actor_id ?? run?.actor_id ?? L("执行会话");
   const state = claim
     ? run?.state === "blocked" ? L("执行受阻") : L("正在推进")
     : run ? L("最近有进展") : L("尚未绑定");
   return `<section class="companion-runtime" data-companion-runtime aria-labelledby="companion-runtime-${escapeHtml(item.goal.goal_id)}">
-    <header><div><small>${L("绑定到 Goal")}</small><h2 id="companion-runtime-${escapeHtml(item.goal.goal_id)}">${escapeHtml(runtime)}</h2></div><span class="companion-runtime-state${claim ? " is-active" : ""}"><i aria-hidden="true"></i>${escapeHtml(state)}</span></header>
+    <header><div><small>Runtime</small><h2 id="companion-runtime-${escapeHtml(item.goal.goal_id)}">${escapeHtml(runtime)}</h2></div><span class="companion-runtime-state${claim ? " is-active" : ""}"><i aria-hidden="true"></i>${escapeHtml(state)}</span></header>
     <p>${escapeHtml(plainRunState(run))}</p>
     <div class="companion-runtime-progress" aria-label="${L("完成标准进度 {passed}/{total}", { passed, total })}"><i><b style="--companion-progress:${progress}%"></b></i><span>${passed}/${total}</span></div>
     <dl><div><dt>${L("完成依据")}</dt><dd>${L("{count} 条", { count: item.evidence.length })}</dd></div><div><dt>${L("执行记录")}</dt><dd>${escapeHtml(run?.state ?? L("未开始"))}</dd></div></dl>
@@ -3454,17 +3505,21 @@ function renderProgressOverview(item: WebGoalView): string {
   const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered");
   const pendingReviews = item.review_obligations.filter((review) => review.state === "pending").length;
   const independentReviews = item.resolved_policy.cross_reviewers + item.resolved_policy.adversarial_reviewers;
-  return `<div class="progress-overview">
-    <dl class="progress-facts">
+  const stateBody = `<dl class="progress-facts">
       <div><dt>${L("谁在推进")}</dt><dd>${escapeHtml(item.active_claim_actor ? L("{name} 正在推进", { name: item.active_claim_actor }) : L("现在还没有人或工具在推进"))}</dd></div>
       <div><dt>${L("最近进展")}</dt><dd>${escapeHtml(plainRunState(latestRun))}${latestRun?.block_reason ? `<small>${escapeHtml(latestRun.block_reason)}</small>` : ""}</dd></div>
       <div><dt>${L("完成依据")}</dt><dd>${L("已有 {evidence} 条依据，{passed}/{total} 条完成标准通过", { evidence: item.evidence.length, passed: displayedPassedCriterionIds(item).length, total: item.goal.acceptance_criteria.length })}</dd></div>
       <div><dt>${L("还要检查")}</dt><dd>${pendingReviews ? L("还有 {count} 项检查没有完成", { count: pendingReviews }) : L("当前没有未完成的检查")}</dd></div>
-    </dl>
-    <div class="progress-blockers"><h3>${L("当前有什么会挡住它")}</h3>${renderReasons(item)}</div>
-    <div class="risk-summary"><header><div><h3>${L("需要留意的风险")}</h3><p>${L("这里只显示仍可能影响推进或完成的风险。")}</p></div><strong>${activeRisks.length}</strong></header>${activeRisks.length ? `<ul>${activeRisks.map((risk) => `<li><a href="#risk-${encodeURIComponent(risk.risk_id)}"><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</small></span>${icon("chevron-right")}</a></li>`).join("")}</ul>` : `<p class="clear-row">${icon("check")}${L("当前没有需要处理的开放风险。")}</p>`}</div>
-    <div class="rule-summary"><h3>${L("完成前还需要哪些检查")}</h3><ul><li>${item.resolved_policy.self_verification ? L("推进者需要先检查自己的结果。") : L("不要求推进者额外自检。")}</li><li>${independentReviews ? L("还需要 {count} 次独立检查。", { count: independentReviews }) : L("不要求额外的独立检查。")}</li><li>${item.resolved_policy.human_approval ? L("最后需要你确认结果。") : L("不需要你的最终确认。")}</li></ul></div>
-  </div>`;
+    </dl>`;
+  const blockerBody = `<div class="progress-blockers"><h3>${L("当前有什么会挡住它")}</h3>${renderReasons(item)}</div>`;
+  const riskBody = `<div class="risk-summary"><header><div><h3>${L("需要留意的风险")}</h3><p>${L("这里只显示仍可能影响推进或完成的风险。")}</p></div><strong>${activeRisks.length}</strong></header>${activeRisks.length ? `<ul>${activeRisks.map((risk) => `<li><a href="#risk-${encodeURIComponent(risk.risk_id)}"><span><strong>${escapeHtml(risk.description)}</strong><small>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</small></span>${icon("chevron-right")}</a></li>`).join("")}</ul>` : `<p class="clear-row">${icon("check")}${L("当前没有需要处理的开放风险。")}</p>`}</div>`;
+  const ruleBody = `<div class="rule-summary"><h3>${L("完成前还需要哪些检查")}</h3><ul><li>${item.resolved_policy.self_verification ? L("推进者需要先检查自己的结果。") : L("不要求推进者额外自检。")}</li><li>${independentReviews ? L("还需要 {count} 次独立检查。", { count: independentReviews }) : L("不要求额外的独立检查。")}</li><li>${item.resolved_policy.human_approval ? L("最后需要你确认结果。") : L("不需要你的最终确认。")}</li></ul></div>`;
+  return renderFocusSectionDeck([
+    { key: "state", iconName: "activity", title: L("推进状态"), description: L("负责人、最近进展、完成依据和待检查项"), body: stateBody, active: true },
+    { key: "blockers", iconName: "blocked", title: L("当前阻塞"), description: L("仍会挡住推进或完成的事实"), body: blockerBody },
+    { key: "risks", iconName: "risk", title: L("开放风险"), description: L("仍可能改变推进结果的风险"), body: riskBody, count: activeRisks.length },
+    { key: "checks", iconName: "check", title: L("完成检查"), description: L("完成前仍需通过的检查规则"), body: ruleBody },
+  ], L("进展与阻塞"), "focus-section-deck--progress progress-overview");
 }
 
 function renderQuickRiskForm(item: WebGoalView, view: GoalBoardWebView): string {
@@ -3515,21 +3570,34 @@ function renderGoalFactors(item: WebGoalView, view: GoalBoardWebView): string {
   const goalId = escapeHtml(item.goal.goal_id);
   const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered").length;
   const activeImpacts = item.impacts.filter((impact) => impact.state !== "inactive").length;
-  const tabs = [
-    ["relations", "link", L("Goal 关系"), item.relations.filter((relation) => relation.state !== "inactive").length],
-    ["risks", "risk", L("风险"), activeRisks],
-    ["impacts", "impact", L("影响范围"), activeImpacts],
-    ["rules", "shield", L("工作规则"), null],
-  ] as const;
   return `<section class="goal-factors" data-goal-section="factors">
     <header class="goal-factors-heading"><span>${icon("link")}</span><div><h2>${L("关联与约束")}</h2><p>${L("查看会影响这条 Goal 的关系、风险、范围和完成规则；需要时再修改。")}</p></div></header>
-    <nav class="goal-factor-nav" role="tablist" aria-label="${L("关联与约束")}">${tabs.map(([key, iconName, label, count], index) => `<button id="goal-factor-tab-${key}-${goalId}" type="button" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="goal-factor-panel-${key}-${goalId}" tabindex="${index === 0 ? "0" : "-1"}" data-goal-factor-tab="${key}">${icon(iconName)}<span>${label}</span>${count == null ? "" : `<small>${count}</small>`}</button>`).join("")}</nav>
-    <div class="goal-factor-panels">
-      <section id="goal-factor-panel-relations-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-relations-${goalId}" data-goal-factor-panel="relations"><header><h3>${L("Goal 关系")}</h3><p>${L("说明这条 Goal 属于什么、依赖什么，以及会影响哪些其他 Goal。")}</p></header>${renderRelations(item, view)}</section>
-      <section id="goal-factor-panel-risks-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-risks-${goalId}" data-goal-factor-panel="risks" hidden><header><h3>${L("风险")} <span>${activeRisks}</span></h3><p>${L("只记录确实需要观察或处理、并可能改变推进结果的情况。")}</p></header>${renderRiskWorkbench(item, view, true, false)}</section>
-      <section id="goal-factor-panel-impacts-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-impacts-${goalId}" data-goal-factor-panel="impacts" hidden><header><h3>${L("影响范围")} <span>${activeImpacts}</span></h3><p>${L("帮助多人或多个 Goal 判断哪些工作能并行，哪些会互相影响。")}</p></header>${renderImpactWorkbench(item, true, false)}</section>
-      <section id="goal-factor-panel-rules-${goalId}" class="goal-factor-panel" role="tabpanel" aria-labelledby="goal-factor-tab-rules-${goalId}" data-goal-factor-panel="rules" hidden><header><h3>${L("工作规则")}</h3><p>${L("说明执行和完成前需要哪些检查；项目默认与当前 Goal 的额外要求会合并生效。")}</p></header>${renderPolicyEditor(item)}</section>
-    </div>
+    ${renderFocusSectionDeck([
+      {
+        key: "relations", iconName: "link", title: L("Goal 关系"), description: L("归属、依赖和对其他 Goal 的影响"), count: item.relations.filter((relation) => relation.state !== "inactive").length, active: true,
+        triggerAttributes: `id="goal-factor-tab-relations-${goalId}" role="tab" aria-selected="true" aria-controls="goal-factor-panel-relations-${goalId}" tabindex="0" data-goal-factor-tab="relations"`,
+        bodyClass: "goal-factor-panel", bodyAttributes: `id="goal-factor-panel-relations-${goalId}" role="tabpanel" aria-labelledby="goal-factor-tab-relations-${goalId}" data-goal-factor-panel="relations"`,
+        body: `<header><h3>${L("Goal 关系")}</h3><p>${L("说明这条 Goal 属于什么、依赖什么，以及会影响哪些其他 Goal。")}</p></header>${renderRelations(item, view)}`,
+      },
+      {
+        key: "risks", iconName: "risk", title: L("风险"), description: L("仍可能改变推进或完成结果的情况"), count: activeRisks,
+        triggerAttributes: `id="goal-factor-tab-risks-${goalId}" role="tab" aria-selected="false" aria-controls="goal-factor-panel-risks-${goalId}" tabindex="-1" data-goal-factor-tab="risks"`,
+        bodyClass: "goal-factor-panel", bodyAttributes: `id="goal-factor-panel-risks-${goalId}" role="tabpanel" aria-labelledby="goal-factor-tab-risks-${goalId}" data-goal-factor-panel="risks"`,
+        body: `<header><h3>${L("风险")} <span>${activeRisks}</span></h3><p>${L("只记录确实需要观察或处理、并可能改变推进结果的情况。")}</p></header>${renderRiskWorkbench(item, view, true, false)}`,
+      },
+      {
+        key: "impacts", iconName: "impact", title: L("影响范围"), description: L("并行工作之间的读取、修改和决定范围"), count: activeImpacts,
+        triggerAttributes: `id="goal-factor-tab-impacts-${goalId}" role="tab" aria-selected="false" aria-controls="goal-factor-panel-impacts-${goalId}" tabindex="-1" data-goal-factor-tab="impacts"`,
+        bodyClass: "goal-factor-panel", bodyAttributes: `id="goal-factor-panel-impacts-${goalId}" role="tabpanel" aria-labelledby="goal-factor-tab-impacts-${goalId}" data-goal-factor-panel="impacts"`,
+        body: `<header><h3>${L("影响范围")} <span>${activeImpacts}</span></h3><p>${L("帮助多人或多个 Goal 判断哪些工作能并行，哪些会互相影响。")}</p></header>${renderImpactWorkbench(item, true, false)}`,
+      },
+      {
+        key: "rules", iconName: "shield", title: L("工作规则"), description: L("执行、检查和完成前必须遵守的规则"),
+        triggerAttributes: `id="goal-factor-tab-rules-${goalId}" role="tab" aria-selected="false" aria-controls="goal-factor-panel-rules-${goalId}" tabindex="-1" data-goal-factor-tab="rules"`,
+        bodyClass: "goal-factor-panel", bodyAttributes: `id="goal-factor-panel-rules-${goalId}" role="tabpanel" aria-labelledby="goal-factor-tab-rules-${goalId}" data-goal-factor-panel="rules"`,
+        body: `<header><h3>${L("工作规则")}</h3><p>${L("说明执行和完成前需要哪些检查；项目默认与当前 Goal 的额外要求会合并生效。")}</p></header>${renderPolicyEditor(item)}`,
+      },
+    ], L("关联与约束"), "goal-factor-nav", `role="tablist"`)}
   </section>`;
 }
 
@@ -3537,14 +3605,18 @@ function renderGoalTechnicalDetails(item: WebGoalView, view: GoalBoardWebView): 
   const goal = item.goal;
   const owner = item.active_claim_actor ?? goal.accepted_by ?? L("未指定");
   const state = explainWorkState(item.work_state);
+  const basics = `<dl class="technical-meta"><div><dt>Goal ID</dt><dd>${escapeHtml(goal.goal_id)}</dd></div><div><dt>${L("创建时间")}</dt><dd>${formatDate(goal.created_at)}</dd></div><div><dt>${L("更新时间")}</dt><dd>${formatDate(goal.updated_at)}</dd></div><div><dt>${L("记录中的负责人")}</dt><dd>${escapeHtml(owner)}</dd></div><div><dt>${L("优先级")}</dt><dd>${goal.priority}</dd></div><div><dt>${L("当前状态")}</dt><dd><strong>${escapeHtml(state.label)}</strong><small>${escapeHtml(state.meaning)}</small></dd></div></dl><section><h3>${L("完成标准")}</h3>${renderAcceptance(item)}</section><section><h3>${L("完整范围、资料和需求覆盖")}</h3>${renderScope(item)}</section>`;
+  const execution = `<div id="execution-${escapeHtml(goal.goal_id)}"><div class="runtime-grid"><section><h3>${L("领取记录")} <span>${L("谁领取了工作")}</span></h3>${renderClaimCell(item)}</section><section><h3>${L("推进记录")} <span>${L("每次推进")}</span></h3>${renderRunCell(item)}</section><section><h3>${L("完成依据")}</h3>${renderEvidenceCell(item, false)}</section><section><h3>${L("检查记录")}</h3>${renderReviewCell(item)}</section></div></div>`;
+  const history = `${renderHistory(item)}${renderFullRecords(item)}`;
+  const relationships = `<section><h3>${L("Goal 关系")}</h3>${renderRelations(item, view, false)}</section><section><h3>${L("风险与影响范围")}</h3>${renderSafety(item, view, false)}</section><section><h3>${L("工作规则")}</h3>${renderPolicyEditor(item, { editGoal: false, editProject: false })}</section>`;
   return `<section class="goal-technical" data-goal-section="technical">
     <header><span>${icon("history")}</span><span><strong>${L("完整记录")}</strong><small>${L("只读查看这条 Goal 的原始事实和变更历史；修改请去对应功能区。")}</small></span></header>
-    <div class="goal-technical-body">
-      <details class="goal-record-section" open><summary><span><strong>${L("基础信息")}</strong><small>${L("目标标识、负责人、时间、状态和完整工作边界")}</small></span>${icon("chevron-down")}</summary><div><dl class="technical-meta"><div><dt>Goal ID</dt><dd>${escapeHtml(goal.goal_id)}</dd></div><div><dt>${L("创建时间")}</dt><dd>${formatDate(goal.created_at)}</dd></div><div><dt>${L("更新时间")}</dt><dd>${formatDate(goal.updated_at)}</dd></div><div><dt>${L("记录中的负责人")}</dt><dd>${escapeHtml(owner)}</dd></div><div><dt>${L("优先级")}</dt><dd>${goal.priority}</dd></div><div><dt>${L("当前状态")}</dt><dd><strong>${escapeHtml(state.label)}</strong><small>${escapeHtml(state.meaning)}</small></dd></div></dl><section><h3>${L("完成标准")}</h3>${renderAcceptance(item)}</section><section><h3>${L("完整范围、资料和需求覆盖")}</h3>${renderScope(item)}</section></div></details>
-      <details class="goal-record-section"><summary><span><strong>${L("执行与检查")}</strong><small>${L("领取、推进、完成依据和检查记录")}</small></span>${icon("chevron-down")}</summary><div id="execution-${escapeHtml(goal.goal_id)}"><div class="runtime-grid"><section><h3>${L("领取记录")} <span>${L("谁领取了工作")}</span></h3>${renderClaimCell(item)}</section><section><h3>${L("推进记录")} <span>${L("每次推进")}</span></h3>${renderRunCell(item)}</section><section><h3>${L("完成依据")}</h3>${renderEvidenceCell(item, false)}</section><section><h3>${L("检查记录")}</h3>${renderReviewCell(item)}</section></div></div></details>
-      <details class="goal-record-section"><summary><span><strong>${L("变更历史")}</strong><small>${L("按时间查看发生过什么，以及是谁修改的")}</small></span>${icon("chevron-down")}</summary><div>${renderHistory(item)}${renderFullRecords(item)}</div></details>
-      <details class="goal-record-section"><summary><span><strong>${L("关联与规则记录")}</strong><small>${L("关系、风险、影响范围和生效规则的只读记录")}</small></span>${icon("chevron-down")}</summary><div><section><h3>${L("Goal 关系")}</h3>${renderRelations(item, view, false)}</section><section><h3>${L("风险与影响范围")}</h3>${renderSafety(item, view, false)}</section><section><h3>${L("工作规则")}</h3>${renderPolicyEditor(item, { editGoal: false, editProject: false })}</section></div></details>
-    </div>
+    <div class="goal-technical-body">${renderFocusSectionDeck([
+      { key: "basics", iconName: "clipboard", title: L("基础信息"), description: L("目标标识、负责人、时间、状态和完整工作边界"), body: basics, active: true, cardClass: "goal-record-section" },
+      { key: "execution", iconName: "activity", title: L("执行与检查"), description: L("领取、推进、完成依据和检查记录"), body: execution, cardClass: "goal-record-section" },
+      { key: "history", iconName: "history", title: L("变更历史"), description: L("按时间查看发生过什么、由谁修改"), body: history, cardClass: "goal-record-section" },
+      { key: "rules", iconName: "link", title: L("关联与规则记录"), description: L("关系、风险、影响范围和生效规则的只读记录"), body: relationships, cardClass: "goal-record-section" },
+    ], L("完整记录"), "focus-section-deck--records")}</div>
   </section>`;
 }
 
@@ -3573,40 +3645,42 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     ["records", "history", L("记录")],
   ] as const;
   const tabNavigation = `<nav class="goal-workspace-nav" role="tablist" aria-label="${L("Goal 详情")}">${tabs.map(([key, iconName, label], index) => `<button id="goal-tab-${key}-${goalId}" type="button" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="goal-panel-${key}-${goalId}" tabindex="${index === 0 ? "0" : "-1"}" data-goal-tab="${key}">${icon(iconName)}<span>${label}</span></button>`).join("")}</nav>`;
+  const purposeBody = `${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
+    ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}`;
+  const completionBody = `<div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
+    ${renderChildProgress(item, view)}
+    <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
+    <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>`;
+  const contextDeck = renderFocusSectionDeck([
+    { key: "purpose", iconName: "book", title: L("目标说明"), description: L("结果、原因和实际运转方式"), body: purposeBody, active: true, cardId: `purpose-${goalId}`, cardAttributes: `data-goal-section="purpose"` },
+    { key: "completion", iconName: "clipboard", title: L("完成要求"), description: L("完成标准、工作边界、子 Goal 和前置事项"), body: completionBody, cardId: `completion-${goalId}`, cardAttributes: `data-goal-section="completion"` },
+  ], L("上下文"), "focus-section-deck--context");
   return `<!--
 THESIS: Goal 的关键因素是工作本身，不是后台管理；拒绝把可修改事实和历史账本混在一起。
-OWN-WORLD: 延续连续 Goal 文档、细分割线、紧凑控件和单一蓝色强调。
+OWN-WORLD: Calm Desktop 使用冷灰导航面、无边框白色 Goal 画布、清楚的排版层级和克制钴蓝焦点色。
 STORY: 先理解，再记录，最后查证。
 FIRST VIEWPORT: 五个稳定入口、标题区快速记录、一次一个工作面板。
 FORM: 这是既有 Goal 工作台的结构性延伸，不引入新视觉概念。
 unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 --><article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
-    <header class="goal-header">
-      <div class="goal-title-kicker">${renderStatus(item.status)}</div>
-      <div class="goal-title-row"><div class="goal-title-copy"><h1>${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${quickRecordAction}${moreActions}</div></div>
-    </header>
-    ${tabNavigation}
+    <section class="goal-hero" aria-labelledby="goal-title-${goalId}">
+      <header class="goal-header">
+        <div class="goal-title-kicker">${renderStatus(item.status)}</div>
+        <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${quickRecordAction}${moreActions}</div></div>
+      </header>
+      ${tabNavigation}
+    </section>
     <div class="goal-workspace-panels">
       <div id="goal-panel-overview-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-overview-${goalId}" data-goal-panel="overview">
         ${renderGoalFocusOverview(item, view)}
       </div>
       <div id="goal-panel-completion-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-completion-${goalId}" data-goal-panel="completion" hidden>
-        <section class="document-section" data-goal-section="purpose" id="purpose-${goalId}">
-          ${sectionHeading("book", "目标说明", "结果、原因和实际运转方式。")}
-          ${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
-          ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}
-        </section>
-        <section class="document-section" data-goal-section="completion" id="completion-${goalId}">
-          ${sectionHeading("clipboard", "完成要求", "完成标准、工作边界、子 Goal 和前置事项。")}
-          <div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
-          ${renderChildProgress(item, view)}
-          <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
-          <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>
-        </section>
+        <header class="focus-panel-heading">${icon("book")}<div><h2>${L("目标上下文")}</h2><p>${L("先扫一眼结构，再展开现在需要阅读或修改的部分。")}</p></div></header>
+        ${contextDeck}
       </div>
       <div id="goal-panel-progress-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-progress-${goalId}" data-goal-panel="progress" hidden>
-        <section class="document-section" data-goal-section="progress" id="progress-${goalId}">
-          ${sectionHeading("workflow", "进展与阻塞", "执行情况、依据、检查、阻塞和风险。")}
+        <section class="focus-panel" data-goal-section="progress" id="progress-${goalId}">
+          <header class="focus-panel-heading">${icon("workflow")}<div><h2>${L("进展与阻塞")}</h2><p>${L("执行情况、依据、检查、阻塞和风险。")}</p></div></header>
           ${renderProgressOverview(item)}
         </section>
       </div>
@@ -3777,11 +3851,21 @@ const STYLES = `
   .brand { min-width: 182px; height: 100%; padding: 0 28px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); }
   .brand svg { color: var(--blue); font-size: 22px; stroke-width: 2.4; }
   .brand strong { font-size: 19px; letter-spacing: -.02em; }
-  .project-bar { min-width: 0; height: 100%; display: flex; align-items: center; gap: 10px; }
   .project-context { min-width: 0; height: 100%; padding: 0 16px 0 24px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: #343a44; }
   .project-context small { color: var(--muted); }
   .project-context a { color: var(--blue-dark); font-size: 12px; font-weight: 650; text-decoration: none; }
   .project-context a:hover { text-decoration: underline; }
+  .navigator-project { min-width: 0; padding: 10px 10px 9px; border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--paper) 62%, var(--rail)); display: grid; gap: 7px; }
+  .navigator-project-primary { min-width: 0; display: flex; align-items: center; gap: 7px; }
+  .navigator-project-mark { width: 20px; height: 20px; color: var(--muted); display: grid; place-items: center; flex: 0 0 auto; }
+  .navigator-project-mark svg { width: 15px; height: 15px; }
+  .navigator-project-primary > strong { min-width: 0; flex: 1; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .navigator-project-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 0; }
+  .navigator-project-action { min-height: 24px; padding: 0 7px; color: var(--blue-dark); display: inline-flex; align-items: center; font-size: 11px; font-weight: 650; text-decoration: none; white-space: nowrap; }
+  .navigator-project-action + .navigator-project-action { border-left: 1px solid var(--line); }
+  .navigator-project-action:hover { color: var(--ink); text-decoration: underline; }
+  .navigator-project-meta { min-width: 0; min-height: 20px; display: flex; align-items: center; gap: 8px; }
+  .navigator-project-status { min-width: 0; margin-left: auto; display: flex; align-items: center; gap: 7px; }
   .project-decisions { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #3b434e; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; text-decoration: none; flex: 0 0 auto; }
   a.project-decisions { color: #3b434e; text-decoration: none; }
   .project-decisions:hover, a.project-decisions:hover { color: var(--blue-dark); background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue), var(--line) 55%); }
@@ -3805,7 +3889,7 @@ const STYLES = `
   .top-action.is-current, a.top-action.is-current { color: var(--blue-dark); background: var(--blue-soft); }
   .top-action svg { font-size: 17px; }
   .workspace { position: relative; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; display: grid; grid-template-columns: var(--tree-width, clamp(280px, 22vw, 360px)) 5px minmax(0, 1fr); }
-  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) 48px; background: color-mix(in srgb, var(--rail) 36%, #fff); border-right: 1px solid var(--line-strong); container-type: inline-size; }
+  .tree-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr) 48px; background: color-mix(in srgb, var(--rail) 36%, #fff); border-right: 1px solid var(--line-strong); container-type: inline-size; }
   .tree-resizer { position: relative; z-index: 3; cursor: col-resize; background: color-mix(in srgb, var(--rail) 36%, #fff); touch-action: none; }
   .tree-resizer::before, .tui-resizer::before { content: ""; position: absolute; inset: 0 -5px; }
   .tree-resizer::after { content: ""; position: absolute; inset: 0 auto 0 2px; width: 1px; background: var(--line-strong); }
@@ -5156,7 +5240,6 @@ const RESPONSIVE_STYLES = `
     .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 0 0; }
     .project-context { min-width: 0; padding-inline: 12px; }
     .project-context > span:not(.sync-state) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    .project-decisions span { display: none; }
     .top-action { padding-inline: 8px; }
     .top-action span { display: none; }
     .runtime-grid { grid-template-columns: 1fr 1fr; }
@@ -5164,10 +5247,9 @@ const RESPONSIVE_STYLES = `
     .runtime-grid > section:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
   }
   @media (max-width: 900px) {
-    .top-spacer { display: none; }
-    .project-bar { min-width: 0; flex: 1 1 auto; }
+    .top-spacer { display: block; flex: 1 1 auto; }
     .project-context { min-width: 0; flex: 1 1 auto; padding-inline: 12px; }
-    .project-context > strong, .project-demo, .project-bar > .sync-state { display: none; }
+    .project-context > strong, .topbar .project-demo, .topbar .sync-state { display: none; }
     .project-context > span:not(.sync-state) { min-width: 0; flex: 1 1 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
     .project-context a { flex: 0 0 auto; }
   }
@@ -5433,7 +5515,11 @@ const SETTINGS_STYLES = `
   body.settings-page { min-height: 100%; overflow: hidden; background: var(--page); }
   .settings-page > .topbar { height: 58px; }
   .settings-page .brand { color: inherit; text-decoration: none; }
+  body.settings-page[data-desktop-shell="true"] .project-context strong { display: block; }
+  body.settings-page[data-desktop-shell="true"] .project-context small { display: none; }
   .settings-shell { height: calc(100dvh - 58px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+  .settings-shell--standalone { grid-template-columns: minmax(0, 1fr); }
+  .settings-shell--standalone .settings-document { margin-inline: auto; }
   .settings-navigation { min-height: 0; overflow-y: auto; padding: 18px 10px; border-right: 1px solid var(--line-strong); background: var(--rail); display: flex; flex-direction: column; gap: 3px; }
   .settings-nav-group { min-width: 0; display: grid; gap: 3px; }
   .settings-nav-group + .settings-nav-group { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -5455,6 +5541,62 @@ const SETTINGS_STYLES = `
   .settings-heading { max-width: 72ch; padding-bottom: 25px; border-bottom: 1px solid var(--line-strong); }
   .settings-heading h1 { margin: 0; font-size: clamp(24px, 2.1vw, 30px); line-height: 1.25; letter-spacing: -.03em; }
   .settings-heading p { margin: 8px 0 0; color: var(--muted); }
+  .appearance-settings { border-bottom: 1px solid var(--line-strong); }
+  .preference-section { padding: 25px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: minmax(190px, .72fr) minmax(360px, 1.28fr); align-items: start; gap: 28px; }
+  .preference-section:last-child { border-bottom: 0; }
+  .preference-copy h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
+  .preference-copy p { max-width: 48ch; margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .preference-options { min-width: 0; display: grid; gap: 8px; }
+  .preference-options--density { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preference-options--language { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preference-options--theme { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .preference-option {
+    position: relative;
+    min-width: 0;
+    min-height: 84px;
+    padding: 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    background: var(--paper);
+    color: var(--ink-soft);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 16px;
+    align-items: center;
+    gap: 11px;
+    text-align: left;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .preference-option:hover { border-color: color-mix(in srgb, var(--blue) 44%, var(--line-strong)); background: color-mix(in srgb, var(--blue-soft) 30%, var(--paper)); }
+  .preference-option[aria-pressed="true"] { border-color: color-mix(in srgb, var(--blue) 58%, var(--line-strong)); color: var(--blue-dark); background: var(--blue-soft); }
+  .preference-option[aria-current="true"] { border-color: color-mix(in srgb, var(--blue) 58%, var(--line-strong)); color: var(--blue-dark); background: var(--blue-soft); }
+  .preference-option > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+  .preference-option strong { color: var(--ink); font-size: 13px; font-weight: 680; }
+  .preference-option small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+  .preference-option > svg { width: 16px; height: 16px; }
+  .preference-option .preference-check { opacity: 0; color: var(--blue-dark); }
+  .preference-option[aria-pressed="true"] .preference-check { opacity: 1; }
+  .preference-option[aria-current="true"] .preference-check { opacity: 1; }
+  .language-preview { width: 54px; height: 42px; border: 1px solid var(--line); border-radius: 5px; background: var(--rail); color: var(--ink); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+  .density-preview {
+    width: 54px;
+    height: 42px;
+    padding: 5px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--rail);
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
+    gap: 4px;
+  }
+  .density-preview > i { border-right: 1px solid var(--line-strong); }
+  .density-preview > span { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .density-preview > span > i { height: 2px; border-radius: 1px; background: var(--muted); opacity: .72; }
+  .density-preview > span > i:nth-child(2) { width: 82%; }
+  .density-preview > span > i:nth-child(3) { width: 68%; }
+  .density-preview--compact > span { gap: 2px; }
+  .density-preview--compact > span > i { height: 1px; }
+  .preference-note { max-width: 72ch; margin: 18px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
   .settings-record-list { border-bottom: 1px solid var(--line-strong); }
   .settings-record { border-bottom: 1px solid var(--line); }
   .settings-record:last-child { border-bottom: 0; }
@@ -5575,6 +5717,10 @@ const SETTINGS_STYLES = `
     .settings-navigation a { min-width: max-content; min-height: 40px; grid-template-columns: 18px auto; }
     .settings-navigation small { display: none; }
     .settings-document { padding: 25px 18px 60px; }
+    .preference-section { grid-template-columns: 1fr; gap: 14px; }
+    .preference-options--theme { grid-template-columns: 1fr; }
+    .preference-options--language { grid-template-columns: 1fr; }
+    .preference-option { min-height: 72px; }
     .settings-record > header { align-items: flex-start; }
     .settings-record-action { align-items: flex-end; flex-direction: column; }
     .settings-paths { padding-left: 0; }
@@ -6748,6 +6894,8 @@ const CLIENT_SCRIPT = `
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
         container.replaceChildren(records);
         container.dataset.loaded = "true";
+        const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+        if (hashTarget) revealFocusTarget(hashTarget);
       } catch (error) {
         if (isAbortError(error)) return;
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
@@ -6822,6 +6970,36 @@ const CLIENT_SCRIPT = `
       }
     };
 
+    const activateFocusSection = (trigger) => {
+      const card = trigger?.closest?.("[data-focus-section-card]");
+      const deck = card?.closest?.("[data-focus-section-deck]");
+      if (!card || !deck) return false;
+      const sectionKey = card.dataset.focusSectionCard;
+      deck.dataset.activeSection = sectionKey;
+      deck.querySelectorAll("[data-focus-section-card-row] > [data-focus-section-card]").forEach((candidate) => {
+        const active = candidate === card;
+        candidate.classList.toggle("is-active", active);
+        const candidateTrigger = candidate.querySelector(":scope > [data-focus-section-trigger]");
+        candidateTrigger?.setAttribute("aria-expanded", String(active));
+      });
+      deck.querySelectorAll(":scope > [data-focus-section-stage] > [data-focus-section-body]").forEach((body) => {
+        const active = body.dataset.focusSectionBody === sectionKey;
+        body.classList.toggle("is-active", active);
+        body?.setAttribute("aria-hidden", String(!active));
+        body?.toggleAttribute("inert", !active);
+      });
+      return true;
+    };
+
+    const revealFocusTarget = (target) => {
+      const card = target?.closest?.("[data-focus-section-card]");
+      const body = target?.closest?.("[data-focus-section-body]");
+      const deck = card?.closest?.("[data-focus-section-deck]") || body?.closest?.("[data-focus-section-deck]");
+      const sectionKey = card?.dataset?.focusSectionCard || body?.dataset?.focusSectionBody;
+      const trigger = sectionKey ? deck?.querySelector?.('[data-focus-section-trigger="' + CSS.escape(sectionKey) + '"]') : null;
+      return trigger ? activateFocusSection(trigger) : false;
+    };
+
     const setGoalPanel = (panelName, persist = true, updateHash = false, resetScroll = false) => {
       const article = documentPane.querySelector("[data-goal-view]");
       if (!article) return false;
@@ -6840,7 +7018,7 @@ const CLIENT_SCRIPT = `
       if (panel === "records") void loadGoalRecords(article);
       else abortGoalRecordsRequest();
       if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
-      if (resetScroll) article.querySelector(".goal-workspace-nav")?.scrollIntoView({ block: "start" });
+      if (resetScroll) documentPane.scrollTop = 0;
       if (persist) queueSave();
       return true;
     };
@@ -6851,14 +7029,13 @@ const CLIENT_SCRIPT = `
       const factor = goalFactorKeys.includes(factorName) ? factorName : "relations";
       const activePanel = article.querySelector('[data-goal-factor-panel="' + factor + '"]');
       if (!activePanel) return false;
+      const trigger = article.querySelector('[data-goal-factor-tab="' + factor + '"]');
+      if (trigger) activateFocusSection(trigger);
       article.dataset.activeFactor = factor;
       article.querySelectorAll("[data-goal-factor-tab]").forEach((button) => {
         const active = button.dataset.goalFactorTab === factor;
         button.setAttribute("aria-selected", String(active));
         button.setAttribute("tabindex", active ? "0" : "-1");
-      });
-      article.querySelectorAll("[data-goal-factor-panel]").forEach((candidate) => {
-        candidate.hidden = candidate !== activePanel;
       });
       if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
       if (persist) queueSave();
@@ -6940,8 +7117,15 @@ const CLIENT_SCRIPT = `
       setGraphZoom(graphZoom, false);
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
+      const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (hashTarget) revealFocusTarget(hashTarget);
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
-      documentPane.scrollTop = ui?.selected === selected ? Number(ui?.documentTop || 0) : 0;
+      documentPane.scrollTop = hashTarget?.matches?.("[data-goal-panel]")
+        ? 0
+        : ui?.selected === selected ? Number(ui?.documentTop || 0) : 0;
+      if (hashTarget && !hashTarget.matches?.("[data-goal-panel]")) {
+        requestAnimationFrame(() => hashTarget.scrollIntoView({ block: "start" }));
+      }
       const restoredMobileView = desktopCompanionActive && selected ? "document" : ui?.mobileView || "tree";
       if (matchMedia("(max-width: 760px)").matches) {
         if (restoredMobileView === "tui") setWorkspaceMode("runtime", false);
@@ -7322,7 +7506,8 @@ const CLIENT_SCRIPT = `
       const detail = document.createElement("span");
       detail.textContent = detailText;
       receipt.append(title, detail);
-      panel.querySelector(":scope > header")?.after(receipt);
+      const panelContent = panel.querySelector(":scope > .focus-section-card-content") || panel;
+      panelContent.querySelector(":scope > header")?.after(receipt);
       receipt.focus({ preventScroll: true });
     };
 
@@ -7658,7 +7843,14 @@ const CLIENT_SCRIPT = `
       }
       const goalTab = target.closest("[data-goal-tab]");
       if (goalTab) {
-        setGoalPanel(goalTab.dataset.goalTab, true, true, false);
+        setGoalPanel(goalTab.dataset.goalTab, true, true, true);
+        return;
+      }
+      const focusSectionTrigger = target.closest("[data-focus-section-trigger]");
+      if (focusSectionTrigger) {
+        const factor = focusSectionTrigger.dataset.goalFactorTab;
+        if (factor) setGoalFactor(factor, true, true);
+        else activateFocusSection(focusSectionTrigger);
         return;
       }
       const factorTab = target.closest("[data-goal-factor-tab]");
@@ -7732,6 +7924,7 @@ const CLIENT_SCRIPT = `
           if (targetPanel) setGoalPanel(targetPanel, true);
           const targetFactor = targetElement.closest("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
           if (targetFactor) setGoalFactor(targetFactor, true);
+          revealFocusTarget(targetElement);
           let disclosure = targetElement.closest("details");
           while (disclosure) {
             disclosure.open = true;
@@ -8603,7 +8796,11 @@ const CLIENT_SCRIPT = `
       const factor = goalFactorFromHash();
       if (factor) setGoalFactor(factor, true);
       const target = targetId ? document.getElementById(targetId) : null;
-      if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
+      if (target) {
+        revealFocusTarget(target);
+        if (target.matches?.("[data-goal-panel]")) documentPane.scrollTop = 0;
+        else requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
+      }
     });
     addEventListener("pagehide", saveUiState);
     addEventListener("keydown", (event) => {
@@ -8618,8 +8815,24 @@ const CLIENT_SCRIPT = `
             : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
         event.preventDefault();
         const nextTab = tabs[nextIndex];
-        setGoalPanel(nextTab.dataset.goalTab, true, true, false);
+        setGoalPanel(nextTab.dataset.goalTab, true, true, true);
         nextTab.focus();
+        return;
+      }
+      const currentFocusSection = event.target?.closest?.("[data-focus-section-trigger]:not([data-goal-factor-tab])");
+      if (currentFocusSection && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+        const triggers = [...currentFocusSection.closest("[data-focus-section-deck]").querySelectorAll("[data-focus-section-card-row] > [data-focus-section-card] > [data-focus-section-trigger]")];
+        const currentIndex = triggers.indexOf(currentFocusSection);
+        const direction = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? triggers.length - 1
+            : (currentIndex + direction + triggers.length) % triggers.length;
+        event.preventDefault();
+        const nextTrigger = triggers[nextIndex];
+        activateFocusSection(nextTrigger);
+        nextTrigger.focus();
         return;
       }
       const currentFactorTab = event.target?.closest?.("[data-goal-factor-tab]");
@@ -8723,20 +8936,6 @@ function renderProjectMigrationDialog(): string {
 </dialog>`;
 }
 
-function renderThemeSwitch(): string {
-  const copy = currentLocale() === "en"
-    ? { appearance: "Appearance", light: "Light", dark: "Dark", system: "Follow system" }
-    : { appearance: "外观", light: "浅色", dark: "深色", system: "跟随系统" };
-  return `<details class="theme-picker">
-    <summary class="top-action" aria-label="${copy.appearance}">${icon("system")}<span>${copy.appearance}</span>${icon("chevron-down", "theme-caret")}</summary>
-    <div class="theme-menu" aria-label="${copy.appearance}">
-      <button type="button" data-theme-option="light" aria-pressed="false">${icon("sun")}<span>${copy.light}</span>${icon("check", "theme-check")}</button>
-      <button type="button" data-theme-option="dark" aria-pressed="false">${icon("moon")}<span>${copy.dark}</span>${icon("check", "theme-check")}</button>
-      <button type="button" data-theme-option="system" aria-pressed="true">${icon("system")}<span>${copy.system}</span>${icon("check", "theme-check")}</button>
-    </div>
-  </details>`;
-}
-
 export function renderGoalBoardProjectIndex(
   projects: readonly WebProjectNavigation[],
   controlToken = "",
@@ -8756,7 +8955,7 @@ export function renderGoalBoardProjectIndex(
   ${controlTokenMeta(controlToken)}
   <title>${L("选择项目 · GoalBoard")}</title>
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
-  <style>${STYLES}${PROJECT_INDEX_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style>
+  <style>${STYLES}${PROJECT_INDEX_STYLES}${VISUAL_FOUNDATION_STYLES}</style>
 </head>
 <body class="project-index-page"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
@@ -8764,9 +8963,7 @@ export function renderGoalBoardProjectIndex(
     <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
     <div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目列表")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
     <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
-    ${renderLocaleSwitch("/")}
-    ${renderThemeSwitch()}
-    <a class="top-action" href="${href("/settings/runtimes")}">${icon("settings")}<span>${L("设置")}</span></a>
+    <a class="top-action" href="${href("/settings/appearance")}" aria-label="${L("打开系统设置")}">${icon("settings")}<span>${L("系统设置")}</span></a>
   </header>
   <main class="project-index">
     <section class="project-index-panel" aria-labelledby="project-index-title">
@@ -8799,6 +8996,50 @@ function runtimeStatePresentation(state: RuntimeIntegrationDetection["connection
   if (state === "goalboard_unavailable") return { label: L("本体不完整"), tone: "danger", description: L("请先查看诊断并修复 GoalBoard 本体安装。") };
   if (state === "not_detected") return { label: L("未检测到"), tone: "neutral", description: L("这台设备上没有找到对应 Runtime。") };
   return { label: L("未接入"), tone: "neutral", description: L("尚未把 GoalBoard MCP 与 Skill 写入这个 Runtime。") };
+}
+
+function renderAppearanceSettings(nextPath: string): string {
+  const densityPreview = (mode: "standard" | "compact") =>
+    `<span class="density-preview density-preview--${mode}" aria-hidden="true"><i></i><span><i></i><i></i><i></i><i></i><i></i></span></span>`;
+  const locale = currentLocale();
+  const languageOption = (value: "zh" | "en", label: string, description: string) =>
+    `<a class="preference-option" href="${localeSwitchHref(value, nextPath)}" hreflang="${value === "zh" ? "zh-CN" : "en"}" lang="${value === "zh" ? "zh-CN" : "en"}" aria-current="${locale === value}"><span class="language-preview" aria-hidden="true">${value === "zh" ? "中" : "EN"}</span><span><strong>${label}</strong><small>${description}</small></span>${icon("check", "preference-check")}</a>`;
+  return `<section class="settings-document appearance-document" aria-labelledby="settings-title">
+    <header class="settings-heading"><h1 id="settings-title">${L("界面与语言")}</h1><p>${L("集中设置当前设备上的语言、主题、终端外观和信息密度，不会改动项目、Goal 或 Runtime 数据。")}</p></header>
+    <div class="appearance-settings">
+      <section class="preference-section" aria-labelledby="language-settings-title">
+        <div class="preference-copy"><h2 id="language-settings-title">${L("界面语言")}</h2><p>${L("只改变 GoalBoard 的界面文案，不翻译 Goal 名称和正文内容。")}</p></div>
+        <div class="preference-options preference-options--language" role="group" aria-label="${L("界面语言")}">
+          ${languageOption("zh", "中文", L("使用中文界面。"))}
+          ${languageOption("en", "English", L("使用英文界面。"))}
+        </div>
+      </section>
+      <section class="preference-section" aria-labelledby="density-settings-title">
+        <div class="preference-copy"><h2 id="density-settings-title">${L("界面密度")}</h2><p>${L("决定桌面 Goal 工作台一次显示多少 Goal 和正文内容。")}</p></div>
+        <div class="preference-options preference-options--density" role="group" aria-label="${L("界面密度")}">
+          <button class="preference-option" type="button" data-density-option="standard" aria-pressed="true">${densityPreview("standard")}<span><strong>${L("标准")}</strong><small>${L("舒展的间距，适合专注阅读和一般工作量。")}</small></span>${icon("check", "preference-check")}</button>
+          <button class="preference-option" type="button" data-density-option="compact" aria-pressed="false">${densityPreview("compact")}<span><strong>${L("紧凑")}</strong><small>${L("减少 Goal 行和正文留白，适合长 Goal Tree 与宽屏。")}</small></span>${icon("check", "preference-check")}</button>
+        </div>
+      </section>
+      <section class="preference-section" aria-labelledby="theme-settings-title">
+        <div class="preference-copy"><h2 id="theme-settings-title">${L("主题")}</h2><p>${L("选择固定主题，或让 GoalBoard 跟随当前系统外观。")}</p></div>
+        <div class="preference-options preference-options--theme" role="group" aria-label="${L("主题")}">
+          <button class="preference-option" type="button" data-theme-option="light" aria-pressed="false">${icon("sun")}<span><strong>${L("浅色")}</strong><small>${L("适合明亮环境。")}</small></span>${icon("check", "preference-check")}</button>
+          <button class="preference-option" type="button" data-theme-option="dark" aria-pressed="false">${icon("moon")}<span><strong>${L("深色")}</strong><small>${L("适合低光环境。")}</small></span>${icon("check", "preference-check")}</button>
+          <button class="preference-option" type="button" data-theme-option="system" aria-pressed="true">${icon("system")}<span><strong>${L("跟随系统")}</strong><small>${L("随设备主题自动切换。")}</small></span>${icon("check", "preference-check")}</button>
+        </div>
+      </section>
+      <section class="preference-section" aria-labelledby="terminal-theme-settings-title">
+        <div class="preference-copy"><h2 id="terminal-theme-settings-title">${L("终端外观")}</h2><p>${L("只改变终端画布的配色；Runtime 导航、Goal 信息和操作继续使用界面主题。")}</p></div>
+        <div class="preference-options preference-options--theme" role="group" aria-label="${L("终端外观")}">
+          <button class="preference-option" type="button" data-terminal-theme-option="auto" aria-pressed="true">${icon("system")}<span><strong>${L("跟随界面")}</strong><small>${L("终端随 GoalBoard 的浅色或深色主题切换。")}</small></span>${icon("check", "preference-check")}</button>
+          <button class="preference-option" type="button" data-terminal-theme-option="light" aria-pressed="false">${icon("sun")}<span><strong>${L("浅色终端")}</strong><small>${L("始终使用浅色终端画布。")}</small></span>${icon("check", "preference-check")}</button>
+          <button class="preference-option" type="button" data-terminal-theme-option="dark" aria-pressed="false">${icon("moon")}<span><strong>${L("深色终端")}</strong><small>${L("始终使用深色终端画布。")}</small></span>${icon("check", "preference-check")}</button>
+        </div>
+      </section>
+    </div>
+    <p class="preference-note">${L("语言、主题、终端外观和密度只保存在当前设备。紧凑模式仅影响 760px 以上的 Goal 导航和 Goal 正文；Runtime、决定中心、设置页和窄屏布局保持原来的密度。")}</p>
+  </section>`;
 }
 
 function renderRuntimeSettings(view: GoalBoardSettingsView): string {
@@ -9019,10 +9260,14 @@ type ProjectSettingsNavigationActive = "rules" | "planning";
 
 function settingsContextHref(
   path: string,
-  _project: WebProjectNavigation | null,
+  project: WebProjectNavigation | null,
   desktopShell: boolean,
 ): string {
-  return desktopShell ? withDesktopQuery(path) : path;
+  const separator = path.includes("?") ? "&" : "?";
+  const contextualPath = project
+    ? `${path}${separator}project=${encodeURIComponent(project.project_id)}`
+    : path;
+  return desktopShell ? withDesktopQuery(contextualPath) : contextualPath;
 }
 
 function renderSettingsNavigation(
@@ -9032,12 +9277,11 @@ function renderSettingsNavigation(
 ): string {
   const globalHref = (path: string) => settingsContextHref(path, project, desktopShell);
   const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
-  return `<nav class="settings-navigation" aria-label="${L("GoalBoard 设置")}">
-    <section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("对所有项目生效")}</small></div>
-      <a href="${globalHref("/settings/projects")}"${current("projects")}>${icon("folder")}<span><strong>${L("项目设置")}</strong><small>${L("选择项目并配置")}</small></span></a>
+  return `<nav class="settings-navigation" aria-label="${L("系统设置")}">
+    <section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("系统设置")}</span><small>${L("只影响当前设备")}</small></div>
+      <a href="${globalHref("/settings/appearance")}"${current("appearance")}>${icon("system")}<span><strong>${L("界面与语言")}</strong><small>${L("语言、主题、终端与界面密度")}</small></span></a>
       <a href="${globalHref("/settings/runtimes")}"${current("runtimes")}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("连接 Runtime 与会话")}</small></span></a>
       <a href="${globalHref("/settings/diagnostics")}"${current("diagnostics")}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装、服务与环境")}</small></span></a>
-      <a href="${globalHref("/settings/planning")}"${current("planning")}>${icon("book")}<span><strong>${L("规划方法")}</strong><small>${L("维护拆分与依赖方法库")}</small></span></a>
     </section>
   </nav>`;
 }
@@ -9051,7 +9295,7 @@ function renderProjectSettingsNavigation(
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
   return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
-    <a class="project-settings-back" href="${href("/settings/projects")}">${icon("arrow")}<span><strong>${L("返回所有项目")}</strong></span></a>
+    <a class="project-settings-back" href="${href(`${routePrefix}/`)}">${icon("arrow")}<span><strong>${L("返回 Goal Tree")}</strong></span></a>
     <section class="settings-nav-group" aria-labelledby="settings-project-group"><div class="settings-nav-label" id="settings-project-group"><span>${L("项目设置")}</span><small>${escapeHtml(project.display_name)}</small></div>
       <a href="${href(`${routePrefix}/settings/rules`)}"${current("rules")}>${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("执行和复核底线")}</small></span></a>
       <a href="${href(`${routePrefix}/settings/planning`)}"${current("planning")}>${icon("workflow")}<span><strong>${L("工作规划")}</strong><small>${L("选择和调整规划方法")}</small></span></a>
@@ -9067,17 +9311,16 @@ export function renderGoalBoardProjectSettings(
   const projectName = view.project?.display_name ?? L("当前项目");
   const settingsProject = view.project ?? null;
   const routePrefix = view.route_prefix;
-  const pagePath = `${routePrefix}/settings/rules`;
   const projectBinding = view.policy_bindings
     .filter((binding) => binding.scope === "project_default" && binding.goal_id == null && binding.state === "active")
     .at(-1);
   const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
   return `<!doctype html>
 <html lang="${htmlLang()}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
 <body class="settings-page project-rules-page" data-route-prefix="${escapeHtml(routePrefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${routePrefix || "/"}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(pagePath || "/settings/rules")}${renderThemeSwitch()}<a class="top-action" href="${routePrefix || "/"}">${icon("tree")}<span>${L("Goal Tree")}</span></a></header>
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${routePrefix || "/"}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${routePrefix || "/"}">${icon("tree")}<span>${L("Goal Tree")}</span></a></header>
   <main class="settings-shell">
     ${settingsProject ? renderProjectSettingsNavigation("rules", settingsProject, desktopShell) : renderSettingsNavigation("projects", null, desktopShell)}
     <div class="settings-content"><section class="settings-document" aria-labelledby="project-rules-title">
@@ -9145,7 +9388,7 @@ const PLANNING_DEPENDENCY_HINTS: Record<string, string> = {
 };
 function friendlyPlanningDependencyHint(value:string):string{return PLANNING_DEPENDENCY_HINTS[value]??value.replace(" depends_on "," 依赖 ")}
 function friendlyPlanningDependencyStatement(value:string):string{return value.replaceAll("depends_on",L("依赖关系"))}
-function planningMethodKindLabel(kind:PlanningMethodPack["kind"]):string{return kind==="work_type"?L("工作类型"):kind==="domain"?L("专业领域"):kind==="meta"?L("元方法"):L("自定义")}
+function planningMethodKindLabel(kind:PlanningMethodPack["kind"]):string{return kind==="work_type"?L("工作类型"):kind==="domain"?L("专业领域"):kind==="industry"?L("行业方法"):kind==="overlay"?L("场景叠加层"):kind==="meta"?L("元方法"):L("自定义")}
 function planningMethodScopeLabel(scope:PlanningMethodPack["scope"]):string{return scope==="built_in"?L("系统模板"):scope==="personal"?L("我的方法"):L("项目专用")}
 function planningSettingsHref(path:string,project:WebProjectNavigation|null,desktop:boolean):string{return settingsContextHref(path,project,desktop)}
 function renderPlanningMethodCards(methods:readonly PlanningMethodPack[],basePath:string,project:WebProjectNavigation|null,desktop:boolean):string{
@@ -9158,7 +9401,7 @@ function renderPlanningAdoptionCards(methods:readonly PlanningMethodPack[],proje
   const endpoint=`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods/apply`;
   return methods.map((method)=>{const detailHref=planningSettingsHref(`/settings/planning/${encodeURIComponent(method.method_id)}`,null,desktop);return `<article class="planning-adoption-card" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><header><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></header><div><h3><a href="${detailHref}">${escapeHtml(method.name)}</a></h3></div><p>${escapeHtml(method.summary)}</p><footer><span>${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span><button type="button" data-adopt-planning-method="${escapeHtml(method.method_id)}" data-adopt-endpoint="${endpoint}">${L("加入组合")}</button></footer></article>`}).join("")
 }
-function planningTopbar(title:string,subtitle:string,returnHref:string,pagePath:string,desktop:boolean):string{return `<header class="topbar"${desktop?" data-tauri-drag-region":""}><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div><div class="top-spacer"></div>${renderLocaleSwitch(pagePath)}${renderThemeSwitch()}<a class="top-action" href="${returnHref}">${icon(returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
+function planningTopbar(title:string,subtitle:string,returnHref:string,_pagePath:string,desktop:boolean):string{return `<header class="topbar"${desktop?" data-tauri-drag-region":""}><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div><div class="top-spacer"></div><a class="top-action" href="${returnHref}">${icon(returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
 
 const PLANNING_SETTINGS_CLIENT_SCRIPT = `
 (()=>{document.querySelectorAll("[data-planning-filter]").forEach((button)=>button.addEventListener("click",()=>{const filter=button.dataset.planningFilter||"all";document.querySelectorAll("[data-planning-filter]").forEach((item)=>item.setAttribute("aria-pressed",String(item===button)));let visible=0;document.querySelectorAll("[data-planning-method]").forEach((item)=>{const matches=filter==="all"||item.dataset.kind===filter||(filter==="mine"&&item.dataset.scope!=="built_in");item.hidden=!matches;if(matches)visible+=1});const empty=document.querySelector("[data-planning-filter-empty]");if(empty)empty.hidden=visible!==0}));const form=document.querySelector("[data-planning-edit-form]");if(!form)return;const error=form.querySelector("[data-planning-method-error]");const cloneRow=(list)=>{const source=list.querySelector("[data-planning-row]");if(!source)return;const row=source.cloneNode(true);row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""});list.append(row);row.querySelector("input, textarea")?.focus({preventScroll:true})};form.addEventListener("click",(event)=>{const add=event.target.closest("[data-add-planning-row]");if(add){const list=form.querySelector('[data-planning-row-list="'+add.dataset.addPlanningRow+'"]');if(list)cloneRow(list);return}const remove=event.target.closest("[data-remove-planning-row]");if(!remove)return;const row=remove.closest("[data-planning-row]");const list=row?.parentElement;if(!row||!list)return;if(list.querySelectorAll("[data-planning-row]").length===1){row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""})}else row.remove()});form.addEventListener("submit",async(event)=>{event.preventDefault();error.hidden=true;error.textContent="";const submit=form.querySelector('button[type="submit"]');submit.disabled=true;const values=(name)=>[...form.querySelectorAll('[name="'+name+'"]')].map((input)=>input.value.trim()).filter(Boolean);const internalId=(prefix,value,index)=>{const readable=String(value||"").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,32);return prefix+"-"+(readable||String(index+1))+"-"+String(index+1)};try{const coverage=[...form.querySelectorAll("[data-coverage-row]")].map((row,index)=>{const label=row.querySelector('[name="coverage_label"]').value.trim();const question=row.querySelector('[name="coverage_question"]').value.trim();return label||question?{area:internalId("coverage",label,index),label,question}:null}).filter(Boolean);const dependencies=[...form.querySelectorAll("[data-dependency-row]")].map((row,index)=>{const statement=row.querySelector('[name="dependency_statement"]').value.trim();const direction=row.querySelector('[name="dependency_direction"]').value.trim();return statement||direction?{rule_id:internalId("dependency",statement,index),statement,direction_hint:direction}:null}).filter(Boolean);const method={method_id:form.elements.method_id.value,kind:form.elements.kind.value,name:form.elements.name.value.trim(),summary:form.elements.summary.value.trim(),instructions:form.elements.instructions.value.trim(),applies_to:String(form.elements.applies_to.value||"").split(",").map((item)=>item.trim()).filter(Boolean),domain_tags:String(form.elements.domain_tags.value||"").split(",").map((item)=>item.trim()).filter(Boolean),steps:values("steps"),required_coverage:coverage,dependency_rules:dependencies,evidence_requirements:values("evidence_requirements"),completion_checks:values("completion_checks"),failure_modes:values("failure_modes"),source_refs:String(form.elements.source_refs.value||"").split(/\\n/).map((item)=>item.trim()).filter(Boolean),confidence:Number(form.elements.confidence.value),enabled:form.elements.enabled.checked};const response=await fetch(form.dataset.apiEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({scope:form.dataset.saveScope,method})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||L("保存失败"));location.assign(form.dataset.returnHref)}catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;submit.disabled=false}})})();
@@ -9187,8 +9430,8 @@ const PLANNING_ADOPTION_CLIENT_SCRIPT = `
 `;
 
 export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPack[],contextProject:WebProjectNavigation|null=null,controlToken="",desktopShell=false):string{
-  const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);
-  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(L("设置"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${renderSettingsNavigation("planning",contextProject,desktopShell)}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);const navigation=contextProject?renderProjectSettingsNavigation("planning",contextProject,desktopShell):"";
+  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(contextProject?contextProject.display_name:L("规划方法"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell${contextProject?"":" settings-shell--standalone"}">${navigation}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-instructions"><header><h2>${L("Runtime 方法说明")}</h2><p>${L("这是 Runtime 在拆分或调整 Goal Tree 前完整阅读的方法正文。")}</p></header><pre>${escapeHtml(method.instructions)}</pre></section><details class="planning-structured-summary"><summary>${L("查看用于检索与检查的结构化摘要")}</summary><div class="planning-structured-summary-body"><section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section></div></details>`}
 function renderPlanningSimpleRows(name:string,values:readonly string[],placeholder:string):string{const rows=values.length?values:[""];return `<div class="planning-row-list" data-planning-row-list="${name}">${rows.map((value)=>`<div class="planning-edit-row" data-planning-row><input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="${name}">${icon("plus")}${L("添加一项")}</button>`}
@@ -9202,11 +9445,11 @@ function renderPlanningEditForm(method:PlanningMethodPack|null,saveScope:"person
   <section class="planning-edit-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("每一项由“检查主题”和一个清晰问题组成；系统会自动处理内部标识。")}</p></header><div class="planning-row-list" data-planning-row-list="coverage">${coverage.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-coverage-row><label>${L("检查主题")}<input name="coverage_label" value="${escapeHtml(rule.label)}" placeholder="${L("例如：最终结果")}"></label><label>${L("Runtime 必须回答的问题")}<textarea name="coverage_question" placeholder="${L("例如：最终交付什么、由谁使用？")}">${escapeHtml(rule.question)}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="coverage">${icon("plus")}${L("添加一个问题")}</button></section>
   <section class="planning-edit-section"><header><h2>${L("依赖判断")}</h2><p>${L("写清什么时候需要建立依赖，以及谁必须先完成。不要把时间上的先后误当成产出依赖。")}</p></header><div class="planning-row-list" data-planning-row-list="dependencies">${dependencies.map((rule)=>`<div class="planning-edit-row planning-edit-row--structured" data-planning-row data-dependency-row><label>${L("什么时候建立依赖")}<textarea name="dependency_statement" placeholder="${L("例如：下游需要消费上游的可验收结果")}">${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</textarea></label><label>${L("谁必须先完成")}<textarea name="dependency_direction" placeholder="${L("例如：先完成提供结果的 Goal，再开始使用它的 Goal")}">${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</textarea></label><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="dependencies">${icon("plus")}${L("添加一条依赖判断")}</button></section>
   <section class="planning-edit-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("分别写清完成证据、收口检查和 Runtime 应避免的误拆。")}</p></header><div class="planning-edit-grid"><div><label>${L("完成前要看到的证据")}</label>${renderPlanningSimpleRows("evidence_requirements",method?.evidence_requirements??[],L("例如：端到端主路径的验证记录"))}</div><div><label>${L("收口前检查")}</label>${renderPlanningSimpleRows("completion_checks",method?.completion_checks??[],L("例如：依赖方向可以由产出消费关系解释"))}</div></div><div><label>${L("提醒 Runtime 避免什么")}</label>${renderPlanningSimpleRows("failure_modes",method?.failure_modes??[],L("例如：按页面或文件夹机械拆 Goal"))}</div><label class="planning-enabled"><input name="enabled" type="checkbox"${method?.enabled===false?"":" checked"}><span>${L("保存后启用这套方法")}</span></label></section>
-  <details class="planning-advanced"><summary><span>${L("高级设置")}</span>${icon("chevron-down")}</summary><div class="planning-advanced-body"><div class="planning-edit-grid"><label>${L("方法类型")}<select name="kind"><option value="custom"${method?.kind==="custom"||!method?" selected":""}>${L("自定义")}</option><option value="work_type"${method?.kind==="work_type"?" selected":""}>${L("工作类型")}</option><option value="domain"${method?.kind==="domain"?" selected":""}>${L("专业领域")}</option><option value="meta"${method?.kind==="meta"?" selected":""}>${L("元方法")}</option></select><small>${L("只用于方法库分类。")}</small></label><label>${L("参考成熟度")}<input name="confidence" type="number" min="0" max="1" step="0.05" value="${method?.confidence??0.8}" required><small>${L("0 到 1；不确定时保持 0.8。")}</small></label></div><label>${L("领域标签")}<input name="domain_tags" value="${escapeHtml(method?.domain_tags.join(", ")??"")}" placeholder="${L("用逗号分隔")}"></label><label>${L("可追溯来源")}<textarea name="source_refs" placeholder="${L("每行一个来源")}">${escapeHtml(method?.source_refs.join("\n")??"")}</textarea></label></div></details><p class="planning-form-error" data-planning-method-error role="alert" hidden></p><footer class="planning-edit-footer"><a class="planning-secondary-action" href="${returnHref}">${L("取消")}</a><button type="submit">${saveScope==="project"?L("保存项目方法"):L("保存到我的方法库")}</button></footer></form>`}
+  <details class="planning-advanced"><summary><span>${L("高级设置")}</span>${icon("chevron-down")}</summary><div class="planning-advanced-body"><div class="planning-edit-grid"><label>${L("方法类型")}<select name="kind"><option value="custom"${method?.kind==="custom"||!method?" selected":""}>${L("自定义")}</option><option value="work_type"${method?.kind==="work_type"?" selected":""}>${L("工作类型")}</option><option value="domain"${method?.kind==="domain"?" selected":""}>${L("专业领域")}</option><option value="industry"${method?.kind==="industry"?" selected":""}>${L("行业方法")}</option><option value="overlay"${method?.kind==="overlay"?" selected":""}>${L("场景叠加层")}</option><option value="meta"${method?.kind==="meta"?" selected":""}>${L("元方法")}</option></select><small>${L("只用于方法库分类。")}</small></label><label>${L("参考成熟度")}<input name="confidence" type="number" min="0" max="1" step="0.05" value="${method?.confidence??0.8}" required><small>${L("0 到 1；不确定时保持 0.8。")}</small></label></div><label>${L("领域标签")}<input name="domain_tags" value="${escapeHtml(method?.domain_tags.join(", ")??"")}" placeholder="${L("用逗号分隔")}"></label><label>${L("可追溯来源")}<textarea name="source_refs" placeholder="${L("每行一个来源")}">${escapeHtml(method?.source_refs.join("\n")??"")}</textarea></label></div></details><p class="planning-form-error" data-planning-method-error role="alert" hidden></p><footer class="planning-edit-footer"><a class="planning-secondary-action" href="${returnHref}">${L("取消")}</a><button type="submit">${saveScope==="project"?L("保存项目方法"):L("保存到我的方法库")}</button></footer></form>`}
 
 export function renderGoalBoardPlanningMethodPage(method:PlanningMethodPack|null,mode:"detail"|"edit"|"new",saveScope:"personal"|"project",project:WebProjectNavigation|null,controlToken="",desktopShell=false):string{
-  const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const active:SettingsNavigationActive=projectScope?"projects":"planning";const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");
-  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectScope?project?.display_name??L("当前项目"):L("设置"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell">${projectScope&&project?renderProjectSettingsNavigation("planning",project,desktopShell):renderSettingsNavigation(active,project,desktopShell)}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell):"";
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(project?.display_name??L("规划方法"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell${project?"":" settings-shell--standalone"}">${navigation}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:readonly PlanningMethodPack[],controlToken="",desktopShell=false):string{
   const project=view.project;
@@ -9216,7 +9459,7 @@ export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:re
   const availableMethods=methods.filter((method)=>method.scope!=="project"&&method.enabled);
   const composition=composePlanningMethodPacks(selectedMethods);
   const basePath=`${view.route_prefix}/settings/planning`;
-  const globalLibraryHref=planningSettingsHref("/settings/planning",null,desktopShell);
+  const globalLibraryHref=planningSettingsHref("/settings/planning",project,desktopShell);
   const newProjectHref=desktopShell?withDesktopQuery(`${basePath}/new`):`${basePath}/new`;
   const orderedSelectedMethods=composition.method_pack_ids
     .map((methodId)=>selectedMethods.find((method)=>method.method_id===methodId))
@@ -9234,25 +9477,36 @@ export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:re
   const inactiveSection=inactiveProjectMethods.length
     ? `<section class="planning-inactive-section" aria-labelledby="planning-inactive-title"><div class="work-planning-section-header"><h2 id="planning-inactive-title">${L("未启用的方法")}</h2><p>${L("这些项目方法仍然保留，但不会参与当前组合；打开后可以重新启用。")}</p></div><div class="planning-composition-list">${inactiveRows}</div></section>`
     : "";
-  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规划")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectName,L("工作规划"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="work-planning"><header class="planning-page-header"><div><h1>${L("工作规划")}</h1><p>${L("为项目「{name}」组合多套规划方法。它们会共同检查同一棵 Goal Tree，不会被机械拆成串行步骤。",{name:projectName})}</p></div><div><a class="planning-secondary-action" href="${globalLibraryHref}">${L("浏览完整方法库")}</a> <a class="planning-primary-action" href="${newProjectHref}">${icon("plus")}${L("从空白新建")}</a></div></header><section class="planning-composition-section" aria-labelledby="planning-composition-title"><div class="work-planning-section-header"><h2 id="planning-composition-title">${L("当前规划组合")}</h2><p>${L("当前组合是规划下限，不是方法上限。Runtime 必须完整使用这组方法，并根据当前 Goal 的实际工作补充其他相关方法。")}</p></div>${compositionContent}</section><section class="planning-adoption-section" aria-labelledby="planning-adoption-title"><div class="work-planning-section-header"><h2 id="planning-adoption-title">${L("添加规划方法")}</h2><p>${L("可以继续加入多套互补方法。加入后会建立该项目的独立版本，原方法和其他项目不变。")}</p></div><div class="planning-adoption-tools"><nav class="planning-filters" aria-label="${L("筛选已有方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-adoption-grid">${adoptionCards}<p class="planning-filter-empty" data-planning-filter-empty${availableMethods.length?" hidden":""}>${L("这个分类里还没有可加入的方法。")}</p></div><p class="planning-adoption-error" data-planning-adoption-error role="alert" hidden></p></section>${inactiveSection}</section></div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${PLANNING_ADOPTION_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规划")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectName,L("工作规划"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="work-planning"><header class="planning-page-header"><div><h1>${L("工作规划")}</h1><p>${L("为项目「{name}」组合多套规划方法。它们会共同检查同一棵 Goal Tree，不会被机械拆成串行步骤。",{name:projectName})}</p></div><div><a class="planning-secondary-action" href="${globalLibraryHref}">${L("浏览完整方法库")}</a> <a class="planning-primary-action" href="${newProjectHref}">${icon("plus")}${L("从空白新建")}</a></div></header><section class="planning-composition-section" aria-labelledby="planning-composition-title"><div class="work-planning-section-header"><h2 id="planning-composition-title">${L("当前规划组合")}</h2><p>${L("当前组合是规划下限，不是方法上限。Runtime 必须完整使用这组方法，并根据当前 Goal 的实际工作补充其他相关方法。")}</p></div>${compositionContent}</section><section class="planning-adoption-section" aria-labelledby="planning-adoption-title"><div class="work-planning-section-header"><h2 id="planning-adoption-title">${L("添加规划方法")}</h2><p>${L("可以继续加入多套互补方法。加入后会建立该项目的独立版本，原方法和其他项目不变。")}</p></div><div class="planning-adoption-tools"><nav class="planning-filters" aria-label="${L("筛选已有方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-adoption-grid">${adoptionCards}<p class="planning-filter-empty" data-planning-filter-empty${availableMethods.length?" hidden":""}>${L("这个分类里还没有可加入的方法。")}</p></div><p class="planning-adoption-error" data-planning-adoption-error role="alert" hidden></p></section>${inactiveSection}</section></div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${PLANNING_ADOPTION_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = "", desktopShell = false): string {
-  const title = view.section === "runtimes" ? L("AI 与执行工具") : view.section === "projects" ? L("项目设置") : L("诊断");
-  const settingsPath = settingsContextHref(`/settings/${view.section}`, null, desktopShell);
-  const returnHref = desktopShell ? withDesktopQuery("/") : "/";
-  const content = view.section === "runtimes"
-    ? renderRuntimeSettings(view)
-    : view.section === "projects"
-      ? renderProjectSettings(view)
-      : renderDiagnosticsSettings(view);
+  const title = view.section === "appearance"
+    ? L("界面与语言")
+    : view.section === "runtimes"
+      ? L("AI 与执行工具")
+      : view.section === "projects"
+        ? L("项目设置")
+        : L("诊断");
+  const contextProject = view.context_project ?? null;
+  const settingsPath = settingsContextHref(`/settings/${view.section}`, contextProject, desktopShell);
+  const rawReturnHref = contextProject ? `/projects/${encodeURIComponent(contextProject.project_id)}/` : "/";
+  const returnHref = desktopShell ? withDesktopQuery(rawReturnHref) : rawReturnHref;
+  const projectManager = view.section === "projects";
+  const content = view.section === "appearance"
+    ? renderAppearanceSettings(settingsPath)
+    : view.section === "runtimes"
+      ? renderRuntimeSettings(view)
+      : view.section === "projects"
+        ? renderProjectSettings(view)
+        : renderDiagnosticsSettings(view);
   return `<!doctype html>
 <html lang="${htmlLang()}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
 <body class="settings-page" data-settings-section="${view.section}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${returnHref}" aria-label="${L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("管理项目、执行工具与本机服务")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>${renderLocaleSwitch(settingsPath)}${renderThemeSwitch()}<a class="top-action" href="${returnHref}">${icon("folder")}<span>${L("项目列表")}</span></a></header>
-  <main class="settings-shell">
-    ${renderSettingsNavigation(view.section, null, desktopShell)}
+  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${returnHref}" aria-label="${contextProject ? L("返回 Goal Tree") : L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("项目管理") : L("系统设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("创建、导入和维护项目") : L("管理界面、Runtime 与本机服务")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${returnHref}">${icon(contextProject ? "tree" : "folder")}<span>${contextProject ? L("Goal Tree") : L("项目列表")}</span></a></header>
+  <main class="settings-shell${projectManager ? " settings-shell--standalone" : ""}">
+    ${projectManager ? "" : renderSettingsNavigation(view.section, contextProject, desktopShell)}
     <div class="settings-content">${content}</div>
   </main>
   ${renderRuntimePlanDialog()}
@@ -9269,13 +9523,14 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
   const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
     .replaceAll('href="__WORKBENCH_CSS__"', 'href="/assets/goalboard-workbench.css"')
-    .replaceAll('href="__SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/rules` : "/settings/projects"}"`);
+    .replaceAll('href="__PROJECT_SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/rules` : "/settings/projects"}"`)
+    .replaceAll('href="__SYSTEM_SETTINGS__"', `href="/settings/appearance${routePrefix ? `?project=${routePrefix.slice("/projects/".length)}` : ""}"`);
   return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
 }
 
 /** Shared workbench presentation. Kept outside project HTML so the browser can reuse it. */
 export function renderGoalBoardWorkbenchStylesheet(): string {
-  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${LOCALE_SWITCH_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
+  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
 }
 
 /** Shared workbench behavior. Locale strings and project facts remain page-local. */
@@ -9342,23 +9597,19 @@ export function renderGoalBoardWeb(
       ? L("在已归档 Goal 中搜索")
       : L("在当前 Goal Tree 内搜索");
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
-  const localeNextPath = decisionView
-    ? `${view.route_prefix}/decisions`
-    : trashView
-      ? selectedId
-        ? `${view.route_prefix}/trash/goals/${encodeURIComponent(selectedId)}`
-        : `${view.route_prefix}/trash`
-    : archiveView
-      ? selectedId
-        ? `${view.route_prefix}/archive/goals/${encodeURIComponent(selectedId)}`
-        : `${view.route_prefix}/archive`
-      : selectedId
-        ? `${view.route_prefix}/goals/${encodeURIComponent(selectedId)}`
-        : view.route_prefix
-          ? `${view.route_prefix}/`
-          : "/";
   const pendingCount = pendingDecisionCount(view);
-  const projectContext = `<div class="project-bar"${desktopDragRegion}><div class="project-context"${desktopDragRegion}><strong${desktopDragRegion}>${L("项目：")}</strong><span${desktopDragRegion}>${escapeHtml(view.project?.display_name ?? L("当前项目"))}</span>${view.project ? `<a href="__PROJECT_INDEX__">${L("切换项目")}</a>` : ""}</div><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>${view.demo ? `<small class="project-demo"${desktopDragRegion}>${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state${desktopDragRegion}>${L("已同步")}</span></div>`;
+  const projectName = view.project?.display_name ?? L("当前项目");
+  const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
+    <div class="navigator-project-primary">
+      <span class="navigator-project-mark" aria-hidden="true">${icon("folder")}</span>
+      <strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>
+      ${view.project ? `<nav class="navigator-project-actions" aria-label="${L("当前项目")}"><a class="navigator-project-action" href="__PROJECT_INDEX__" aria-label="${L("切换项目")}" title="${L("切换项目")}">${icon("switch")}<span aria-hidden="true">${L("切换项目")}</span></a><a class="navigator-project-action" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}<span aria-hidden="true">${L("项目设置")}</span></a></nav>` : ""}
+    </div>
+    <div class="navigator-project-meta">
+      <a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>
+      <span class="navigator-project-status">${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></span>
+    </div>
+  </section>`;
   const showTui = !decisionView && !archiveView && !trashView;
   const compactNavigation = {
     tree: L("目标"),
@@ -9366,11 +9617,11 @@ export function renderGoalBoardWeb(
     runtime: L("运行"),
   };
   const html = `<!--
-THESIS: 选中的 Goal 贯穿 Navigator、Focus 与 Runtime；GoalBoard 是跨 Runtime 的长期任务真相源，不是 Dashboard，也不是 Agent Orchestration。
-OWN-WORLD: Quiet Intent Workspace 使用石墨与冷白纸面、矿物蓝、系统字体、Lucide 图标、1px 接缝和小圆角，拒绝渐变、玻璃与装饰性卡片。
-STORY: 选择 Goal，理解当前事实，处理下一步，在同一 Goal 上运行；与 Harness 并排时仍保持这条连续路径。
-FIRST VIEWPORT: 宽屏同时呈现三栏；窄屏以 Goals / Focus / Runtime 切换同一组真实内容。
-FORM: Approved A+B workbench direction with the focused relation language from C; List and Graph are two readings of the same Goal facts.
+THESIS: 选中的 Goal 贯穿 Navigator、Focus 与 Runtime；拒绝监控台式的蓝色高亮、密集线框和卡片堆叠。
+OWN-WORLD: Calm Desktop 使用冷灰导航面、无边框白色 Goal 画布、克制钴蓝焦点色、系统字体、Lucide 图标与 6/8/10px 圆角系统。
+STORY: 先在连续的 Project 与 Goal 目录中定位，再在无边框主画布上理解和判断，最后进入同一 Goal 的深色 Runtime 执行。
+FIRST VIEWPORT: GoalBoard 左对齐在桌面框架中，左侧是冷灰目录，中间是完整白色 Goal 画布，Runtime 在需要时作为深色执行区出现；紧凑模式只压缩节奏，不压平层级。
+FORM: Operate 模式的连续桌面工作台，seed=user-pinned-youmind-2026-08-28；方向由用户提供的低噪桌面参考锁定，保留现有 GoalBoard 信息架构与行为。
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <!doctype html>
@@ -9388,15 +9639,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <div class="app">
     <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}>
       <div class="brand"${desktopDragRegion}>${icon("brand")}<strong${desktopDragRegion}>GoalBoard</strong></div>
-      ${projectContext}
       <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
-      ${renderLocaleSwitch(localeNextPath)}
-      ${renderThemeSwitch()}
-      <a class="top-action" data-settings-link href="__SETTINGS__" aria-label="${L("打开 GoalBoard 设置")}">${icon("settings")}<span>${L("设置")}</span></a>
+      <a class="top-action" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开系统设置")}">${icon("settings")}<span>${L("系统设置")}</span></a>
     </header>
     <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
     <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree" data-workspace-mode="focus">
       <aside class="tree-pane" id="goal-tree-pane">
+        ${projectNavigatorLayer}
         <header class="desktop-pane-header desktop-pane-header--navigator"><strong data-navigator-heading>${L("目标导航")}</strong></header>
         ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
         <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>

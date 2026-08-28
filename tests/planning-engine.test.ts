@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +7,7 @@ import {
   BUILTIN_PLANNING_METHOD_PACKS,
   composePlanningMethodPacks,
   hydratePlanningMethodPack,
+  loadBuiltinPlanningMethodPacks,
   normalizePlanningMethodPack,
   resolvePlanningMethodPacks,
   type PlanningMethodPackInput,
@@ -41,6 +42,51 @@ function customMethod(methodId: string): PlanningMethodPackInput {
     confidence: 0.8,
     enabled: true,
   };
+}
+
+function catalogMethodMarkdown(methodId: string, kind: "work_type" | "domain" = "work_type"): string {
+  return `---
+method_id: ${methodId}
+version: 1
+kind: ${kind}
+name: "目录测试"
+summary: "验证 Markdown 方法目录。"
+applies_to: ["目录测试"]
+domain_tags: ["test"]
+source_refs: ["test fixture"]
+confidence: 0.8
+---
+
+# 目录测试
+
+## 规划路径
+
+1. 建立可验证结果
+
+## 必须覆盖
+
+| area | label | question |
+| --- | --- | --- |
+| result | 结果 | 交付什么？ |
+
+## 依赖规则
+
+| rule_id | statement | direction_hint |
+| --- | --- | --- |
+| proof | 验证消费交付结果。 | verification depends_on result |
+
+## 完成证据
+
+- 可读取结果
+
+## 收口检查
+
+- 结果可验证
+
+## 常见误拆
+
+- 把目录当成任务
+`;
 }
 
 function goal(goalId: string, state: GoalRecord["fulfillment_state"] = "unmet") {
@@ -102,6 +148,60 @@ test("planning methods resolve project over personal over cold-start built-ins",
   assert.ok(resolved.some((pack) => pack.method_id === "meta-domain-pack-builder"));
 });
 
+test("built-in Markdown catalog keeps one method per file and exposes all planning layers", () => {
+  assert.equal(BUILTIN_PLANNING_METHOD_PACKS.length, 37);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["meta", "work_type", "domain", "industry", "overlay"].map((kind) => [
+        kind,
+        BUILTIN_PLANNING_METHOD_PACKS.filter((method) => method.kind === kind).length,
+      ]),
+    ),
+    { meta: 1, work_type: 7, domain: 15, industry: 8, overlay: 6 },
+  );
+  for (const methodId of [
+    "domain-growth-distribution",
+    "domain-security-privacy",
+    "industry-education",
+    "industry-healthcare",
+    "industry-games",
+    "overlay-sensitive-data-privacy",
+    "overlay-ai-human-review",
+  ]) {
+    assert.ok(BUILTIN_PLANNING_METHOD_PACKS.some((method) => method.method_id === methodId), `${methodId} should load from Markdown`);
+  }
+});
+
+test("Markdown catalog rejects filename drift, duplicate IDs, and malformed tables", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "goalboard-method-catalog-"));
+  try {
+    const workTypes = path.join(root, "work-types");
+    mkdirSync(workTypes, { recursive: true });
+    writeFileSync(path.join(workTypes, "wrong-name.md"), catalogMethodMarkdown("catalog-fixture"));
+    assert.throws(() => loadBuiltinPlanningMethodPacks(root), /文件名必须是 catalog-fixture\.md/);
+
+    rmSync(path.join(workTypes, "wrong-name.md"));
+    writeFileSync(path.join(workTypes, "catalog-fixture.md"), catalogMethodMarkdown("catalog-fixture"));
+    const loaded = loadBuiltinPlanningMethodPacks(root);
+    assert.equal(loaded[0]?.method_id, "catalog-fixture");
+    assert.ok(loaded[0]?.dependency_rules.some((rule) => rule.rule_id === "output-consumption"));
+
+    const domains = path.join(root, "domains");
+    mkdirSync(domains, { recursive: true });
+    writeFileSync(path.join(domains, "catalog-fixture.md"), catalogMethodMarkdown("catalog-fixture", "domain"));
+    assert.throws(() => loadBuiltinPlanningMethodPacks(root), /method_id catalog-fixture 重复/);
+
+    rmSync(path.join(domains, "catalog-fixture.md"));
+    writeFileSync(
+      path.join(workTypes, "catalog-fixture.md"),
+      catalogMethodMarkdown("catalog-fixture").replace("| result | 结果 | 交付什么？ |", "| result | 结果 |"),
+    );
+    assert.throws(() => loadBuiltinPlanningMethodPacks(root), /必须覆盖.*3 个非空字段/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("every built-in method evaluates domain hard dependencies and cross-topic recall", () => {
   const universalRuleIds = new Set([
     "output-consumption",
@@ -114,7 +214,8 @@ test("every built-in method evaluates domain hard dependencies and cross-topic r
       pack.dependency_rules.some((rule) => !universalRuleIds.has(rule.rule_id)),
       `${pack.method_id} needs at least one method-specific dependency rule`,
     );
-    assert.match(pack.instructions, /规则适用时，它就是不能跳过的硬依赖/);
+    assert.match(pack.instructions, /规则描述真实产出消费时，它就是不能跳过的硬依赖/);
+    assert.match(pack.instructions, /规则明确要求保持并行时/);
     assert.match(pack.instructions, /与其他主题一起规划/);
     assert.match(pack.instructions, /召回相应主题的方法/);
     assert.match(pack.instructions, /一般相关.*保持并行/);
@@ -124,10 +225,10 @@ test("every built-in method evaluates domain hard dependencies and cross-topic r
 test("planning packs expose provider-consumer rules for representative cross-topic work", () => {
   const scenarios = [
     {
-      label: "product decisions provide inputs for technical design",
+      label: "product decisions provide inputs for the project technical SSOT",
       methodId: "domain-software-development",
-      ruleId: "technical-design-after-product-plan",
-      direction: "technical design depends_on confirmed product plan",
+      ruleId: "project-ssot-after-product-plan",
+      direction: "project SSOT depends_on confirmed product plan",
     },
     {
       label: "data and evaluation provide the baseline for AI capability",
@@ -157,6 +258,33 @@ test("planning packs expose provider-consumer rules for representative cross-top
   }
 });
 
+test("software planning establishes project and module SSOTs before parallel implementation", () => {
+  const software = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
+  const coverageAreas = new Set(software.required_coverage.map((rule) => rule.area));
+  for (const area of ["project_ssot", "module_architecture", "module_ssot_contracts", "parallel_impact_boundaries"]) {
+    assert.ok(coverageAreas.has(area), `software planning should require ${area}`);
+  }
+
+  const stepText = software.steps.join("\n");
+  assert.match(stepText, /项目级 SSOT/);
+  assert.match(stepText, /纵向端到端结果和横向共享能力/);
+  assert.match(stepText, /并行撰写模块 SSOT/);
+  assert.match(stepText, /test double、fixture 或兼容层/);
+
+  const rules = new Map(software.dependency_rules.map((rule) => [rule.rule_id, rule]));
+  assert.equal(rules.get("project-ssot-after-product-plan")?.direction_hint, "project SSOT depends_on confirmed product plan");
+  assert.equal(rules.get("module-ssot-after-project-ssot")?.direction_hint, "module SSOT depends_on project SSOT and module map");
+  assert.equal(rules.get("implementation-after-module-ssot")?.direction_hint, "module implementation depends_on its module SSOT and consumed provider contract");
+  assert.equal(rules.get("provider-consumer-implementations-parallel")?.direction_hint, "keep provider and consumer implementations parallel after contract");
+  assert.equal(rules.get("integration-after-module-implementations")?.direction_hint, "integration and release depend_on provider and consumer implementations");
+
+  assert.match(software.instructions, /每个重要状态、数据、契约和决策由谁唯一拥有/);
+  assert.match(software.instructions, /计划并行的 Goal.*Impact surfaces/);
+  assert.match(software.instructions, /提供者与消费者.*保持并行/);
+  assert.ok(software.completion_checks.some((check) => /只有一个所有者/.test(check)));
+  assert.ok(software.failure_modes.some((mode) => /UI、API、数据库/.test(mode)));
+});
+
 test("legacy method packs receive current dependency guidance without a data migration", () => {
   const software = BUILTIN_PLANNING_METHOD_PACKS.find((pack) => pack.method_id === "domain-software-development")!;
   const legacy = {
@@ -174,9 +302,9 @@ test("legacy method packs receive current dependency guidance without a data mig
 
   const hydrated = hydratePlanningMethodPack(legacy);
   assert.equal(hydrated.steps, legacy.steps);
-  assert.match(hydrated.instructions, /技术方案设计/);
-  assert.match(hydrated.instructions, /技术基础能力建设/);
-  assert.match(hydrated.instructions, /产品功能实现/);
+  assert.match(hydrated.instructions, /项目级 SSOT/);
+  assert.match(hydrated.instructions, /横向共享能力/);
+  assert.match(hydrated.instructions, /模块实现/);
   assert.match(hydrated.instructions, /consumer depends_on provider contract/);
   assert.match(hydrated.instructions, /召回相应主题的方法/);
 });
@@ -191,13 +319,35 @@ test("project planning composition keeps method paths separate and merges their 
   assert.equal(composition.method_paths[0]?.steps.length, workType.steps.length);
   assert.equal(composition.method_paths[1]?.steps.length, software.steps.length);
   assert.equal(composition.method_paths[0]?.instructions, workType.instructions);
-  assert.match(composition.method_paths[1]?.instructions ?? "", /技术方案设计/);
+  assert.match(composition.method_paths[1]?.instructions ?? "", /项目级 SSOT/);
   assert.equal(
     composition.dependency_rules.filter((rule) => rule.direction_hint === "consumer depends_on provider").length,
     1,
   );
   assert.ok(composition.required_coverage.some((rule) => rule.area === "final_outcome"));
   assert.ok(composition.required_coverage.some((rule) => rule.area === "core_function"));
+});
+
+test("planning composition keeps work type, domain, industry, and overlay as parallel method paths", () => {
+  const selected = [
+    "overlay-minors",
+    "industry-education",
+    "domain-product-ux",
+    "work-build-change",
+  ].map((methodId) => BUILTIN_PLANNING_METHOD_PACKS.find((method) => method.method_id === methodId)!);
+  const composition = composePlanningMethodPacks(selected);
+  assert.deepEqual(composition.method_pack_ids, [
+    "work-build-change",
+    "domain-product-ux",
+    "industry-education",
+    "overlay-minors",
+  ]);
+  assert.deepEqual(composition.method_paths.map((method) => method.kind), [
+    "work_type",
+    "domain",
+    "industry",
+    "overlay",
+  ]);
 });
 
 test("complex decomposition must include every method in the project composition", () => {

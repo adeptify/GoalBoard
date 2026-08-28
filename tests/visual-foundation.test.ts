@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  GOALBOARD_DENSITY_STORAGE_KEY,
+  GOALBOARD_TERMINAL_THEME_STORAGE_KEY,
   GOALBOARD_THEME_STORAGE_KEY,
   THEME_BOOTSTRAP_SCRIPT,
   VISUAL_FOUNDATION_CLIENT_SCRIPT,
@@ -18,6 +21,59 @@ test("visual foundation keeps Light, Dark, and System as local presentation choi
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /dataset\.navigationPending = "true"/);
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /a\[aria-busy="true"\]/);
   assert.match(VISUAL_FOUNDATION_STYLES, /data-navigation-pending="true"/);
+});
+
+test("visual foundation ships one restrained Calm Desktop world across workbench and settings", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /--page: #f3f3f5;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--paper: #ffffff;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--muted: #62626b;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--faint: #76767f;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--action: #202023;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--radius-surface: 10px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-board-view\] \.document-pane,[\s\S]*border-radius: 0;[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-node\.is-selected,[\s\S]*background: var\(--paper\);[\s\S]*inset 0 0 0 1px var\(--line\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation a\[aria-current="page"\][\s\S]*background: var\(--paper\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.project-index-panel \{[\s\S]*border-radius: 12px;/);
+});
+
+test("visual foundation keeps Standard and Compact as local presentation choices", () => {
+  assert.equal(GOALBOARD_DENSITY_STORAGE_KEY, "goalboard:density");
+  assert.match(THEME_BOOTSTRAP_SCRIPT, /goalboard:density/);
+  assert.match(THEME_BOOTSTRAP_SCRIPT, /dataset\.density = density/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /data-density-option/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /applyDensity/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /localStorage\.setItem\(densityKey/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@media \(min-width: 761px\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-density="compact"/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-board-view\]:not\(\[data-board-view="decisions"\]\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-row \{\s*min-height: 27px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-node \{\s*min-height: 25px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-document \{\s*width: min\(100%, 1120px\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-desktop-shell="true"[^}]+\.goal-document \{\s*padding: 10px 18px 30px;/);
+  const compactSelectorHeaders = [...VISUAL_FOUNDATION_STYLES.matchAll(/([^{}]+)\{/g)]
+    .map((match) => match[1] ?? "")
+    .filter((selector) => selector.includes('data-density="compact"'))
+    .join("\n");
+  assert.ok(compactSelectorHeaders.length > 0);
+  assert.doesNotMatch(compactSelectorHeaders, /\.tui-/);
+});
+
+test("visual foundation keeps terminal appearance separate and local", () => {
+  assert.equal(GOALBOARD_TERMINAL_THEME_STORAGE_KEY, "goalboard:terminal-theme");
+  assert.match(THEME_BOOTSTRAP_SCRIPT, /dataset\.resolvedTerminalTheme/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /data-terminal-theme-option/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /applyTerminalTheme/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /goalboard:terminal-theme-change/);
+  assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /localStorage\.setItem\(terminalThemeKey/);
+});
+
+test("live xterm sessions receive the selected terminal palette", () => {
+  const ptyClientSource = readFileSync(new URL("../src/web/pty-client.ts", import.meta.url), "utf8");
+  assert.match(ptyClientSource, /theme: terminalPalette\(\)/);
+  assert.match(ptyClientSource, /goalboard:terminal-theme-change/);
+  assert.match(ptyClientSource, /term\.options\.theme = palette/);
+  assert.match(ptyClientSource, /selectionBackground/);
+  assert.match(ptyClientSource, /brightWhite/);
 });
 
 test("visual foundation defines one wide workbench and one narrow companion", () => {
@@ -46,6 +102,25 @@ test("visual foundation keeps the Goal navigator dense and relationships progres
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-relations > summary/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-relations\[open\]/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-dep-copy small \{[^}]*text-overflow: ellipsis/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--goal-status-tone: var\(--ink-soft\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /border: 1px solid color-mix\(in srgb, var\(--goal-status-tone\) 28%, var\(--line\)\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-status--execution_blocked,[\s\S]*--goal-status-tone: var\(--red\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*grid-template-columns: 18px minmax\(0, 1fr\) auto/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action \{[\s\S]*width: 28px;[\s\S]*justify-content: center/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action span \{ display: none; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action svg \{ width: 15px; height: 15px; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-rows: auto auto minmax\(0, 1fr\) 42px/);
+});
+
+test("runtime separates app chrome from a configurable terminal canvas", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /--terminal-muted: #b5b5bd;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--terminal-faint: #92929b;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-terminal-theme="light"[\s\S]*--terminal: #fbfbfc;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-terminal-theme="dark"[\s\S]*--terminal: #101012;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-pane,[\s\S]*background: var\(--paper\);[\s\S]*color: var\(--ink\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-parent-guard-copy p,[\s\S]*color: var\(--muted\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-chrome \.tui-advance:disabled[\s\S]*background: var\(--rail\);[\s\S]*color: var\(--faint\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-terminal \{[\s\S]*background: var\(--terminal\);[\s\S]*color: var\(--terminal-ink\);/);
 });
 
 test("visual foundation makes the default Goal view an action-led Focus", () => {
@@ -54,6 +129,29 @@ test("visual foundation makes the default Goal view an action-led Focus", () => 
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-now-blockers--clear/);
   assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-theme="dark"\] \.goal-factor-nav/);
   assert.match(VISUAL_FOUNDATION_STYLES, /data-resolved-theme="dark"\] \.risk-state-preview/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-focus-layout \{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@container \(min-width: 720px\)[\s\S]*grid-template-columns: minmax\(0, 1fr\) minmax\(220px, 250px\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-now-body \.goal-primary-action \{[\s\S]*max-width: 11rem/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@media \(min-width: 761px\) \{[\s\S]*data-density="compact"[\s\S]*\.goal-now,[\s\S]*\.goal-focus-criteria,[\s\S]*\.goal-focus-context \{[\s\S]*padding: 14px 18px 16px;/);
+  assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /\.goal-now-mark/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-focus-aside \{[\s\S]*border-top: 1px solid var\(--line\)/);
+});
+
+test("visual foundation gives every Focus detail one responsive section deck", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /--focus-canvas-inset: clamp\(12px, 1\.4vw, 20px\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-document \{[\s\S]*background: transparent;[\s\S]*display: grid;[\s\S]*gap: 14px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-hero,[\s\S]*\.goal-workspace-panels \{[\s\S]*border-radius: 14px;[\s\S]*background: var\(--paper\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-card-row \{[\s\S]*display: grid;[\s\S]*repeat\(auto-fit, minmax\(136px, 1fr\)\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-card-copy > small \{[\s\S]*max-height: none;[\s\S]*overflow: visible;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-card-trigger,[\s\S]*height: 100%;[\s\S]*align-items: start;/);
+  assert.doesNotMatch(VISUAL_FOUNDATION_STYLES.slice(VISUAL_FOUNDATION_STYLES.lastIndexOf("/* Focus is an inset reading surface")), /\.focus-section-card\.is-active \{[^}]*flex:/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-stage \{[\s\S]*margin-top: 12px;[\s\S]*display: grid;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-card-reveal \{[\s\S]*clip-path: inset\(0 0 10% 0 round 12px\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@container \(max-width: 700px\)[\s\S]*\.focus-section-card-row \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.focus-section-card[\s\S]*transition: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /Relations read as records, not a pile of pills/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-card-reveal \.relation-row \{[\s\S]*grid-template-columns: 54px minmax\(0, 1fr\) auto 16px;[\s\S]*justify-content: stretch;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.relation-goal-id, \.relation-path, \.relation-reason[\s\S]*background: transparent !important;/);
 });
 
 test("visual foundation gives Goal Graph a radial clustered workspace", () => {
@@ -66,7 +164,7 @@ test("visual foundation gives Goal Graph a radial clustered workspace", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-orbit--inner/);
   assert.match(VISUAL_FOUNDATION_STYLES, /left: var\(--graph-x\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /top: var\(--graph-y\)/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /tree-pane > \.tree-scroll \{ grid-row: 3; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /tree-pane > \.tree-scroll \{ grid-row: 4; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-zoom/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-edge--depends_on path/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-arrow--part_of path/);

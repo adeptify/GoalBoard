@@ -426,7 +426,7 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
     assert.match(openPage, /data-goal-id="OPEN-PARENT"[^>]*data-goal-status="compound_closure_pending"/);
     assert.match(openPage, /goal-status--compound_closure_pending[^>]*[\s\S]*?<span>待确认父目标<\/span>/);
     assert.match(openPage, /现有子 Goal 都完成了，但父 Goal 仍标记为尚未拆完，所以不会自动完成/);
-    assert.match(openPage, /data-open-goal-tui[^>]*>[\s\S]*确认当前拆分是否完整/);
+    assert.match(openPage, /data-open-goal-tui[^>]*aria-label="确认当前拆分是否完整"[^>]*>[\s\S]*?<span>查看完成结果<\/span>/);
     assert.match(openPage, /child-progress--needs_confirmation/);
     assert.match(openPage, /现有子 Goal 已完成，父目标待确认/);
     assert.match(openPage, /先确认它们是否已经覆盖整个父目标/);
@@ -652,6 +652,12 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(historyDecisionHtml, /展开查看每项变化/);
   assert.match(historyRootHtml, /处理 \d+ 项决定/);
   const pageHtml = renderGoalBoardWeb(view);
+  const projectPageHtml = renderGoalBoardWeb({
+    ...view,
+    route_prefix: "/projects/PROJECT-UI",
+    project: { project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" },
+    projects: [{ project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" }],
+  });
   const corePageHtml = renderGoalBoardWeb(view, "CORE");
   // Keep this broad presentation contract checking the same assembled workbench
   // surface even though production now serves the shared assets separately.
@@ -675,11 +681,31 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((html.match(/data-goal-tab="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.equal((html.match(/data-goal-panel="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.match(html, /data-goal-tab="overview"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-goal-tab="overview"/);
-  assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, false\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, true\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const activateFocusSection = \(trigger\) =>/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealFocusTarget = \(target\) =>/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /revealFocusTarget\(targetElement\)/);
+  assert.match(html, /class="focus-section-deck focus-section-deck--context"/);
+  assert.match(html, /class="focus-section-card-row" data-focus-section-card-row/);
+  assert.match(html, /class="focus-section-stage" data-focus-section-stage/);
+  assert.ok(html.indexOf('class="focus-section-card-row"') < html.indexOf('class="focus-section-stage"'));
+  assert.equal((html.match(/data-focus-section-card="(?:purpose|completion)"/g) ?? []).length, 2);
+  assert.equal((html.match(/data-focus-section-body="(?:purpose|completion)"/g) ?? []).length, 2);
+  for (const key of ["state", "blockers", "risks", "checks"]) assert.match(html, new RegExp(`data-focus-section-card="${key}"`));
+  assert.match(html, /class="focus-section-deck focus-section-deck--progress progress-overview"/);
+  assert.equal((html.match(/data-goal-factor-tab="(?:relations|risks|impacts|rules)"/g) ?? []).length, 4);
+  assert.match(html, /class="focus-section-deck goal-factor-nav"/);
+  assert.equal((recordsFragment.match(/data-focus-section-card="(?:basics|execution|history|rules)"/g) ?? []).length, 4);
   assert.match(html, /data-goal-panel="completion" hidden|hidden[^>]*data-goal-panel="completion"/);
   assert.match(html, /aria-controls="goal-panel-overview-V1"/);
   assert.match(html, /aria-labelledby="goal-tab-overview-V1"/);
   assert.match(html, /下一步/);
+  assert.match(html, /class="goal-focus-layout"/);
+  assert.ok(html.indexOf('class="goal-hero"') < html.indexOf('class="goal-workspace-panels"'));
+  assert.ok(html.indexOf('class="goal-focus-main"') < html.indexOf('class="goal-focus-aside"'));
+  assert.match(html, /<header><h2[^>]*>下一步<\/h2><\/header>/);
+  assert.doesNotMatch(html, /<header><h2[^>]*>下一步<\/h2><span class="goal-status"/);
+  assert.doesNotMatch(html, /goal-now-mark/);
   assert.match(html, /目标说明/);
   assert.match(html, /完成要求/);
   assert.match(html, /进展与阻塞/);
@@ -693,6 +719,8 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /name="direction" required/);
   assert.match(html, /name="type" required/);
   assert.equal((html.match(/data-goal-factor-panel="(?:relations|risks|impacts|rules)"/g) ?? []).length, 4);
+  assert.match(html, /class="relation-heading"><strong>/);
+  assert.match(html, /class="relation-goal-id">PLATFORM<\/small><\/span><small class="relation-path">/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /data-factor-write-receipt/);
   assert.match(WORKBENCH_STYLES, /\.factor-write-receipt \{/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /showFactorReceipt\(\s*"relations"/);
@@ -710,6 +738,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-quick-record-type="impact"/);
   assert.match(html, /data-quick-record-type="relation"/);
   assert.equal((html.match(/class="goal-primary-action"/g) ?? []).length, 1);
+  assert.match(html, /aria-label="进入子 Goal「[^”]+」"[^>]*>[\s\S]*?<span>进入子 Goal<\/span>/);
   assert.doesNotMatch(html, /<section class="goal-technical"[^>]*>/);
   assert.match(html, /data-goal-records-content data-loaded="false"/);
   assert.match(recordsFragment, /<section class="goal-technical"[^>]*>/);
@@ -796,7 +825,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-global-search/);
   assert.equal((html.match(/<input type="search" data-global-search/g) ?? []).length, 1);
   assert.match(html, /data-settings-link/);
-  assert.match(html, /class="project-bar"/);
+  assert.match(html, /class="navigator-project"/);
+  assert.match(projectPageHtml, /class="navigator-project-action"[^>]*aria-label="切换项目"[^>]*title="切换项目"[^>]*>[\s\S]*?icon-switch[\s\S]*?<span aria-hidden="true">切换项目<\/span>/);
+  assert.match(projectPageHtml, /class="navigator-project-action"[^>]*aria-label="打开当前项目设置"[^>]*title="项目设置"[^>]*>[\s\S]*?icon-tune[\s\S]*?<span aria-hidden="true">项目设置<\/span>/);
   assert.match(html, /class="project-decisions/);
   assert.match(html, /@media \(max-width: 1180px\)[\s\S]*\.top-action span \{ display: none; \}/);
   assert.doesNotMatch(html, /class="tree-heading"|class="global-search"|class="top-filter-control"/);
@@ -866,7 +897,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /querySelector\("\[data-tree-resizer\]"\)/);
   assert.match(html, /treeResizer\??\.addEventListener\("pointermove"/);
   assert.match(html, /treeResizer\??\.addEventListener\("keydown"/);
-  assert.match(html, /tree-copy"><strong>让第一次使用的人顺利完成一轮目标协作<\/strong><small>V1<\/small>/);
+  assert.match(html, /tree-copy"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><small>V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-goal-section="progress"/);
   assert.match(html, /data-goal-section="now"/);
@@ -1189,7 +1220,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(await missingSelection.text(), /请先选择一个 GoalBoard 项目/);
 
     const alphaPage = await (await webFetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY`)).text();
-    assert.match(alphaPage, /项目：<\/strong><span>产品 Alpha/);
+    assert.match(alphaPage, /class="navigator-project"[\s\S]*title="产品 Alpha">产品 Alpha<\/strong>/);
     assert.match(alphaPage, /切换项目/);
     assert.match(alphaPage, /仅 Alpha 可见的 Goal/);
     assert.doesNotMatch(alphaPage, /仅 Beta 可见的 Goal|数据源:|goalboard\.db/);
@@ -1288,7 +1319,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     );
 
     const betaPage = await (await webFetch(`${origin}${betaPrefix}/goals/BETA-ONLY`)).text();
-    assert.match(betaPage, /项目：<\/strong><span>产品 Beta/);
+    assert.match(betaPage, /class="navigator-project"[\s\S]*title="产品 Beta">产品 Beta<\/strong>/);
     assert.match(betaPage, /仅 Beta 可见的 Goal/);
     assert.doesNotMatch(betaPage, /仅 Alpha 可见的 Goal/);
 
@@ -1356,7 +1387,59 @@ test("Web settings use shared Runtime and project services for confirmed setup f
 
     const redirect = await webFetch(`${origin}/settings`, { redirect: "manual" });
     assert.equal(redirect.status, 302);
-    assert.equal(redirect.headers.get("location"), "/settings/projects");
+    assert.equal(redirect.headers.get("location"), "/settings/appearance");
+
+    const appearancePage = await (await webFetch(`${origin}/settings/appearance`)).text();
+    assertInlineScriptsCompile(appearancePage);
+    assert.match(appearancePage, /<h1 id="settings-title">界面与语言<\/h1>/);
+    assert.match(appearancePage, /href="\/settings\/appearance" aria-current="page"/);
+    assert.match(appearancePage, /href="\/locale\?lang=zh/);
+    assert.match(appearancePage, /href="\/locale\?lang=en/);
+    assert.match(appearancePage, /aria-label="界面语言"/);
+    assert.match(appearancePage, /data-density-option="standard" aria-pressed="true"/);
+    assert.match(appearancePage, /data-density-option="compact" aria-pressed="false"/);
+    assert.match(appearancePage, /data-theme-option="system" aria-pressed="true"/);
+    assert.match(appearancePage, /data-terminal-theme-option="auto" aria-pressed="true"/);
+    assert.match(appearancePage, /data-terminal-theme-option="light" aria-pressed="false"/);
+    assert.match(appearancePage, /data-terminal-theme-option="dark" aria-pressed="false"/);
+    assert.match(appearancePage, /语言、主题、终端外观和密度只保存在当前设备/);
+    const systemNavigation = appearancePage.slice(
+      appearancePage.indexOf('<nav class="settings-navigation"'),
+      appearancePage.indexOf('<div class="settings-content">'),
+    );
+    assert.match(systemNavigation, /系统设置/);
+    assert.match(systemNavigation, /界面与语言/);
+    assert.match(systemNavigation, /AI 与执行工具/);
+    assert.match(systemNavigation, /诊断/);
+    assert.doesNotMatch(systemNavigation, /项目设置|规划方法/);
+
+    const contextualAppearancePage = await (await webFetch(
+      `${origin}/settings/appearance?project=${fixture.alpha.project_id}`,
+    )).text();
+    assert.match(contextualAppearancePage, new RegExp(`/settings/runtimes\\?project=${fixture.alpha.project_id}`));
+    assert.match(contextualAppearancePage, new RegExp(`/projects/${fixture.alpha.project_id}/`));
+
+    const projectBoardPage = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/`,
+    )).text();
+    const projectBoardTopbar = projectBoardPage.slice(
+      projectBoardPage.indexOf('<header class="topbar"'),
+      projectBoardPage.indexOf('<nav class="mobile-switch"'),
+    );
+    const projectNavigatorLayer = projectBoardPage.slice(
+      projectBoardPage.indexOf('<section class="navigator-project"'),
+      projectBoardPage.indexOf('<header class="desktop-pane-header desktop-pane-header--navigator"'),
+    );
+    assert.match(projectBoardTopbar, /data-settings-link/);
+    assert.doesNotMatch(projectBoardTopbar, /产品 Alpha|切换项目|项目设置|project-decisions/);
+    assert.match(projectNavigatorLayer, /产品 Alpha/);
+    assert.match(projectNavigatorLayer, new RegExp(`href="/projects/${fixture.alpha.project_id}/settings/rules"`));
+    assert.match(projectNavigatorLayer, /切换项目/);
+    assert.match(projectNavigatorLayer, /项目设置/);
+    assert.match(projectNavigatorLayer, /project-decisions/);
+    assert.doesNotMatch(projectNavigatorLayer, /#icon-settings/);
+    assert.match(projectBoardPage, new RegExp(`data-settings-link href="/settings/appearance\\?project=${fixture.alpha.project_id}"`));
+    assert.doesNotMatch(projectBoardPage, /class="locale-switch"|class="theme-picker"/);
 
     const runtimePage = await (await webFetch(`${origin}/settings/runtimes`)).text();
     assertInlineScriptsCompile(runtimePage);
@@ -1402,13 +1485,12 @@ test("Web settings use shared Runtime and project services for confirmed setup f
       projectRulesPage.indexOf('<nav class="settings-navigation'),
       projectRulesPage.indexOf('<div class="settings-content">'),
     );
-    assert.match(projectRulesNavigation, /返回所有项目/);
+    assert.match(projectRulesNavigation, /返回 Goal Tree/);
     assert.match(projectRulesNavigation, /项目设置/);
     assert.match(projectRulesNavigation, /产品 Alpha/);
     assert.match(projectRulesNavigation, /工作规则/);
     assert.match(projectRulesNavigation, /工作规划/);
     assert.doesNotMatch(projectRulesNavigation, /全局设置|AI 与执行工具|诊断/);
-    assert.doesNotMatch(projectRulesNavigation, />Goal Tree</);
     assert.match(projectRulesPage, /data-route-prefix="\/projects\//);
     assert.match(projectRulesPage, /name="scope" value="project_default"/);
     assert.doesNotMatch(projectRulesPage, /name="goal_id"/);
@@ -1464,12 +1546,16 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(workPlanningPage, /尚未建立项目规划组合/);
     assert.match(workPlanningPage, /添加规划方法/);
     assert.match(workPlanningPage, /data-adopt-planning-method="domain-software-development"/);
+    assert.match(workPlanningPage, /data-adopt-planning-method="industry-education"/);
+    assert.match(workPlanningPage, /data-adopt-planning-method="overlay-minors"/);
+    assert.match(workPlanningPage, /data-planning-filter="industry"/);
+    assert.match(workPlanningPage, /data-planning-filter="overlay"/);
     assert.match(workPlanningPage, /加入组合/);
     const workPlanningNavigation = workPlanningPage.slice(
       workPlanningPage.indexOf('<nav class="settings-navigation'),
       workPlanningPage.indexOf('<div class="settings-content">'),
     );
-    assert.match(workPlanningNavigation, /返回所有项目/);
+    assert.match(workPlanningNavigation, /返回 Goal Tree/);
     assert.match(workPlanningNavigation, /产品 Alpha/);
     assert.match(workPlanningNavigation, /工作规则/);
     assert.match(workPlanningNavigation, /工作规划/);
@@ -1513,7 +1599,7 @@ test("Web settings use shared Runtime and project services for confirmed setup f
       projectPlanningDetail.indexOf('<nav class="settings-navigation'),
       projectPlanningDetail.indexOf('<div class="settings-content">'),
     );
-    assert.match(projectPlanningDetailNavigation, /返回所有项目/);
+    assert.match(projectPlanningDetailNavigation, /返回 Goal Tree/);
     assert.match(projectPlanningDetailNavigation, /产品 Alpha/);
     assert.match(projectPlanningDetailNavigation, /工作规则/);
     assert.match(projectPlanningDetailNavigation, /工作规划/);
@@ -1527,23 +1613,30 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(planningLibrary, /class="planning-card"/);
     assert.match(planningLibrary, /陌生领域方法包生成/);
     assert.match(planningLibrary, /软件开发/);
+    assert.match(planningLibrary, /医疗健康/);
+    assert.match(planningLibrary, /AI 人工复核/);
     assert.match(planningLibrary, /data-planning-filter="work_type"/);
+    assert.match(planningLibrary, /data-planning-filter="industry"/);
+    assert.match(planningLibrary, /data-planning-filter="overlay"/);
+    assert.match(planningLibrary, /行业方法/);
+    assert.match(planningLibrary, /场景叠加层/);
     assert.doesNotMatch(planningLibrary, /class="planning-layout"|class="planning-editor"|<form class="planning-edit-form"/);
     const planningNavigation = planningLibrary.slice(
-      planningLibrary.indexOf('<nav class="settings-navigation"'),
+      planningLibrary.indexOf('<nav class="settings-navigation'),
       planningLibrary.indexOf('<div class="settings-content">'),
     );
-    assert.match(planningNavigation, /全局设置/);
     assert.match(planningNavigation, /项目设置/);
-    assert.doesNotMatch(planningNavigation, /当前项目|产品 Alpha/);
-    assert.doesNotMatch(planningNavigation, />Goal Tree</);
+    assert.match(planningNavigation, /产品 Alpha/);
+    assert.match(planningNavigation, /返回 Goal Tree/);
+    assert.doesNotMatch(planningNavigation, /系统设置|AI 与执行工具|诊断/);
 
     const planningDetail = await (await webFetch(
       `${origin}/settings/planning/domain-software-development?project=${fixture.alpha.project_id}`,
     )).text();
     assert.match(planningDetail, /Runtime 方法说明/);
-    assert.match(planningDetail, /技术方案设计/);
-    assert.match(planningDetail, /技术基础能力建设/);
+    assert.match(planningDetail, /项目级 SSOT/);
+    assert.match(planningDetail, /横纵模块地图/);
+    assert.match(planningDetail, /并发写入边界/);
     assert.match(planningDetail, /规划路径/);
     assert.match(planningDetail, /拆分时必须回答/);
     assert.match(planningDetail, /依赖判断/);
@@ -1557,6 +1650,8 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(planningEditor, /<form class="planning-edit-form"[^>]*data-planning-edit-form/);
     assert.match(planningEditor, /保存到我的方法库/);
     assert.match(planningEditor, /name="instructions"/);
+    assert.match(planningEditor, /option value="industry"/);
+    assert.match(planningEditor, /option value="overlay"/);
     assert.match(planningEditor, /Runtime 方法正文/);
     assert.match(planningEditor, /data-coverage-row/);
     assert.match(planningEditor, /data-dependency-row/);
@@ -2139,9 +2234,8 @@ test("Web chrome switches between Chinese and English without translating Goal t
     const chinese = await (await webFetch(`${origin}/`)).text();
     assert.match(chinese, /lang="zh-CN"/);
     assert.match(chinese, /选择一个项目/);
-    assert.match(chinese, /class="locale-switch"/);
-    assert.match(chinese, />中文</);
-    assert.match(chinese, />EN</);
+    assert.doesNotMatch(chinese, /class="locale-switch"|class="theme-picker"/);
+    assert.match(chinese, /打开系统设置/);
 
     const switched = await webFetch(`${origin}/locale?lang=en&next=/`, { redirect: "manual" });
     assert.equal(switched.status, 302);
@@ -2157,7 +2251,7 @@ test("Web chrome switches between Chinese and English without translating Goal t
     assert.match(english, /lang="en"/);
     assert.match(english, /<title>Choose a project · GoalBoard<\/title>/);
     assert.match(english, /<h1 id="project-index-title">Choose a project<\/h1>/);
-    assert.match(english, />Settings</);
+    assert.match(english, />System settings</);
     assert.doesNotMatch(english, /<h1 id="project-index-title">选择一个项目<\/h1>/);
 
     const capsuleEnglish = await (await webFetch(`${origin}/desktop/capsule?desktop=1&locale=en`, {
@@ -2203,10 +2297,17 @@ test("Web chrome switches between Chinese and English without translating Goal t
     assert.match(board, /New Goal/);
     assert.match(board, /aria-label="Filter Goals"/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /L\("筛选目标，已选择 \{count\} 种状态"/);
-    assert.match(board, /Settings/);
-    assert.match(board, /href="\/locale\?lang=zh/);
+    assert.match(board, /System settings/);
+    assert.doesNotMatch(board, /href="\/locale\?lang=zh/);
+    const englishAppearance = await (await webFetch(`${origin}/settings/appearance`, {
+      headers: { cookie: "goalboard_locale=en" },
+    })).text();
+    assert.match(englishAppearance, /Interface &amp; language|Interface & language/);
+    assert.match(englishAppearance, /href="\/locale\?lang=zh/);
+    assert.match(englishAppearance, /Use GoalBoard in English/);
     assertInlineScriptsCompile(english);
     assertInlineScriptsCompile(board);
+    assertInlineScriptsCompile(englishAppearance);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -2307,7 +2408,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
     }
 
     const migratedPage = await (await webFetch(`${origin}${migrated.project_path}`)).text();
-    assert.match(migratedPage, /项目：<\/strong><span>迁移后的产品/);
+    assert.match(migratedPage, /class="navigator-project"[\s\S]*title="迁移后的产品">迁移后的产品<\/strong>/);
     assert.match(migratedPage, /让第一次使用的人顺利完成一轮目标协作/);
     assert.doesNotMatch(migratedPage, new RegExp(legacyDatabasePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
