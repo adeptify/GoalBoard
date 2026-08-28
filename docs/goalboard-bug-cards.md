@@ -23,6 +23,7 @@
 | GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 工程验证通过 | P1（发布门禁） |
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 待审批 | 未开始 | P1 |
+| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 待审批 | 未开始 | P2 |
 
 ---
 
@@ -455,3 +456,57 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 - **工程验证**：未开始。需先用可控时钟复现 Contract 冲突与租约外 `reportRun`，再验证所有读取/写入顺序得到一致终态、事件只写一次且 idempotency 不变。
 - **产品实操**：`UNVERIFIED`。需在最终安装产物中用短 lease 的真实 Goal 覆盖“自然过期后读取、旧执行者上报、另一执行者接管”，确认消费者无需猜测或询问用户。
 - **Owner 最终验收**：未开始。需要用户审批修复后，再依据最终包的实际恢复路径验收；当前分析不能算作已修复。
+
+---
+
+## GB-20260829-09：`repo:` 项目内 Evidence 被降级且没有可修正格式
+
+**来源**：CGS G2B 主线消费者反馈 7
+**Bug 确认**：确认是 GoalBoard locator 协议可发现性和恢复提示设计债；不是现有校验器误判
+**修复决定**：待用户审批；不进入已经送审的 v0.1.3
+**修复状态**：未开始
+
+### 1. 真实场景
+
+消费者在 Content Growth Studio 的 executor Run 中提交两条真实存在的 Markdown 证据，locator 分别为 `repo:docs/reviews/2026-08-29-g2b-codex-review.md#engineering-verification` 和 `repo:docs/reviews/2026-08-29-g2b-codex-review.md#browser-assisted-product-checks`。GoalBoard 将二者保存为 `UNVERIFIED`，只返回“不透明或外部 locator”，没有告诉消费者应该改成普通相对路径还是 `project://`。
+
+### 2. 事实与归因
+
+源码可确定性复现。当前校验器明确只把普通相对路径、`project://` 和位于 canonical workspace 内的绝对路径当作可验证项目文件；除 HTTP 和 `project://` 外，任何带 URI scheme 的值都会作为不透明 locator 保留。`repo:` 从未被声明为支持格式，因此不是校验器违反当前协议；但 MCP 工具说明只说“预检当前项目内文件与 Markdown anchor”，没有在 `locator` 参数旁列出支持格式，失败结果也没有返回可修正示例。消费者使用常见的 `repo:` 表达具有合理性。主要归因是 GoalBoard 的协议可发现性与恢复设计债，不是 CGS 误用，也不是 workspace 归属错误。
+
+### 3. 现有流程的问题
+
+Evidence 已经不可变地以 UNVERIFIED 写入后，消费者才知道格式不被识别。它需要猜测绝对路径、`file:`、普通相对路径或 `project://`，重新提交一条 Evidence，再调用 correction 替代原记录。一次格式歧义变成两次额外写入和一条永久历史记录；若不修正，Review 又会把真实工程证据当成未验证。
+
+### 4. 设计根因与初衷
+
+GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任意自定义协议、不把 URL 或命令误当成本地文件，也避免路径逃逸。内部使用 `project://` 是为了让存储记录不暴露机器绝对路径并能稳定跟随 workspace。这个安全边界合理；缺口是输入协议没有就近说明，且对可以安全映射到当前项目的 `repo:` 常见别名没有规范化或修正提示。
+
+### 5. 当前影响
+
+影响采用 `repo:<relative-path>#<anchor>` 表达仓库证据的 Runtime；普通相对路径、`project://` 和已修复的项目内绝对路径不受影响。当前已有两条真实 CGS Evidence 被降级，需要 correction 才能恢复验证等级。它不阻断文件存在，也不越权，但会降低验收可信度并污染 Evidence 历史，属于有明确绕行路径的 P2 体验问题。
+
+### 6. 复杂度审查
+
+- **当前必须**：让工具参数直接列出可验证格式；对安全的 `repo:<relative-path>` 给出确定处理——要么作为输入别名校验并统一存成 `project://`，要么在结果中返回机器可读的规范 locator 和 correction 动作。
+- **可以延后**：支持更多宿主自定义 scheme、Git commit/blob 定位、跨仓库 Evidence、自动生成永久内容地址。
+- **应当删除**：只返回“不透明或外部”而不区分可修正的当前项目别名；让 Runtime 靠试错猜 `file:`、绝对路径或内部协议。
+
+### 7. 修复必要性与优先级
+
+建议修复，P2，等待审批。当前已有三种安全格式和人工 correction 绕行，不是闭环硬阻塞；但 locator 是验收可信度基础，格式错误只能在写入后发现且 Evidence 不可变，修复收益明确。优先采用“接受 `repo:` 作为窄输入别名、仍只存 `project://`”的最小方案，不新增第二套 canonical 协议。
+
+### 8. 修复前后体验差异
+
+- **修复前**：提交 `repo:docs/review.md#checks` → Evidence 被永久写为 UNVERIFIED → 猜格式并重提 → 再 correction 原记录。
+- **修复后**：工具参数明确示例；提交安全的 `repo:docs/review.md#checks` → 按当前 canonical workspace 只读校验文件和 anchor → 存为 `project://docs/review.md#checks` 且返回 verified。项目外、逃逸路径和其他未知 scheme 仍不会被调用。
+
+### 9. 最小修复范围
+
+拟修改 Evidence locator 的输入规范化、MCP `locator` 字段说明、Skill 使用说明和结构化验证结果；仅接受形如 `repo:<安全相对路径>` 的当前项目别名，复用现有 realpath、范围和 Markdown anchor 校验，并统一存成 `project://`。不支持 `file:`，不访问网络，不打开其他自定义协议，不自动修改历史 Evidence。回滚时移除输入别名即可，已经规范化存储的记录仍是现有合法格式。
+
+### 10. 验收边界
+
+- **工程验证**：未开始。需补 `repo:` 文件/anchor 成功、缺失 anchor、`..` 逃逸、symlink 逃逸、其他 scheme 保持 UNVERIFIED、MCP schema 示例和 canonical 持久化回归。
+- **产品实操**：`UNVERIFIED`。需在最终安装产物中对真实 CGS Markdown 提交 `repo:` locator，确认一次提交即 verified，并检查 Web 能打开规范化后的项目引用。
+- **Owner 最终验收**：未开始。需要用户审批后，确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。
