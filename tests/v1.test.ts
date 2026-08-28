@@ -2292,6 +2292,36 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.match(verified.locator_validation_reason, /Markdown 文件与 anchor/);
   assert.ok(verified.locator_checked_at);
 
+  const repoAlias = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "evidence-locator",
+    actor_id: "runtime-a",
+    criterion_ids: ["evidence-locator-criterion"],
+    kind: "inspection",
+    locator: "repo:contract.md#平台差异化观察窗口",
+    result: "passed",
+    locator_context: { project_root: projectRoot, workspace_id: "workspace-repo-alias" },
+    idempotency_key: "evidence-locator-repo-alias",
+  }).evidence;
+  assert.equal(repoAlias.locator_status, "verified");
+  assert.equal(repoAlias.locator, "project://contract.md#平台差异化观察窗口");
+  assert.equal(repoAlias.locator_workspace_id, "workspace-repo-alias");
+
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "evidence-locator",
+      actor_id: "runtime-a",
+      criterion_ids: ["evidence-locator-criterion"],
+      kind: "artifact",
+      locator: "repo:../outside.txt",
+      result: "passed",
+      locator_context: { project_root: projectRoot },
+      idempotency_key: "evidence-locator-repo-escape",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
+
   const deduplicated = coordinator.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
@@ -2409,7 +2439,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(opaque.locator_status, "unverified");
   assert.match(opaque.locator_validation_reason, /不透明或外部 locator/);
   assert.ok(opaque.locator_checked_at);
-  assert.equal(store.snapshot("board-1").evidence.length, 5);
+  assert.equal(store.snapshot("board-1").evidence.length, 6);
   store.close();
 });
 

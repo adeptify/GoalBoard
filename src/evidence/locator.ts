@@ -187,7 +187,9 @@ export function validateEvidenceLocator(
   if (/^file:\/\//i.test(value) || /^[a-z]:[\\/]/i.test(value)) {
     throw new ProjectReferenceError(400, "Evidence locator 不能指向项目范围外的本地文件");
   }
-  let normalizedLocator = value;
+  let normalizedLocator = value.startsWith("repo:")
+    ? `project://${value.slice("repo:".length)}`
+    : value;
   if (path.isAbsolute(splitProjectLocator(value).path)) {
     if (!options.projectRoot) {
       throw new ProjectReferenceError(404, "项目引用根目录不可用");

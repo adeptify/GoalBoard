@@ -23,7 +23,7 @@
 | GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 工程验证通过 | P1（发布门禁） |
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 待审批 | 未开始 | P2 |
+| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 工程验证通过 | P2 |
 
 ---
 
@@ -463,8 +463,8 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 
 **来源**：CGS G2B 主线消费者反馈 7
 **Bug 确认**：确认是 GoalBoard locator 协议可发现性和恢复提示设计债；不是现有校验器误判
-**修复决定**：待用户审批；不进入已经送审的 v0.1.3
-**修复状态**：未开始
+**修复决定**：用户已批准
+**修复状态**：工程验证通过；尚未安装、产品实操或最终验收
 
 ### 1. 真实场景
 
@@ -494,7 +494,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 
 ### 7. 修复必要性与优先级
 
-建议修复，P2，等待审批。当前已有三种安全格式和人工 correction 绕行，不是闭环硬阻塞；但 locator 是验收可信度基础，格式错误只能在写入后发现且 Evidence 不可变，修复收益明确。优先采用“接受 `repo:` 作为窄输入别名、仍只存 `project://`”的最小方案，不新增第二套 canonical 协议。
+已批准修复，P2。当前虽已有三种安全格式和人工 correction 绕行，不是闭环硬阻塞；但 locator 是验收可信度基础，格式错误只能在写入后发现且 Evidence 不可变，修复收益明确。实现只接受 `repo:` 作为窄输入别名，仍只存 `project://`，没有新增第二套 canonical 协议。
 
 ### 8. 修复前后体验差异
 
@@ -503,10 +503,10 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 
 ### 9. 最小修复范围
 
-拟修改 Evidence locator 的输入规范化、MCP `locator` 字段说明、Skill 使用说明和结构化验证结果；仅接受形如 `repo:<安全相对路径>` 的当前项目别名，复用现有 realpath、范围和 Markdown anchor 校验，并统一存成 `project://`。不支持 `file:`，不访问网络，不打开其他自定义协议，不自动修改历史 Evidence。回滚时移除输入别名即可，已经规范化存储的记录仍是现有合法格式。
+已修改 Evidence locator 的输入规范化、MCP `locator` 字段说明和 Skill 使用说明；仅接受形如 `repo:<安全相对路径>` 的当前项目别名，复用现有 realpath、范围和 Markdown anchor 校验，并统一存成 `project://`。没有支持 `file:`、访问网络、打开其他自定义协议或自动修改历史 Evidence。回滚时移除输入别名即可，已经规范化存储的记录仍是现有合法格式。
 
 ### 10. 验收边界
 
-- **工程验证**：未开始。需补 `repo:` 文件/anchor 成功、缺失 anchor、`..` 逃逸、symlink 逃逸、其他 scheme 保持 UNVERIFIED、MCP schema 示例和 canonical 持久化回归。
+- **工程验证**：回归先复现真实项目内 `repo:` Markdown 被标为 UNVERIFIED，修复后验证文件和 anchor 成功、统一存成 `project://`、`..` 逃逸被拒绝、其他 scheme 保持 UNVERIFIED，并验证 MCP schema 直接提供相对路径、`repo:`、`project://` 和绝对路径示例。目标 V1/MCP 回归、TypeScript、Skill 校验及整仓门禁 263/263 通过。
 - **产品实操**：`UNVERIFIED`。需在最终安装产物中对真实 CGS Markdown 提交 `repo:` locator，确认一次提交即 verified，并检查 Web 能打开规范化后的项目引用。
-- **Owner 最终验收**：未开始。需要用户审批后，确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。
+- **Owner 最终验收**：未通过。需在最终安装包中确认真实消费者无需阅读额外文档或试错即可提交可验证 Evidence。
