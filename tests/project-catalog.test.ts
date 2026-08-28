@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import {
+  catalogSchemaCompatibilityError,
   GoalBoardProjectCatalog,
   GoalBoardProjectCatalogError,
   type RuntimeWorkContext,
@@ -128,6 +129,65 @@ test("catalog session closes its catalog when work fails", async () => {
 
     assert.ok(scopedCatalog);
     assert.throws(() => scopedCatalog.listProjects(), /database connection is not open/i);
+  });
+});
+
+test("a reader that is older than the catalog reports exact versions and a non-destructive recovery", () => {
+  const error = catalogSchemaCompatibilityError(9, 8);
+  assert.ok(error instanceof GoalBoardProjectCatalogError);
+  assert.equal(error.code, "catalog.reader_too_old");
+  assert.deepEqual(error.details, {
+    actual_schema_version: 9,
+    supported_schema_min: 1,
+    supported_schema_max: 8,
+    recovery: "new_or_fork_session_then_context_resolve",
+  });
+  assert.match(error.message, /catalog schema=9/);
+  assert.match(error.message, /reader.*1\.\.8/);
+  assert.match(error.message, /新建或 Fork/);
+  assert.match(error.message, /确认当前任务焦点/);
+  assert.match(error.message, /context_resolve/);
+  assert.match(error.message, /不要回滚 catalog\.db/);
+  assert.doesNotMatch(error.message, /版本无法识别/);
+});
+
+test("opening a future catalog fails without rewriting its schema or project facts", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const home = join(directory, "home", ".goalboard");
+    const created = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+    const project = await created.createProject({ display_name: "保留项目", actor_id: "user" });
+    created.close();
+
+    const databasePath = join(home, "projects", "catalog.db");
+    const future = new Database(databasePath);
+    try {
+      future.prepare("UPDATE catalog_meta SET value = '10' WHERE key = 'schema_version'").run();
+    } finally {
+      future.close();
+    }
+
+    await assert.rejects(
+      () => GoalBoardProjectCatalog.open({ homeDirectory: home }),
+      (error: unknown) =>
+        error instanceof GoalBoardProjectCatalogError
+        && error.code === "catalog.reader_too_old"
+        && error.details.actual_schema_version === 10
+        && error.details.supported_schema_max === 9,
+    );
+
+    const preserved = new Database(databasePath, { readonly: true });
+    try {
+      assert.equal(
+        preserved.prepare("SELECT value FROM catalog_meta WHERE key = 'schema_version'").pluck().get(),
+        "10",
+      );
+      assert.equal(
+        preserved.prepare("SELECT display_name FROM projects WHERE project_id = ?").pluck().get(project.project_id),
+        "保留项目",
+      );
+    } finally {
+      preserved.close();
+    }
   });
 });
 

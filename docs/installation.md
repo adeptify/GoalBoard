@@ -41,6 +41,8 @@ pnpm install:local
 
 更新 MCP 或 Skill 后也要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
 
+如果旧 Session 随后报告 catalog schema 高于当前 reader 支持范围，这表示运行中的 MCP 已过期，不表示数据库损坏。不要回滚 `catalog.db`，也不要用 SQLite、CLI 或 Web 绕过写入。新建或 Fork Session 后，先确认消息确实落在新任务，再只读解析当前 GoalBoard 项目；解析成功后才继续写入。宿主显示“已导航”不等于下一条消息一定进入了新任务。
+
 ## 演示数据
 
 安装后的 CLI 和 Web“设置 → 项目”都能创建同一份演示数据。先预览，明确确认后才写入：

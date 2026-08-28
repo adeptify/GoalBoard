@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
+import Database from "better-sqlite3";
 import { GoalBoardServer, runtimeContextHostFromEnvironment } from "../src/mcp/server.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 
@@ -166,6 +167,49 @@ describe("mcp server", () => {
     assert.ok(managementNames.every((name) => name.startsWith("goalboard_v1_")));
   });
 
+  it("returns structured reader-too-old diagnostics without exposing the catalog path", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-reader-too-old-"));
+    const home = path.join(directory, "home", ".goalboard");
+    try {
+      const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+      await catalog.createProject({ display_name: "保留项目", actor_id: "user" });
+      catalog.close();
+      const databasePath = path.join(home, "projects", "catalog.db");
+      const future = new Database(databasePath);
+      try {
+        future.prepare("UPDATE catalog_meta SET value = '10' WHERE key = 'schema_version'").run();
+      } finally {
+        future.close();
+      }
+
+      const runtime = new GoalBoardServer("runtime", null, {
+        homeDirectory: home,
+        runtimeContext: {
+          runtime_id: "codex",
+          stable_work_context_id: "reader-too-old-session",
+          host_declares_stable: true,
+        },
+        webBaseUrl: "http://127.0.0.1:4173",
+      });
+      const response = await runtime.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "goalboard_v1_context_resolve", arguments: {} },
+      }) as { result: { isError: boolean; content: Array<{ text: string }> } };
+      const errorText = response.result.content[0]?.text ?? "";
+      assert.equal(response.result.isError, true);
+      assert.match(errorText, /错误: GoalBoard catalog schema=10/);
+      assert.match(errorText, /"code":"catalog\.reader_too_old"/);
+      assert.match(errorText, /"actual_schema_version":10/);
+      assert.match(errorText, /"supported_schema_max":9/);
+      assert.match(errorText, /"recovery":"new_or_fork_session_then_context_resolve"/);
+      assert.doesNotMatch(errorText, new RegExp(databasePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore the removed static Runtime DB connection from environment", () => {
     const keys = [
       "GOALBOARD_DATABASE",
@@ -269,6 +313,20 @@ describe("mcp server", () => {
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references["service-start"], /service status --home "\$HOME\/\.goalboard" --json/);
     for (const content of Object.values(references)) assert.doesNotMatch(content, /GOALBOARD_DATABASE/);
+  });
+
+  it("Runtime recovery guidance treats a newer catalog as a stale Session, not damaged data", () => {
+    const skillRoot = path.join(ROOT, "skills/goal-advance");
+    const connection = fs.readFileSync(path.join(skillRoot, "references/project-connection.md"), "utf8");
+
+    assert.match(connection, /`catalog\.reader_too_old`/);
+    assert.match(connection, /actual_schema_version.*supported_schema_max/s);
+    assert.match(connection, /current Session cannot hot-reload.*MCP/is);
+    assert.match(connection, /new or Forked Session.*confirm.*current task focus/is);
+    assert.match(connection, /read-only `goalboard_v1_context_resolve`/);
+    assert.match(connection, /message still lands in the old task.*do not enter a write path/is);
+    assert.match(connection, /Never roll back `catalog\.db`.*SQLite.*CLI.*Web/s);
+    assert.match(connection, /host navigation.*does not prove.*task focus/is);
   });
 
   it("Runtime Skill preserves readable planning, decisions, execution, and correction", () => {

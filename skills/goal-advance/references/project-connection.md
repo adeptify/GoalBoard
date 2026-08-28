@@ -13,6 +13,20 @@ Call `goalboard_v1_context_resolve` only after the user explicitly invokes GoalB
 
 The working directory is only a host clue used to rank projects previously associated with it. It is never a Session ID or project identity. Raw host clues, database paths, and internal project IDs stay out of normal user-facing text.
 
+## Recover from an older Runtime reader
+
+Treat `catalog.reader_too_old` as a Runtime/catalog version mismatch, not damaged user data. Report the returned `actual_schema_version` and `supported_schema_max` in plain language. The current Session cannot hot-reload its MCP process, so do not retry the same call unchanged.
+
+Use this safe recovery sequence:
+
+1. Preserve the current task and GoalBoard data. Never roll back `catalog.db`, edit SQLite, route writes through CLI or Web, or terminate the old task automatically.
+2. Ask the user to create a new or Forked Session when one does not already exist. Host navigation or opening another task does not prove that the user's next message has the new task focus.
+3. In the new or Forked Session, confirm the current task focus from host-visible context before any GoalBoard write. Then make a read-only `goalboard_v1_context_resolve` call.
+4. Continue only after that call succeeds and the returned project is bound under the normal connection rules. A suggestion still requires a project decision; do not turn recovery into automatic rebinding.
+5. If the message still lands in the old task, show the same version mismatch and focus guidance, and do not enter a write path.
+
+GoalBoard owns the version diagnosis and the no-data-loss recovery instructions. The Runtime host owns task navigation and message focus; never claim that host navigation succeeded merely because a navigation call returned successfully.
+
 ## Bind or create only after a clear choice
 
 - Existing project: call `goalboard_v1_context_bind(project_id, actor_id, user_confirmed=true)` after the user explicitly selects it.

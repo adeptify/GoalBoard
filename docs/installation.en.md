@@ -41,6 +41,8 @@ pnpm install:local
 
 After updating MCP or the Skill, also open a new Runtime Session, because an already-running Session does not reload tools. To make the built-in demo use the new example content, run `goalboard demo reset --confirm` separately; it clears changes inside the demo but never touches user projects.
 
+If an older Session then reports a catalog schema above its reader's supported range, the running MCP is stale; the database is not damaged. Do not roll back `catalog.db` or bypass writes through SQLite, CLI, or Web. Create or Fork a Session, confirm that messages actually have the new task focus, and perform a read-only GoalBoard project resolution before any write. A host navigation success alone does not prove that the next message will land in the new task.
+
 ## Demo data
 
 Both the CLI and Web "Settings → Projects" can create the same demo data. Preview first, then write only after explicit confirmation:

@@ -2032,7 +2032,7 @@ export class GoalBoardServer {
             content: [
               {
                 type: "text",
-                text: `错误: ${err instanceof Error ? err.message : String(err)}`,
+                text: formatMcpToolError(err),
               },
             ],
             isError: true,
@@ -2052,6 +2052,12 @@ export class GoalBoardServer {
       error: { code: -32601, message: `Method not found: ${method}` },
     };
   }
+}
+
+function formatMcpToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof GoalBoardProjectCatalogError)) return `错误: ${message}`;
+  return `错误: ${message}\n${JSON.stringify({ code: error.code, ...error.details })}`;
 }
 
 async function runStdio(): Promise<void> {
