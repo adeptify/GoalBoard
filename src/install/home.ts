@@ -749,8 +749,9 @@ function launcherSource(
   if (useBundledNode) {
     const nodePath = path.join(releaseDirectory, "runtime", "node");
     const entryPath = path.join(releaseDirectory, target);
+    const serviceEnvironment = entry === "web" ? "/usr/bin/env GOALBOARD_WEB_SERVICE_PROCESS_ID=$$ " : "";
     return `${BUNDLED_NODE_LAUNCHER_HEADER}
-exec ${shellQuote(nodePath)} ${shellQuote(entryPath)} "$@"
+exec ${serviceEnvironment}${shellQuote(nodePath)} ${shellQuote(entryPath)} "$@"
 `;
   }
   return `${LEGACY_LAUNCHER_HEADER}

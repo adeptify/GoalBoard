@@ -166,6 +166,7 @@ test("changed owned files block uninstall and a failed service step leaves a rec
       userHomeDirectory: failed.userHome,
       platform: "darwin",
       uid: 501,
+      async portCheck() { return false; },
       async healthCheck() { return true; },
       async runCommand(_file, args) {
         if (args[0] === "print") return { code: loaded ? 0 : 113, stdout: loaded ? "state = running\npid = 4242\n" : "", stderr: loaded ? "" : "not found" };

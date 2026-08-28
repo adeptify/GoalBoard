@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -58,8 +59,10 @@ export interface GoalBoardWebServiceManagerOptions {
   platform?: NodeJS.Platform;
   uid?: number;
   runCommand?: (file: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
-  /** Returns true only after the managed Web endpoint can serve requests. */
-  healthCheck?: () => Promise<boolean>;
+  /** Returns true only when the endpoint belongs to the expected managed process. */
+  healthCheck?: (expectedProcessId?: number) => Promise<boolean>;
+  /** Returns true when another process is already accepting connections on the Web port. */
+  portCheck?: () => Promise<boolean>;
   /** Tests may remove the real launchd transition wait without changing retry behavior. */
   transitionDelayMilliseconds?: number;
 }
@@ -101,6 +104,7 @@ export class GoalBoardWebServiceManager {
   private readonly nodeExecutablePath: string;
   private readonly runCommand: NonNullable<GoalBoardWebServiceManagerOptions["runCommand"]>;
   private readonly healthCheck: NonNullable<GoalBoardWebServiceManagerOptions["healthCheck"]>;
+  private readonly portCheck: NonNullable<GoalBoardWebServiceManagerOptions["portCheck"]>;
   private readonly transitionDelayMilliseconds: number;
   private readonly plans = new Map<string, PreparedServicePlan>();
 
@@ -119,6 +123,7 @@ export class GoalBoardWebServiceManager {
     this.stderrLog = path.join(this.homeDirectory, "logs", "web-service.error.log");
     this.runCommand = options.runCommand ?? runCommand;
     this.healthCheck = options.healthCheck ?? goalBoardWebHealthCheck;
+    this.portCheck = options.portCheck ?? goalBoardWebPortCheck;
     this.transitionDelayMilliseconds = Math.max(0, options.transitionDelayMilliseconds ?? 250);
   }
 
@@ -133,9 +138,31 @@ export class GoalBoardWebServiceManager {
     if (plist == null) {
       const receiptOwned = Boolean(receipt && receipt.owner === SERVICE_OWNER && receipt.label === SERVICE_LABEL);
       if (receiptOwned) {
+        const status = await this.launchctl(["print", this.serviceTarget()]);
+        const running = launchAgentProcessId(status) != null;
+        if (running) {
+          return this.detection(
+            "conflict",
+            true,
+            true,
+            true,
+            command,
+            "GoalBoard LaunchAgent 仍在运行，但原 plist 已缺失，无法安全回滚自动修复；请先明确停止服务后再修复",
+          );
+        }
         return launcherAvailable
           ? this.detection("needs_repair", true, true, false, command, "LaunchAgent 文件缺失，可重新安装或移除残留记录")
           : this.detection("unavailable", true, true, false, command, "GoalBoard Web 启动器和 LaunchAgent 文件均缺失；可移除残留记录，或先修复 GoalBoard 安装");
+      }
+      if (await this.portCheck()) {
+        return this.detection(
+          "conflict",
+          true,
+          false,
+          false,
+          command,
+          "127.0.0.1:4173 已有进程监听；GoalBoard 不会接管或中断它，请先关闭现有监听后再安装",
+        );
       }
       return launcherAvailable
         ? this.detection("absent", true, false, false, command, "尚未启用常驻 Web 服务")
@@ -152,19 +179,51 @@ export class GoalBoardWebServiceManager {
       return this.detection("conflict", true, false, false, command, "同名 LaunchAgent 不属于 GoalBoard 或已被修改，不会覆盖");
     }
     const status = await this.launchctl(["print", this.serviceTarget()]);
-    const running = launchAgentIsRunning(status);
+    const processId = launchAgentProcessId(status);
+    const running = processId != null;
+    const healthyOwnedInstance = processId != null && await this.healthCheck(processId);
     if (!launcherAvailable) {
       return this.detection("unavailable", true, true, running, command, "GoalBoard Web 启动器缺失；可移除服务或先修复 GoalBoard 安装");
     }
     if (plist !== this.plistSource()) {
+      if (!healthyOwnedInstance && await this.portCheck()) {
+        return this.detection(
+          "conflict",
+          true,
+          true,
+          running,
+          command,
+          "4173 的监听者无法证明属于当前 GoalBoard LaunchAgent；不会在修复旧配置前停止或接管它",
+        );
+      }
       return this.detection("needs_repair", true, true, running, command, "GoalBoard Web 常驻服务使用旧配置，可预览并确认修复");
     }
     if (!running) {
+      if (await this.portCheck()) {
+        return this.detection(
+          "conflict",
+          true,
+          true,
+          false,
+          command,
+          "GoalBoard LaunchAgent 当前未运行，但 127.0.0.1:4173 已被其他进程占用；不会接管或中断该监听",
+        );
+      }
       return this.detection("stopped", true, true, false, command, status.code === 0
         ? "GoalBoard Web 常驻服务已加载但进程未运行，请查看错误日志"
         : "GoalBoard Web 常驻服务已安装但当前未运行");
     }
-    return await this.healthCheck()
+    if (!healthyOwnedInstance && await this.portCheck()) {
+      return this.detection(
+        "conflict",
+        true,
+        true,
+        true,
+        command,
+        "4173 的监听者无法证明属于当前 GoalBoard LaunchAgent；不会先停止受管服务或接管现有监听",
+      );
+    }
+    return healthyOwnedInstance
       ? this.detection("running", true, true, true, command, "GoalBoard Web 常驻服务正在运行，页面已可访问")
       : this.detection("unhealthy", true, true, true, command, "GoalBoard Web 进程正在运行，但页面暂时不可访问；可受控重启并查看错误日志");
   }
@@ -172,7 +231,8 @@ export class GoalBoardWebServiceManager {
   async prepare(action: GoalBoardWebServiceAction): Promise<GoalBoardWebServicePlan> {
     const detection = await this.detect();
     const expectedPlist = this.plistSource();
-    const status = planStatus(action, detection);
+    const managedArtifactsAbsent = await readText(this.plistPath) == null && await readText(this.receiptPath) == null;
+    const status = planStatus(action, detection, managedArtifactsAbsent);
     const plan: GoalBoardWebServicePlan = {
       plan_id: `web-service-plan-${randomUUID()}`,
       action,
@@ -206,13 +266,25 @@ export class GoalBoardWebServiceManager {
       return { status: "unchanged", action: prepared.publicPlan.action, detection: await this.detect(), message: prepared.publicPlan.message };
     }
     const action = prepared.publicPlan.action;
-    if (action === "install") await this.install(prepared.expectedPlist);
-    if (action === "start") await this.start();
+    let finalDetection: GoalBoardWebServiceDetection | null = null;
+    if (action === "install") finalDetection = await this.install(prepared.expectedPlist);
+    if (action === "start") {
+      finalDetection = prepared.publicPlan.detection.state === "unhealthy"
+        ? await this.restart()
+        : await this.startPreservingState(prepared.publicPlan.detection.running);
+    }
     if (action === "stop") await this.stop();
-    if (action === "restart") await this.restart();
+    if (action === "restart") finalDetection = await this.restart();
     if (action === "remove") await this.remove();
+    finalDetection ??= await this.detect();
+    if (["install", "start", "restart"].includes(action) && finalDetection.state !== "running") {
+      throw new GoalBoardWebServiceError(
+        "service.command_failed",
+        `GoalBoard Web 操作后没有保持当前受管实例的运行状态：${finalDetection.message}`,
+      );
+    }
     const status = ({ install: "installed", start: "started", stop: "stopped", restart: "restarted", remove: "removed" } as const)[action];
-    return { status, action, detection: await this.detect(), message: resultMessage(action) };
+    return { status, action, detection: finalDetection, message: resultMessage(action) };
   }
 
   private command(): string[] {
@@ -253,39 +325,84 @@ ${args}
 `;
   }
 
-  private async install(plist: string): Promise<void> {
+  private async install(plist: string): Promise<GoalBoardWebServiceDetection> {
     const previousPlist = await readText(this.plistPath);
     const previousReceipt = await readText(this.receiptPath);
     const detection = await this.detect();
-    if (detection.owned) await this.stop();
-    await fs.mkdir(path.dirname(this.plistPath), { recursive: true });
-    await fs.mkdir(path.dirname(this.receiptPath), { recursive: true });
-    await fs.mkdir(path.dirname(this.stdoutLog), { recursive: true });
-    await writeAtomic(this.plistPath, plist);
-    await writeAtomic(this.receiptPath, `${JSON.stringify({
-      schema_version: 1,
-      owner: SERVICE_OWNER,
-      label: SERVICE_LABEL,
-      plist_path: this.plistPath,
-      plist_hash: digest(plist),
-      installed_at: new Date().toISOString(),
-    } satisfies WebServiceReceipt, null, 2)}\n`);
+    if (detection.state === "conflict") {
+      throw new GoalBoardWebServiceError("service.conflict", detection.message);
+    }
+    const previouslyRunning = detection.running;
+    let serviceMutated = false;
+    let filesMutated = false;
     try {
+      if (detection.owned) {
+        serviceMutated = true;
+        await this.stop();
+      }
+      await this.assertPortAvailable();
+      await fs.mkdir(path.dirname(this.plistPath), { recursive: true });
+      await fs.mkdir(path.dirname(this.receiptPath), { recursive: true });
+      await fs.mkdir(path.dirname(this.stdoutLog), { recursive: true });
+      await writeAtomic(this.plistPath, plist);
+      filesMutated = true;
+      await writeAtomic(this.receiptPath, `${JSON.stringify({
+        schema_version: 1,
+        owner: SERVICE_OWNER,
+        label: SERVICE_LABEL,
+        plist_path: this.plistPath,
+        plist_hash: digest(plist),
+        installed_at: new Date().toISOString(),
+      } satisfies WebServiceReceipt, null, 2)}\n`);
+      serviceMutated = true;
       await this.start();
+      const finalDetection = await this.detect();
+      if (finalDetection.state !== "running") {
+        throw new GoalBoardWebServiceError(
+          "service.command_failed",
+          `GoalBoard Web 安装后没有保持当前受管实例的运行状态：${finalDetection.message}`,
+        );
+      }
+      return finalDetection;
     } catch (error) {
-      await this.stop().catch(() => undefined);
-      if (previousPlist == null) await fs.rm(this.plistPath, { force: true });
-      else await writeAtomic(this.plistPath, previousPlist);
-      if (previousReceipt == null) await fs.rm(this.receiptPath, { force: true });
-      else await writeAtomic(this.receiptPath, previousReceipt);
-      if (previousPlist != null && previousReceipt != null) {
-        await this.start().catch(() => undefined);
+      const rollbackErrors: string[] = [];
+      if (serviceMutated || filesMutated) {
+        await this.stop().catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        if (previousPlist == null) {
+          await fs.rm(this.plistPath, { force: true }).catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        } else {
+          await writeAtomic(this.plistPath, previousPlist).catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        }
+        if (previousReceipt == null) {
+          await fs.rm(this.receiptPath, { force: true }).catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        } else {
+          await writeAtomic(this.receiptPath, previousReceipt).catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        }
+        if (previouslyRunning && previousPlist != null && previousReceipt != null) {
+          await this.restoreRunningState().catch((rollbackError) => rollbackErrors.push(errorMessage(rollbackError)));
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new GoalBoardWebServiceError(
+          "service.command_failed",
+          `${errorMessage(error)}；自动恢复未完成：${rollbackErrors.join("；")}`,
+        );
       }
       throw error;
     }
   }
 
   private async start(): Promise<void> {
+    await this.assertPortAvailable();
+    await this.startAfterPortCheck();
+  }
+
+  private async startAfterPortCheck(): Promise<void> {
+    await this.loadAndWaitForRunning();
+    await this.waitForReady();
+  }
+
+  private async loadAndWaitForRunning(): Promise<void> {
     let bootstrap = await this.launchctl(["bootstrap", this.domainTarget(), this.plistPath]);
     for (let attempt = 1; bootstrap.code === 37 && attempt < 25; attempt += 1) {
       await delay(this.transitionDelayMilliseconds);
@@ -297,7 +414,6 @@ ${args}
       if (kickstart.code !== 0) throw commandError("启动", kickstart);
     }
     await this.waitForRunning();
-    await this.waitForReady();
   }
 
   private async stop(): Promise<void> {
@@ -308,9 +424,31 @@ ${args}
     if (result.code === 0) await this.waitForUnloaded();
   }
 
-  private async restart(): Promise<void> {
-    await this.stop();
-    await this.start();
+  private async startPreservingState(previouslyRunning: boolean): Promise<GoalBoardWebServiceDetection> {
+    await this.assertPortAvailable();
+    try {
+      await this.startAfterPortCheck();
+      return await this.requireRunningDetection("启动");
+    } catch (error) {
+      await this.restoreLaunchctlState(previouslyRunning, error);
+      throw error;
+    }
+  }
+
+  private async restart(): Promise<GoalBoardWebServiceDetection> {
+    const previous = await this.detect();
+    if (previous.state === "conflict") {
+      throw new GoalBoardWebServiceError("service.conflict", previous.message);
+    }
+    try {
+      await this.stop();
+      await this.assertPortAvailable();
+      await this.startAfterPortCheck();
+      return await this.requireRunningDetection("重启");
+    } catch (error) {
+      await this.restoreLaunchctlState(previous.running, error);
+      throw error;
+    }
   }
 
   private async remove(): Promise<void> {
@@ -337,11 +475,11 @@ ${args}
 
   private async waitForRunning(): Promise<void> {
     let status = await this.launchctl(["print", this.serviceTarget()]);
-    for (let attempt = 1; !launchAgentIsRunning(status) && attempt < 25; attempt += 1) {
+    for (let attempt = 1; launchAgentProcessId(status) == null && attempt < 25; attempt += 1) {
       await delay(this.transitionDelayMilliseconds);
       status = await this.launchctl(["print", this.serviceTarget()]);
     }
-    if (!launchAgentIsRunning(status)) {
+    if (launchAgentProcessId(status) == null) {
       throw new GoalBoardWebServiceError(
         "service.command_failed",
         `launchctl 启动后未进入运行状态（${status.code}）：${status.stderr.trim() || "请查看 GoalBoard Web 错误日志"}`,
@@ -350,17 +488,58 @@ ${args}
   }
 
   private async waitForReady(): Promise<void> {
-    let ready = await this.healthCheck();
-    for (let attempt = 1; !ready && attempt < 25; attempt += 1) {
-      await delay(this.transitionDelayMilliseconds);
-      ready = await this.healthCheck();
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const status = await this.launchctl(["print", this.serviceTarget()]);
+      const processId = launchAgentProcessId(status);
+      if (processId != null && await this.healthCheck(processId)) {
+        await delay(this.transitionDelayMilliseconds);
+        const stableStatus = await this.launchctl(["print", this.serviceTarget()]);
+        const stableProcessId = launchAgentProcessId(stableStatus);
+        if (stableProcessId != null && await this.healthCheck(stableProcessId)) return;
+      } else if (attempt < 24) {
+        await delay(this.transitionDelayMilliseconds);
+      }
     }
-    if (!ready) {
+    throw new GoalBoardWebServiceError(
+      "service.command_failed",
+      `GoalBoard Web 已有 LaunchAgent 进程，但当前实例的进程身份健康检查仍未通过；请查看错误日志：${this.stderrLog}`,
+    );
+  }
+
+  private async requireRunningDetection(action: string): Promise<GoalBoardWebServiceDetection> {
+    const detection = await this.detect();
+    if (detection.state === "running") return detection;
+    throw new GoalBoardWebServiceError(
+      "service.command_failed",
+      `GoalBoard Web ${action}后没有保持当前受管实例的运行状态：${detection.message}`,
+    );
+  }
+
+  private async restoreLaunchctlState(previouslyRunning: boolean, originalError: unknown): Promise<void> {
+    try {
+      if (previouslyRunning) await this.restoreRunningState();
+      else await this.stop();
+    } catch (rollbackError) {
       throw new GoalBoardWebServiceError(
         "service.command_failed",
-        `GoalBoard Web 进程已经启动，但页面健康检查仍未通过；请查看错误日志：${this.stderrLog}`,
+        `${errorMessage(originalError)}；自动恢复操作前运行状态失败：${errorMessage(rollbackError)}`,
       );
     }
+  }
+
+  private async restoreRunningState(): Promise<void> {
+    const status = await this.launchctl(["print", this.serviceTarget()]);
+    if (launchAgentProcessId(status) != null) return;
+    await this.assertPortAvailable();
+    await this.loadAndWaitForRunning();
+  }
+
+  private async assertPortAvailable(): Promise<void> {
+    if (!await this.portCheck()) return;
+    throw new GoalBoardWebServiceError(
+      "service.conflict",
+      "127.0.0.1:4173 已有进程监听；GoalBoard 不会接管、终止或随机改用其他端口",
+    );
   }
 
   private async launchctl(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -398,9 +577,18 @@ ${args}
   }
 }
 
-function planStatus(action: GoalBoardWebServiceAction, detection: GoalBoardWebServiceDetection): GoalBoardWebServicePlan["status"] {
+function planStatus(
+  action: GoalBoardWebServiceAction,
+  detection: GoalBoardWebServiceDetection,
+  managedArtifactsAbsent: boolean,
+): GoalBoardWebServicePlan["status"] {
   if (!detection.supported) return "unsupported";
-  if (detection.state === "conflict") return "conflict";
+  if (detection.state === "conflict") {
+    if (action === "remove" && detection.owned) return "ready";
+    if (action === "remove" && !detection.owned && managedArtifactsAbsent) return "no_change";
+    if (action === "stop" && detection.owned) return detection.running ? "ready" : "no_change";
+    return "conflict";
+  }
   if (detection.state === "unavailable") {
     if (action === "remove" && detection.owned) return "ready";
     if (action === "remove" && !detection.owned) return "no_change";
@@ -459,28 +647,58 @@ async function runCommand(file: string, args: string[]): Promise<{ code: number;
   }
 }
 
-async function goalBoardWebHealthCheck(): Promise<boolean> {
+async function goalBoardWebHealthCheck(expectedProcessId?: number): Promise<boolean> {
   try {
     const response = await fetch("http://127.0.0.1:4173/health", {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(1_000),
     });
     if (!response.ok) return false;
-    const body = await response.json() as { status?: unknown };
-    return body.status === "ok";
+    const body = await response.json() as {
+      status?: unknown;
+      process_id?: unknown;
+      service_process_id?: unknown;
+    };
+    return body.status === "ok"
+      && (expectedProcessId == null
+        || (body.service_process_id ?? body.process_id) === expectedProcessId);
   } catch {
     return false;
   }
+}
+
+async function goalBoardWebPortCheck(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port: 4173 });
+    let settled = false;
+    const finish = (occupied: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(occupied);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code !== "ECONNREFUSED");
+    });
+    socket.setTimeout(1_000, () => finish(true));
+  });
 }
 
 function commandError(action: string, result: { code: number; stderr: string }): GoalBoardWebServiceError {
   return new GoalBoardWebServiceError("service.command_failed", `launchctl ${action}失败（${result.code}）：${result.stderr.trim() || "未知错误"}`);
 }
 
-function launchAgentIsRunning(result: { code: number; stdout: string }): boolean {
-  if (result.code !== 0) return false;
-  return /(?:^|\n)\s*state\s*=\s*running\s*(?:\n|$)/i.test(result.stdout)
-    || /(?:^|\n)\s*pid\s*=\s*\d+\s*(?:\n|$)/i.test(result.stdout);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function launchAgentProcessId(result: { code: number; stdout: string }): number | null {
+  if (result.code !== 0) return null;
+  const match = result.stdout.match(/(?:^|\n)\s*pid\s*=\s*(\d+)\s*(?:\n|$)/i);
+  if (!match) return null;
+  const processId = Number(match[1]);
+  return Number.isSafeInteger(processId) && processId > 0 ? processId : null;
 }
 
 function delay(milliseconds: number): Promise<void> {

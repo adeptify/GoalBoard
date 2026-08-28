@@ -252,6 +252,14 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
     let token: string;
     try {
       token = controlTokenFrom(await waitForWeb(origin, web));
+      const health = await (await fetch(`${origin}/health`)).json() as {
+        status: string;
+        process_id?: number;
+        service_process_id?: number;
+      };
+      assert.equal(health.status, "ok");
+      assert.ok(Number.isInteger(health.process_id));
+      assert.equal(health.service_process_id, web.pid);
       const diagnostics = await (await fetch(`${origin}/api/settings/diagnostics`)).json() as {
         installation_state: string;
         version: string;

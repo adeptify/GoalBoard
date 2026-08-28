@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,6 +132,29 @@ function webFixture() {
   seedDemoBoard(databasePath);
   return { databasePath };
 }
+
+test("Web health identifies the process serving the response", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-health-"));
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const health = await (await webFetch(`http://127.0.0.1:${address.port}/health`)).json() as {
+      status: string;
+      process_id?: number;
+      service_process_id?: number;
+    };
+    assert.equal(health.status, "ok");
+    assert.equal(health.process_id, process.pid);
+    assert.equal(health.service_process_id, process.pid);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    rmSync(homeDirectory, { recursive: true, force: true });
+  }
+});
 
 test("Web View cache follows canonical Board events instead of SQLite file lifecycle", () => {
   const { databasePath } = webFixture();
@@ -1707,6 +1730,7 @@ test("Web diagnostics previews and confirms the same managed Web service lifecyc
     userHomeDirectory: userHome,
     platform: "darwin",
     uid: 501,
+    async portCheck() { return false; },
     async healthCheck() { return healthy; },
     async runCommand(_file, args) {
       if (args[0] === "print") return { code: loaded ? 0 : 113, stdout: loaded ? "state = running\npid = 4242\n" : "", stderr: loaded ? "" : "not found" };

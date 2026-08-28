@@ -587,6 +587,11 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.end(JSON.stringify(value));
 }
 
+function serviceProcessId(): number {
+  const inherited = Number(process.env.GOALBOARD_WEB_SERVICE_PROCESS_ID);
+  return Number.isSafeInteger(inherited) && inherited > 0 ? inherited : process.pid;
+}
+
 function ptyClientFilePath(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -1638,7 +1643,13 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/health") {
-          sendJson(response, 200, { status: "ok", project_count: resolved.projects.length, desktop_tui: true });
+          sendJson(response, 200, {
+            status: "ok",
+            process_id: process.pid,
+            service_process_id: serviceProcessId(),
+            project_count: resolved.projects.length,
+            desktop_tui: true,
+          });
           return;
         }
         if (request.method === "GET" && url.pathname === "/") {
@@ -1824,7 +1835,13 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/health") {
-          sendJson(response, 200, { status: "ok", board_id: options.boardId, desktop_tui: true });
+          sendJson(response, 200, {
+            status: "ok",
+            process_id: process.pid,
+            service_process_id: serviceProcessId(),
+            board_id: options.boardId,
+            desktop_tui: true,
+          });
           return;
         }
         if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {

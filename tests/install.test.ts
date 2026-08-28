@@ -382,6 +382,24 @@ test("all installed launchers keep running after the installation source is dele
   });
 });
 
+test("only the bundled Web launcher exports its LaunchAgent process identity", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const bundledNode = join(source, "runtime", "node");
+    await mkdir(join(source, "runtime"), { recursive: true });
+    await copyFile(process.execPath, bundledNode);
+    await chmod(bundledNode, 0o755);
+    const result = await installGoalBoardHome({
+      homeDirectory: join(directory, "home", ".goalboard"),
+      sourceDirectory: source,
+    });
+
+    const webLauncher = await readFile(result.launchers.web, "utf8");
+    assert.match(webLauncher, /exec \/usr\/bin\/env GOALBOARD_WEB_SERVICE_PROCESS_ID=\$\$/);
+    assert.doesNotMatch(await readFile(result.launchers.cli, "utf8"), /GOALBOARD_WEB_SERVICE_PROCESS_ID/);
+    assert.doesNotMatch(await readFile(result.launchers.mcp, "utf8"), /GOALBOARD_WEB_SERVICE_PROCESS_ID/);
+  });
+});
 test("a bundled Node runtime produces standalone launchers without a system Node PATH", async () => {
   await withTemporaryDirectory(async (directory) => {
     const source = await fixtureSource(directory, "1.0.0");
