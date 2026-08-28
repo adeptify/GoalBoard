@@ -27,7 +27,7 @@ accepted Contract 不原地改版本。后续新需求创建新的 Candidate Goa
 
 ## Runtime 工作流
 
-统一 GoalBoard Skill 被用户调用后，先解析可选 Session ID 与当前 workspace：同一 Session 已绑定时恢复连接；否则把该目录以前明确用过的项目作为候选，并在当前对话询问，即使只有一个候选也不自动连接。用户明确选择后才调用 `context-bind`；有 Session ID 时保存本 Session 选择，没有时只记录 workspace 历史并让当前 MCP 调用流继续。把项目设为目录默认是另一项明确决定，只有传入 `binding_scope=workspace_default` 后，新 Session 才自动恢复。新建、候选拒绝、切换、Session 解绑、workspace 解除关联和项目删除都有各自的确认。项目删除仍先保护有效 Claim 和未结束 Run。这个解析不会在 Runtime 启动或普通对话时后台发生。
+统一 GoalBoard Skill 被用户调用后，先解析可选 Session ID 与当前 workspace：同一 Session 已绑定时恢复连接；否则把该目录以前明确用过的项目作为候选。目录和候选本身永远不会自动授权连接，即使只有一个候选；但若当前用户消息已经明确要求用 GoalBoard 连接或推进一个已命名项目，且返回的现有项目中只有一个无歧义匹配，Skill 会直接调用 `context-bind`，不要求用户重复选择。其他情况才在当前对话询问。有 Session ID 时保存本 Session 选择，没有时只记录 workspace 历史并让当前 MCP 调用流继续。把项目设为目录默认是另一项明确决定，只有传入 `binding_scope=workspace_default` 后，新 Session 才自动恢复。新建、候选拒绝、切换、Session 解绑、workspace 解除关联和项目删除都有各自的确认。项目删除仍先保护有效 Claim 和未结束 Run。这个解析不会在 Runtime 启动或普通对话时后台发生。
 
 Skill 的正常回复先用用户当前语言说明“我理解了什么、为什么还要确认这一点、接下来只问或做什么”，不会把 MCP 工具名和内部 ID 当作回答。新想法、已有 Draft 恢复和方向变化会显示可修改的结构化 checkpoint，明确区分用户已确认事实、可查项目事实、Runtime 假设和建议；每个实质回答先写入 dialogue turn，再继续下一问。提案就绪时用可读 Goal Tree 汇总结果、非目标、关系依赖、叶子验收、风险和确认后的状态，用户可以整份决定或点名修改条目。
 

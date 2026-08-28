@@ -937,7 +937,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_resolve",
     description:
-      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；未绑定时返回当前对话应让用户选择或创建项目的结果。返回 suggested 时必须向用户展示候选项目名和通用原因并询问是否绑定；返回 unbound 时必须展示项目列表并询问选择或新建；任何情况下都不要自动绑定或猜测项目。",
+      "由统一 GoalBoard Skill 显式解析当前 Runtime 宿主提供的稳定工作入口；本工具只读，候选、目录和历史本身都不授权绑定。若用户当前消息已经明确要求用 GoalBoard 连接或推进一个已命名项目，且返回的现有项目中只有一个与该指代无歧义匹配，Skill 应直接调用 context_bind，不要让用户重复确认；否则，suggested 时展示候选并询问，unbound 时展示项目列表并询问选择或新建。仅提到项目、含糊表达或宿主线索都不能当成选择。",
     inputSchema: {
       type: "object",
       properties: {},

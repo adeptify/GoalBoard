@@ -1315,7 +1315,10 @@ describe("mcp server", () => {
       };
       assert.equal(unbound.status, "unbound");
       assert.equal(unbound.reason, "unknown_context");
-      assert.equal(unbound.next_action, "ask_user_to_select_or_create");
+      assert.equal(
+        unbound.next_action,
+        "use_explicit_existing_selection_or_ask_user_to_select_or_create",
+      );
       assert.equal(unbound.connection, null);
       assert.deepEqual(unbound.available_projects.map((project) => project.project_id).sort(), [
         first.project_id,
@@ -1625,7 +1628,10 @@ describe("mcp server", () => {
         suggested_projects: Array<{ project_id: string; reasons: string[] }>;
       };
       assert.equal(suggested.status, "suggested");
-      assert.equal(suggested.next_action, "ask_user_to_confirm_suggestion");
+      assert.equal(
+        suggested.next_action,
+        "use_explicit_existing_selection_or_ask_user_to_confirm_suggestion",
+      );
       assert.equal(suggested.connection, null);
       assert.deepEqual(suggested.suggested_projects.map((project) => project.project_id), [
         primary.project_id,
