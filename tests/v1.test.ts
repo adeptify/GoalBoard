@@ -6340,6 +6340,339 @@ test("unified Available lets the Runtime choose across clarification, execution,
   store.close();
 });
 
+test("needs_changes reopens execution until a newer executor run completes", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "review-rework");
+
+  const firstExecution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    actor_id: "runtime-executor-first",
+    role: "executor",
+    idempotency_key: "review-rework-execute-first",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: firstExecution.run!.run_id,
+    actor_id: "runtime-executor-first",
+    state: "completed",
+    idempotency_key: "review-rework-execute-first-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: firstExecution.claim!.claim_id,
+    actor_id: "runtime-executor-first",
+    reason: "交给自检",
+    idempotency_key: "review-rework-execute-first-release",
+  });
+
+  const obligation = store
+    .snapshot("board-1")
+    .review_obligations.find((item) => item.goal_id === "review-rework" && item.role === "self_verifier")!;
+  const reviewRun = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    actor_id: "runtime-reviewer",
+    role: "self_verifier",
+    idempotency_key: "review-rework-review-select",
+  });
+  const feedback = coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    obligation_id: obligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    verdict: "needs_changes",
+    reasoning: "已完成的局部结果可保留，但整体 Goal 仍需继续执行",
+    idempotency_key: "review-rework-needs-changes",
+  }).review;
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: reviewRun.run!.run_id,
+    actor_id: "runtime-reviewer",
+    state: "completed",
+    idempotency_key: "review-rework-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: reviewRun.claim!.claim_id,
+    actor_id: "runtime-reviewer",
+    reason: "退回继续执行",
+    idempotency_key: "review-rework-review-release",
+  });
+
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
+    "execution_pending",
+  );
+  assert.deepEqual(
+    coordinator
+      .queryAvailable({ board_id: "board-1", actor_id: "runtime-executor-second" })
+      .available
+      .filter((item) => item.goal.goal_id === "review-rework")
+      .map((item) => [item.next_action, item.role]),
+    [["execute", "executor"]],
+  );
+  assert.equal(
+    store.snapshot("board-1").reviews.find((item) => item.review_id === feedback.review_id)?.verdict,
+    "needs_changes",
+  );
+
+  const secondExecution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    actor_id: "runtime-executor-second",
+    role: "executor",
+    idempotency_key: "review-rework-execute-second",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: secondExecution.run!.run_id,
+    actor_id: "runtime-executor-second",
+    state: "completed",
+    idempotency_key: "review-rework-execute-second-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: secondExecution.claim!.claim_id,
+    actor_id: "runtime-executor-second",
+    reason: "重新交给自检",
+    idempotency_key: "review-rework-execute-second-release",
+  });
+
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
+    "review_pending",
+  );
+  assert.deepEqual(
+    coordinator
+      .queryAvailable({ board_id: "board-1", actor_id: "runtime-reviewer-second" })
+      .available
+      .filter((item) => item.goal.goal_id === "review-rework")
+      .map((item) => [item.next_action, item.role]),
+    [["review", "self_verifier"]],
+  );
+  store.close();
+});
+
+test("needs_changes starts a fresh review round without carrying earlier passes", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "review-round-reset");
+  coordinator.setPolicy(
+    "board-1",
+    {
+      goal_id: "review-round-reset",
+      policy: { cross_reviewers: 2 },
+      reason: "同时验证自检重开和多人复核票数不会跨返工轮次复用",
+    },
+    { actor_id: "user-1", idempotency_key: "review-round-reset-policy" },
+  );
+
+  const firstExecution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-author-first",
+    role: "executor",
+    idempotency_key: "review-round-reset-execute-first",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: firstExecution.run!.run_id,
+    actor_id: "runtime-author-first",
+    state: "completed",
+    idempotency_key: "review-round-reset-execute-first-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: firstExecution.claim!.claim_id,
+    actor_id: "runtime-author-first",
+    reason: "进入第一轮复核",
+    idempotency_key: "review-round-reset-execute-first-release",
+  });
+
+  const initialObligations = store
+    .snapshot("board-1")
+    .review_obligations.filter((item) => item.goal_id === "review-round-reset");
+  const selfObligation = initialObligations.find((item) => item.role === "self_verifier")!;
+  const crossObligation = initialObligations.find((item) => item.role === "cross_reviewer")!;
+
+  const selfReview = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-self-reviewer",
+    role: "self_verifier",
+    idempotency_key: "review-round-reset-self-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    obligation_id: selfObligation.obligation_id,
+    actor_id: "runtime-self-reviewer",
+    verdict: "pass",
+    reasoning: "第一轮自检通过",
+    idempotency_key: "review-round-reset-self-pass",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: selfReview.run!.run_id,
+    actor_id: "runtime-self-reviewer",
+    state: "completed",
+    idempotency_key: "review-round-reset-self-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: selfReview.claim!.claim_id,
+    actor_id: "runtime-self-reviewer",
+    reason: "自检完成",
+    idempotency_key: "review-round-reset-self-release",
+  });
+
+  const firstCrossReview = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-cross-reviewer-one",
+    role: "cross_reviewer",
+    idempotency_key: "review-round-reset-cross-one-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    obligation_id: crossObligation.obligation_id,
+    actor_id: "runtime-cross-reviewer-one",
+    verdict: "pass",
+    reasoning: "第一位交叉复核者在第一轮通过",
+    idempotency_key: "review-round-reset-cross-one-pass",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: firstCrossReview.run!.run_id,
+    actor_id: "runtime-cross-reviewer-one",
+    state: "completed",
+    idempotency_key: "review-round-reset-cross-one-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: firstCrossReview.claim!.claim_id,
+    actor_id: "runtime-cross-reviewer-one",
+    reason: "等待第二位交叉复核者",
+    idempotency_key: "review-round-reset-cross-one-release",
+  });
+
+  const changeReview = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-cross-reviewer-two",
+    role: "cross_reviewer",
+    idempotency_key: "review-round-reset-cross-two-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    obligation_id: crossObligation.obligation_id,
+    actor_id: "runtime-cross-reviewer-two",
+    verdict: "needs_changes",
+    reasoning: "发现仍需返工，上一轮所有通过结果都需要在新产物上重验",
+    idempotency_key: "review-round-reset-cross-two-needs-changes",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: changeReview.run!.run_id,
+    actor_id: "runtime-cross-reviewer-two",
+    state: "completed",
+    idempotency_key: "review-round-reset-cross-two-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: changeReview.claim!.claim_id,
+    actor_id: "runtime-cross-reviewer-two",
+    reason: "退回返工",
+    idempotency_key: "review-round-reset-cross-two-release",
+  });
+
+  assert.deepEqual(
+    Object.fromEntries(
+      store
+        .snapshot("board-1")
+        .review_obligations.filter((item) => item.goal_id === "review-round-reset")
+        .map((item) => [item.role, item.state]),
+    ),
+    { self_verifier: "pending", cross_reviewer: "pending" },
+  );
+  assert.throws(
+    () =>
+      coordinator.submitReview({
+        board_id: "board-1",
+        goal_id: "review-round-reset",
+        obligation_id: selfObligation.obligation_id,
+        actor_id: "runtime-self-reviewer",
+        verdict: "pass",
+        reasoning: "不能在返工执行完成前沿用旧产物复核",
+        idempotency_key: "review-round-reset-premature-pass",
+      }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "review.rework_pending",
+  );
+
+  const secondExecution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-author-second",
+    role: "executor",
+    idempotency_key: "review-round-reset-execute-second",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: secondExecution.run!.run_id,
+    actor_id: "runtime-author-second",
+    state: "completed",
+    idempotency_key: "review-round-reset-execute-second-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: secondExecution.claim!.claim_id,
+    actor_id: "runtime-author-second",
+    reason: "进入返工后的新一轮复核",
+    idempotency_key: "review-round-reset-execute-second-release",
+  });
+
+  const freshCrossReview = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-cross-reviewer-three",
+    role: "cross_reviewer",
+    idempotency_key: "review-round-reset-cross-three-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    obligation_id: crossObligation.obligation_id,
+    actor_id: "runtime-cross-reviewer-three",
+    verdict: "pass",
+    reasoning: "返工后的第一位交叉复核者通过",
+    idempotency_key: "review-round-reset-cross-three-pass",
+  });
+  assert.equal(
+    store
+      .snapshot("board-1")
+      .review_obligations.find((item) => item.obligation_id === crossObligation.obligation_id)?.state,
+    "pending",
+  );
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: freshCrossReview.run!.run_id,
+    actor_id: "runtime-cross-reviewer-three",
+    state: "completed",
+    idempotency_key: "review-round-reset-cross-three-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: freshCrossReview.claim!.claim_id,
+    actor_id: "runtime-cross-reviewer-three",
+    reason: "仍等待返工后的第二位交叉复核者",
+    idempotency_key: "review-round-reset-cross-three-release",
+  });
+  store.close();
+});
+
 test("Available brings an unfinished parent back to the user after its current children finish", () => {
   const { store, coordinator } = fixture();
   coordinator.createGoal(

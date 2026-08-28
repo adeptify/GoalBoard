@@ -4385,6 +4385,12 @@ export class GoalBoardCoordinator {
       if (!latestWorkRun || asText(latestWorkRun.state) !== "completed") {
         throw new GoalBoardV1Error("review.execution_not_completed", "执行 Run 尚未完成，不能提交 Review");
       }
+      if (this.hasPostExecutionNeedsChanges(input.board_id, input.goal_id)) {
+        throw new GoalBoardV1Error(
+          "review.rework_pending",
+          "Review 已要求返工，必须先完成新的执行 Run 再重新复核",
+        );
+      }
       const role = asText(obligation.role);
       if (role === "human_approver" && input.actor_kind !== "user") {
         throw new GoalBoardV1Error(
@@ -4426,16 +4432,6 @@ export class GoalBoardCoordinator {
           input.reasoning.trim(),
           now,
         );
-      if (input.verdict === "pass") {
-        const passed = this.store.db
-          .prepare("SELECT COUNT(DISTINCT actor_id) AS count FROM reviews WHERE obligation_id = ? AND verdict = 'pass'")
-          .get(input.obligation_id) as Row;
-        if (Number(passed.count ?? 0) >= Number(obligation.required_count ?? 0)) {
-          this.store.db
-            .prepare("UPDATE review_obligations SET state = 'satisfied' WHERE obligation_id = ?")
-            .run(input.obligation_id);
-        }
-      }
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -4447,6 +4443,38 @@ export class GoalBoardCoordinator {
         payload: { goal_id: input.goal_id, obligation_id: input.obligation_id, verdict: input.verdict },
         at: now,
       });
+      if (input.verdict === "needs_changes") {
+        this.store.db
+          .prepare("UPDATE review_obligations SET state = 'pending' WHERE goal_id = ? AND state = 'satisfied'")
+          .run(input.goal_id);
+      }
+      if (input.verdict === "pass") {
+        const passed = this.store.db
+          .prepare(`
+            SELECT COUNT(DISTINCT review.actor_id) AS count
+            FROM reviews review
+            JOIN events event
+              ON event.object_id = review.review_id
+             AND event.type = 'review.submitted'
+            WHERE review.obligation_id = ?
+              AND review.verdict = 'pass'
+              AND event.seq > COALESCE((
+                SELECT MAX(work_event.seq)
+                FROM events work_event
+                JOIN runs run ON run.run_id = work_event.object_id
+                WHERE work_event.board_id = ?
+                  AND work_event.type = 'run.completed'
+                  AND run.goal_id = ?
+                  AND run.role IN ('executor', 'revalidator')
+              ), 0)
+          `)
+          .get(input.obligation_id, input.board_id, input.goal_id) as Row;
+        if (Number(passed.count ?? 0) >= Number(obligation.required_count ?? 0)) {
+          this.store.db
+            .prepare("UPDATE review_obligations SET state = 'satisfied' WHERE obligation_id = ?")
+            .run(input.obligation_id);
+        }
+      }
       const review = this.readReview(reviewId);
       const outcome = { review, observed_event_cursor: cursor };
       this.remember(input.board_id, input.actor_id, "submit_review", input.idempotency_key, hash, outcome, now);
@@ -8253,7 +8281,8 @@ export class GoalBoardCoordinator {
       };
     }
 
-    if (pendingReviewObligations.length > 0 && reviewReady) {
+    const reworkRequested = this.hasPostExecutionNeedsChanges(boardId, goal.goal_id);
+    if (pendingReviewObligations.length > 0 && reviewReady && !reworkRequested) {
       const action = pendingReviewObligations
         .map((obligation) => this.reviewActionFor(obligation))
         .find((candidate): candidate is AvailableAction => candidate !== null);
@@ -8424,6 +8453,33 @@ export class GoalBoardCoordinator {
         )
         .at(-1)?.state ?? null
     );
+  }
+
+  private hasPostExecutionNeedsChanges(boardId: string, goalId: string): boolean {
+    const row = this.store.db
+      .prepare(`
+        SELECT
+          COALESCE((
+            SELECT MAX(event.seq)
+            FROM events event
+            JOIN reviews review ON review.review_id = event.object_id
+            WHERE event.board_id = ?
+              AND event.type = 'review.submitted'
+              AND review.goal_id = ?
+              AND review.verdict = 'needs_changes'
+          ), 0) AS latest_needs_changes_seq,
+          COALESCE((
+            SELECT MAX(event.seq)
+            FROM events event
+            JOIN runs run ON run.run_id = event.object_id
+            WHERE event.board_id = ?
+              AND event.type = 'run.completed'
+              AND run.goal_id = ?
+              AND run.role IN ('executor', 'revalidator')
+          ), 0) AS latest_work_completed_seq
+      `)
+      .get(boardId, goalId, boardId, goalId) as Row;
+    return Number(row.latest_needs_changes_seq) > Number(row.latest_work_completed_seq);
   }
 
   private workStatePhaseReasons(
