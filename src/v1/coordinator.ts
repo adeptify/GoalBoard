@@ -3109,13 +3109,23 @@ export class GoalBoardCoordinator {
       `);
       for (const item of proposal.items) {
         if (item.state !== "pending" && item.state !== "conflict") continue;
-        const conflicts = item.baseline_versions.flatMap((baseline) => {
+        const validationIssue = goalTreeProposalItemValidationIssues(item)[0];
+        const baselineConflicts = item.baseline_versions.flatMap((baseline) => {
           const current = this.proposalObjectVersion(input.board_id, baseline);
           return baseline.exists === current.exists && baseline.version === current.version
             ? []
             : [{ object: { object_type: baseline.object_type, object_id: baseline.object_id }, baseline, current }];
         });
-        const conflict = conflicts.length > 0 ? { objects: conflicts } : null;
+        const conflict = validationIssue
+          ? {
+              code: validationIssue.code,
+              field: validationIssue.field,
+              message: validationIssue.message,
+              recovery: validationIssue.recovery,
+            }
+          : baselineConflicts.length > 0
+            ? { objects: baselineConflicts }
+            : null;
         if (conflict) conflictItemIds.push(item.item_id);
         updateItem.run(conflict ? "conflict" : "pending", conflict ? sqliteJson(conflict) : null, now, item.item_id, proposalId);
       }
@@ -3127,7 +3137,7 @@ export class GoalBoardCoordinator {
         objectType: "goal_tree_proposal",
         objectId: proposalId,
         reason: conflictItemIds.length > 0
-          ? "当前 Runtime 检查到部分 Goal Tree 提案条目的基准已过期"
+          ? "当前 Runtime 检查到部分 Goal Tree 提案条目不再满足当前校验或基准"
           : "当前 Runtime 检查到 Goal Tree 提案的各条目基准仍有效",
         payload: {
           conflict_item_ids: conflictItemIds,
@@ -7564,6 +7574,34 @@ export class GoalBoardCoordinator {
       revisit_condition: String(payload.revisit_condition ?? ""),
       owner: String(payload.owner ?? ""),
     });
+    const requestedState = String(payload.state ?? "").trim();
+    if (requestedState && !RISK_STATES.has(requestedState as RiskRecord["state"])) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.risk_state_invalid",
+        `Risk 生命周期状态“${requestedState}”不受支持；mitigate 是 treatment，降低措施完成后应使用 state=resolved`,
+      );
+    }
+    if (item.operation === "create" && requestedState && requestedState !== "open") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.risk_state_invalid",
+        "新建 Risk 必须从 open 开始；后续状态变化应通过 update 并记录用户确认",
+      );
+    }
+    const previous = item.operation === "create"
+      ? undefined
+      : this.store.db
+          .prepare("SELECT * FROM risks WHERE board_id = ? AND risk_id = ?")
+          .get(boardId, riskId) as Row | undefined;
+    if (item.operation !== "create" && !previous) {
+      throw new GoalBoardV1Error("goal_tree_proposal.risk_not_found", "要更新的 Risk 不存在");
+    }
+    const previousState = previous ? asText(previous.state) as RiskRecord["state"] : null;
+    const state = (requestedState || previousState || "open") as RiskRecord["state"];
+    const previousGoalIds = previous
+      ? (this.store.db
+          .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
+          .all(riskId) as Row[]).map((row) => asText(row.goal_id))
+      : [];
     if (item.operation === "create") {
       this.store.db
         .prepare(`
@@ -7571,7 +7609,7 @@ export class GoalBoardCoordinator {
             risk_id, board_id, description, probability, impact,
             affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
             revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           riskId,
@@ -7586,6 +7624,7 @@ export class GoalBoardCoordinator {
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
+          state,
           at,
           at,
         );
@@ -7593,7 +7632,7 @@ export class GoalBoardCoordinator {
       const result = this.store.db
         .prepare(`
           UPDATE risks SET description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
+            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, state = ?, updated_at = ?
           WHERE board_id = ? AND risk_id = ?
         `)
         .run(
@@ -7607,6 +7646,7 @@ export class GoalBoardCoordinator {
           facts.blocking_mode,
           facts.revisit_condition,
           facts.owner,
+          state,
           at,
           boardId,
           riskId,
@@ -7616,6 +7656,25 @@ export class GoalBoardCoordinator {
     }
     const link = this.store.db.prepare("INSERT INTO goal_risks (goal_id, risk_id) VALUES (?, ?)");
     for (const goalId of facts.goal_ids) link.run(goalId, riskId);
+    if (previous) {
+      const wasInvalidating = asText(previous.blocking_mode) === "invalidate_on_trigger" && previousState === "triggered";
+      const isInvalidating = facts.blocking_mode === "invalidate_on_trigger" && state === "triggered";
+      const nextInvalidated = new Set(isInvalidating ? facts.goal_ids : []);
+      if (wasInvalidating) {
+        for (const goalId of previousGoalIds.filter((candidate) => !nextInvalidated.has(candidate))) {
+          this.store.db
+            .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
+            .run(at, goalId);
+        }
+      }
+      if (isInvalidating) {
+        for (const goalId of facts.goal_ids) {
+          this.store.db
+            .prepare("UPDATE goals SET validity_state = 'invalidated', updated_at = ? WHERE goal_id = ?")
+            .run(at, goalId);
+        }
+      }
+    }
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId,
@@ -7624,7 +7683,15 @@ export class GoalBoardCoordinator {
       objectType: "risk",
       objectId: riskId,
       reason: reasonText,
-      payload: { proposal_item_id: item.item_id, goal_ids: facts.goal_ids, blocking_mode: facts.blocking_mode },
+      payload: {
+        proposal_item_id: item.item_id,
+        previous_goal_ids: previousGoalIds,
+        goal_ids: facts.goal_ids,
+        previous_blocking_mode: previous ? asText(previous.blocking_mode) : null,
+        blocking_mode: facts.blocking_mode,
+        previous_state: previousState,
+        state,
+      },
       at,
     });
     return { object_type: "risk", object_id: riskId };

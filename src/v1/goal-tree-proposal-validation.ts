@@ -10,8 +10,9 @@ export interface GoalTreeProposalItemValidationIssue {
     | "goal_tree_proposal.risk_goal_required"
     | "goal_tree_proposal.risk_required_field_missing"
     | "goal_tree_proposal.risk_treatment_invalid"
-    | "goal_tree_proposal.risk_blocking_mode_invalid";
-  field: "goal_ids" | "risk_facts" | "treatment" | "blocking_mode";
+    | "goal_tree_proposal.risk_blocking_mode_invalid"
+    | "goal_tree_proposal.risk_state_invalid";
+  field: "goal_ids" | "risk_facts" | "treatment" | "blocking_mode" | "state";
   message: string;
   recovery: string;
   missing_fields?: string[];
@@ -19,6 +20,7 @@ export interface GoalTreeProposalItemValidationIssue {
 
 const RISK_TREATMENTS = new Set(["accept", "mitigate", "avoid", "defer"]);
 const RISK_BLOCKING_MODES = new Set(["none", "claim", "completion", "invalidate_on_trigger"]);
+const RISK_STATES = new Set(["open", "triggered", "resolved", "accepted", "expired"]);
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -76,6 +78,22 @@ export function goalTreeProposalItemValidationIssues(
       field: "blocking_mode",
       message: "“对 Goal 的影响”不是 GoalBoard 支持的选项。",
       recovery: "请退回方案，让 Runtime 重新选择是否阻止开始、完成或在发生时让 Goal 失效。",
+    });
+  }
+  const state = text(item.payload.state);
+  if (state && !RISK_STATES.has(state)) {
+    issues.push({
+      code: "goal_tree_proposal.risk_state_invalid",
+      field: "state",
+      message: `Risk 生命周期状态“${state}”不受支持；支持 open、triggered、resolved、accepted、expired。mitigate 是 treatment，不是 state；降低措施完成后应使用 resolved。`,
+      recovery: "请退回方案，让 Runtime 区分处理策略与生命周期状态后重新提交。",
+    });
+  } else if (item.operation === "create" && state && state !== "open") {
+    issues.push({
+      code: "goal_tree_proposal.risk_state_invalid",
+      field: "state",
+      message: `新建 Risk 必须从 open 开始，不能直接创建为“${state}”。`,
+      recovery: "请先创建 open Risk；后续状态变化应通过 update 并记录用户确认。",
     });
   }
   return issues;

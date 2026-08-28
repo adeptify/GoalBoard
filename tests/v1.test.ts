@@ -2888,6 +2888,240 @@ test("Goal Tree proposal rejects an invalid Risk before it enters the decision q
   store.close();
 });
 
+test("Goal Tree Risk updates reject unsupported lifecycle states before user decision", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "risk-state-target");
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "risk-state-validation",
+      goal_ids: ["risk-state-target"],
+      description: "来源覆盖仍可能不足",
+      probability: "medium",
+      impact: "机会判断可能偏差",
+      affected_surfaces: ["opportunity-pool"],
+      trigger: "样本没有覆盖关键来源",
+      treatment: "mitigate",
+      treatment_plan: "补齐样本并复核覆盖结果",
+      blocking_mode: "completion",
+      revisit_condition: "覆盖检查通过后关闭风险",
+      owner: "runtime-risk-validation",
+    },
+    { actor_id: "user-1", idempotency_key: "risk-state-validation-add" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-risk-validation",
+    rough_idea: "确认已有 Risk 的处置结果。",
+    goal_id: "risk-state-validation-context",
+    idempotency_key: "risk-state-validation-dialogue",
+  });
+  const proposalCountBefore = store.snapshot("board-1").goal_tree_proposals.length;
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-validation",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "risk-state-validation-context",
+      summary: "错误示例：把处理策略误写成不存在的 Risk 生命周期状态。",
+      items: [goalTreeProposalItem({
+        item_id: "unsupported-risk-state",
+        kind: "risk",
+        operation: "update",
+        payload: {
+          risk_id: "risk-state-validation",
+          goal_ids: ["risk-state-target"],
+          description: "来源覆盖仍可能不足",
+          probability: "medium",
+          impact: "机会判断可能偏差",
+          affected_surfaces: ["opportunity-pool"],
+          trigger: "样本没有覆盖关键来源",
+          treatment: "mitigate",
+          treatment_plan: "补齐样本并复核覆盖结果",
+          blocking_mode: "completion",
+          revisit_condition: "覆盖检查通过后关闭风险",
+          owner: "runtime-risk-validation",
+          state: "mitigated",
+        },
+        object_type: "risk",
+        object_id: "risk-state-validation",
+      })],
+      idempotency_key: "unsupported-risk-state-proposal",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.risk_state_invalid");
+      assert.match(error.message, /mitigated/);
+      assert.match(error.message, /resolved/);
+      return true;
+    },
+  );
+
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, proposalCountBefore);
+  assert.equal(coordinator.readGoalContract("board-1", "risk-state-target").risks[0]?.state, "open");
+  store.close();
+});
+
+test("a confirmed Risk update materializes a supported state and clears the completion blocker", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "risk-completion-target");
+  const riskFacts = {
+    risk_id: "risk-completion-state",
+    goal_ids: ["risk-completion-target"],
+    description: "来源覆盖仍可能不足",
+    probability: "medium",
+    impact: "机会判断可能偏差",
+    affected_surfaces: ["opportunity-pool"],
+    trigger: "样本没有覆盖关键来源",
+    treatment: "mitigate" as const,
+    treatment_plan: "补齐样本并复核覆盖结果",
+    blocking_mode: "completion" as const,
+    revisit_condition: "覆盖检查通过后关闭风险",
+    owner: "runtime-risk-closure",
+  };
+  coordinator.addRisk(
+    "board-1",
+    riskFacts,
+    { actor_id: "user-1", idempotency_key: "risk-completion-state-add" },
+  );
+  const before = coordinator.evaluateLeafCompletion({
+    board_id: "board-1",
+    goal_id: "risk-completion-target",
+    actor_id: "runtime-risk-closure",
+    idempotency_key: "risk-completion-before-update",
+  });
+  assert.ok(before.reasons.some((reason) => reason.code === "risk.blocks_completion"));
+
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-risk-closure",
+    rough_idea: "确认来源覆盖风险已经按计划处置。",
+    goal_id: "risk-completion-context",
+    idempotency_key: "risk-completion-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-risk-closure",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "risk-completion-context",
+    summary: "来源覆盖检查已经通过，建议把现有 completion Risk 标为 resolved。",
+    items: [goalTreeProposalItem({
+      item_id: "resolve-completion-risk",
+      kind: "risk",
+      operation: "update",
+      payload: { ...riskFacts, state: "resolved" },
+      object_type: "risk",
+      object_id: "risk-completion-state",
+    })],
+    idempotency_key: "risk-completion-state-proposal",
+  }).proposal;
+  const decided = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-risk-closure",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://risk-completion",
+      message_ref: "message://risk-completion-confirm",
+    },
+    decisions: [{
+      item_id: "resolve-completion-risk",
+      decision: "confirm",
+      reason: "确认覆盖检查通过，这条风险已经解决。",
+    }],
+    idempotency_key: "risk-completion-state-decide",
+  });
+
+  assert.deepEqual(decided.applied_item_ids, ["resolve-completion-risk"]);
+  assert.equal(decided.proposal.items[0]?.materialized_objects[0]?.object_id, "risk-completion-state");
+  assert.equal(coordinator.readGoalContract("board-1", "risk-completion-target").risks[0]?.state, "resolved");
+  const after = coordinator.evaluateLeafCompletion({
+    board_id: "board-1",
+    goal_id: "risk-completion-target",
+    actor_id: "runtime-risk-closure",
+    idempotency_key: "risk-completion-after-update",
+  });
+  assert.equal(after.reasons.some((reason) => reason.code === "risk.blocks_completion"), false);
+  const available = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-risk-closure-next",
+  }).available.find((entry) => entry.goal.goal_id === "risk-completion-target");
+  assert.deepEqual(available?.risk_summary, []);
+  store.close();
+});
+
+test("checking a pending Risk proposal exposes an unsupported lifecycle state as a conflict", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "risk-state-check-target");
+  const riskFacts = {
+    risk_id: "risk-state-check",
+    goal_ids: ["risk-state-check-target"],
+    description: "来源覆盖仍可能不足",
+    probability: "medium",
+    impact: "机会判断可能偏差",
+    affected_surfaces: ["opportunity-pool"],
+    trigger: "样本没有覆盖关键来源",
+    treatment: "mitigate" as const,
+    treatment_plan: "补齐样本并复核覆盖结果",
+    blocking_mode: "completion" as const,
+    revisit_condition: "覆盖检查通过后关闭风险",
+    owner: "runtime-risk-check",
+  };
+  coordinator.addRisk(
+    "board-1",
+    riskFacts,
+    { actor_id: "user-1", idempotency_key: "risk-state-check-add" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-risk-check",
+    rough_idea: "确认已有 Risk 的处置结果。",
+    goal_id: "risk-state-check-context",
+    idempotency_key: "risk-state-check-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-risk-check",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "risk-state-check-context",
+    summary: "来源覆盖检查已经通过，建议把现有 Risk 标为 resolved。",
+    items: [goalTreeProposalItem({
+      item_id: "risk-state-check-item",
+      kind: "risk",
+      operation: "update",
+      payload: { ...riskFacts, state: "resolved" },
+      object_type: "risk",
+      object_id: "risk-state-check",
+    })],
+    idempotency_key: "risk-state-check-submit",
+  }).proposal;
+
+  // Simulate a proposal persisted by an older Runtime that accepted the
+  // unsupported `mitigated` value before this validation existed.
+  store.db
+    .prepare("UPDATE goal_tree_proposal_items SET payload_json = ? WHERE proposal_id = ? AND item_id = ?")
+    .run(
+      JSON.stringify({ ...riskFacts, state: "mitigated" }),
+      proposal.proposal_id,
+      "risk-state-check-item",
+    );
+
+  const checked = coordinator.checkGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-risk-check",
+    idempotency_key: "risk-state-check-check",
+  });
+  assert.deepEqual(checked.conflict_item_ids, ["risk-state-check-item"]);
+  assert.equal(checked.proposal.items[0]?.state, "conflict");
+  assert.equal(checked.proposal.items[0]?.conflict?.code, "goal_tree_proposal.risk_state_invalid");
+  assert.equal(coordinator.readGoalContract("board-1", "risk-state-check-target").risks[0]?.state, "open");
+  store.close();
+});
+
 test("Goal Tree proposals require one primary result and split work that passes two independence signals", () => {
   const { store, coordinator } = fixture();
   const dialogue = coordinator.startDraftDialogue({

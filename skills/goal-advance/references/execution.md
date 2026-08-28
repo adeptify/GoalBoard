@@ -15,6 +15,8 @@ GoalBoard does not dispatch one mandatory next task. The Runtime chooses among e
 
 When Available returns a non-null `parallel_suggestion`, proactively explain the concrete value of splitting those assignments across the returned abstract Runtime slots and ask whether the user wants that split. The suggestion is advisory only: do not start another Runtime, select or Claim any assignment, or imply that GoalBoard has dispatched work. After the user agrees, every participating Runtime must re-read Available with its real capabilities and individually call `goalboard_v1_select_goal` for its assigned Goal. If the suggestion is null, an Impact is unconfirmed, or the fresh read shows a conflict, do not claim that parallel execution is safe.
 
+`available` and `explain(role=executor)` answer whether the current execution action can be claimed. They do not certify that `complete` will pass: a Risk with `blocking_mode=completion` deliberately allows more execution while still blocking completion. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
+
 For a named Goal absent from Available, call `goalboard_v1_explain` and report its actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass the blocker with legacy `ready → claim → run_start`; the normal path is `available → select_goal`.
 
 If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推进.” Opening the panel itself is not permission to select it.

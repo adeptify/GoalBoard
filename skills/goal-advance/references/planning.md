@@ -236,6 +236,8 @@ A ready leaf has no unresolved decision or independent deliverable, covers every
 
 Use one `goalboard_v1_goal_tree_propose` for the complete change set, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Include parent and child Goal/Contract changes, `part_of`, `depends_on`, Risks, Policy, Candidates, and Rewires where applicable.
 
+For a Risk item, keep treatment strategy and lifecycle state separate. `treatment` is one of `accept | mitigate | avoid | defer`; optional `state` is one of `open | triggered | resolved | accepted | expired`. There is no `state=mitigated`: after mitigation work is actually complete, propose `state=resolved`. New Risks start `open`. After a confirmed Risk update, re-read the canonical Contract and verify its state before claiming that a completion blocker is cleared.
+
 To promote an existing pending Candidate, do not create a second Candidate or call a separate decision path. Add one `kind=candidate`, `operation=update` item to the unified Proposal:
 
 - `payload.candidate_id` names the existing Candidate;

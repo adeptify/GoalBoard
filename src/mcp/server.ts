@@ -74,7 +74,11 @@ const GOAL_TREE_ITEM = {
       enum: ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
     },
     operation: { type: "string", enum: ["create", "update", "deactivate"] },
-    payload: { type: "object" },
+    payload: {
+      type: "object",
+      description:
+        "条目正文。kind=risk 时，treatment 只能是 accept|mitigate|avoid|defer；可选 state 只能是 open|triggered|resolved|accepted|expired。mitigate 是处理策略，不是生命周期状态；措施完成后使用 state=resolved。",
+    },
     source_refs: V1_STRING_ARRAY,
     reason: V1_STRING,
     confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -268,7 +272,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回当前 Runtime 可领取并推进的统一 Available 集合，覆盖澄清、执行、复核和重新验证；这表示当前动作具备领取条件，不表示 complete 的验收或 completion Risk 门禁已经通过，执行前后仍需读取 risk_summary/Contract。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {
@@ -323,7 +327,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "goalboard_v1_explain",
-    description: "解释一个 Goal 为什么现在可做或被什么阻塞。",
+    description: "解释一个 Goal 的当前动作为什么可领取或被什么阻塞；role=executor 的 ready 只表示执行 Claim 就绪，不表示 complete 的验收或 completion Risk 门禁已经通过。",
     inputSchema: {
       type: "object",
       properties: {
@@ -447,7 +451,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
