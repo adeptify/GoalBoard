@@ -14,6 +14,7 @@ Use GoalBoard only after the user explicitly invokes it for the current work. St
 - Creating, switching, unbinding, deleting, confirming a Proposal, and recoverably trashing or restoring a Goal require the specific user authority described by the relevant tool. Do not turn vague approval into another operation.
 - Web is optional. Starting it does not select a project or authorize Goal changes. Use the service CLI only for an explicit request to start or open Web.
 - `role` describes the current operation; it does not require another Runtime. Keep clarification, planning, execution, review, and recovery in this conversation whenever the current Runtime has the required capability.
+- Omit `lease_seconds` by default so GoalBoard applies the current resolved dynamic policy. Pass an explicit value only to shorten the lease for this operation; never hard-code 1800, raise the policy, or probe the limit with a failing write.
 - A Goal opened beside a Desktop Runtime is context, not a Claim. Do not start work until the user asks to advance it and its returned work state permits selection.
 
 Before the first GoalBoard write, read [references/protocol.md](references/protocol.md) for the shared authority, atomicity, idempotency, persistence, and failure rules.

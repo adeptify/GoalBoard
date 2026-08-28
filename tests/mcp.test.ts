@@ -191,6 +191,52 @@ describe("mcp server", () => {
     }
   });
 
+  it("exposes one dynamic optional lease contract on every Runtime claim entry", async () => {
+    const server = new GoalBoardServer();
+    const response = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/list",
+      params: {},
+    });
+    const tools = (response as {
+      result: {
+        tools: Array<{
+          name: string;
+          inputSchema: { properties?: Record<string, unknown>; required?: string[] };
+        }>;
+      };
+    }).result.tools;
+    const names = [
+      "goalboard_v1_claim",
+      "goalboard_v1_select_goal",
+      "goalboard_v1_draft_dialogue_start",
+      "goalboard_v1_draft_dialogue_resume",
+    ];
+
+    for (const name of names) {
+      const tool = tools.find((item) => item.name === name);
+      assert.ok(tool, name);
+      const lease = tool.inputSchema.properties?.lease_seconds as {
+        type?: string;
+        minimum?: number;
+        maximum?: number;
+        description?: string;
+      };
+      assert.equal(lease.type, "integer", name);
+      assert.equal(lease.minimum, 1, name);
+      assert.equal("maximum" in lease, false, name);
+      assert.match(lease.description ?? "", /通常省略.*当前动态策略/s, name);
+      assert.match(lease.description ?? "", /显式值.*缩短/s, name);
+      assert.equal(tool.inputSchema.required?.includes("lease_seconds"), false, name);
+    }
+
+    const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
+    assert.match(skill, /Omit `lease_seconds` by default/);
+    assert.match(skill, /resolved dynamic policy/);
+    assert.match(skill, /explicit value only to shorten/);
+  });
+
   it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {
     const skillRoot = path.join(ROOT, "skills/goal-advance");
     const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");

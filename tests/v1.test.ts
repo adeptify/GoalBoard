@@ -1536,6 +1536,76 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   store.close();
 });
 
+test("lease omission uses the resolved policy while over-limit Draft startup leaves no residue", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "lease-default");
+
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-default",
+    actor_id: "runtime-default",
+    role: "executor",
+    idempotency_key: "lease-default-select",
+  });
+  assert.equal(selected.allowed, true);
+  assert.equal(
+    (new Date(selected.claim!.expires_at).getTime() - new Date(selected.claim!.claimed_at).getTime()) / 1000,
+    1800,
+  );
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-default",
+    reason: "验证默认租约后释放",
+    idempotency_key: "lease-default-release",
+  });
+
+  const before = store.snapshot("board-1");
+  assert.throws(
+    () => coordinator.startDraftDialogue({
+      board_id: "board-1",
+      actor_id: "runtime-over-limit",
+      rough_idea: "验证超限租约不留下 Draft 或对话记录",
+      lease_seconds: 7200,
+      idempotency_key: "lease-over-limit-draft",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error
+      && error.code === "draft_dialogue.claim_denied"
+      && /1800/.test(error.message),
+  );
+  const after = store.snapshot("board-1");
+  assert.equal(after.goals.length, before.goals.length);
+  assert.equal(after.claims.length, before.claims.length);
+  assert.equal(after.runs.length, before.runs.length);
+  assert.equal(after.clarification_sessions.length, before.clarification_sessions.length);
+  assert.equal(after.clarification_turns.length, before.clarification_turns.length);
+  store.close();
+});
+
+test("a project dynamic lease policy can allow an explicit value above the default", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "lease-dynamic");
+  coordinator.setPolicy(
+    "board-1",
+    { policy: { max_lease_seconds: 3600 }, reason: "当前项目允许更长的受控执行窗口" },
+    { actor_id: "user-1", idempotency_key: "lease-dynamic-policy" },
+  );
+
+  const claim = coordinator.claimGoal({
+    board_id: "board-1",
+    goal_id: "lease-dynamic",
+    actor_id: "runtime-dynamic",
+    lease_seconds: 2400,
+    idempotency_key: "lease-dynamic-claim",
+  }).claim;
+  assert.ok(claim);
+  assert.equal(
+    (new Date(claim.expires_at).getTime() - new Date(claim.claimed_at).getTime()) / 1000,
+    2400,
+  );
+  store.close();
+});
+
 test("confirmed impact bindings prevent two active writers", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "writer-a");

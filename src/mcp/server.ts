@@ -31,6 +31,12 @@ const V1_CLAIM_ROLE = {
 
 const V1_STRING = { type: "string" };
 const V1_STRING_ARRAY = { type: "array", items: V1_STRING };
+const V1_LEASE_SECONDS = {
+  type: "integer",
+  minimum: 1,
+  description:
+    "可选；通常省略以采用当前动态策略（由项目与 Goal 共同解析）。显式值只用于缩短租约，必须是正整数且不能超过当前 resolved policy 的 max_lease_seconds；不要通过失败调用探测上限。",
+};
 const DRAFT_DIALOGUE_FACT = {
   type: "object",
   properties: {
@@ -343,7 +349,7 @@ const V1_TOOLS: McpToolDefinition[] = [
         role: V1_CLAIM_ROLE,
         capabilities: { type: "array", items: { type: "string" } },
         goal_mode_attestation: { type: "boolean" },
-        lease_seconds: { type: "integer" },
+        lease_seconds: V1_LEASE_SECONDS,
         strengthen_policy: { type: "object" },
         idempotency_key: { type: "string" },
       },
@@ -363,7 +369,7 @@ const V1_TOOLS: McpToolDefinition[] = [
         role: V1_CLAIM_ROLE,
         capabilities: { type: "array", items: { type: "string" } },
         goal_mode_attestation: { type: "boolean" },
-        lease_seconds: { type: "integer" },
+        lease_seconds: V1_LEASE_SECONDS,
         strengthen_policy: { type: "object" },
         idempotency_key: { type: "string" },
       },
@@ -384,7 +390,7 @@ const V1_TOOLS: McpToolDefinition[] = [
         actor_id: V1_STRING,
         capabilities: V1_STRING_ARRAY,
         goal_mode_attestation: { type: "boolean" },
-        lease_seconds: { type: "integer" },
+        lease_seconds: V1_LEASE_SECONDS,
         idempotency_key: V1_STRING,
       },
       required: ["board_id", "rough_idea", "actor_id", "idempotency_key"],
@@ -432,7 +438,7 @@ const V1_TOOLS: McpToolDefinition[] = [
         actor_id: V1_STRING,
         capabilities: V1_STRING_ARRAY,
         goal_mode_attestation: { type: "boolean" },
-        lease_seconds: { type: "integer" },
+        lease_seconds: V1_LEASE_SECONDS,
         idempotency_key: V1_STRING,
       },
       required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
