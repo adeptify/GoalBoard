@@ -93,11 +93,13 @@ test("visual foundation defines one wide workbench and one narrow companion", ()
 test("desktop shell uses one project directory, project tabs, and soft work surfaces", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /Personal workbench v3: one directory, project-scoped tabs, and soft work surfaces/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-traffic-light-center-y: 16px/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-traffic-light-center-y\) \* 2\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-control-center-y: 16px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-project-control-center-y\) \* 2\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*grid-template-rows: auto minmax\(0, 1fr\) auto !important/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*padding: 0 8px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-resizer \{[\s\S]*grid-row: 2 \/ -1;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 72px;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);

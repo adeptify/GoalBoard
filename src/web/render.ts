@@ -6319,6 +6319,7 @@ const CLIENT_SCRIPT = `
     const goalUiStorageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
     const storageKey = decisionView ? goalUiStorageKey + ":inbox" : goalUiStorageKey;
     const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
+    const desktopNavigationStateVersion = 2;
     let desktopDirectoryOrigin = null;
     let activeDesktopSurface = decisionView ? "inbox" : "goal";
     let desktopSurfaceScroll = {};
@@ -6452,8 +6453,14 @@ const CLIENT_SCRIPT = `
       try {
         const goalUi = JSON.parse(sessionStorage.getItem(goalUiStorageKey) || "null");
         goalId = String(goalUi?.selected || "");
-        if (openGoalsDirectory && goalUi && typeof goalUi === "object") {
-          sessionStorage.setItem(goalUiStorageKey, JSON.stringify({ ...goalUi, directory: "goals", workSurface: "goal" }));
+        if (openGoalsDirectory) {
+          const nextGoalUi = goalUi && typeof goalUi === "object" ? goalUi : {};
+          sessionStorage.setItem(goalUiStorageKey, JSON.stringify({
+            ...nextGoalUi,
+            navigationVersion: desktopNavigationStateVersion,
+            directory: "goals",
+            workSurface: "goal",
+          }));
         }
       } catch {}
       const available = new Set(visibleGoals().map((item) => item.goal.goal_id));
@@ -7351,7 +7358,8 @@ const CLIENT_SCRIPT = `
       graphFocusOnly,
       graphZoom,
       graphRelationTypes: [...graphRelationTypes],
-      directory: treePane?.dataset.desktopDirectory || "goals",
+      navigationVersion: desktopNavigationStateVersion,
+      directory: treePane?.dataset.desktopDirectory || "root",
       goalPanel: documentPane.querySelector('[data-goal-tab][aria-selected="true"]')?.dataset.goalTab || "overview",
       goalFactor: documentPane.querySelector('[data-goal-factor-tab][aria-selected="true"]')?.dataset.goalFactorTab || "relations",
     });
@@ -7363,7 +7371,14 @@ const CLIENT_SCRIPT = `
       const nextDesktopSurface = decisionView ? ui?.workSurface || "inbox" : ui?.workSurface || "goal";
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
       if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
-      if (desktopDirectoryPanels.length) setDesktopDirectory(decisionView ? "root" : ui?.directory || treePane.dataset.desktopDirectory || "goals", false, false);
+      if (desktopDirectoryPanels.length) {
+        const restoredDirectory = decisionView
+          ? "root"
+          : ui?.navigationVersion === desktopNavigationStateVersion
+            ? ui?.directory || "root"
+            : "root";
+        setDesktopDirectory(restoredDirectory, false, false);
+      }
       const collapsed = new Set(ui?.collapsed || []);
       document.querySelectorAll("[data-tree-item]").forEach((item) => {
         const isCollapsed = collapsed.has(item.dataset.goalId);
@@ -9979,7 +9994,7 @@ export function renderGoalBoardWeb(
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
   const pendingCount = pendingDecisionCount(view);
   const projectName = view.project?.display_name ?? L("当前项目");
-  const initialDesktopDirectory = decisionView ? "root" : "goals";
+  const initialDesktopDirectory = desktopShell || decisionView ? "root" : "goals";
   const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
   const desktopAccountFooter = `<footer class="personal-sidebar-footer">
     <a class="personal-account" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开全局设置")}">

@@ -13,14 +13,14 @@ Chosen direction: Single-directory Project-Tab Workbench (`seed=goalboard-deskto
 
 Memorable moment: the user enters Goals inside the only directory, opens several Goals without losing the first, then moves among their project tabs while each Goal's result, reason, operating logic, next step, completion requirements, context, and Runtime remain intact.
 
-Visual system: one 286-334px graphite directory beside a flexible light workbench. Restrained cobalt marks focus and available intent; semantic color is only for real state. Native system typography, Lucide icons, softly rounded 6-14px surfaces, related tonal fills, and low diffuse shadows define both Light and Dark Calm Desktop. Structural lines are intentionally rare. In macOS Overlay mode, a fixed 48px native-chrome band protects the traffic lights and creates one consistent top rhythm across the Goal workspace and scoped Settings.
+Visual system: one 286-334px graphite directory beside a flexible light workbench. Restrained cobalt marks focus and available intent; semantic color is only for real state. Native system typography, Lucide icons, softly rounded 6-14px surfaces, related tonal fills, and local low diffuse shadows define both Light and Dark Calm Desktop. The directory/work-surface boundary is tonal only—no full-height border or standing shadow—and structural lines are intentionally rare. In macOS Overlay mode, a fixed 48px native-chrome band protects the traffic lights and creates one consistent top rhythm across the Goal workspace and scoped Settings.
 
 Implementation inventory:
 
 | Visible ingredient | Implementation |
 | --- | --- |
 | Desktop two-region shell | One 286-334px resizable directory and one remaining tabbed workbench; no second left navigation column or repeated top breadcrumb |
-| macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row whose center is the native `trafficLightPosition.y = 16px`, with no separate project row; Settings keeps its scoped navigation and 48px work-surface topbar |
+| macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row and uses the real-window-calibrated native `trafficLightPosition.y = 24px` inset, with no separate project row; Settings keeps its scoped navigation and 48px work-surface topbar |
 | Drag ownership | The remaining left titlebar space and an elastic right titlebar track of at least 72px may drag; project-index and Settings use only plain-text context or empty spacers; tabs, actions, dropdowns, outer topbars, and the workbench bar remain interactive, not draggable |
 | Titlebar interaction safety | The directory resizer begins at grid row 2 below native chrome, utility tabs remain one line, and interactive tabs and actions never enter the traffic-light safe zone |
 | Project controls | Current project selector, direct real-project dropdown, and current-project Settings control sit in the native titlebar to the right of the traffic lights |

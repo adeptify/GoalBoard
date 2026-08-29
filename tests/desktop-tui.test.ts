@@ -49,7 +49,7 @@ test("desktop capability permits the custom title bar to drag its window", () =>
   const mainWindow = TAURI_CONFIG.app?.windows?.find((window) => window.label === "main");
   assert.equal(mainWindow?.titleBarStyle, "Overlay");
   assert.equal(mainWindow?.hiddenTitle, true);
-  assert.deepEqual(mainWindow?.trafficLightPosition, { x: 16, y: 16 });
+  assert.deepEqual(mainWindow?.trafficLightPosition, { x: 16, y: 24 });
 });
 
 function createGoalBoardWebServer(
@@ -449,10 +449,10 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /src="\/desktop\/pty-client\.js"/);
     assert.match(desktop, /data-desktop-shell="true"/);
     assert.doesNotMatch(desktop, /class="personal-sidebar"|class="personal-space-context"/);
-    assert.match(desktop, /data-desktop-directory="goals"/);
-    assert.match(desktop, /data-directory-panel="root" hidden/);
+    assert.match(desktop, /data-desktop-directory="root"/);
+    assert.match(desktop, /data-directory-panel="root">/);
     assert.doesNotMatch(desktop, /data-directory-panel="inbox"/);
-    assert.match(desktop, /data-directory-panel="goals"/);
+    assert.match(desktop, /data-directory-panel="goals" hidden/);
     assert.match(desktop, /data-decisions-link href="\/decisions\?desktop=1"[\s\S]*<strong>Inbox<\/strong>/);
     assert.match(desktop, /data-directory-open="goals" data-work-surface-open="goal"[\s\S]*<strong>Goals<\/strong>/);
     assert.match(desktop, /data-work-surface-open="feed"[\s\S]*<strong>Feed<\/strong>/);
@@ -479,12 +479,15 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /data-close-work-tab=/);
     assert.match(desktop, /workTabsStorageKey = "goalboard-work-tabs:"/);
     assert.match(desktop, /goalUiStorageKey \+ ":inbox"/);
+    assert.match(desktop, /const desktopNavigationStateVersion = 2/);
+    assert.match(desktop, /navigationVersion: desktopNavigationStateVersion/);
     assert.match(desktop, /const setDesktopWorkSurface = \(surface, persist = true, restoreScroll = true\) =>/);
     assert.match(desktop, /surfaceScroll: \{ \.\.\.desktopSurfaceScroll, \[activeDesktopSurface\]: documentPane\.scrollTop \}/);
     assert.match(desktop, /setDesktopWorkSurface\("goal", true, true\)/);
     assert.match(desktop, /if \(!openWorkTabs\.includes\(goalId\)\) openWorkTabs\.push\(goalId\)/);
     assert.match(desktop, /let desktopDirectoryOrigin = null/);
-    assert.match(desktop, /setDesktopDirectory\(decisionView \? "root" : ui\?\.directory \|\| treePane\.dataset\.desktopDirectory \|\| "goals", false, false\)/);
+    assert.match(desktop, /ui\?\.navigationVersion === desktopNavigationStateVersion/);
+    assert.match(desktop, /setDesktopDirectory\(restoredDirectory, false, false\)/);
     assert.match(desktop, /const focusWorkTab = \(goalId\) =>/);
     assert.match(desktop, /selectGoal\(nextGoalId\)\.then\(\(\) => focusWorkTab\(nextGoalId\)\)/);
     assert.match(desktop, /data-directory-back/);

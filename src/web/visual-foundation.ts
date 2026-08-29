@@ -4798,8 +4798,8 @@ export const VISUAL_FOUNDATION_STYLES = `
   @media (min-width: 761px) {
     body[data-desktop-shell="true"] {
       --desktop-titlebar-height: 48px;
-      --desktop-traffic-light-center-y: 16px;
-      --desktop-native-control-row-height: calc(var(--desktop-traffic-light-center-y) * 2);
+      --desktop-project-control-center-y: 16px;
+      --desktop-native-control-row-height: calc(var(--desktop-project-control-center-y) * 2);
     }
     body[data-desktop-shell="true"] .app {
       height: 100dvh;
@@ -4837,7 +4837,7 @@ export const VISUAL_FOUNDATION_STYLES = `
       grid-template-rows: auto minmax(0, 1fr) auto !important;
       color: var(--ink-soft);
       background: color-mix(in srgb, var(--rail) 78%, var(--page));
-      box-shadow: 4px 0 16px color-mix(in srgb, var(--shadow-color) 30%, transparent);
+      box-shadow: none;
       z-index: 2;
     }
     body[data-desktop-shell="true"] .tree-resizer {
@@ -5684,7 +5684,7 @@ export const VISUAL_FOUNDATION_STYLES = `
       grid-template-rows: var(--desktop-titlebar-height) 50px 50px minmax(0, 1fr) auto;
       gap: 0;
       background: color-mix(in srgb, var(--rail) 78%, var(--page));
-      box-shadow: 4px 0 16px color-mix(in srgb, var(--shadow-color) 30%, transparent);
+      box-shadow: none;
       display: grid;
       z-index: 2;
     }
