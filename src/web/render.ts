@@ -38,10 +38,14 @@ import {
   localeSwitchHref,
   clientI18nScript,
 } from "./i18n.js";
-import { appendDesktopQueryToLocalHrefs, withDesktopQuery } from "./desktop-shell.js";
+import {
+  appendDesktopQueryToLocalHrefs,
+  NATIVE_DESKTOP_BOOTSTRAP_SCRIPT,
+  withDesktopQuery,
+} from "./desktop-shell.js";
 import { buildGoalGraphLayout } from "./goal-graph.js";
 import {
-  THEME_BOOTSTRAP_SCRIPT,
+  THEME_BOOTSTRAP_SCRIPT as BASE_THEME_BOOTSTRAP_SCRIPT,
   VISUAL_FOUNDATION_CLIENT_SCRIPT,
   VISUAL_FOUNDATION_STYLES,
 } from "./visual-foundation.js";
@@ -64,6 +68,8 @@ import {
   type GoalDecompositionValidationIssue,
   type ProductPathArea,
 } from "../v1/goal-decomposition-validation.js";
+
+const THEME_BOOTSTRAP_SCRIPT = `${BASE_THEME_BOOTSTRAP_SCRIPT}${NATIVE_DESKTOP_BOOTSTRAP_SCRIPT}`;
 
 export type WebGoalStatus = GoalPresentationState;
 
@@ -5564,7 +5570,7 @@ const PROJECT_INDEX_CLIENT_SCRIPT = `
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || L("迁移失败，请检查来源 DB 后重试"));
-        location.assign(result.project_path);
+        location.assign(globalThis.goalboardNavigationUrl(result.project_path));
       } catch (error) {
         errorBox.textContent = error.message || L("迁移失败，请检查来源 DB 后重试");
         errorBox.hidden = false;
@@ -5948,7 +5954,7 @@ const SETTINGS_CLIENT_SCRIPT = `
         const response = await fetch("/api/settings/projects", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ display_name: String(values.get("display_name") || "").trim(), user_confirmed: true }) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || L("项目创建失败"));
-        location.assign(result.project_path);
+        location.assign(globalThis.goalboardNavigationUrl(result.project_path));
       } catch (caught) {
         error.textContent = caught.message || L("项目创建失败");
         error.hidden = false;
@@ -6445,7 +6451,7 @@ const CLIENT_SCRIPT = `
       } catch {}
       const available = new Set(visibleGoals().map((item) => item.goal.goal_id));
       if (!available.has(goalId)) goalId = state.active_goal_id || visibleGoals()[0]?.goal.goal_id || "";
-      location.assign(goalId ? route("/goals/" + encodeURIComponent(goalId)) : route("/"));
+      location.assign(globalThis.goalboardNavigationUrl(goalId ? route("/goals/" + encodeURIComponent(goalId)) : route("/")));
     };
 
     const setDesktopWorkSurface = (surface, persist = true, restoreScroll = true) => {
@@ -6799,7 +6805,7 @@ const CLIENT_SCRIPT = `
         redirecting = true;
         trashDialog.close();
         sessionStorage.removeItem(storageKey);
-        location.assign(route((trashIntent.trashed ? "/trash/goals/" : "/goals/") + encodeURIComponent(trashIntent.goalId)));
+        location.assign(globalThis.goalboardNavigationUrl(route((trashIntent.trashed ? "/trash/goals/" : "/goals/") + encodeURIComponent(trashIntent.goalId))));
       } catch (error) {
         trashError.textContent = error.message || "操作失败，请检查后重试";
         trashError.hidden = false;
@@ -7506,7 +7512,7 @@ const CLIENT_SCRIPT = `
 
     const selectGoal = async (goalId, updateHistory = true) => {
       if (decisionView) {
-        location.assign(route("/goals/" + encodeURIComponent(goalId)));
+        location.assign(globalThis.goalboardNavigationUrl(route("/goals/" + encodeURIComponent(goalId))));
         return;
       }
       const currentView = documentPane.querySelector("[data-goal-view]");
@@ -8362,7 +8368,7 @@ const CLIENT_SCRIPT = `
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "操作失败");
-          location.assign(route((archived ? "/archive/goals/" : "/goals/") + encodeURIComponent(goalId)));
+          location.assign(globalThis.goalboardNavigationUrl(route((archived ? "/archive/goals/" : "/goals/") + encodeURIComponent(goalId))));
         } catch (error) {
           archiveAction.disabled = false;
           showToast(error.message || "操作失败", true);
@@ -9099,7 +9105,7 @@ const CLIENT_SCRIPT = `
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "创建失败");
         sessionStorage.removeItem(storageKey);
-        location.assign(result.goal_path);
+        location.assign(globalThis.goalboardNavigationUrl(result.goal_path));
       } catch (error) {
         formError.textContent = error.message || "创建失败，请检查输入后重试";
         formError.hidden = false;

@@ -96,6 +96,8 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-control-center-y: 21\.5px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-project-control-center-y\) \* 2\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-safe-inline-start: 2px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-native-desktop="true"\] body\[data-desktop-shell="true"\][\s\S]*--desktop-project-safe-inline-start: 88px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*grid-template-rows: auto minmax\(0, 1fr\) auto !important/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*padding: 0 8px;/);
@@ -103,7 +105,7 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*overflow: visible;[\s\S]*z-index: 2;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-resizer \{[\s\S]*grid-row: 2 \/ -1;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 88px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 var\(--desktop-project-safe-inline-start\);/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-menu-popover \{[\s\S]*position: absolute;[\s\S]*width: min\(310px, calc\(100vw - 24px\)\);[\s\S]*box-shadow: 0 14px 34px[\s\S]*z-index: 80;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-directory-panel\[hidden\] \{ display: none !important; \}/);
@@ -133,7 +135,7 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*grid-template-rows: var\(--desktop-titlebar-height\) 50px minmax\(0, 1fr\) auto;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-desktop-project \{[\s\S]*height: var\(--desktop-titlebar-height\);[\s\S]*grid-row: 1;[\s\S]*grid-template-rows: var\(--desktop-native-control-row-height\);[\s\S]*align-content: start;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-settings \{[\s\S]*height: 28px;[\s\S]*min-height: 28px;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\]:not\(\[data-native-desktop="true"\]\) \.navigator-project \{[\s\S]*padding-left: 2px;/);
+  assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /:not\(\[data-native-desktop="true"\]\) \.navigator-project/);
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-heading \{ margin-bottom: 18px; padding: 0 2px; border: 0; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.preference-section \{ padding: 18px 0; border: 0; \}/);

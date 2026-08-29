@@ -17,6 +17,7 @@
 - Desktop 项目页当前把 `Goals` 作为初始左栏目录，并恢复旧版保存的 `directory: goals`；因此即使新包已经安装，用户打开项目仍直接看到 Goal Tree，根目录工作台被藏在返回箭头后，视觉上与旧版几乎一致；
 - Desktop 请求曾写入一年有效期的 `goalboard-desktop` Cookie，导致同一浏览器随后访问普通 Web 也被错误识别成 Desktop；响应式聚焦页因此丢失项目切换入口；
 - Desktop 与普通 Web 仍保留了两套项目壳层：Desktop 使用新版单目录工作台，Web 使用旧 Goal Tree。原生窗口一旦丢失 `desktop=1` 就直接暴露旧壳层；真实 Footballnia 页面已经复现。根因不是缺少更多身份补丁，而是同一个产品不该继续维护两套互相漂移的主界面；
+- 同壳层完成后，原生安全区仍由服务端是否看到 `desktop=1` 决定；进入 Goal、Inbox 跳转、归档、恢复、新建项目或 Web 服务恢复等完整页面导航会丢失该参数，随后 CSS 把标题栏左内缩从原生安全值降到普通 Web 的 `2px`，项目图标和标题再次被 traffic lights 遮挡；
 - Desktop 设置页仍使用“原生标题栏安全空行 + 下一行项目卡片”的旧结构，项目切换下沉并与设置标题重复；主工作台的项目控件左侧安全距离也不足，会与 traffic lights 重叠；
 - 普通项目首页和设置页把约 230KB 的共享视觉样式重复内联进 HTML，项目首页仍使用长列表；冷启动还需要同步探测本地 Runtime 命令，造成首次页面偶发接近 1 秒的等待；
 - Light 模式的大面积白卡同时使用描边和宽而重的阴影，层次漂浮且光源不一致；
@@ -123,6 +124,7 @@ Desktop 与普通 Web 的宽屏界面共用一个目录列：
 
 - 项目工作台、项目切换、单目录、Inbox、Goal 标签、Goal 内容和 Runtime 在 Desktop 与普通 Web 共用同一份 HTML 结构、CSS 和交互脚本；删除旧 Web Goal Tree 壳层和 `desktopShell ? 新壳层 : 旧壳层` 双分支；
 - `desktop=1` 或 Desktop 请求头只启用原生增强：macOS traffic lights 安全距离、可拖动标题栏和 Tauri 窗口能力。它们不再决定用户看到哪套产品界面；
+- 原生增强不能只依赖服务端 URL 标记：页面在 stylesheet 生效前通过 Tauri 注入对象自识别原生环境，完整页面跳转统一保留 `desktop=1`，服务恢复也必须把当前 loopback URL 归一化为 Desktop URL。普通 Web 不获得原生安全区；
 - 普通 Web 在宽屏直接使用同一项目下拉和单目录工作台；760px 以下继续折叠为同一 DOM 的 Companion 视图，不另建旧版导航；
 - 旧 `goalboard_desktop` Cookie 不再读取或写入，桌面正确性也不依赖每条链接都追加查询参数；
 - Desktop 内置 Runtime 只在首次缺失或版本号严格升级时写入本机安装；旧 App 不得以同版本内容覆盖本地新构建。内置版本升级后要重启已有的受管 Web 服务，让当前 App 与 4173 立即使用同一 release；
@@ -222,6 +224,7 @@ Desktop 与普通 Web 的宽屏界面共用一个目录列：
 20. Goal 标题上方的状态 pill 对“待执行、待澄清、执行受阻、已完成”等所有状态统一保留至少 26px 高度、清楚的图文间距和左右内边距，不能让图标、文字或边框挤在一起。
 21. 打开旧 Desktop App、重启 4173 或执行同版本 `install:local` 时，本机 release 不会被旧 App 内置 Runtime 回写；安装更高版本 App 时才升级 Runtime，并重启已有受管服务。
 22. 没有 LaunchAgent 时由 Desktop 自行启动 Web，退出 App 后 launcher 与实际 server 都结束；重新启用 LaunchAgent 不出现 4173 端口冲突。
+23. Desktop 从项目列表、Goals、Inbox、新建 Goal、归档、回收站恢复、项目设置、全局设置或 Web 服务恢复进入任一完整页面后，URL 仍包含 `desktop=1`，页面继续应用原生安全区和拖动区；即使某条历史 URL 缺少参数，Tauri 页面也会在首帧布局前自愈。普通浏览器页面仍使用无 traffic lights 留白的 Web 对齐。
 
 ## 验证
 

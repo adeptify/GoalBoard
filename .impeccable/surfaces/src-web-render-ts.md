@@ -20,7 +20,7 @@ Implementation inventory:
 | Visible ingredient | Implementation |
 | --- | --- |
 | Desktop two-region shell | One 286-334px resizable directory and one remaining tabbed workbench; no second left navigation column or repeated top breadcrumb |
-| macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row and uses the real-window-calibrated native `trafficLightPosition.y = 24px` inset, with no separate project row; Settings keeps its scoped navigation and 48px work-surface topbar |
+| macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row and uses the real-window-calibrated native `trafficLightPosition.y = 24px` inset, with no separate project row; Tauri self-identification activates the native safe-area before stylesheets load even if a navigation dropped `desktop=1`; Settings keeps its scoped navigation and 48px work-surface topbar |
 | Drag ownership | The remaining left titlebar space and an elastic right titlebar track of at least 72px may drag; project-index and Settings use only plain-text context or empty spacers; tabs, actions, dropdowns, outer topbars, and the workbench bar remain interactive, not draggable |
 | Titlebar interaction safety | The directory resizer begins at grid row 2 below native chrome, utility tabs remain one line, and interactive tabs and actions never enter the traffic-light safe zone |
 | Project controls | Current project selector, direct real-project dropdown, and current-project Settings control sit in the native titlebar to the right of the traffic lights |

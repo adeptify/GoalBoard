@@ -11,6 +11,7 @@ import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 import { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "../src/web/control-token.js";
+import { NATIVE_DESKTOP_BOOTSTRAP_SCRIPT } from "../src/web/desktop-shell.js";
 import {
   GoalBoardPtyHost,
   buildPtyEnvironment,
@@ -30,6 +31,7 @@ import {
 
 const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
 const PTY_CLIENT_SOURCE = readFileSync(new URL("../src/web/pty-client.ts", import.meta.url), "utf8");
+const WEB_RENDER_SOURCE = readFileSync(new URL("../src/web/render.ts", import.meta.url), "utf8");
 const DESKTOP_CAPABILITIES = JSON.parse(
   readFileSync(new URL("../desktop/src-tauri/capabilities/default.json", import.meta.url), "utf8"),
 ) as { permissions?: string[] };
@@ -50,6 +52,18 @@ test("desktop capability permits the custom title bar to drag its window", () =>
   assert.equal(mainWindow?.titleBarStyle, "Overlay");
   assert.equal(mainWindow?.hiddenTitle, true);
   assert.deepEqual(mainWindow?.trafficLightPosition, { x: 16, y: 24 });
+});
+
+test("native Desktop identity self-heals before layout and survives full-page navigation", () => {
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /__TAURI_INTERNALS__\|\|globalThis\.__TAURI__/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /document\.documentElement\.dataset\.nativeDesktop="true"/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /next\.searchParams\.set\("desktop","1"\)/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /location\.replace\(normalized\)/);
+  assert.match(WEB_RENDER_SOURCE, /const THEME_BOOTSTRAP_SCRIPT = `\$\{BASE_THEME_BOOTSTRAP_SCRIPT\}\$\{NATIVE_DESKTOP_BOOTSTRAP_SCRIPT\}`/);
+  assert.doesNotMatch(
+    WEB_RENDER_SOURCE,
+    /location\.assign\((?:result\.(?:project_path|goal_path)|route\()/,
+  );
 });
 
 function createGoalBoardWebServer(

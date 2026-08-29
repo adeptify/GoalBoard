@@ -4660,6 +4660,13 @@ export const VISUAL_FOUNDATION_STYLES = `
       --desktop-titlebar-height: 48px;
       --desktop-project-control-center-y: 21.5px;
       --desktop-native-control-row-height: calc(var(--desktop-project-control-center-y) * 2);
+      --desktop-project-safe-inline-start: 2px;
+      --desktop-settings-safe-inline-start: 2px;
+    }
+    body[data-desktop-shell="true"][data-native-desktop="true"],
+    html[data-native-desktop="true"] body[data-desktop-shell="true"] {
+      --desktop-project-safe-inline-start: 88px;
+      --desktop-settings-safe-inline-start: 80px;
     }
     body[data-desktop-shell="true"] .app {
       height: 100dvh;
@@ -4721,15 +4728,12 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .navigator-project {
       min-width: 0;
       min-height: var(--desktop-titlebar-height);
-      padding: 0 2px 0 88px;
+      padding: 0 2px 0 var(--desktop-project-safe-inline-start);
       border: 0;
       grid-row: 1;
       background: transparent;
       position: relative;
       z-index: 24;
-    }
-    body[data-desktop-shell="true"]:not([data-native-desktop="true"]) .navigator-project {
-      padding-left: 2px;
     }
     body[data-desktop-shell="true"] .navigator-project-primary {
       min-width: 0;
@@ -5567,7 +5571,7 @@ export const VISUAL_FOUNDATION_STYLES = `
       min-width: 0;
       height: var(--desktop-titlebar-height);
       min-height: var(--desktop-titlebar-height);
-      padding: 0 2px 0 80px;
+      padding: 0 2px 0 var(--desktop-settings-safe-inline-start);
       grid-row: 1;
       display: grid;
       grid-template-columns: minmax(0, 178px) 28px minmax(12px, 1fr);
@@ -5575,9 +5579,6 @@ export const VISUAL_FOUNDATION_STYLES = `
       align-content: start;
       align-items: center;
       gap: 2px;
-    }
-    body.settings-page[data-desktop-shell="true"]:not([data-native-desktop="true"]) .settings-desktop-project {
-      padding-left: 2px;
     }
     body.settings-page[data-desktop-shell="true"] .settings-desktop-heading {
       min-height: 50px;
