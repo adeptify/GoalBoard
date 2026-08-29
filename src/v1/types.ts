@@ -695,6 +695,12 @@ export interface GoalWorkStateView {
   work_state: GoalWorkState;
   next_action: GoalWorkAction | null;
   active_claim: ClaimRecord | null;
+  active_claim_lease: {
+    remaining_seconds: number;
+    renewal_window_seconds: number;
+    renew_recommended: boolean;
+    next_action: "renew_claim" | null;
+  } | null;
   active_run: RunRecord | null;
   pending_review_roles: Array<"self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver">;
   child_goal_ids: string[];
@@ -832,6 +838,20 @@ export interface ClaimRequest {
   lease_seconds?: number;
   strengthen_policy?: Partial<GoalPolicy>;
   idempotency_key: string;
+}
+
+export interface ClaimRenewRequest {
+  board_id: string;
+  claim_id: string;
+  actor_id: string;
+  lease_seconds?: number;
+  idempotency_key: string;
+}
+
+export interface ClaimRenewResult {
+  claim: ClaimRecord;
+  replayed: boolean;
+  observed_event_cursor: number;
 }
 
 export interface ClaimDecision {

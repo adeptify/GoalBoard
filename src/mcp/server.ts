@@ -38,6 +38,12 @@ const V1_LEASE_SECONDS = {
   description:
     "可选；通常省略以采用当前动态策略（由项目与 Goal 共同解析）。显式值只用于缩短租约，必须是正整数且不能超过当前 resolved policy 的 max_lease_seconds；不要通过失败调用探测上限。",
 };
+const V1_RENEW_LEASE_SECONDS = {
+  type: "integer",
+  minimum: 1,
+  description:
+    "可选；省略时采用领取时确认的策略上限。显式值必须是正整数且不能超过该 Claim 领取时 resolved policy 的 max_lease_seconds。",
+};
 const DRAFT_DIALOGUE_FACT = {
   type: "object",
   properties: {
@@ -529,6 +535,17 @@ const V1_TOOLS: McpToolDefinition[] = [
       required: ["board_id", "proposal_id", "authority", "idempotency_key"],
     },
   },
+  v1PayloadTool(
+    "goalboard_v1_claim_renew",
+    "由当前领取者为仍未过期的 active Claim 续租；保持同一个 Claim 和 Run，不会复活过期工作。",
+    {
+      claim_id: V1_STRING,
+      actor_id: V1_STRING,
+      lease_seconds: V1_RENEW_LEASE_SECONDS,
+      idempotency_key: V1_STRING,
+    },
+    ["claim_id", "actor_id", "idempotency_key"],
+  ),
   v1PayloadTool(
     "goalboard_v1_release",
     "由领取者释放 Claim。",
@@ -1066,6 +1083,7 @@ const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_goal_tree_read",
   "goalboard_v1_goal_tree_check",
   "goalboard_v1_goal_tree_decide",
+  "goalboard_v1_claim_renew",
   "goalboard_v1_release",
   "goalboard_v1_run_start",
   "goalboard_v1_revalidate",
@@ -1787,6 +1805,9 @@ export class GoalBoardServer {
         }
         case "goalboard_v1_release":
           result = coordinator.releaseClaim(this.v1Payload(arguments_));
+          break;
+        case "goalboard_v1_claim_renew":
+          result = coordinator.renewClaim(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_revoke_claim":
           result = coordinator.revokeClaim(this.v1Payload(arguments_));

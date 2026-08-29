@@ -1782,6 +1782,138 @@ test("a project dynamic lease policy can allow an explicit value above the defau
   store.close();
 });
 
+test("an active Claim can renew the same lifecycle and exposes a near-expiry action", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "lease-renew");
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "lease-renew",
+    actor_id: "runtime-renew",
+    role: "executor",
+    lease_seconds: 10,
+    idempotency_key: "lease-renew-select",
+  });
+
+  setNow("2026-08-15T00:00:07.000Z");
+  const renewed = coordinator.renewClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-renew",
+    lease_seconds: 10,
+    idempotency_key: "lease-renew-active",
+  });
+  assert.equal(renewed.replayed, false);
+  assert.equal(renewed.claim.claim_id, selected.claim!.claim_id);
+  assert.equal(renewed.claim.renewed_at, "2026-08-15T00:00:07.000Z");
+  assert.equal(renewed.claim.expires_at, "2026-08-15T00:00:17.000Z");
+  assert.equal(
+    store.snapshot("board-1").runs.filter((item) => item.goal_id === "lease-renew").length,
+    1,
+    "续租不能创建新的 Run",
+  );
+
+  const replay = coordinator.renewClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-renew",
+    lease_seconds: 10,
+    idempotency_key: "lease-renew-active",
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.claim.expires_at, renewed.claim.expires_at);
+  assert.deepEqual(
+    store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'claim.renewed'").get(),
+    { count: 1 },
+  );
+
+  setNow("2026-08-15T00:00:15.000Z");
+  const workState = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "lease-renew",
+  });
+  assert.deepEqual(workState.active_claim_lease, {
+    remaining_seconds: 2,
+    renewal_window_seconds: 4,
+    renew_recommended: true,
+    next_action: "renew_claim",
+  });
+  store.close();
+});
+
+test("Claim renewal rejects another actor, policy overflow, expired and released leases", () => {
+  const { store, coordinator, setNow } = fixture();
+  createLeaf(coordinator, "lease-renew-guard");
+  const claim = coordinator.claimGoal({
+    board_id: "board-1",
+    goal_id: "lease-renew-guard",
+    actor_id: "runtime-owner",
+    lease_seconds: 10,
+    idempotency_key: "lease-renew-guard-claim",
+  }).claim!;
+
+  assert.throws(
+    () => coordinator.renewClaim({
+      board_id: "board-1",
+      claim_id: claim.claim_id,
+      actor_id: "runtime-other",
+      idempotency_key: "lease-renew-other",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "claim.not_owner",
+  );
+  assert.throws(
+    () => coordinator.renewClaim({
+      board_id: "board-1",
+      claim_id: claim.claim_id,
+      actor_id: "runtime-owner",
+      lease_seconds: 1801,
+      idempotency_key: "lease-renew-over-policy",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "lease.duration_exceeds_policy",
+  );
+
+  setNow("2026-08-15T00:00:11.000Z");
+  assert.throws(
+    () => coordinator.renewClaim({
+      board_id: "board-1",
+      claim_id: claim.claim_id,
+      actor_id: "runtime-owner",
+      idempotency_key: "lease-renew-expired",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error
+      && error.code === "claim.lease_expired"
+      && error.details?.next_action === "select_goal",
+  );
+
+  createLeaf(coordinator, "lease-renew-released");
+  const released = coordinator.claimGoal({
+    board_id: "board-1",
+    goal_id: "lease-renew-released",
+    actor_id: "runtime-owner",
+    idempotency_key: "lease-renew-released-claim",
+  }).claim!;
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: released.claim_id,
+    actor_id: "runtime-owner",
+    reason: "工作主动结束",
+    idempotency_key: "lease-renew-release",
+  });
+  assert.throws(
+    () => coordinator.renewClaim({
+      board_id: "board-1",
+      claim_id: released.claim_id,
+      actor_id: "runtime-owner",
+      idempotency_key: "lease-renew-after-release",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "claim.not_active",
+  );
+  assert.deepEqual(
+    store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'claim.renewed'").get(),
+    { count: 0 },
+  );
+  store.close();
+});
+
 test("confirmed impact bindings prevent two active writers", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "writer-a");

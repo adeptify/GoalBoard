@@ -433,6 +433,7 @@ export function buildGoalBoardWebView(
       reasons: workState.reasons,
       active_claim_actor: activeClaim?.actor_id ?? null,
       active_claim: activeClaim ?? null,
+      active_claim_lease: workState.active_claim_lease,
       claims,
       runs,
       evidence,

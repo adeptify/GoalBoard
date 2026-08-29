@@ -12,6 +12,8 @@ import {
   type BlockedAvailableGoal,
   type ClaimDecision,
   type ClaimRecord,
+  type ClaimRenewRequest,
+  type ClaimRenewResult,
   type ClaimRunDecision,
   type ClaimRequest,
   type ClaimRole,
@@ -3725,6 +3727,110 @@ export class GoalBoardCoordinator {
         now,
       );
       return decision;
+    });
+  }
+
+  renewClaim(input: ClaimRenewRequest): ClaimRenewResult {
+    const hash = requestHash({
+      board_id: input.board_id,
+      claim_id: input.claim_id,
+      actor_id: input.actor_id,
+      lease_seconds: input.lease_seconds ?? null,
+    });
+    return this.store.immediate(() => {
+      const replay = this.replay<Omit<ClaimRenewResult, "replayed">>(
+        input.board_id,
+        input.actor_id,
+        "renew_claim",
+        input.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+
+      this.requireBoard(input.board_id);
+      const row = this.store.db
+        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
+        .get(input.claim_id, input.board_id) as Row | undefined;
+      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
+      const claim = mapSqliteClaim(row);
+      if (claim.actor_id !== input.actor_id) {
+        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以续租 Claim");
+      }
+      if (claim.state !== "active") {
+        throw new GoalBoardV1Error("claim.not_active", "只有 active Claim 可以续租");
+      }
+
+      const now = this.clock().toISOString();
+      if (claim.expires_at <= now) {
+        throw new GoalBoardV1Error(
+          "claim.lease_expired",
+          "Claim 租约已过期，不能续租；请重新领取 Goal",
+          {
+            claim_id: claim.claim_id,
+            goal_id: claim.goal_id,
+            next_action: "select_goal",
+            requires_user_confirmation: false,
+          },
+        );
+      }
+      const maxLeaseSeconds = claim.resolved_policy.max_lease_seconds;
+      const requestedLease = input.lease_seconds ?? maxLeaseSeconds;
+      if (!Number.isInteger(requestedLease) || requestedLease <= 0) {
+        throw new GoalBoardV1Error(
+          "lease.duration_invalid",
+          "续租时长必须是正整数秒",
+          { requested_lease_seconds: requestedLease },
+        );
+      }
+      if (requestedLease > maxLeaseSeconds) {
+        throw new GoalBoardV1Error(
+          "lease.duration_exceeds_policy",
+          `续租时长不能超过领取时确认的 ${maxLeaseSeconds} 秒`,
+          {
+            requested_lease_seconds: requestedLease,
+            max_lease_seconds: maxLeaseSeconds,
+          },
+        );
+      }
+
+      const requestedExpiry = addSeconds(now, requestedLease);
+      const expiresAt = requestedExpiry > claim.expires_at ? requestedExpiry : claim.expires_at;
+      this.store.db
+        .prepare("UPDATE claims SET expires_at = ?, renewed_at = ? WHERE claim_id = ?")
+        .run(expiresAt, now, input.claim_id);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: "claim.renewed",
+        objectType: "claim",
+        objectId: input.claim_id,
+        reason: "领取者确认工作仍在继续并续租 Claim",
+        payload: {
+          goal_id: claim.goal_id,
+          previous_expires_at: claim.expires_at,
+          expires_at: expiresAt,
+          lease_seconds: requestedLease,
+        },
+        at: now,
+      });
+      const updated = this.store.db
+        .prepare("SELECT * FROM claims WHERE claim_id = ?")
+        .get(input.claim_id) as Row;
+      const outcome = {
+        claim: mapSqliteClaim(updated),
+        observed_event_cursor: cursor,
+      };
+      this.remember(
+        input.board_id,
+        input.actor_id,
+        "renew_claim",
+        input.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
+      return { ...outcome, replayed: false };
     });
   }
 
@@ -8788,9 +8894,36 @@ export class GoalBoardCoordinator {
     );
     const pendingReviewRoles = pendingReviewObligations.map((obligation) => obligation.role);
     const reviewReady = this.latestWorkRunState(snapshot, goal.goal_id) === "completed";
+    const activeClaimLease = activeClaim
+      ? (() => {
+          const remainingSeconds = Math.max(
+            0,
+            Math.ceil((new Date(activeClaim.expires_at).getTime() - new Date(now).getTime()) / 1000),
+          );
+          const leaseStartedAt = activeClaim.renewed_at ?? activeClaim.claimed_at;
+          const currentLeaseSeconds = Math.max(
+            1,
+            Math.ceil(
+              (new Date(activeClaim.expires_at).getTime() - new Date(leaseStartedAt).getTime()) / 1000,
+            ),
+          );
+          const renewalWindowSeconds = Math.max(
+            1,
+            Math.min(300, Math.ceil(currentLeaseSeconds / 3)),
+          );
+          const renewRecommended = remainingSeconds <= renewalWindowSeconds;
+          return {
+            remaining_seconds: remainingSeconds,
+            renewal_window_seconds: renewalWindowSeconds,
+            renew_recommended: renewRecommended,
+            next_action: renewRecommended ? "renew_claim" as const : null,
+          };
+        })()
+      : null;
     const base = {
       goal_id: goal.goal_id,
       active_claim: activeClaim,
+      active_claim_lease: activeClaimLease,
       active_run: activeRun,
       pending_review_roles: pendingReviewRoles,
       child_goal_ids: childGoalIds,

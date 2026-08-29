@@ -14,6 +14,7 @@ import type {
   GoalRelationRecord,
   GoalTreeProposalRecord,
   GoalWorkState,
+  GoalWorkStateView,
   ImpactBindingRecord,
   ReviewObligationRecord,
   ReviewRecord,
@@ -152,6 +153,7 @@ export interface WebGoalView {
   reasons: DecisionReason[];
   active_claim_actor: string | null;
   active_claim: ClaimRecord | null;
+  active_claim_lease: GoalWorkStateView["active_claim_lease"];
   claims: ClaimRecord[];
   runs: RunRecord[];
   evidence: EvidenceRecord[];
@@ -3494,6 +3496,7 @@ function renderGoalFocusOverview(item: WebGoalView, view: GoalBoardWebView): str
 
 function renderCompanionRuntime(item: WebGoalView): string {
   const claim = item.active_claim;
+  const lease = item.active_claim_lease;
   const run = [...item.runs].reverse().find((candidate) => candidate.state === "started" || candidate.state === "blocked") ?? item.runs.at(-1);
   const total = item.goal.acceptance_criteria.length;
   const passed = displayedPassedCriterionIds(item).length;
@@ -3502,9 +3505,13 @@ function renderCompanionRuntime(item: WebGoalView): string {
   const state = claim
     ? run?.state === "blocked" ? L("执行受阻") : L("正在推进")
     : run ? L("最近有进展") : L("尚未绑定");
+  const leaseNotice = lease
+    ? `<p class="companion-runtime-lease${lease.renew_recommended ? " is-warning" : ""}">${icon("clock")}<span>${L("租约还剩 {count} 分钟", { count: Math.max(1, Math.ceil(lease.remaining_seconds / 60)) })} · ${L("到期前续租可保持当前 Claim 和 Run")}</span></p>`
+    : "";
   return `<section class="companion-runtime" data-companion-runtime aria-labelledby="companion-runtime-${escapeHtml(item.goal.goal_id)}">
     <header><div><small>Runtime</small><h2 id="companion-runtime-${escapeHtml(item.goal.goal_id)}">${escapeHtml(runtime)}</h2></div><span class="companion-runtime-state${claim ? " is-active" : ""}"><i aria-hidden="true"></i>${escapeHtml(state)}</span></header>
     <p>${escapeHtml(plainRunState(run))}</p>
+    ${leaseNotice}
     <div class="companion-runtime-progress" aria-label="${L("完成标准进度 {passed}/{total}", { passed, total })}"><i><b style="--companion-progress:${progress}%"></b></i><span>${passed}/${total}</span></div>
     <dl><div><dt>${L("完成依据")}</dt><dd>${L("{count} 条", { count: item.evidence.length })}</dd></div><div><dt>${L("执行记录")}</dt><dd>${escapeHtml(run?.state ?? L("未开始"))}</dd></div></dl>
     <button type="button" data-companion-runtime-open>${L("在 Runtime 查看会话")}${icon("chevron-right")}</button>

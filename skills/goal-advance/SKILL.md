@@ -106,7 +106,9 @@ Always follow the latest returned `work_state`:
 | Read work and blockers | `snapshot`, `contract`, `available`, `explain` |
 | Start or resume Goal clarification | `draft_dialogue_start`, `draft_dialogue_turn`, `draft_dialogue_resume`, `planning_methods`, `planning_analyze_change`, `planning_graph_check` |
 | Propose and decide Goal Tree changes | `goal_tree_propose`, `goal_tree_read`, `goal_tree_check`, `goal_tree_decide` |
-| Atomically start and report work | `select_goal`, `run_report`, `evidence_submit`, `evidence_correct`, `review_submit`, `complete`, `release`, `revalidate` |
+| Atomically start and report work | `select_goal`, `claim_renew`, `run_report`, `evidence_submit`, `evidence_correct`, `review_submit`, `complete`, `release`, `revalidate` |
 | Recoverably trash or restore a Goal | `goal_trash`, `goal_trash_list`, `goal_restore` |
 
 Use the full `goalboard_v1_` tool names. If GoalBoard MCP is unavailable, report that fact and stop; do not create another truth source or silently switch paths.
+
+During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Do not create background heartbeat loops.

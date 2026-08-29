@@ -59,6 +59,7 @@ describe("mcp server", () => {
     assert.ok(!names.includes("goalboard_v1_postinstall_project_selection"));
     assert.ok(names.includes("goalboard_v1_available"));
     assert.ok(names.includes("goalboard_v1_select_goal"));
+    assert.ok(names.includes("goalboard_v1_claim_renew"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
@@ -305,10 +306,22 @@ describe("mcp server", () => {
       assert.equal(tool.inputSchema.required?.includes("lease_seconds"), false, name);
     }
 
+    const renew = tools.find((item) => item.name === "goalboard_v1_claim_renew");
+    assert.ok(renew);
+    const renewPayload = renew.inputSchema.properties?.payload as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    const renewalLease = renewPayload.properties?.lease_seconds as { description?: string };
+    assert.match(renewalLease.description ?? "", /领取时确认的策略/);
+    assert.equal(renewPayload.required?.includes("lease_seconds"), false);
+
     const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
     assert.match(skill, /Omit `lease_seconds` by default/);
     assert.match(skill, /resolved dynamic policy/);
     assert.match(skill, /explicit value only to shorten/);
+    assert.match(skill, /active_claim_lease/);
+    assert.match(skill, /goalboard_v1_claim_renew/);
   });
 
   it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {
@@ -771,6 +784,21 @@ describe("mcp server", () => {
       assert.ok(selected.claim);
       assert.ok(selected.run);
       assert.equal(selected.work_state?.work_state, "executing");
+
+      const renewedResponse = await call(runtime, "goalboard_v1_claim_renew", {
+        board_id: "mcp-board",
+        payload: {
+          claim_id: selected.claim!.claim_id,
+          actor_id: "runtime-a",
+          idempotency_key: "mcp-renew-active-claim",
+        },
+      });
+      assert.equal(renewedResponse.result.isError, false, renewedResponse.result.content[0]?.text);
+      const renewed = JSON.parse(renewedResponse.result.content[0].text) as {
+        claim: { claim_id: string; renewed_at: string | null };
+      };
+      assert.equal(renewed.claim.claim_id, selected.claim!.claim_id);
+      assert.ok(renewed.claim.renewed_at);
 
       const evidenceResponse = await call(runtime, "goalboard_v1_evidence_submit", {
         board_id: "mcp-board",

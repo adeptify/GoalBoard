@@ -930,6 +930,8 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-desktop-directory="root"/);
   assert.match(html, /data-companion-runtime/);
   assert.match(html, /data-companion-runtime-open/);
+  assert.match(coreHtml, /租约还剩 \d+ 分钟/);
+  assert.match(coreHtml, /到期前续租可保持当前 Claim 和 Run/);
   assert.match(html, /desktopCompanionActive && selected \? "document"/);
   assert.match(html, /const setWorkspaceMode =/);
   assert.match(html, /workspace\.dataset\.workspaceMode = nextMode/);
