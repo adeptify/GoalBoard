@@ -2298,6 +2298,9 @@ async function handleGoalBoardWebRequest(
           const body = await readBody(request);
           const state = String(body.state ?? "") as RiskRecord["state"];
           const reason = String(body.reason ?? "").trim();
+          const rawResolutionBasis = body.resolution_basis && typeof body.resolution_basis === "object" && !Array.isArray(body.resolution_basis)
+            ? body.resolution_basis as Record<string, unknown>
+            : null;
           try {
             const result = coordinator.setRiskState(
               options.boardId,
@@ -2305,6 +2308,19 @@ async function handleGoalBoardWebRequest(
                 risk_id: decodeURIComponent(riskStateMatch[1]),
                 state,
                 reason,
+                ...(rawResolutionBasis == null
+                  ? {}
+                  : {
+                      resolution_basis: {
+                        summary: String(rawResolutionBasis.summary ?? ""),
+                        evidence_refs: Array.isArray(rawResolutionBasis.evidence_refs)
+                          ? rawResolutionBasis.evidence_refs.map(String)
+                          : [],
+                        residual_gaps: Array.isArray(rawResolutionBasis.residual_gaps)
+                          ? rawResolutionBasis.residual_gaps.map(String)
+                          : [],
+                      },
+                    }),
               },
               {
                 actor_id: "web-user",

@@ -793,8 +793,8 @@ Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，�
 
 **来源**：CGS G2 / G2A 产品实操反馈
 **Bug 确认**：确认存在严重误导体验；主要归因是 GoalBoard 跨层 Contract 覆盖与 Risk 解决依据的设计债，同时存在 CGS 把能力目标降成样本验收的建模错误；不是 `satisfied` 状态机计算错误
-**修复决定**：待 Owner 审批；CGS Contract 纠偏与 GoalBoard Core 防误导修复需要分别推进
-**修复状态**：已完成只读复现与归因，尚未修改源码、打包、安装或完成任何验收
+**修复决定**：Owner 已批准 GoalBoard Core 防误导修复；CGS Contract 纠偏仍需在 CGS 项目中单独推进
+**修复状态**：GoalBoard 源码与数据库迁移已实现，工程验证通过；尚未打新版本、安装最终 App，也未完成产品实操或 Owner 验收
 
 ### 1. 真实场景
 
@@ -824,7 +824,7 @@ GoalBoard 把自然语言 Contract 的含义与取舍交给用户确认，而不
 
 ### 7. 修复必要性与优先级
 
-需要修复，P1，但需 Owner 审批具体数据模型。CGS 应立即把当前 G2A 明确定性为“Opportunity 合同与代表样本验证”，并把真实多源研究与机会分析补成新的可执行 Goal，或经用户确认重开原 Contract；原 source coverage Risk 若描述的是完整能力，也应重新打开。GoalBoard Core 需要阻止今后的跨层静默降级并诚实展示局部完成，不能替 CGS 自动补齐研究能力。
+需要修复，P1，Owner 已批准最小数据模型。GoalBoard Core 已阻止新的跨层静默降级并诚实展示局部完成，但不会替 CGS 自动补齐研究能力。CGS 仍应把当前 G2A 明确定性为“Opportunity 合同与代表样本验证”，并把真实多源研究与机会分析补成新的可执行 Goal，或经用户确认重开原 Contract；原 source coverage Risk 若描述的是完整能力，也应重新判断，而不是由本次迁移自动改写。
 
 ### 8. 修复前后体验差异
 
@@ -833,10 +833,10 @@ GoalBoard 把自然语言 Contract 的含义与取舍交给用户确认，而不
 
 ### 9. 最小修复范围
 
-GoalBoard 侧在现有 Goal Tree decomposition review 上新增结构化 parent result / acceptance coverage，并在用户确认 closed compound 时持久化；父级收口与自动完成读取该映射，Web、Contract、Available/Explain 展示局部完成和剩余覆盖。Risk 状态转换对新的 `resolved` 写入新增 resolution basis、Evidence refs 与 residual gaps，历史记录缺失时只显示“未记录解决依据”，不自动篡改状态。保留既有叶子 Evidence、Review 和 `satisfied` 事实，不做语义模型、向量索引或第二套规划系统。CGS 源码和 GoalBoard Core 分仓修改、分开提交；回滚时保留新增字段为可选历史事实，并恢复旧派生逻辑，不删除用户记录。
+GoalBoard 侧复用现有 decomposition review，新增 `contract_coverage`：父级每个 promised output / acceptance criterion 必须精确引用后代 Contract 字段，并标记 `complete / partial / integration_required / uncovered`。仅 `complete` 可确认 `closed_compound`；canonical 映射写入 `goals.decomposition_review_json`，父级自动完成和 Work State 都读取同一事实。Contract 新增 `parent_contract_coverage`，Web 在父子详情分别展示覆盖与贡献，并把绿色文案收窄为“本 Goal 按当前 Contract 已满足”。Risk 的新 `resolved` 写入必须携带 `resolution_basis.summary / evidence_refs / residual_gaps`，存入 `risks.resolution_basis_json`；历史缺失只显示“未记录”，不追溯改状态。schema migration 21 只增加两个可空 JSON 字段。未修改 accepted Contract 的不可变边界、Evidence / Review 机制、历史完成事实、CGS 源码，也未引入语义模型或第二套规划系统。回滚可停止使用新字段并恢复旧派生逻辑，已有 JSON 事实保留且无需删除。
 
 ### 10. 验收边界
 
-- **工程验证**：本轮仅完成源码与 CGS 合同/样本的只读核对。已确认当前父级自动完成只依赖 active children 的 fulfillment，Risk resolved 只依赖状态与理由；尚无失败测试或实现，不能报告工程验证通过。
-- **产品实操**：修复前的“样本合同通过但真实研究能力不存在”已由 CGS 编辑台实际使用暴露；修复后的跨层覆盖展示、父级阻断、Risk 解决依据和历史兼容均为 `UNVERIFIED`。
-- **Owner 最终验收**：未通过。需先审批数据模型与 CGS 纠偏方式；实现后用“样本 spike 完成但父能力未完成”和“所有父承诺确实由子树覆盖”两条真实旅程验收，并由用户确认状态文案不会再次把局部工程完成提升为能力完成。
+- **工程验证**：通过。TDD 覆盖缺失映射、部分映射、错误后代引用、完整映射持久化、子 Contract 反向投影、部分覆盖的派生阻断和父级自动完成防线；Risk 覆盖直接状态写入、Goal Tree 提案、Web 表单、readback 与历史无依据展示；migration 21 从缺列旧库恢复。`pnpm test` 完成构建、安装包回归及全部 273/273 测试，`pnpm typecheck` 与 `git diff --check` 通过。
+- **产品实操**：修复前的“样本合同通过但真实研究能力不存在”已由 CGS 编辑台实际使用暴露。修复后的 Web HTML、HTTP 写入和 packed-release 自动化链路已覆盖，但尚未在新安装的最终 GoalBoard App 中由真人走完“部分覆盖阻断 → 补全映射 → 父级收口”旅程，因此仍为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。打包安装后需用两条真实旅程验收：样本 spike 完成但父能力保持开放；所有父承诺确由子树覆盖后父级才收口。同时检查 Risk resolved 是否能看懂解决依据与剩余缺口，并由用户确认状态文案不会再把局部工程完成提升为能力完成。

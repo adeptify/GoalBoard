@@ -87,6 +87,76 @@ const GOAL_TREE_ACCEPTANCE_CRITERION = {
   },
   required: ["statement", "decision_method", "pass_condition", "required_evidence"],
 };
+const GOAL_TREE_CONTRACT_COVERAGE_STATUS = {
+  type: "string",
+  enum: ["complete", "partial", "integration_required", "uncovered"],
+};
+const GOAL_TREE_CONTRACT_COVERAGE = {
+  type: "object",
+  description:
+    "逐项把父 Goal Contract 的 promised_outputs 与 acceptance_criteria 映射到后代 Goal 的真实 Contract 字段。closed_compound 只接受 complete；partial、integration_required 或 uncovered 必须保持父 Goal 开放。",
+  properties: {
+    promised_outputs: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          parent_promised_output: V1_STRING,
+          status: GOAL_TREE_CONTRACT_COVERAGE_STATUS,
+          child_outputs: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              properties: { goal_id: V1_STRING, promised_output: V1_STRING },
+              required: ["goal_id", "promised_output"],
+            },
+          },
+          reason: V1_STRING,
+        },
+        required: ["parent_promised_output", "status", "child_outputs", "reason"],
+      },
+    },
+    acceptance_criteria: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          parent_criterion_id: V1_STRING,
+          status: GOAL_TREE_CONTRACT_COVERAGE_STATUS,
+          child_criteria: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              properties: { goal_id: V1_STRING, criterion_id: V1_STRING },
+              required: ["goal_id", "criterion_id"],
+            },
+          },
+          reason: V1_STRING,
+        },
+        required: ["parent_criterion_id", "status", "child_criteria", "reason"],
+      },
+    },
+  },
+  required: ["promised_outputs", "acceptance_criteria"],
+};
+const GOAL_TREE_DECOMPOSITION_REVIEW = {
+  type: "object",
+  description:
+    "拆分检查。complete + closed_compound 必须提供 contract_coverage，并逐项覆盖父 Contract；GoalBoard 只验证明确引用，不猜测自然语言语义等价。",
+  properties: {
+    status: { type: "string", enum: ["complete", "paused"] },
+    method_pack_ids: V1_STRING_ARRAY,
+    task_context: { type: "string", enum: ["game", "app", "ai_data", "content_research", "operations", "other"] },
+    product_context: { type: "string", enum: ["game", "app", "other"] },
+    coverage: { type: "array", items: { type: "object" } },
+    open_goal_ids: V1_STRING_ARRAY,
+    next_step: V1_STRING,
+    contract_coverage: GOAL_TREE_CONTRACT_COVERAGE,
+  },
+  required: ["status", "coverage", "open_goal_ids", "next_step"],
+};
 const GOAL_TREE_GOAL_PROPERTIES = {
   goal_id: {
     type: "string",
@@ -106,7 +176,7 @@ const GOAL_TREE_GOAL_PROPERTIES = {
     type: "string",
     enum: ["abstract", "frontier_open", "closed_leaf", "closed_compound"],
   },
-  decomposition_review: { type: "object" },
+  decomposition_review: GOAL_TREE_DECOMPOSITION_REVIEW,
   leaf_readiness: { type: "object" },
   priority: { type: "number" },
   acceptance_criteria: { type: "array", items: GOAL_TREE_ACCEPTANCE_CRITERION },
@@ -453,7 +523,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_contract",
     description:
-      "读取一个 Goal 的完整 Contract、关系、风险、执行事实和可供用户打开的稳定页面地址。",
+      "读取一个 Goal 的完整 Contract、关系、风险、执行事实和可供用户打开的稳定页面地址。parent_contract_coverage 会逐项说明它对父 Goal 承诺结果与完成条件的贡献；record_status=unrecorded 表示历史数据未记录映射，不代表父级能力已被覆盖。",
     inputSchema: {
       type: "object",
       properties: {
@@ -664,7 +734,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
@@ -850,7 +920,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_risk_state",
-    "更新 Risk 状态并执行失效影响。",
+    "更新 Risk 状态并执行失效影响。state=resolved 时必须提供 resolution_basis：解决摘要、至少一条证据引用，以及明确的 residual_gaps（没有时传空数组）。",
     {
       risk: {
         type: "object",
@@ -858,6 +928,15 @@ const V1_TOOLS: McpToolDefinition[] = [
           risk_id: V1_STRING,
           state: { type: "string", enum: ["open", "triggered", "resolved", "accepted", "expired"] },
           reason: V1_STRING,
+          resolution_basis: {
+            type: "object",
+            properties: {
+              summary: V1_STRING,
+              evidence_refs: { ...V1_STRING_ARRAY, minItems: 1 },
+              residual_gaps: V1_STRING_ARRAY,
+            },
+            required: ["summary", "evidence_refs", "residual_gaps"],
+          },
         },
         required: ["risk_id", "state", "reason"],
       },

@@ -11,8 +11,9 @@ export interface GoalTreeProposalItemValidationIssue {
     | "goal_tree_proposal.risk_required_field_missing"
     | "goal_tree_proposal.risk_treatment_invalid"
     | "goal_tree_proposal.risk_blocking_mode_invalid"
-    | "goal_tree_proposal.risk_state_invalid";
-  field: "goal_ids" | "risk_facts" | "treatment" | "blocking_mode" | "state";
+    | "goal_tree_proposal.risk_state_invalid"
+    | "goal_tree_proposal.risk_resolution_basis_required";
+  field: "goal_ids" | "risk_facts" | "treatment" | "blocking_mode" | "state" | "resolution_basis";
   message: string;
   recovery: string;
   missing_fields?: string[];
@@ -95,6 +96,23 @@ export function goalTreeProposalItemValidationIssues(
       message: `新建 Risk 必须从 open 开始，不能直接创建为“${state}”。`,
       recovery: "请先创建 open Risk；后续状态变化应通过 update 并记录用户确认。",
     });
+  }
+  if (state === "resolved") {
+    const basis = item.payload.resolution_basis;
+    const record = basis && typeof basis === "object" && !Array.isArray(basis)
+      ? basis as Record<string, unknown>
+      : null;
+    const evidenceRefs = Array.isArray(record?.evidence_refs)
+      ? record.evidence_refs.map(text).filter(Boolean)
+      : [];
+    if (!text(record?.summary) || evidenceRefs.length === 0 || !Array.isArray(record?.residual_gaps)) {
+      issues.push({
+        code: "goal_tree_proposal.risk_resolution_basis_required",
+        field: "resolution_basis",
+        message: "Risk 标记为已解决时，必须写清解决摘要、至少一条证据引用和 residual_gaps。",
+        recovery: "请补充 resolution_basis；没有剩余缺口时 residual_gaps 传空数组。",
+      });
+    }
   }
   return issues;
 }

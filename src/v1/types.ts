@@ -66,6 +66,8 @@ export interface GoalRecord {
   constraints: string[];
   required_inputs: string[];
   promised_outputs: string[];
+  /** Canonical user-confirmed decomposition and parent-to-child Contract trace. */
+  decomposition_review: DecompositionReview | null;
   definition_state: DefinitionState;
   decomposition_state: DecompositionState;
   validity_state: ValidityState;
@@ -153,6 +155,11 @@ export interface RiskRecord {
   revisit_condition: string;
   owner: string;
   state: "open" | "triggered" | "resolved" | "accepted" | "expired";
+  resolution_basis: {
+    summary: string;
+    evidence_refs: string[];
+    residual_gaps: string[];
+  } | null;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +193,25 @@ export interface DecompositionReview {
   }>;
   open_goal_ids: string[];
   next_step: string;
+  /**
+   * User-confirmed structural trace from this compound Goal's Contract to
+   * descendant Contracts. GoalBoard validates exact references; it does not
+   * infer semantic equivalence between differently worded results.
+   */
+  contract_coverage?: {
+    promised_outputs: Array<{
+      parent_promised_output: string;
+      status: "complete" | "partial" | "integration_required" | "uncovered";
+      child_outputs: Array<{ goal_id: string; promised_output: string }>;
+      reason: string;
+    }>;
+    acceptance_criteria: Array<{
+      parent_criterion_id: string;
+      status: "complete" | "partial" | "integration_required" | "uncovered";
+      child_criteria: Array<{ goal_id: string; criterion_id: string }>;
+      reason: string;
+    }>;
+  };
 }
 
 /**
@@ -782,6 +808,13 @@ export interface GoalContractView {
   observed_event_cursor: number;
   goal_path: string;
   goal: GoalRecord;
+  parent_contract_coverage: Array<{
+    parent_goal_id: string;
+    parent_goal_title: string;
+    record_status: "recorded" | "unrecorded";
+    promised_outputs: NonNullable<DecompositionReview["contract_coverage"]>["promised_outputs"];
+    acceptance_criteria: NonNullable<DecompositionReview["contract_coverage"]>["acceptance_criteria"];
+  }>;
   work_state: GoalWorkStateView;
   relations: GoalRelationRecord[];
   impacts: ImpactBindingRecord[];
@@ -814,7 +847,7 @@ export interface CreateGoalInput {
   promised_outputs?: string[];
   /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
   leaf_readiness?: LeafReadiness;
-  /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
+  /** User-confirmed decomposition evidence and parent-to-child Contract trace. */
   decomposition_review?: DecompositionReview;
   definition_state?: DefinitionState;
   decomposition_state?: DecompositionState;

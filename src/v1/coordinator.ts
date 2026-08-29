@@ -71,6 +71,7 @@ import {
   goalProposalLeafReadinessIssues,
   goalTreeProposalDecompositionIssues,
   readDecompositionReview,
+  recordedContractCoverageBlocksClosure,
 } from "./goal-decomposition-validation.js";
 import {
   composePlanningMethodPacks,
@@ -808,10 +809,10 @@ export class GoalBoardCoordinator {
           INSERT INTO goals (
             goal_id, board_id, title, outcome, why, business_logic,
             in_scope_json, out_of_scope_json, constraints_json,
-            required_inputs_json, promised_outputs_json,
+            required_inputs_json, promised_outputs_json, decomposition_review_json,
             definition_state, decomposition_state, validity_state, fulfillment_state,
             priority, accepted_by, accepted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
         `)
         .run(
           goalId,
@@ -825,6 +826,7 @@ export class GoalBoardCoordinator {
           sqliteJson(input.constraints ?? []),
           sqliteJson(input.required_inputs ?? []),
           sqliteJson(input.promised_outputs ?? []),
+          input.decomposition_review == null ? null : sqliteJson(input.decomposition_review),
           definitionState,
           decompositionState,
           input.priority ?? 0,
@@ -960,6 +962,7 @@ export class GoalBoardCoordinator {
             title = ?, outcome = ?, why = ?, business_logic = ?,
             in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
             required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_review_json = ?,
             decomposition_state = ?, priority = ?, updated_at = ?
           WHERE goal_id = ? AND board_id = ?
         `)
@@ -973,6 +976,7 @@ export class GoalBoardCoordinator {
           sqliteJson(normalized.constraints ?? []),
           sqliteJson(normalized.required_inputs ?? []),
           sqliteJson(normalized.promised_outputs ?? []),
+          normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
           normalized.decomposition_state ?? current.decomposition_state,
           normalized.priority ?? current.priority,
           now,
@@ -1726,7 +1730,12 @@ export class GoalBoardCoordinator {
 
   setRiskState(
     boardId: string,
-    input: { risk_id: string; state: RiskRecord["state"]; reason: string },
+    input: {
+      risk_id: string;
+      state: RiskRecord["state"];
+      reason: string;
+      resolution_basis?: NonNullable<RiskRecord["resolution_basis"]>;
+    },
     write: ActorWrite,
   ): { risk: RiskRecord; replayed: boolean; observed_event_cursor: number } {
     const hash = requestHash({ board_id: boardId, ...input });
@@ -1746,14 +1755,30 @@ export class GoalBoardCoordinator {
       if (!reasonText) {
         throw new GoalBoardV1Error("risk.reason_required", "变更 Risk 状态时必须说明原因");
       }
+      const resolutionBasis = input.state === "resolved"
+        ? (() => {
+            const raw = input.resolution_basis;
+            const summary = raw?.summary?.trim() ?? "";
+            const evidenceRefs = unique((raw?.evidence_refs ?? []).map((item) => item.trim()).filter(Boolean));
+            const residualGapsProvided = Array.isArray(raw?.residual_gaps);
+            const residualGaps = unique((raw?.residual_gaps ?? []).map((item) => item.trim()).filter(Boolean));
+            if (!summary || evidenceRefs.length === 0 || !residualGapsProvided) {
+              throw new GoalBoardV1Error(
+                "risk.resolution_basis_required",
+                "Risk 标记为已解决时，必须记录解决摘要、至少一条证据引用，并明确 residual_gaps（没有剩余缺口时传空数组）",
+              );
+            }
+            return { summary, evidence_refs: evidenceRefs, residual_gaps: residualGaps };
+          })()
+        : null;
       const row = this.store.db
         .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
         .get(input.risk_id, boardId) as Row | undefined;
       if (!row) throw new GoalBoardV1Error("risk.not_found", `Risk 不存在: ${input.risk_id}`);
       const now = this.clock().toISOString();
       this.store.db
-        .prepare("UPDATE risks SET state = ?, updated_at = ? WHERE risk_id = ?")
-        .run(input.state, now, input.risk_id);
+        .prepare("UPDATE risks SET state = ?, resolution_basis_json = ?, updated_at = ? WHERE risk_id = ?")
+        .run(input.state, resolutionBasis == null ? null : sqliteJson(resolutionBasis), now, input.risk_id);
       const linkedGoals = this.store.db
         .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
         .all(input.risk_id) as Row[];
@@ -1783,6 +1808,7 @@ export class GoalBoardCoordinator {
         payload: {
           previous_state: asText(row.state),
           state: input.state,
+          resolution_basis: resolutionBasis,
           blocking_mode: asText(row.blocking_mode),
           linked_goal_ids: linkedGoals.map((item) => asText(item.goal_id)),
         },
@@ -2525,11 +2551,30 @@ export class GoalBoardCoordinator {
         .prepare("SELECT risk_id FROM goal_risks WHERE goal_id = ? ORDER BY risk_id")
         .all(goalId) as Row[]).map((row) => asText(row.risk_id)),
     );
+    const parentContractCoverage = snapshot.relations
+      .filter((relation) => relation.state === "active" && relation.type === "part_of" && relation.from_goal_id === goalId)
+      .map((relation) => snapshot.goals.find((candidate) => candidate.goal_id === relation.to_goal_id))
+      .filter((parent): parent is GoalRecord => parent != null)
+      .map((parent) => {
+        const coverage = parent.decomposition_review?.contract_coverage;
+        return {
+          parent_goal_id: parent.goal_id,
+          parent_goal_title: parent.title,
+          record_status: coverage == null ? "unrecorded" as const : "recorded" as const,
+          promised_outputs: coverage?.promised_outputs.filter((entry) =>
+            entry.child_outputs.some((reference) => reference.goal_id === goalId),
+          ) ?? [],
+          acceptance_criteria: coverage?.acceptance_criteria.filter((entry) =>
+            entry.child_criteria.some((reference) => reference.goal_id === goalId),
+          ) ?? [],
+        };
+      });
     return {
       board: snapshot.board,
       observed_event_cursor: snapshot.cursor,
       goal_path: `/goals/${encodeURIComponent(goalId)}`,
       goal,
+      parent_contract_coverage: parentContractCoverage,
       work_state: this.deriveGoalWorkState(boardId, goal, snapshot, now),
       relations: snapshot.relations.filter(
         (item) => item.from_goal_id === goalId || item.to_goal_id === goalId,
@@ -5649,6 +5694,7 @@ export class GoalBoardCoordinator {
             title = ?, outcome = ?, why = ?, business_logic = ?,
             in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
             required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_review_json = NULL,
             definition_state = 'accepted', decomposition_state = 'closed_leaf',
             validity_state = 'valid', fulfillment_state = 'unmet', priority = ?,
             accepted_by = ?, accepted_at = ?, updated_at = ?
@@ -7833,10 +7879,10 @@ export class GoalBoardCoordinator {
           INSERT INTO goals (
             goal_id, board_id, title, outcome, why, business_logic,
             in_scope_json, out_of_scope_json, constraints_json,
-            required_inputs_json, promised_outputs_json,
+            required_inputs_json, promised_outputs_json, decomposition_review_json,
             definition_state, decomposition_state, validity_state, fulfillment_state,
             priority, accepted_by, accepted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
         `)
         .run(
           goalId,
@@ -7850,6 +7896,7 @@ export class GoalBoardCoordinator {
           sqliteJson(goal.constraints ?? []),
           sqliteJson(goal.required_inputs ?? []),
           sqliteJson(goal.promised_outputs ?? []),
+          goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review),
           definitionState,
           decompositionState,
           goal.priority ?? 0,
@@ -7882,10 +7929,10 @@ export class GoalBoardCoordinator {
       this.store.db
         .prepare(`
           UPDATE goals
-          SET decomposition_state = 'closed_compound', fulfillment_state = 'unmet', updated_at = ?
+          SET decomposition_state = 'closed_compound', decomposition_review_json = ?, fulfillment_state = 'unmet', updated_at = ?
           WHERE board_id = ? AND goal_id = ?
         `)
-        .run(at, boardId, goalId);
+        .run(goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review), at, boardId, goalId);
       this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
@@ -7926,6 +7973,7 @@ export class GoalBoardCoordinator {
           title = ?, outcome = ?, why = ?, business_logic = ?,
           in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
           required_inputs_json = ?, promised_outputs_json = ?,
+          decomposition_review_json = ?,
           definition_state = ?, decomposition_state = ?, priority = ?,
           accepted_by = ?, accepted_at = ?, updated_at = ?
         WHERE board_id = ? AND goal_id = ?
@@ -7940,6 +7988,7 @@ export class GoalBoardCoordinator {
         sqliteJson(normalized.constraints ?? []),
         sqliteJson(normalized.required_inputs ?? []),
         sqliteJson(normalized.promised_outputs ?? []),
+        normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
         definitionState,
         decompositionState,
         normalized.priority ?? existing.priority,
@@ -8274,6 +8323,33 @@ export class GoalBoardCoordinator {
     }
     const previousState = previous ? asText(previous.state) as RiskRecord["state"] : null;
     const state = (requestedState || previousState || "open") as RiskRecord["state"];
+    const rawResolutionBasis = payload.resolution_basis && typeof payload.resolution_basis === "object" && !Array.isArray(payload.resolution_basis)
+      ? payload.resolution_basis as Record<string, unknown>
+      : null;
+    const previousResolutionBasis = previous
+      ? parseJson<RiskRecord["resolution_basis"]>(previous.resolution_basis_json, null)
+      : null;
+    const resolutionBasis = state !== "resolved"
+      ? null
+      : rawResolutionBasis
+        ? {
+            summary: String(rawResolutionBasis.summary ?? "").trim(),
+            evidence_refs: this.goalTreeStringArray(rawResolutionBasis.evidence_refs),
+            residual_gaps: this.goalTreeStringArray(rawResolutionBasis.residual_gaps),
+          }
+        : requestedState
+          ? null
+          : previousResolutionBasis;
+    if (requestedState === "resolved" && (
+      !resolutionBasis?.summary ||
+      resolutionBasis.evidence_refs.length === 0 ||
+      !Array.isArray(rawResolutionBasis?.residual_gaps)
+    )) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.risk_resolution_basis_required",
+        "Risk 标记为已解决时，必须记录解决摘要、至少一条证据引用和 residual_gaps",
+      );
+    }
     const previousGoalIds = previous
       ? (this.store.db
           .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
@@ -8285,8 +8361,8 @@ export class GoalBoardCoordinator {
           INSERT INTO risks (
             risk_id, board_id, description, probability, impact,
             affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
-            revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            revisit_condition, owner, state, resolution_basis_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           riskId,
@@ -8302,6 +8378,7 @@ export class GoalBoardCoordinator {
           facts.revisit_condition,
           facts.owner,
           state,
+          resolutionBasis == null ? null : sqliteJson(resolutionBasis),
           at,
           at,
         );
@@ -8309,7 +8386,7 @@ export class GoalBoardCoordinator {
       const result = this.store.db
         .prepare(`
           UPDATE risks SET description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, state = ?, updated_at = ?
+            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, state = ?, resolution_basis_json = ?, updated_at = ?
           WHERE board_id = ? AND risk_id = ?
         `)
         .run(
@@ -8324,6 +8401,7 @@ export class GoalBoardCoordinator {
           facts.revisit_condition,
           facts.owner,
           state,
+          resolutionBasis == null ? null : sqliteJson(resolutionBasis),
           at,
           boardId,
           riskId,
@@ -8368,6 +8446,7 @@ export class GoalBoardCoordinator {
         blocking_mode: facts.blocking_mode,
         previous_state: previousState,
         state,
+        resolution_basis: resolutionBasis,
       },
       at,
     });
@@ -9060,6 +9139,29 @@ export class GoalBoardCoordinator {
     if (goal.archived_at) {
       return { ...base, work_state: "archived", next_action: null, reasons: [] };
     }
+    if (
+      goal.decomposition_state === "closed_compound" &&
+      recordedContractCoverageBlocksClosure(goal, {
+        goals: snapshot.goals,
+        relations: snapshot.relations,
+      })
+    ) {
+      return {
+        ...base,
+        work_state: "clarification_blocked",
+        next_action: "clarify",
+        reasons: [
+          reason(
+            "goal.contract_coverage_incomplete",
+            "goal",
+            goal.goal_id,
+            "父 Goal 记录的承诺结果或完成条件尚未被子 Contract 完整覆盖",
+            undefined,
+            "继续澄清父子 Contract 映射；部分覆盖、尚未覆盖或仍需父级集成时不能关闭父 Goal",
+          ),
+        ],
+      };
+    }
     if (goal.fulfillment_state === "satisfied") {
       return { ...base, work_state: "satisfied", next_action: null, reasons: [] };
     }
@@ -9610,6 +9712,13 @@ export class GoalBoardCoordinator {
       goal.validity_state !== "valid" ||
       goal.fulfillment_state === "satisfied"
     ) {
+      return false;
+    }
+    const snapshot = this.store.snapshot(boardId);
+    if (recordedContractCoverageBlocksClosure(goal, {
+      goals: snapshot.goals,
+      relations: snapshot.relations,
+    })) {
       return false;
     }
     const children = this.activePartOfChildren(boardId, goalId);
