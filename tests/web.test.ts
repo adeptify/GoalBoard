@@ -61,6 +61,127 @@ test("completed Goal presentation closes criteria without inventing Evidence", (
   assert.deepEqual(displayedPassedCriterionIds(item), ["ROOT-C1"]);
 });
 
+test("Web distinguishes local Contract satisfaction from recorded parent Contract coverage", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-contract-coverage-"));
+  const databasePath = join(directory, "coverage.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "coverage-board",
+    title: "Contract Coverage",
+    actor_id: "user-1",
+    idempotency_key: "coverage-board-create",
+  });
+  coordinator.createGoal(
+    "coverage-board",
+    {
+      goal_id: "coverage-parent",
+      title: "形成可解释的完整机会能力",
+      outcome: "多源研究能够形成可解释机会",
+      why: "避免把代表性样本误当成完整能力",
+      business_logic: "父级能力由多个子 Contract 的明确结果共同覆盖。",
+      promised_outputs: ["可解释的多源机会"],
+      definition_state: "accepted",
+      decomposition_state: "closed_compound",
+      decomposition_review: {
+        status: "complete",
+        task_context: "content_research",
+        coverage: [],
+        open_goal_ids: [],
+        next_step: "按子 Goal 推进。",
+        contract_coverage: {
+          promised_outputs: [
+            {
+              parent_promised_output: "可解释的多源机会",
+              status: "complete",
+              child_outputs: [
+                { goal_id: "coverage-child", promised_output: "三类代表性样本" },
+              ],
+              reason: "这是用户确认的父子结果映射。",
+            },
+          ],
+          acceptance_criteria: [
+            {
+              parent_criterion_id: "coverage-parent-criterion",
+              status: "complete",
+              child_criteria: [
+                { goal_id: "coverage-child", criterion_id: "coverage-child-criterion" },
+              ],
+              reason: "子级检查提供父级验收依据。",
+            },
+          ],
+        },
+      },
+      acceptance_criteria: [
+        {
+          criterion_id: "coverage-parent-criterion",
+          statement: "机会形成链路可解释",
+          decision_method: "inspection",
+          pass_condition: "父子结果均可追溯",
+          required_evidence: ["coverage-map"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-parent-create" },
+  );
+  coordinator.createGoal(
+    "coverage-board",
+    {
+      goal_id: "coverage-child",
+      title: "保存三类代表性样本",
+      outcome: "三类样本可读取",
+      why: "验证最小样本链路",
+      business_logic: "只交付被当前 Contract 承诺的代表性样本。",
+      promised_outputs: ["三类代表性样本"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "coverage-child-criterion",
+          statement: "三类样本存在",
+          decision_method: "inspection",
+          pass_condition: "每类至少一个样本",
+          required_evidence: ["sample-file"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-child-create" },
+  );
+  coordinator.addRelation(
+    "coverage-board",
+    {
+      from_goal_id: "coverage-child",
+      to_goal_id: "coverage-parent",
+      type: "part_of",
+      reason: "样本属于父级机会能力的一部分。",
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-relation" },
+  );
+  store.db.prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?").run("coverage-child");
+
+  const view = buildGoalBoardWebView(store, coordinator, { boardId: "coverage-board" });
+  const childHtml = renderGoalBoardWeb(view, "coverage-child");
+  assert.match(childHtml, /本 Goal 按当前 Contract 已满足/);
+  assert.match(childHtml, /对父 Goal 的贡献/);
+  assert.match(childHtml, /形成可解释的完整机会能力/);
+  assert.match(childHtml, /可解释的多源机会/);
+  const parentHtml = renderGoalBoardWeb(view, "coverage-parent");
+  assert.match(parentHtml, /父子 Contract 覆盖/);
+  assert.match(parentHtml, /三类代表性样本/);
+
+  store.db
+    .prepare("UPDATE goals SET decomposition_review_json = NULL, fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("coverage-parent");
+  const historicalView = buildGoalBoardWebView(store, coordinator, { boardId: "coverage-board" });
+  const historicalParentHtml = renderGoalBoardWeb(historicalView, "coverage-parent");
+  assert.match(historicalParentHtml, /未记录父子 Contract 覆盖（历史数据）/);
+  assert.equal(store.getGoal("coverage-parent")?.fulfillment_state, "satisfied");
+  const historicalChildHtml = renderGoalBoardWeb(historicalView, "coverage-child");
+  assert.match(historicalChildHtml, /这条历史父 Goal 未记录父子 Contract 覆盖/);
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("Goal Tree sorts ready work before blocked, waiting, and finished Goals", () => {
   assert.deepEqual([...GOAL_TREE_STATUS_ORDER].sort(), [...WEB_GOAL_STATUSES].sort());
   const ordered = sortGoalTreeItems([
@@ -3201,6 +3322,18 @@ test("Web explains incomplete product decomposition and shows who owns each prod
             })),
             open_goal_ids: [],
             next_step: "等待子 Goal 完成。",
+            contract_coverage: {
+              promised_outputs: [],
+              acceptance_criteria: [{
+                parent_criterion_id: "web-footballnia-complete",
+                status: "complete",
+                child_criteria: [{
+                  goal_id: "web-footballnia-product-slice",
+                  criterion_id: "web-footballnia-slice-complete",
+                }],
+                reason: "端到端子 Goal 的试玩检查覆盖父级完整路径验收。",
+              }],
+            },
           },
         },
         source_refs: ["conversation://web-footballnia"],
@@ -3535,6 +3668,18 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
             })),
             open_goal_ids: [],
             next_step: "按依赖顺序推进基础能力和核心能力。",
+            contract_coverage: {
+              promised_outputs: [],
+              acceptance_criteria: [{
+                parent_criterion_id: "web-ai-parent-complete",
+                status: "complete",
+                child_criteria: [
+                  { goal_id: coreGoalId, criterion_id: `${coreGoalId}-criterion` },
+                  { goal_id: foundationGoalId, criterion_id: `${foundationGoalId}-criterion` },
+                ],
+                reason: "核心与基础 Goal 的检查共同覆盖完整 AI 结果链。",
+              }],
+            },
           },
         },
         source_refs: ["conversation://web-task-chain"],
@@ -4568,6 +4713,9 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     const riskDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(riskDecisionPage, /<form class="decision-record risk-decision" data-risk-state-form/);
     assert.match(riskDecisionPage, /<option value="" selected disabled>请选择处理结果<\/option>/);
+    assert.match(riskDecisionPage, /name="resolution_summary"/);
+    assert.match(riskDecisionPage, /name="resolution_evidence_refs"/);
+    assert.match(riskDecisionPage, /name="resolution_residual_gaps"/);
     assert.match(riskDecisionPage, /保持待处理，继续阻塞完成/);
     assert.doesNotMatch(riskDecisionPage, /<option value="open" selected/);
     for (const state of ["open", "triggered", "resolved", "accepted", "expired"]) {
@@ -4595,13 +4743,22 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     });
     assert.equal(updateResponse.status, 200, await updateResponse.text());
 
-    for (const state of ["triggered", "resolved", "accepted", "expired", "open"] as const) {
+    for (const state of ["triggered", "accepted", "expired", "open", "resolved"] as const) {
       const stateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           state,
           reason: `用户确认进入 ${state}`,
+          ...(state === "resolved"
+            ? {
+                resolution_basis: {
+                  summary: "负责人确认外部规则版本已经冻结。",
+                  evidence_refs: ["conversation://rule-owner-confirmation"],
+                  residual_gaps: ["下一次规则发布后仍需重新检查"],
+                },
+              }
+            : {}),
           idempotency_key: `web-risk-state-${state}`,
         }),
       });
@@ -4619,7 +4776,11 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(updatedPage, /外部规则已经进入确认窗口/);
     assert.match(updatedPage, /60%/);
     assert.match(updatedPage, /规避 \/ 阻止领取/);
-    assert.match(updatedPage, /开放/);
+    assert.match(updatedPage, /已解决/);
+    assert.match(updatedPage, /解决依据/);
+    assert.match(updatedPage, /负责人确认外部规则版本已经冻结/);
+    assert.match(updatedPage, /conversation:\/\/rule-owner-confirmation/);
+    assert.match(updatedPage, /下一次规则发布后仍需重新检查/);
     assert.match(updatedPage, /交付风险工作台/);
     const verify = new SqliteGoalBoardStore(databasePath);
     try {
@@ -4632,9 +4793,28 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       assert.deepEqual(stored?.affected_surfaces, ["Contract", "tests"]);
       assert.equal(stored?.owner, "risk-owner");
       assert.equal(stored?.treatment_plan, "在规则冻结前不接入新的外部字段");
+      assert.deepEqual(stored?.resolution_basis, {
+        summary: "负责人确认外部规则版本已经冻结。",
+        evidence_refs: ["conversation://rule-owner-confirmation"],
+        residual_gaps: ["下一次规则发布后仍需重新检查"],
+      });
       assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'risk.updated'").get(created.risk.risk_id));
     } finally {
       verify.close();
+    }
+    const historical = new SqliteGoalBoardStore(databasePath);
+    try {
+      historical.db
+        .prepare("UPDATE risks SET resolution_basis_json = NULL WHERE risk_id = ?")
+        .run(created.risk.risk_id);
+      const historicalCoordinator = new GoalBoardCoordinator(historical);
+      const historicalView = buildGoalBoardWebView(historical, historicalCoordinator, {
+        boardId: "risk-workbench-board",
+      });
+      const historicalPage = renderGoalBoardWeb(historicalView, "RISK-B");
+      assert.match(historicalPage, /未记录解决依据（历史数据）/);
+    } finally {
+      historical.close();
     }
   } finally {
     await new Promise<void>((resolve, reject) =>

@@ -96,6 +96,29 @@ describe("mcp server", () => {
     )?.then?.properties?.payload;
     assert.deepEqual(payloadFor("goal")?.required, ["goal_id", "title"]);
     assert.ok(payloadFor("goal")?.properties?.acceptance_criteria);
+    const decompositionReview = payloadFor("goal")?.properties?.decomposition_review as {
+      properties?: {
+        contract_coverage?: {
+          properties?: {
+            promised_outputs?: { items?: { required?: string[] } };
+            acceptance_criteria?: { items?: { required?: string[] } };
+          };
+          required?: string[];
+        };
+      };
+    } | undefined;
+    assert.deepEqual(decompositionReview?.properties?.contract_coverage?.required, [
+      "promised_outputs",
+      "acceptance_criteria",
+    ]);
+    assert.deepEqual(
+      decompositionReview?.properties?.contract_coverage?.properties?.promised_outputs?.items?.required,
+      ["parent_promised_output", "status", "child_outputs", "reason"],
+    );
+    assert.deepEqual(
+      decompositionReview?.properties?.contract_coverage?.properties?.acceptance_criteria?.items?.required,
+      ["parent_criterion_id", "status", "child_criteria", "reason"],
+    );
     assert.match(payloadFor("goal")?.description ?? "", /父子关系必须另提 relation 条目/);
     assert.ok(payloadFor("relation")?.properties?.from_goal_id);
     assert.ok(payloadFor("relation")?.properties?.to_goal_id);
@@ -154,6 +177,7 @@ describe("mcp server", () => {
     );
     const contractTool = listedTools.find((tool) => tool.name === "goalboard_v1_contract");
     assert.ok(!("web_base_url" in (contractTool?.inputSchema.properties ?? {})));
+    assert.match(contractTool?.description ?? "", /parent_contract_coverage/);
     const candidateTool = listedTools.find((tool) => tool.name === "goalboard_v1_candidate_submit");
     assert.ok(candidateTool?.inputSchema.properties?.payload.properties?.proposed_goal);
     assert.ok(candidateTool?.inputSchema.properties?.payload.required?.includes("idempotency_key"));
@@ -230,9 +254,28 @@ describe("mcp server", () => {
       method: "tools/list",
       params: {},
     });
-    const managementNames = (
-      managementTools as { result: { tools: Array<{ name: string }> } }
-    ).result.tools.map((tool) => tool.name);
+    const managementListedTools = (
+      managementTools as {
+        result: {
+          tools: Array<{
+            name: string;
+            inputSchema: {
+              properties?: Record<string, { properties?: Record<string, unknown> }>;
+            };
+          }>;
+        };
+      }
+    ).result.tools;
+    const managementNames = managementListedTools.map((tool) => tool.name);
+    const riskStateTool = managementListedTools.find((tool) => tool.name === "goalboard_v1_risk_state");
+    const resolutionBasis = riskStateTool?.inputSchema.properties?.payload.properties?.risk as {
+      properties?: { resolution_basis?: { required?: string[] } };
+    } | undefined;
+    assert.deepEqual(resolutionBasis?.properties?.resolution_basis?.required, [
+      "summary",
+      "evidence_refs",
+      "residual_gaps",
+    ]);
     assert.ok(managementNames.includes("goalboard_v1_create_goal"));
     assert.ok(managementNames.includes("goalboard_v1_contract_decide"));
     assert.ok(managementNames.includes("goalboard_v1_candidate_decide"));

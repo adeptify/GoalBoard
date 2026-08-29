@@ -55,6 +55,7 @@ function createLeaf(
       outcome: `${goalId} 有可检查的完成结果`,
       why: "让下一步可以安全继续",
       business_logic: "先完成这一小段工作并证明结果，再允许依赖它的工作开始。",
+      promised_outputs: [`${goalId} 有可检查的完成结果`],
       definition_state: "accepted",
       decomposition_state: "closed_leaf",
       priority,
@@ -232,6 +233,46 @@ function completeDecompositionReview(
   };
 }
 
+function withCompleteContractCoverage(
+  review: DecompositionReview,
+  parent: {
+    goal_id?: string;
+    promised_outputs?: string[];
+    acceptance_criteria: Array<{ criterion_id?: string }>;
+  },
+  children: Array<{
+    goal_id?: string;
+    promised_outputs?: string[];
+    acceptance_criteria: Array<{ criterion_id?: string }>;
+  }>,
+): DecompositionReview {
+  const childOutputs = children.flatMap((child) => (child.promised_outputs ?? []).map((promisedOutput) => ({
+    goal_id: String(child.goal_id ?? ""),
+    promised_output: promisedOutput,
+  })));
+  const childCriteria = children.flatMap((child) => child.acceptance_criteria.map((criterion) => ({
+    goal_id: String(child.goal_id ?? ""),
+    criterion_id: String(criterion.criterion_id ?? ""),
+  })));
+  return {
+    ...review,
+    contract_coverage: {
+      promised_outputs: (parent.promised_outputs ?? []).map((promisedOutput) => ({
+        parent_promised_output: promisedOutput,
+        status: "complete",
+        child_outputs: childOutputs,
+        reason: "用户确认这些子 Goal 承担该父级承诺结果。",
+      })),
+      acceptance_criteria: parent.acceptance_criteria.map((criterion) => ({
+        parent_criterion_id: String(criterion.criterion_id ?? ""),
+        status: "complete",
+        child_criteria: childCriteria,
+        reason: "用户确认这些子 Goal 的完成条件共同覆盖该父级条件。",
+      })),
+    },
+  };
+}
+
 function pausedDecompositionReview(
   openGoalId: string,
   productContext: LegacyProductContext = "other",
@@ -342,6 +383,13 @@ function acceptedCompoundClosurePayload(
   ownerGoalId?: string,
   overrides: Record<string, unknown> = {},
 ) {
+  const ownerContract = ownerGoalId == null
+    ? null
+    : {
+        goal_id: ownerGoalId,
+        promised_outputs: [`${ownerGoalId} 有可检查的完成结果`],
+        acceptance_criteria: [{ criterion_id: `${ownerGoalId}-criterion` }],
+      };
   return {
     goal_id: goal.goal_id,
     title: goal.title,
@@ -355,7 +403,15 @@ function acceptedCompoundClosurePayload(
     promised_outputs: goal.promised_outputs,
     definition_state: "accepted",
     decomposition_state: "closed_compound",
-    ...(ownerGoalId == null ? {} : { decomposition_review: completeDecompositionReview(ownerGoalId) }),
+    ...(ownerContract == null
+      ? {}
+      : {
+          decomposition_review: withCompleteContractCoverage(
+            completeDecompositionReview(ownerGoalId!),
+            goal,
+            [ownerContract],
+          ),
+        }),
     priority: goal.priority,
     acceptance_criteria: goal.acceptance_criteria.map(({ goal_id: _goalId, ...criterion }) => criterion),
     ...overrides,
@@ -488,6 +544,9 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
     DELETE FROM schema_migrations WHERE migration_id = 11;
     ALTER TABLE risks DROP COLUMN treatment_plan;
     DELETE FROM schema_migrations WHERE migration_id = 15;
+    ALTER TABLE goals DROP COLUMN decomposition_review_json;
+    ALTER TABLE risks DROP COLUMN resolution_basis_json;
+    DELETE FROM schema_migrations WHERE migration_id = 21;
     DROP TABLE evidence_corrections;
     DELETE FROM schema_migrations WHERE migration_id = 17;
   `);
@@ -583,6 +642,11 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 20")
       .get(),
   );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 21")
+      .get(),
+  );
   const evidenceColumns = reopened.db.pragma("table_info(evidence)") as Array<{ name: string }>;
   for (const column of ["locator_status", "locator_validation_reason", "locator_checked_at", "locator_workspace_id", "locator_workspace_root"]) {
     assert.ok(evidenceColumns.some((item) => item.name === column), `missing evidence.${column}`);
@@ -594,6 +658,8 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   );
   const riskColumns = reopened.db.pragma("table_info(risks)") as Array<{ name: string }>;
   assert.ok(riskColumns.some((column) => column.name === "treatment_plan"));
+  assert.ok(riskColumns.some((column) => column.name === "resolution_basis_json"));
+  assert.ok(goalColumns.some((column) => column.name === "decomposition_review_json"));
   assert.ok(
     reopened.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_trash_records'")
@@ -3375,7 +3441,10 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
         payload: {
           goal_id: "tree-root",
           decomposition_state: "closed_compound",
-          decomposition_review: completeDecompositionReview("first-use-guide"),
+          decomposition_review: {
+            ...completeDecompositionReview("first-use-guide"),
+            contract_coverage: { promised_outputs: [], acceptance_criteria: [] },
+          },
         },
         object_type: "goal",
         object_id: "tree-root",
@@ -3704,6 +3773,26 @@ test("a confirmed Risk update materializes a supported state and clears the comp
     goal_id: "risk-completion-context",
     idempotency_key: "risk-completion-dialogue",
   });
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-closure",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "risk-completion-context",
+      summary: "错误示例：没有解决依据就把 Risk 标成 resolved。",
+      items: [goalTreeProposalItem({
+        item_id: "resolve-completion-risk-without-basis",
+        kind: "risk",
+        operation: "update",
+        payload: { ...riskFacts, state: "resolved" },
+        object_type: "risk",
+        object_id: "risk-completion-state",
+      })],
+      idempotency_key: "risk-completion-state-proposal-without-basis",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.risk_resolution_basis_required",
+  );
   const proposal = coordinator.submitGoalTreeProposal({
     board_id: "board-1",
     actor_id: "runtime-risk-closure",
@@ -3714,7 +3803,15 @@ test("a confirmed Risk update materializes a supported state and clears the comp
       item_id: "resolve-completion-risk",
       kind: "risk",
       operation: "update",
-      payload: { ...riskFacts, state: "resolved" },
+      payload: {
+        ...riskFacts,
+        state: "resolved",
+        resolution_basis: {
+          summary: "来源覆盖检查已经通过。",
+          evidence_refs: ["evidence://coverage-check"],
+          residual_gaps: ["未覆盖登录态平台，只在当前 Contract 范围内解决"],
+        },
+      },
       object_type: "risk",
       object_id: "risk-completion-state",
     })],
@@ -3742,6 +3839,14 @@ test("a confirmed Risk update materializes a supported state and clears the comp
   assert.deepEqual(decided.applied_item_ids, ["resolve-completion-risk"]);
   assert.equal(decided.proposal.items[0]?.materialized_objects[0]?.object_id, "risk-completion-state");
   assert.equal(coordinator.readGoalContract("board-1", "risk-completion-target").risks[0]?.state, "resolved");
+  assert.deepEqual(
+    coordinator.readGoalContract("board-1", "risk-completion-target").risks[0]?.resolution_basis,
+    {
+      summary: "来源覆盖检查已经通过。",
+      evidence_refs: ["evidence://coverage-check"],
+      residual_gaps: ["未覆盖登录态平台，只在当前 Contract 范围内解决"],
+    },
+  );
   const after = coordinator.evaluateLeafCompletion({
     board_id: "board-1",
     goal_id: "risk-completion-target",
@@ -3796,7 +3901,15 @@ test("checking a pending Risk proposal exposes an unsupported lifecycle state as
       item_id: "risk-state-check-item",
       kind: "risk",
       operation: "update",
-      payload: { ...riskFacts, state: "resolved" },
+      payload: {
+        ...riskFacts,
+        state: "resolved",
+        resolution_basis: {
+          summary: "来源覆盖检查已经通过。",
+          evidence_refs: ["evidence://risk-state-check"],
+          residual_gaps: [],
+        },
+      },
       object_type: "risk",
       object_id: "risk-state-check",
     })],
@@ -4089,6 +4202,239 @@ test("Goal Tree proposals cannot call a game plan complete while product paths o
   store.close();
 });
 
+test("Goal Tree proposals cannot close a compound Goal without mapping every parent Contract result to child Contracts", () => {
+  const { store, coordinator } = fixture();
+  createAcceptedCompoundParent(coordinator, "contract-coverage-parent");
+  coordinator.createGoal(
+    "board-1",
+    {
+      goal_id: "contract-coverage-child",
+      title: "交付代表性样本",
+      outcome: "代表性样本已经结构化保存",
+      why: "先验证最小样本链路",
+      business_logic: "样本只能证明样本链路，不能自动证明父级完整能力。",
+      in_scope: ["三类代表性样本"],
+      out_of_scope: ["完整市场搜索"],
+      required_inputs: ["三类来源各一个样本"],
+      promised_outputs: ["三类代表性结构化样本"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "contract-coverage-child-samples",
+          statement: "三类样本都能读取",
+          decision_method: "inspection",
+          pass_condition: "每类至少存在一个结构化样本",
+          required_evidence: ["sample-file"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "contract-coverage-child-create" },
+  );
+  coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "contract-coverage-child",
+      to_goal_id: "contract-coverage-parent",
+      type: "part_of",
+      reason: "代表性样本是父目标的一部分，但不是父目标全部能力。",
+    },
+    { actor_id: "user-1", idempotency_key: "contract-coverage-parent-child" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-clarifier",
+    goal_id: "contract-coverage-parent",
+    rough_idea: "确认父目标是否已经被子 Contract 完整覆盖。",
+    idempotency_key: "contract-coverage-dialogue",
+  });
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-clarifier",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "contract-coverage-parent",
+      summary: "只有产品路径归属，没有父子 Contract 结果映射。",
+      items: [
+        goalTreeProposalItem({
+          item_id: "contract-coverage-parent-close-without-mapping",
+          kind: "contract",
+          operation: "update",
+          payload: acceptedCompoundClosurePayload(
+            store.getGoal("contract-coverage-parent")!,
+            "contract-coverage-child",
+            { decomposition_review: completeDecompositionReview("contract-coverage-child") },
+          ),
+          object_type: "goal",
+          object_id: "contract-coverage-parent",
+        }),
+      ],
+      idempotency_key: "contract-coverage-proposal-without-mapping",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.contract_coverage_required",
+  );
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 0);
+
+  const coverageReview = (
+    status: "complete" | "partial",
+    childOutput = "三类代表性结构化样本",
+  ): DecompositionReview => ({
+    ...completeDecompositionReview("contract-coverage-child"),
+    contract_coverage: {
+      promised_outputs: [
+        {
+          parent_promised_output: "父 Goal 的单一工作状态",
+          status,
+          child_outputs: [
+            { goal_id: "contract-coverage-child", promised_output: childOutput },
+          ],
+          reason: status === "complete"
+            ? "父级状态由样本子 Goal 的可检查结果提供。"
+            : "样本只覆盖演示链路，尚未覆盖父级完整能力。",
+        },
+      ],
+      acceptance_criteria: [
+        {
+          parent_criterion_id: "contract-coverage-parent-children",
+          status: "complete",
+          child_criteria: [
+            { goal_id: "contract-coverage-child", criterion_id: "contract-coverage-child-samples" },
+          ],
+          reason: "子 Goal 的样本检查为父级检查提供明确依据。",
+        },
+      ],
+    },
+  });
+  const submitClosure = (review: DecompositionReview, suffix: string) => coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-clarifier",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "contract-coverage-parent",
+    summary: "逐项记录父子 Contract 结果覆盖。",
+    items: [
+      goalTreeProposalItem({
+        item_id: `contract-coverage-parent-close-${suffix}`,
+        kind: "contract",
+        operation: "update",
+        payload: acceptedCompoundClosurePayload(
+          store.getGoal("contract-coverage-parent")!,
+          "contract-coverage-child",
+          { decomposition_review: review },
+        ),
+        object_type: "goal",
+        object_id: "contract-coverage-parent",
+      }),
+    ],
+    idempotency_key: `contract-coverage-proposal-${suffix}`,
+  });
+
+  assert.throws(
+    () => submitClosure(coverageReview("partial"), "partial"),
+    (error: unknown) => error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.contract_coverage_incomplete",
+  );
+  assert.throws(
+    () => submitClosure(coverageReview("complete", "并不存在的子输出"), "bad-reference"),
+    (error: unknown) => error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.contract_coverage_reference_invalid",
+  );
+
+  const proposal = submitClosure(coverageReview("complete"), "complete").proposal;
+  coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-clarifier",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://contract-coverage",
+      message_ref: "message://contract-coverage-confirmed",
+    },
+    decisions: [
+      {
+        item_id: proposal.items[0]!.item_id,
+        decision: "confirm",
+        reason: "用户确认这份逐项覆盖关系。",
+      },
+    ],
+    idempotency_key: "contract-coverage-decision",
+  });
+  const storedReview = store.getGoal("contract-coverage-parent")?.decomposition_review;
+  assert.equal(storedReview?.contract_coverage?.promised_outputs[0]?.status, "complete");
+  assert.equal(
+    storedReview?.contract_coverage?.acceptance_criteria[0]?.child_criteria[0]?.criterion_id,
+    "contract-coverage-child-samples",
+  );
+  const childContract = coordinator.readGoalContract("board-1", "contract-coverage-child");
+  assert.deepEqual(childContract.parent_contract_coverage, [
+    {
+      parent_goal_id: "contract-coverage-parent",
+      parent_goal_title: "收口 contract-coverage-parent",
+      record_status: "recorded",
+      promised_outputs: [
+        {
+          parent_promised_output: "父 Goal 的单一工作状态",
+          status: "complete",
+          child_outputs: [
+            { goal_id: "contract-coverage-child", promised_output: "三类代表性结构化样本" },
+          ],
+          reason: "父级状态由样本子 Goal 的可检查结果提供。",
+        },
+      ],
+      acceptance_criteria: [
+        {
+          parent_criterion_id: "contract-coverage-parent-children",
+          status: "complete",
+          child_criteria: [
+            { goal_id: "contract-coverage-child", criterion_id: "contract-coverage-child-samples" },
+          ],
+          reason: "子 Goal 的样本检查为父级检查提供明确依据。",
+        },
+      ],
+    },
+  ]);
+
+  store.db
+    .prepare("UPDATE goals SET decomposition_review_json = ? WHERE goal_id = ?")
+    .run(JSON.stringify(coverageReview("partial")), "contract-coverage-parent");
+  const guardedContract = coordinator.readGoalContract("board-1", "contract-coverage-parent");
+  assert.equal(guardedContract.work_state.work_state, "clarification_blocked");
+  assert.ok(
+    guardedContract.work_state.reasons.some((item) => item.code === "goal.contract_coverage_incomplete"),
+  );
+
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("contract-coverage-child");
+  const activeRelation = store.snapshot("board-1").relations.find(
+    (relation) => relation.from_goal_id === "contract-coverage-child" &&
+      relation.to_goal_id === "contract-coverage-parent" &&
+      relation.type === "part_of" &&
+      relation.state === "active",
+  );
+  assert.ok(activeRelation);
+  coordinator.deactivateRelation(
+    "board-1",
+    { relation_id: activeRelation.relation_id, reason: "测试重新激活关系时的父级完成防线" },
+    { actor_id: "user-1", idempotency_key: "contract-coverage-relation-deactivate" },
+  );
+  coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "contract-coverage-child",
+      to_goal_id: "contract-coverage-parent",
+      type: "part_of",
+      reason: "重新激活后仍不得把部分覆盖的父 Goal 自动判定完成",
+    },
+    { actor_id: "user-1", idempotency_key: "contract-coverage-relation-reactivate" },
+  );
+  assert.equal(store.getGoal("contract-coverage-parent")?.fulfillment_state, "unmet");
+  store.close();
+});
+
 test("Goal Tree proposals cover complete game and App paths without forcing one Goal per checklist item", () => {
   const { store, coordinator } = fixture();
   const submitCompleteProduct = (
@@ -4156,7 +4502,21 @@ test("Goal Tree proposals cover complete game and App paths without forcing one 
     }).proposal;
   };
 
-  const gameReview = completeDecompositionReview("complete-game-slice", "game");
+  const gameReview = withCompleteContractCoverage(
+    completeDecompositionReview("complete-game-slice", "game"),
+    treeGoalPayload({
+      goal_id: "complete-game",
+      title: "交付完整可玩的足球游戏",
+      definition_state: "accepted",
+      decomposition_state: "closed_compound",
+    }),
+    [treeGoalPayload({
+      goal_id: "complete-game-slice",
+      title: "完成 complete-game 的完整产品闭环",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    })],
+  );
   const gameProposal = submitCompleteProduct("complete-game", "complete-game-slice", "game", gameReview);
   assert.equal(gameProposal.state, "pending");
   assert.deepEqual(
@@ -4164,7 +4524,21 @@ test("Goal Tree proposals cover complete game and App paths without forcing one 
     decompositionAreas.game,
   );
 
-  const appReview = completeDecompositionReview("complete-app-slice", "app");
+  const appReview = withCompleteContractCoverage(
+    completeDecompositionReview("complete-app-slice", "app"),
+    treeGoalPayload({
+      goal_id: "complete-app",
+      title: "交付端到端可用的 App",
+      definition_state: "accepted",
+      decomposition_state: "closed_compound",
+    }),
+    [treeGoalPayload({
+      goal_id: "complete-app-slice",
+      title: "完成 complete-app 的完整产品闭环",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    })],
+  );
   appReview.coverage = appReview.coverage.map((entry) => entry.area === "content_information"
     ? {
         ...entry,
@@ -4186,6 +4560,19 @@ test("new task decomposition checks the shared result chain before each task-spe
   const submitTask = (taskContext: TaskContext, review: DecompositionReview, suffix = "complete") => {
     const rootGoalId = `${taskContext}-${suffix}-root`;
     const childGoalId = `${taskContext}-${suffix}-owner`;
+    const parentPayload = treeGoalPayload({
+      goal_id: rootGoalId,
+      title: `交付完整的 ${taskContext} 结果`,
+      definition_state: "accepted",
+      decomposition_state: "closed_compound",
+    });
+    const childPayload = treeGoalPayload({
+      goal_id: childGoalId,
+      title: `承担 ${taskContext} 的完整闭环`,
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    });
+    const reviewed = withCompleteContractCoverage(review, parentPayload, [childPayload]);
     const dialogue = coordinator.startDraftDialogue({
       board_id: "board-1",
       actor_id: "runtime-task-planner",
@@ -4204,13 +4591,7 @@ test("new task decomposition checks the shared result chain before each task-spe
           item_id: `${rootGoalId}-contract`,
           kind: "contract",
           operation: "update",
-          payload: treeGoalPayload({
-            goal_id: rootGoalId,
-            title: `交付完整的 ${taskContext} 结果`,
-            definition_state: "accepted",
-            decomposition_state: "closed_compound",
-            decomposition_review: review,
-          }),
+          payload: { ...parentPayload, decomposition_review: reviewed },
           object_type: "goal",
           object_id: rootGoalId,
         }),
@@ -4218,12 +4599,7 @@ test("new task decomposition checks the shared result chain before each task-spe
           item_id: `${childGoalId}-goal`,
           kind: "goal",
           operation: "create",
-          payload: treeGoalPayload({
-            goal_id: childGoalId,
-            title: `承担 ${taskContext} 的完整闭环`,
-            definition_state: "accepted",
-            decomposition_state: "closed_leaf",
-          }),
+          payload: childPayload,
           object_type: "goal",
           object_id: childGoalId,
         }),
@@ -4352,18 +4728,32 @@ test("separate foundation Goals need an explicit dependency from core work to fo
   const review = completeTaskDecompositionReview("other", coreGoalId, {
     foundation_infrastructure: [foundationGoalId],
   });
+  const foundationParentPayload = treeGoalPayload({
+    goal_id: rootGoalId,
+    title: "交付由明确基础能力支撑的完整结果",
+    definition_state: "accepted",
+    decomposition_state: "closed_compound",
+  });
+  const foundationChildPayloads = [
+    [coreGoalId, "完成用户直接需要的核心工作"],
+    [foundationGoalId, "提供核心工作需要的基础能力"],
+  ].map(([goalId, title]) => treeGoalPayload({
+    goal_id: goalId!,
+    title: title!,
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+  }));
+  const reviewedFoundation = withCompleteContractCoverage(
+    review,
+    foundationParentPayload,
+    foundationChildPayloads,
+  );
   const baseItems = [
     goalTreeProposalItem({
       item_id: "foundation-path-contract",
       kind: "contract",
       operation: "update",
-      payload: treeGoalPayload({
-        goal_id: rootGoalId,
-        title: "交付由明确基础能力支撑的完整结果",
-        definition_state: "accepted",
-        decomposition_state: "closed_compound",
-        decomposition_review: review,
-      }),
+      payload: { ...foundationParentPayload, decomposition_review: reviewedFoundation },
       object_type: "goal",
       object_id: rootGoalId,
     }),
@@ -4372,12 +4762,7 @@ test("separate foundation Goals need an explicit dependency from core work to fo
         item_id: `${goalId}-goal`,
         kind: "goal",
         operation: "create",
-        payload: treeGoalPayload({
-          goal_id: goalId,
-          title: goalId === coreGoalId ? "完成用户直接需要的核心工作" : "提供核心工作需要的基础能力",
-          definition_state: "accepted",
-          decomposition_state: "closed_leaf",
-        }),
+        payload: foundationChildPayloads.find((payload) => payload.goal_id === goalId)!,
         object_type: "goal",
         object_id: goalId,
       }),
@@ -5386,7 +5771,20 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
           title: "确认已经完成子树的 Draft 父 Goal",
           definition_state: "accepted",
           decomposition_state: "closed_compound",
-          decomposition_review: completeDecompositionReview("newly-accepted-compound-child"),
+          decomposition_review: withCompleteContractCoverage(
+            completeDecompositionReview("newly-accepted-compound-child"),
+            treeGoalPayload({
+              goal_id: "newly-accepted-compound-parent",
+              title: "确认已经完成子树的 Draft 父 Goal",
+              definition_state: "accepted",
+              decomposition_state: "closed_compound",
+            }),
+            [{
+              goal_id: "newly-accepted-compound-child",
+              promised_outputs: ["newly-accepted-compound-child 有可检查的完成结果"],
+              acceptance_criteria: [{ criterion_id: "newly-accepted-compound-child-criterion" }],
+            }],
+          ),
         }),
         object_type: "goal",
         object_id: "newly-accepted-compound-parent",
@@ -6834,10 +7232,35 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
       .explainGoal({ board_id: "board-1", goal_id: "risk-goal", actor_id: "runtime-a" })
       .reasons.some((item) => item.code === "risk.blocks_claim"),
   );
+  assert.throws(
+    () => coordinator.setRiskState(
+      "board-1",
+      { risk_id: "claim-risk", state: "resolved", reason: "输入已经确认" },
+      { actor_id: "user-1", idempotency_key: "risk-resolve-claim-without-basis" },
+    ),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "risk.resolution_basis_required",
+  );
   coordinator.setRiskState(
     "board-1",
-    { risk_id: "claim-risk", state: "resolved", reason: "输入已经确认" },
+    {
+      risk_id: "claim-risk",
+      state: "resolved",
+      reason: "输入已经确认",
+      resolution_basis: {
+        summary: "用户已确认关键输入及其当前版本。",
+        evidence_refs: ["conversation://risk-input-confirmation"],
+        residual_gaps: [],
+      },
+    },
     { actor_id: "user-1", idempotency_key: "risk-resolve-claim" },
+  );
+  assert.deepEqual(
+    store.snapshot("board-1").risks.find((risk) => risk.risk_id === "claim-risk")?.resolution_basis,
+    {
+      summary: "用户已确认关键输入及其当前版本。",
+      evidence_refs: ["conversation://risk-input-confirmation"],
+      residual_gaps: [],
+    },
   );
   assert.equal(
     coordinator.explainGoal({ board_id: "board-1", goal_id: "risk-goal", actor_id: "runtime-a" }).ready,
@@ -7144,7 +7567,16 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     .run("revalidation-dependency");
   coordinator.setRiskState(
     "board-1",
-    { risk_id: "revalidation-risk", state: "resolved", reason: "迁移证据已经补齐" },
+    {
+      risk_id: "revalidation-risk",
+      state: "resolved",
+      reason: "迁移证据已经补齐",
+      resolution_basis: {
+        summary: "迁移证据已补齐并通过复核。",
+        evidence_refs: ["evidence://migration-complete"],
+        residual_gaps: [],
+      },
+    },
     { actor_id: "user-1", idempotency_key: "revalidation-resolve-risk" },
   );
 
