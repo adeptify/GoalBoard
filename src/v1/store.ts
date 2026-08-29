@@ -691,7 +691,10 @@ export class SqliteGoalBoardStore {
     const evidenceCorrectionsApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 17")
       .get();
-    if (!evidenceCorrectionsApplied) this.migrateEvidenceCorrections();
+    const evidenceCorrectionsTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_corrections'")
+      .get();
+    if (!evidenceCorrectionsApplied || !evidenceCorrectionsTable) this.migrateEvidenceCorrections();
     const evidenceLocatorValidationApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 18")
       .get();
@@ -1393,7 +1396,7 @@ export class SqliteGoalBoardStore {
           ON evidence_corrections(board_id, goal_id, created_at, correction_id);
       `);
       this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (17, ?)")
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (17, ?)")
         .run(new Date().toISOString());
     });
   }

@@ -33,6 +33,9 @@ const PTY_CLIENT_SOURCE = readFileSync(new URL("../src/web/pty-client.ts", impor
 const DESKTOP_CAPABILITIES = JSON.parse(
   readFileSync(new URL("../desktop/src-tauri/capabilities/default.json", import.meta.url), "utf8"),
 ) as { permissions?: string[] };
+const TAURI_CONFIG = JSON.parse(
+  readFileSync(new URL("../desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+) as { app?: { windows?: Array<{ label?: string; titleBarStyle?: string; hiddenTitle?: boolean; trafficLightPosition?: { x?: number; y?: number } }> } };
 let webRequestSequence = 0;
 
 test("Runtime stays available as a workspace view instead of an independently collapsed dock", () => {
@@ -43,6 +46,10 @@ test("Runtime stays available as a workspace view instead of an independently co
 
 test("desktop capability permits the custom title bar to drag its window", () => {
   assert.ok(DESKTOP_CAPABILITIES.permissions?.includes("core:window:allow-start-dragging"));
+  const mainWindow = TAURI_CONFIG.app?.windows?.find((window) => window.label === "main");
+  assert.equal(mainWindow?.titleBarStyle, "Overlay");
+  assert.equal(mainWindow?.hiddenTitle, true);
+  assert.deepEqual(mainWindow?.trafficLightPosition, { x: 16, y: 24 });
 });
 
 function createGoalBoardWebServer(
@@ -363,7 +370,7 @@ test("PTY PATH still finds node when NVM_BIN is absent", () => {
   }
 });
 
-test("Goal pages include the TUI pane in the browser and the desktop shell", () => {
+test("Web and Desktop share one project workbench; Desktop only adds native chrome hooks", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-desktop-render-"));
   const databasePath = join(directory, "demo.db");
   seedDemoBoard(databasePath);
@@ -379,11 +386,26 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     const browser = `${renderGoalBoardWeb(view)}${workbenchAssets}`;
     const desktop = `${renderGoalBoardWeb(view, undefined, false, false, false, "", true)}${workbenchAssets}`;
     const decisions = renderGoalBoardWeb(view, undefined, false, true);
+    const desktopDecisions = renderGoalBoardWeb(view, undefined, false, true, false, "", true);
+    const browserMarkup = browser.slice(0, browser.indexOf("<style>"));
     assert.match(browser, /class="tui-pane"/);
     assert.match(browser, /推进这个 Goal/);
     assert.match(browser, /pty-client\.js/);
     assert.match(browser, /class="workspace is-desktop-tui"/);
+    assert.match(browser, /data-desktop-shell="true"/);
+    assert.doesNotMatch(browserMarkup, /data-native-desktop="true"|data-tauri-drag-region/);
+    assert.match(browser, /class="desktop-project-switcher navigator-project-menu"/);
+    assert.match(browser, /data-desktop-directory="root"/);
+    assert.match(browser, /class="desktop-workbench-bar"/);
+    assert.doesNotMatch(browser, /class="navigator-project-meta"|class="web-project-switcher"/);
+    assert.doesNotMatch(browser, /class="personal-sidebar"|class="desktop-project-context"/);
     assert.doesNotMatch(decisions, /class="tui-pane"|推进这个 Goal|复制命令|pty-client\.js|data-mobile-target="tui"/);
+    assert.match(desktopDecisions, /class="desktop-work-tabs" data-work-tabs role="tablist" aria-label="Inbox"/);
+    assert.match(desktopDecisions, /class="desktop-work-tab is-selected is-utility"><span role="tab" aria-selected="true">Inbox<\/span>/);
+    assert.match(desktopDecisions, /data-document-pane role="tabpanel" tabindex="0" aria-label="Inbox"/);
+    assert.match(desktopDecisions, /data-desktop-directory="root"/);
+    assert.match(desktopDecisions, /class="desktop-module-item desktop-module-item--inbox is-current"[^>]*data-decisions-link/);
+    assert.match(desktopDecisions, /class="decision-center inbox-workspace" data-decision-center/);
     assert.match(browser, /data-mobile-target="tui"/);
     assert.match(browser, /aria-controls="goal-tui-pane"/);
     assert.match(browser, /data-tui-kind="claude-code"/);
@@ -406,7 +428,7 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /<strong data-tui-owner-title>/);
     assert.match(desktop, /<b>绑定到 Goal<\/b>/);
     assert.match(desktop, /class="tui-mode-label">终端<\/span>/);
-    assert.match(desktop, /data-navigator-heading>目标导航/);
+    assert.doesNotMatch(desktop, /data-navigator-heading>目标导航/);
     assert.match(desktop, /class="workbench-header desktop-pane-header"/);
     assert.match(desktop, /data-workbench-view="focus"/);
     assert.match(desktop, /data-workbench-view="runtime"/);
@@ -433,6 +455,57 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /class="workspace is-desktop-tui"/);
     assert.match(desktop, /src="\/desktop\/pty-client\.js"/);
     assert.match(desktop, /data-desktop-shell="true"/);
+    assert.match(desktop, /data-native-desktop="true"/);
+    assert.doesNotMatch(desktop, /class="personal-sidebar"|class="personal-space-context"/);
+    assert.match(desktop, /data-desktop-directory="root"/);
+    assert.match(desktop, /data-directory-panel="root">/);
+    assert.doesNotMatch(desktop, /data-directory-panel="inbox"/);
+    assert.match(desktop, /data-directory-panel="goals" hidden/);
+    assert.match(desktop, /data-decisions-link href="\/decisions\?desktop=1"[\s\S]*<strong>Inbox<\/strong>/);
+    assert.match(desktop, /data-directory-open="goals" data-work-surface-open="goal"[\s\S]*<strong>Goals<\/strong>/);
+    assert.match(desktop, /data-work-surface-open="feed"[\s\S]*<strong>Feed<\/strong>/);
+    assert.match(desktop, /data-work-surface-open="promotion"[\s\S]*<strong>Promotion<\/strong>/);
+    assert.match(desktop, /data-work-surface-open="visual"[\s\S]*可视化工作区/);
+    assert.match(desktop, /data-work-surface="goal" data-work-surface-label="Goal Tree"/);
+    assert.match(desktop, /data-work-surface="feed" data-work-surface-label="Feed" hidden/);
+    assert.match(desktop, /data-work-surface="promotion" data-work-surface-label="Promotion" hidden/);
+    assert.match(desktop, /data-work-surface="visual" data-work-surface-label="可视化工作区" hidden/);
+    assert.doesNotMatch(desktop, /data-directory-panel="feed"|data-directory-panel="promotion"|data-directory-panel="visual"/);
+    assert.match(desktop, /class="desktop-project-switcher navigator-project-menu" data-project-menu/);
+    assert.match(desktop, /<summary class="navigator-project-selector"[^>]*aria-label="切换项目"/);
+    assert.match(desktop, /class="navigator-project-menu-popover"/);
+    assert.match(desktop, /class="desktop-titlebar-drag desktop-titlebar-drag--left" data-tauri-drag-region/);
+    assert.doesNotMatch(desktop, /class="desktop-titlebar-safe"/);
+    assert.match(desktop, /<div class="desktop-workbench-bar">[\s\S]*?<div class="desktop-titlebar-drag" data-tauri-drag-region aria-hidden="true"><\/div>[\s\S]*?<div class="desktop-workbench-actions">/);
+    assert.doesNotMatch(desktop, /class="desktop-workbench-bar" data-tauri-drag-region/);
+    assert.match(desktop, /class="personal-account" data-settings-link[^>]*aria-label="打开全局设置"/);
+    assert.match(desktop, /class="personal-account-avatar"/);
+    assert.match(desktop, /class="personal-account-settings"/);
+    assert.match(desktop, />一骏<\/strong><small>本地空间<\/small>/);
+    assert.match(desktop, /class="desktop-work-tabs" data-work-tabs role="tablist"/);
+    assert.match(desktop, /data-work-tab-shell=/);
+    assert.match(desktop, /data-close-work-tab=/);
+    assert.match(desktop, /workTabsStorageKey = "goalboard-work-tabs:"/);
+    assert.match(desktop, /goalUiStorageKey \+ ":inbox"/);
+    assert.match(desktop, /const desktopNavigationStateVersion = 2/);
+    assert.match(desktop, /navigationVersion: desktopNavigationStateVersion/);
+    assert.match(desktop, /const setDesktopWorkSurface = \(surface, persist = true, restoreScroll = true\) =>/);
+    assert.match(desktop, /surfaceScroll: \{ \.\.\.desktopSurfaceScroll, \[activeDesktopSurface\]: documentPane\.scrollTop \}/);
+    assert.match(desktop, /setDesktopWorkSurface\("goal", true, true\)/);
+    assert.match(desktop, /if \(!openWorkTabs\.includes\(goalId\)\) openWorkTabs\.push\(goalId\)/);
+    assert.match(desktop, /let desktopDirectoryOrigin = null/);
+    assert.match(desktop, /ui\?\.navigationVersion === desktopNavigationStateVersion/);
+    assert.match(desktop, /setDesktopDirectory\(restoredDirectory, false, false\)/);
+    assert.match(desktop, /const focusWorkTab = \(goalId\) =>/);
+    assert.match(desktop, /selectGoal\(nextGoalId\)\.then\(\(\) => focusWorkTab\(nextGoalId\)\)/);
+    assert.match(desktop, /data-directory-back/);
+    assert.doesNotMatch(desktop, /class="desktop-project-context"/);
+    assert.doesNotMatch(desktop, /class="project-decisions/);
+    assert.match(desktop, /class="goal-brief-grid"/);
+    assert.match(desktop, />完成后会得到什么<\/h2>/);
+    assert.match(desktop, />为什么现在做<\/h2>/);
+    assert.match(desktop, />它会怎样运转<\/h2>/);
+    assert.match(desktop, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   } finally {
     store.close();
   }
@@ -462,21 +535,30 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.doesNotMatch(indexHtml, /class="tui-pane"|pty-client\.js/);
 
     const desktopIndex = await webFetch(`${origin}/?desktop=1`);
-    assert.match(String(desktopIndex.headers.get("set-cookie")), /goalboard_desktop=1/);
+    assert.equal(desktopIndex.headers.get("set-cookie"), null);
     const desktopIndexHtml = await desktopIndex.text();
     assert.match(desktopIndexHtml, /打开项目后，Goal 详情右侧会出现终端栏/);
     assert.match(desktopIndexHtml, new RegExp(`href="${prefix}\\?desktop=1"`));
 
-    const cookiePage = await (
-      await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
-        headers: { cookie: "goalboard_desktop=1" },
-      })
-    ).text();
+    const cookieResponse = await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
+      headers: { cookie: "goalboard_desktop=1" },
+    });
+    const cookiePage = await cookieResponse.text();
     assert.match(cookiePage, /data-tui-pane/);
     assert.match(cookiePage, /添加终端/);
+    assert.match(cookiePage, /data-desktop-shell="true"/);
+    assert.doesNotMatch(cookiePage, /data-native-desktop="true"|class="navigator-project-meta"/);
+    assert.equal(cookieResponse.headers.get("set-cookie"), null);
 
     const queryPage = await (await webFetch(`${origin}${prefix}/goals/TUI-GOAL?desktop=1`)).text();
     assert.match(queryPage, /data-tui-pane/);
+    assert.match(queryPage, /data-native-desktop="true"/);
+
+    const runtimeAvailability = await (
+      await webFetch(`${origin}${prefix}/api/runtime-availability`)
+    ).json() as Record<string, boolean>;
+    assert.deepEqual(Object.keys(runtimeAvailability).sort(), ["claude-code", "codex", "grok-build", "opencode", "pi-agent"]);
+    assert.ok(Object.values(runtimeAvailability).every((available) => typeof available === "boolean"));
 
     const desktopPage = await (
       await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, { headers: { "x-goalboard-desktop": "1" } })
@@ -484,6 +566,7 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.match(desktopPage, /data-tui-pane/);
     assert.match(desktopPage, /推进这个 Goal/);
     assert.match(desktopPage, /添加终端/);
+    assert.match(desktopPage, /data-native-desktop="true"/);
 
     const opened = await webFetch(panelsUrl, {
       method: "POST",
