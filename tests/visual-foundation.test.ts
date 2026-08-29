@@ -24,7 +24,8 @@ test("visual foundation keeps Light, Dark, and System as local presentation choi
 });
 
 test("visual foundation ships one restrained Calm Desktop world across workbench and settings", () => {
-  assert.match(VISUAL_FOUNDATION_STYLES, /--page: #f3f3f5;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--page: #f6f6f7;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--shadow-soft: 0 1px 2px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--paper: #ffffff;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--muted: #62626b;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--faint: #76767f;/);
@@ -93,17 +94,18 @@ test("visual foundation defines one wide workbench and one narrow companion", ()
 test("desktop shell uses one project directory, project tabs, and soft work surfaces", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /Personal workbench v3: one directory, project-scoped tabs, and soft work surfaces/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-control-center-y: 16px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-control-center-y: 21\.5px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-project-control-center-y\) \* 2\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*grid-template-rows: auto minmax\(0, 1fr\) auto !important/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*padding: 0 8px;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*overflow: visible;[\s\S]*z-index: 2;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-resizer \{[\s\S]*grid-row: 2 \/ -1;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 72px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 88px;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-menu-popover \{[\s\S]*position: absolute;[\s\S]*box-shadow: 0 14px 34px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-menu-popover \{[\s\S]*position: absolute;[\s\S]*width: min\(310px, calc\(100vw - 24px\)\);[\s\S]*box-shadow: 0 14px 34px[\s\S]*z-index: 80;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-directory-panel\[hidden\] \{ display: none !important; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-module-item \{[\s\S]*min-height: 40px;[\s\S]*border-radius: 8px;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-module-item\.is-current \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 8%, transparent\)/);
@@ -113,22 +115,26 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-selected \{[\s\S]*background: var\(--paper\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility \{[\s\S]*min-width: max-content;[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility > \[role="tab"\] \{[\s\S]*white-space: nowrap;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*grid-template-columns: minmax\(0, max-content\) minmax\(72px, 1fr\) auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, max-content\) minmax\(72px, 1fr\) auto;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-titlebar-drag \{[\s\S]*min-width: 72px;[\s\S]*-webkit-app-region: drag;[\s\S]*user-select: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-surface\[hidden\] \{ display: none !important; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-utility-surface:not\(\[hidden\]\) \{ display: grid; gap: 34px; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\[data-desktop-surface\]:not\(\[data-desktop-surface="goal"\]\)[\s\S]*\.tui-pane \{ display: none !important; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-brief-item,[\s\S]*box-shadow:/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: max\(420px, calc\(100dvh - 340px\)\);[\s\S]*display: grid;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-title-kicker \.goal-status \{[\s\S]*min-height: 26px;[\s\S]*padding: 2px 9px;[\s\S]*gap: 6px;[\s\S]*border-radius: 8px;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: max\(280px, calc\(100dvh - 510px\)\);[\s\S]*align-items: stretch;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-stage > \.focus-section-card-reveal \{[\s\S]*grid-area: 1 \/ 1;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel\[data-goal-panel="overview"\]:not\(\[hidden\]\) \.goal-focus-main,[\s\S]*\.goal-focus-aside \{[\s\S]*grid-template-rows: auto minmax\(0, 1fr\);[\s\S]*align-content: stretch;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-deck \{[\s\S]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-pane\[data-tui-read-only\] \.tui-tabs,[\s\S]*\.tui-menu \{[\s\S]*display: none !important;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /body\.settings-page\[data-desktop-shell="true"\]:has\(\.settings-navigation\)/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /> \.topbar \{[\s\S]*height: var\(--desktop-titlebar-height\);[\s\S]*min-height: 48px;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*grid-template-rows: var\(--desktop-titlebar-height\) 50px 50px minmax\(0, 1fr\) auto;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe \{ grid-row: 1; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /> \.topbar \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*min-height: var\(--desktop-native-control-row-height\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*grid-template-rows: var\(--desktop-titlebar-height\) 50px minmax\(0, 1fr\) auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-desktop-project \{[\s\S]*height: var\(--desktop-titlebar-height\);[\s\S]*grid-row: 1;[\s\S]*grid-template-rows: var\(--desktop-native-control-row-height\);[\s\S]*align-content: start;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-settings \{[\s\S]*height: 28px;[\s\S]*min-height: 28px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\]:not\(\[data-native-desktop="true"\]\) \.navigator-project \{[\s\S]*padding-left: 2px;/);
+  assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-heading \{ margin-bottom: 18px; padding: 0 2px; border: 0; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.preference-section \{ padding: 18px 0; border: 0; \}/);
 });
@@ -148,10 +154,9 @@ test("visual foundation keeps the Goal navigator dense and relationships progres
   assert.match(VISUAL_FOUNDATION_STYLES, /--goal-status-tone: var\(--ink-soft\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /border: 1px solid color-mix\(in srgb, var\(--goal-status-tone\) 28%, var\(--line\)\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-status--execution_blocked,[\s\S]*--goal-status-tone: var\(--red\)/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*grid-template-columns: 18px minmax\(0, 1fr\) auto/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action \{[\s\S]*width: 28px;[\s\S]*justify-content: center/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action span \{ display: none; \}/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-action svg \{ width: 15px; height: 15px; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\] \.navigator-project-primary \{[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\] \.navigator-project-selector \{[\s\S]*height: 30px;[\s\S]*grid-template-columns: 16px minmax\(0, 1fr\) 12px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\] \.navigator-project-settings \{[\s\S]*width: 28px;[\s\S]*place-items: center/);
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-rows: auto auto minmax\(0, 1fr\) 42px/);
 });
 

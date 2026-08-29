@@ -3932,31 +3932,7 @@ const STYLES = `
   .project-context a:hover { text-decoration: underline; }
   .navigator-project { min-width: 0; padding: 10px 10px 9px; border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--paper) 62%, var(--rail)); display: grid; gap: 7px; }
   .navigator-project-primary { min-width: 0; display: flex; align-items: center; gap: 7px; }
-  .navigator-project-mark { width: 20px; height: 20px; color: var(--muted); display: grid; place-items: center; flex: 0 0 auto; }
-  .navigator-project-mark svg { width: 15px; height: 15px; }
   .navigator-project-primary > strong { min-width: 0; flex: 1; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-  .navigator-project-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 0; }
-  .navigator-project-action { min-height: 24px; padding: 0 7px; color: var(--blue-dark); display: inline-flex; align-items: center; font-size: 11px; font-weight: 650; text-decoration: none; white-space: nowrap; }
-  .navigator-project-action + .navigator-project-action { border-left: 1px solid var(--line); }
-  .navigator-project-action:hover { color: var(--ink); text-decoration: underline; }
-  .navigator-project-meta { min-width: 0; min-height: 20px; display: flex; align-items: center; gap: 8px; }
-  .navigator-project-status { min-width: 0; margin-left: auto; display: flex; align-items: center; gap: 7px; }
-  .project-decisions { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #3b434e; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; text-decoration: none; flex: 0 0 auto; }
-  a.project-decisions { color: #3b434e; text-decoration: none; }
-  .project-decisions:hover, a.project-decisions:hover { color: var(--blue-dark); background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue), var(--line) 55%); }
-  .project-decisions.is-current, a.project-decisions.is-current { color: var(--blue-dark); background: var(--blue-soft); border-color: #bcd4f2; }
-  .project-decisions svg { font-size: 14px; }
-  .project-decisions strong { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
-  .project-decisions.has-pending { border-color: color-mix(in srgb, var(--amber), white 42%); background: var(--amber-soft); }
-  .project-decisions.has-pending, a.project-decisions.has-pending { color: #6d4e10; }
-  .project-decisions.has-pending:hover, a.project-decisions.has-pending:hover { color: #6d4e10; background: #ffe7b5; border-color: color-mix(in srgb, var(--amber), white 28%); }
-  .project-decisions.has-pending.is-current, a.project-decisions.has-pending.is-current { color: #6d4e10; background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber), white 28%); }
-  .project-decisions.has-pending strong { color: var(--amber); }
-  .project-demo { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .sync-state { margin-left: 2px; padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-  .sync-state::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--green); }
-  .sync-state.is-syncing::before { background: var(--blue); animation: pulse 1s infinite; }
-  .sync-state.is-offline::before { background: var(--red); }
   .top-spacer { min-width: 0; flex: 1; }
   .top-action { height: 34px; margin-right: 10px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent; color: #3b434e; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; white-space: nowrap; }
   a.top-action { color: #3b434e; text-decoration: none; }
@@ -5312,7 +5288,7 @@ const RESPONSIVE_STYLES = `
   @media (max-width: 1500px) {
     .brand { min-width: 160px; padding-inline: 20px; }
     .project-context { min-width: 0; padding-inline: 14px; }
-    .project-context > span:not(.sync-state) { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context > span { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
     .top-action { padding-inline: 9px; }
   }
   @media (max-width: 1180px) {
@@ -5321,7 +5297,7 @@ const RESPONSIVE_STYLES = `
     .workspace.is-desktop-tui { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 5px var(--tui-width, 400px); }
     .workspace.is-desktop-tui.is-tui-collapsed { grid-template-columns: var(--tree-width, 240px) 5px minmax(0, 1fr) 0 0; }
     .project-context { min-width: 0; padding-inline: 12px; }
-    .project-context > span:not(.sync-state) { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context > span { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
     .top-action { padding-inline: 8px; }
     .top-action span { display: none; }
     .runtime-grid { grid-template-columns: 1fr 1fr; }
@@ -5331,8 +5307,8 @@ const RESPONSIVE_STYLES = `
   @media (max-width: 900px) {
     .top-spacer { display: block; flex: 1 1 auto; }
     .project-context { min-width: 0; flex: 1 1 auto; padding-inline: 12px; }
-    .project-context > strong, .topbar .project-demo, .topbar .sync-state { display: none; }
-    .project-context > span:not(.sync-state) { min-width: 0; flex: 1 1 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+    .project-context > strong { display: none; }
+    .project-context > span { min-width: 0; flex: 1 1 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
     .project-context a { flex: 0 0 auto; }
   }
   @media (max-width: 760px) {
@@ -5342,7 +5318,7 @@ const RESPONSIVE_STYLES = `
     .brand { min-width: 0; padding: 0 15px; border-right: 0; }
     .brand strong { font-size: 17px; }
     .project-context { padding-inline: 8px; }
-    .project-context > span:not(.sync-state) { max-width: 132px; }
+    .project-context > span { max-width: 132px; }
     .top-spacer { flex: 1; }
     .top-action { margin-right: 8px; }
     .top-action span { display: none; }
@@ -5462,22 +5438,26 @@ const PROJECT_INDEX_STYLES = `
   body.project-index-page { overflow: auto; background: var(--page); }
   .project-index-page > .topbar { height: 58px; }
   .project-index-page .brand { color: inherit; text-decoration: none; }
-  .project-index { min-height: calc(100dvh - 58px); padding: clamp(40px, 10vh, 112px) 24px; display: grid; place-items: start center; }
-  .project-index-panel { width: min(100%, 760px); border: 1px solid var(--line-strong); background: var(--paper); box-shadow: var(--shadow); }
-  .project-index-heading { padding: 28px 30px 23px; border-bottom: 1px solid var(--line-strong); }
-  .project-index-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
-  .project-index-heading p { max-width: 52ch; margin: 7px 0 0; color: var(--muted); }
-  .project-index-desktop-note { max-width: none; margin-top: 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--blue), var(--line) 62%); border-radius: 7px; background: var(--blue-soft); color: var(--blue-dark); font-size: 13px; font-weight: 650; }
-  .project-list { list-style: none; margin: 0; padding: 0; }
-  .project-list li + li { border-top: 1px solid var(--line); }
-  .project-list a { min-height: 74px; padding: 16px 24px 16px 30px; color: inherit; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 18px; text-decoration: none; }
-  .project-list a:hover { background: color-mix(in srgb, var(--blue-soft) 58%, var(--paper)); }
-  .project-list a:focus-visible { outline-offset: -3px; }
-  .project-list a > span { min-width: 0; display: grid; gap: 2px; }
-  .project-list strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
-  .project-list span { color: var(--muted); font-size: 12px; }
-  .project-list svg { color: var(--faint); }
-  .project-list a:hover svg { color: var(--blue); transform: rotate(-90deg); }
+  .project-index { min-height: calc(100dvh - 58px); padding: clamp(42px, 7vh, 78px) clamp(22px, 5vw, 72px) 72px; display: grid; place-items: start center; }
+  .project-index-panel { width: min(100%, 1120px); background: transparent; }
+  .project-index-heading { padding: 0 0 28px; }
+  .project-index-heading h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -.04em; }
+  .project-index-heading p { max-width: 64ch; margin: 9px 0 0; color: var(--muted); }
+  .project-index-desktop-note { max-width: 66ch; margin-top: 13px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 520; }
+  .project-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 18px; }
+  .project-card { min-width: 0; min-height: 196px; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: inherit; background: var(--paper); box-shadow: var(--shadow-soft); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 24px; text-decoration: none; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+  .project-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-raised); transform: translateY(-1px); }
+  .project-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 56%, transparent); outline-offset: 3px; }
+  .project-card > header, .project-card > footer { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .project-card > div { min-width: 0; }
+  .project-card-icon { width: 30px; height: 30px; border-radius: 9px; color: var(--ink-soft); background: var(--rail); display: grid; place-items: center; }
+  .project-card-icon svg { width: 16px; height: 16px; }
+  .project-card-kind { min-width: 0; overflow: hidden; color: var(--faint); font-size: 10px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .project-card h2 { margin: 0; overflow: hidden; font-size: 17px; letter-spacing: -.018em; text-overflow: ellipsis; white-space: nowrap; }
+  .project-card p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .project-card footer { color: var(--ink-soft); font-size: 11px; font-weight: 650; }
+  .project-card footer svg { width: 14px; height: 14px; transform: rotate(180deg); transition: transform .16s ease; }
+  .project-card:hover footer svg { transform: rotate(180deg) translateX(-2px); }
   .project-index-empty { padding: 42px 30px 46px; color: var(--muted); }
   .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
   .project-index-empty p { max-width: 48ch; margin: 0; }
@@ -5485,7 +5465,7 @@ const PROJECT_INDEX_STYLES = `
   .project-index-start a { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--blue-dark); background: var(--paper); display: inline-flex; align-items: center; font-weight: 650; text-decoration: none; }
   .project-index-start a:first-child { border-color: var(--blue); color: #fff; background: var(--blue); }
   .project-index-start a:hover { border-color: color-mix(in srgb, var(--blue), var(--line) 58%); background: var(--blue-soft); color: var(--blue-dark); }
-  .project-index-migration { padding: 16px 30px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; background: var(--rail); }
+  .project-index-migration { margin-top: 28px; padding: 18px 20px; border: 0; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 18px; background: color-mix(in srgb, var(--rail) 78%, var(--page)); }
   .project-index-migration > div { min-width: 0; }
   .project-index-migration strong { display: block; font-size: 13px; }
   .project-index-migration small { display: block; margin-top: 2px; color: var(--muted); }
@@ -5511,7 +5491,7 @@ const PROJECT_INDEX_STYLES = `
   .project-migration-form > footer .project-migration-submit { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
   .project-migration-form > footer .project-migration-submit:hover { background: var(--blue-dark); }
   .project-migration-form > footer .project-migration-submit:disabled { opacity: .58; cursor: wait; }
-  .project-index-note { margin: 0; padding: 12px 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--rail); }
+  .project-index-note { margin: 10px 0 0; padding: 0 2px; border: 0; color: var(--muted); font-size: 11px; background: transparent; }
   @media (max-width: 760px) {
     .project-index-page > .topbar { height: 52px; }
     .project-index { min-height: calc(100dvh - 52px); }
@@ -5520,8 +5500,9 @@ const PROJECT_INDEX_STYLES = `
   @media (max-width: 620px) {
     .project-index { padding: 28px 14px; place-items: start stretch; }
     .project-index-panel { width: 100%; }
-    .project-index-heading, .project-index-empty { padding-inline: 20px; }
-    .project-list a { padding-inline: 20px; }
+    .project-index-heading, .project-index-empty { padding-inline: 0; }
+    .project-card-grid { grid-template-columns: 1fr; }
+    .project-card { min-height: 184px; padding: 22px 20px; gap: 22px; }
     .project-index-migration { padding-inline: 20px; align-items: stretch; flex-direction: column; }
     .project-index-migrate { align-self: flex-start; }
     .project-index-note { padding-inline: 20px; }
@@ -6304,7 +6285,6 @@ const CLIENT_SCRIPT = `
     const trashError = document.querySelector("[data-goal-trash-error]");
     const trashSubmit = document.querySelector("[data-goal-trash-submit]");
     const toast = document.querySelector("[data-toast]");
-    const syncStates = [...document.querySelectorAll("[data-sync-state]")];
     const archiveView = document.body.dataset.boardView === "archive";
     const trashView = document.body.dataset.boardView === "trash";
     const decisionView = document.body.dataset.boardView === "decisions";
@@ -6731,7 +6711,7 @@ const CLIENT_SCRIPT = `
     };
 
     const goalPageBase = () => route(trashView ? "/trash/goals/" : archiveView ? "/archive/goals/" : "/goals/");
-    const goalPageUrl = (goalId) => goalPageBase() + encodeURIComponent(goalId) + (document.body.dataset.desktopShell === "true" ? "?desktop=1" : "");
+    const goalPageUrl = (goalId) => goalPageBase() + encodeURIComponent(goalId) + (document.body.dataset.nativeDesktop === "true" ? "?desktop=1" : "");
 
     const openGoalTrashDialog = (trigger, trashed) => {
       if (!trashDialog || !trashForm) return;
@@ -6826,14 +6806,6 @@ const CLIENT_SCRIPT = `
       } finally {
         if (!redirecting) trashSubmit.disabled = false;
       }
-    };
-
-    const setSyncState = (label, mode = "") => {
-      syncStates.forEach((syncState) => {
-        syncState.textContent = L(label);
-        syncState.classList.toggle("is-syncing", mode === "syncing");
-        syncState.classList.toggle("is-offline", mode === "offline");
-      });
     };
 
     const setMobileView = (view) => {
@@ -7510,7 +7482,6 @@ const CLIENT_SCRIPT = `
       const controller = new AbortController();
       goalDocumentRequest = controller;
       setGoalDocumentBusy(true);
-      setSyncState("载入 Goal…", "syncing");
       try {
         const response = await fetch(
           route("/api/goals/" + encodeURIComponent(goalId) + "/document?view=" + documentCollection),
@@ -7520,11 +7491,9 @@ const CLIENT_SCRIPT = `
         const html = await response.text();
         if (goalDocumentRequest !== controller) return null;
         replaceGoalDocument(html);
-        setSyncState("已同步");
         return true;
       } catch (error) {
         if (isAbortError(error) || goalDocumentRequest !== controller) return null;
-        setSyncState("暂时离线", "offline");
         showToast(error.message || "无法读取这条 Goal 正文", true);
         return false;
       } finally {
@@ -7638,12 +7607,10 @@ const CLIENT_SCRIPT = `
     const refreshBoard = async (force = false) => {
       if (syncing || document.hidden) return;
       if (!force && searchInteractionActive()) {
-        setSyncState("搜索中");
         scheduleDeferredRefresh();
         return;
       }
       if (!force && document.activeElement?.closest?.("[data-live-form]")) {
-        setSyncState("编辑中");
         return;
       }
       syncing = true;
@@ -7652,15 +7619,12 @@ const CLIENT_SCRIPT = `
         if (!cursorResponse.ok) throw new Error("无法读取 GoalBoard 游标");
         const cursorState = await cursorResponse.json();
         if (Number(cursorState.observed_event_cursor) === Number(state.snapshot.cursor)) {
-          setSyncState("已同步");
           return;
         }
         if (!force && searchInteractionActive()) {
-          setSyncState("搜索中");
           scheduleDeferredRefresh();
           return;
         }
-        setSyncState("同步中", "syncing");
         const ui = readUiState();
         const pageBase = goalPageBase();
         const collectionPath = trashView ? "/trash" : archiveView ? "/archive" : "/";
@@ -7699,7 +7663,6 @@ const CLIENT_SCRIPT = `
         const nextTrashLink = parsed.querySelector("[data-trash-link]");
         if (!nextTree || !nextDocument || !nextFooter) throw new Error("页面数据不完整");
         if (!force && searchInteractionActive()) {
-          setSyncState("搜索中");
           scheduleDeferredRefresh();
           return;
         }
@@ -7742,9 +7705,7 @@ const CLIENT_SCRIPT = `
         applyUiState(ui);
         updateAllRelationFormPreviews();
         requestAnimationFrame(() => documentPane.classList.remove("is-syncing"));
-        setSyncState("刚刚更新");
       } catch {
-        setSyncState("暂时离线", "offline");
       } finally {
         syncing = false;
       }
@@ -9329,9 +9290,9 @@ export function renderGoalBoardProjectIndex(
   desktopShell = false,
 ): string {
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
-  const projectRows = projects
+  const projectCards = projects
     .map(
-      (project) => `<li><a href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}"><span><strong>${escapeHtml(project.display_name)}${project.data_class === "regenerable_demo" ? ` <small>${L("演示数据 · 可重建")}</small>` : ""}</strong><span>${L("打开这个项目的 Goal Tree")}</span></span>${icon("chevron-down")}</a></li>`,
+      (project) => `<a class="project-card" href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}"><header><span class="project-card-icon">${icon("database")}</span><span class="project-card-kind">${project.data_class === "regenerable_demo" ? L("演示数据 · 可重建") : project.data_class === "migrated_user" ? L("已迁移项目") : L("本地项目")}</span></header><div><h2>${escapeHtml(project.display_name)}</h2><p>${L("Goal、记录和项目设置保存在当前设备。")}</p></div><footer><span>${L("打开 Goal Tree")}</span>${icon("arrow")}</footer></a>`,
     )
     .join("");
   return `<!doctype html>
@@ -9342,9 +9303,9 @@ export function renderGoalBoardProjectIndex(
   ${controlTokenMeta(controlToken)}
   <title>${L("选择项目 · GoalBoard")}</title>
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
-  <style>${STYLES}${PROJECT_INDEX_STYLES}${VISUAL_FOUNDATION_STYLES}</style>
+  <link rel="stylesheet" href="/assets/goalboard-project-index.css">
 </head>
-<body class="project-index-page"${desktopShell ? ' data-desktop-shell="true"' : ""}>
+<body class="project-index-page" data-desktop-shell="true"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
   <header class="topbar">
     <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
@@ -9360,7 +9321,7 @@ export function renderGoalBoardProjectIndex(
         <p class="project-index-desktop-note">${L("打开项目后，Goal 详情右侧会出现终端栏。点「添加终端」即可在当前 Goal 上打开 TUI。")}</p>
       </header>
       ${projects.length
-        ? `<ul class="project-list">${projectRows}</ul>`
+        ? `<div class="project-card-grid">${projectCards}</div>`
         : `<div class="project-index-empty"><h2>${L("从一个真实项目开始")}</h2><p>${L("你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。")}</p><div class="project-index-start"><a href="${href("/settings/projects")}">${L("创建第一个项目")}</a><a href="${href("/settings/runtimes")}">${L("设置 Runtime 接入")}</a></div></div>`}
       <section class="project-index-migration"><div><strong>${L("已有一份旧的 GoalBoard DB？")}</strong><small>${L("只有你明确选择并确认后，才会迁移它并保留已有历史。")}</small></div><button class="project-index-migrate" type="button" data-open-project-migration>${L("迁移已有 GoalBoard 数据")}</button></section>
       <p class="project-index-note">${L("选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。")}</p>
@@ -9657,17 +9618,31 @@ function settingsContextHref(
   return desktopShell ? withDesktopQuery(contextualPath) : contextualPath;
 }
 
+function renderProjectSwitcher(
+  currentProject: WebProjectNavigation | null,
+  projects: readonly WebProjectNavigation[],
+  desktopShell: boolean,
+  className = "navigator-project-menu",
+  manageHref = "/",
+): string {
+  const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
+  const options = projects.length ? projects : currentProject ? [currentProject] : [];
+  const currentName = currentProject?.display_name ?? L("选择项目");
+  return `<details class="${className} navigator-project-menu" data-project-menu><summary class="navigator-project-selector" aria-label="${L("切换项目")}">${icon("database")}<strong title="${escapeHtml(currentName)}">${escapeHtml(currentName)}</strong>${icon("chevron-down")}</summary><div class="navigator-project-menu-popover"><span>${L("切换项目")}</span><nav>${options.map((project) => `<a class="navigator-project-option${project.project_id === currentProject?.project_id ? " is-current" : ""}" href="${href(`/projects/${encodeURIComponent(project.project_id)}/`)}"${project.project_id === currentProject?.project_id ? ' aria-current="page"' : ""}><span>${icon("database")}<strong>${escapeHtml(project.display_name)}</strong></span>${project.project_id === currentProject?.project_id ? icon("check") : ""}</a>`).join("")}</nav><a class="navigator-project-manage" href="${desktopShell ? withDesktopQuery(manageHref) : manageHref}">${icon("settings")}<span>${L("管理项目")}</span></a></div></details>`;
+}
+
 function renderSettingsNavigation(
   active: SettingsNavigationActive,
   project: WebProjectNavigation | null,
   desktopShell = false,
+  projects: readonly WebProjectNavigation[] = [],
 ): string {
   const globalHref = (path: string) => settingsContextHref(path, project, desktopShell);
   const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
   const projectHome = project ? `/projects/${encodeURIComponent(project.project_id)}/` : "/";
   const projectSettings = project ? `/projects/${encodeURIComponent(project.project_id)}/settings/rules` : "/settings/projects";
-  const desktopProjectContext = desktopShell ? `<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"></div><div class="settings-desktop-project"><a class="navigator-project-selector" href="${withDesktopQuery(projectHome)}" aria-label="${project ? L("返回当前项目") : L("选择项目")}">${icon("database")}<span><strong>${escapeHtml(project?.display_name ?? L("选择项目"))}</strong><small>${project ? L("项目状态本地保存") : L("打开项目列表")}</small></span>${icon("switch")}</a><a class="navigator-project-settings" href="${withDesktopQuery(projectSettings)}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("tune")}</a></div><header class="settings-desktop-heading"><a href="${withDesktopQuery(projectHome)}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>` : "";
-  const desktopFooter = desktopShell ? `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalHref("/settings/appearance")}" aria-current="page" aria-label="${L("全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>` : "";
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${desktopShell ? withDesktopQuery(projectSettings) : projectSettings}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("tune")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${desktopShell ? withDesktopQuery(projectHome) : projectHome}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>`;
+  const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalHref("/settings/appearance")}" aria-current="page" aria-label="${L("全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation" aria-label="${L("系统设置")}">
     ${desktopProjectContext}<div class="settings-nav-body"><section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("只影响当前设备")}</small></div>
       <a href="${globalHref("/settings/appearance")}"${current("appearance")}>${icon("system")}<span><strong>${L("界面与语言")}</strong><small>${L("语言、主题、终端与界面密度")}</small></span></a>
@@ -9681,15 +9656,16 @@ function renderProjectSettingsNavigation(
   active: ProjectSettingsNavigationActive,
   project: WebProjectNavigation,
   desktopShell = false,
+  projects: readonly WebProjectNavigation[] = [],
 ): string {
   const routePrefix = `/projects/${encodeURIComponent(project.project_id)}`;
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
-  const desktopProjectContext = desktopShell ? `<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"></div><div class="settings-desktop-project"><a class="navigator-project-selector" href="${href(`${routePrefix}/`)}" aria-label="${L("返回当前项目")}">${icon("database")}<span><strong>${escapeHtml(project.display_name)}</strong><small>${L("项目状态本地保存")}</small></span>${icon("switch")}</a><a class="navigator-project-settings" href="${href(`${routePrefix}/settings/rules`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("tune")}</a></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>` : "";
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${href(`${routePrefix}/settings/rules`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("tune")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>`;
   const globalSettingsHref = settingsContextHref("/settings/appearance", project, desktopShell);
-  const desktopFooter = desktopShell ? `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalSettingsHref}" aria-label="${L("打开全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>` : "";
+  const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalSettingsHref}" aria-label="${L("打开全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
-    ${desktopProjectContext}<div class="settings-nav-body">${desktopShell ? "" : `<a class="project-settings-back" href="${href(`${routePrefix}/`)}">${icon("arrow")}<span><strong>${L("返回 Goal Tree")}</strong></span></a>`}
+    ${desktopProjectContext}<div class="settings-nav-body">
     <section class="settings-nav-group" aria-labelledby="settings-project-group"><div class="settings-nav-label" id="settings-project-group"><span>${L("项目设置")}</span><small>${escapeHtml(project.display_name)}</small></div>
       <a href="${href(`${routePrefix}/settings/rules`)}"${current("rules")}>${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("执行和复核底线")}</small></span></a>
       <a href="${href(`${routePrefix}/settings/planning`)}"${current("planning")}>${icon("workflow")}<span><strong>${L("工作规划")}</strong><small>${L("选择和调整规划方法")}</small></span></a>
@@ -9712,12 +9688,12 @@ export function renderGoalBoardProjectSettings(
   const projectPolicy = mergePolicy(DEFAULT_GOAL_POLICY, projectBinding);
   return `<!doctype html>
 <html lang="${htmlLang()}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
-<body class="settings-page project-rules-page" data-route-prefix="${escapeHtml(routePrefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head>
+<body class="settings-page project-rules-page" data-route-prefix="${escapeHtml(routePrefix)}" data-desktop-shell="true"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
   <header class="topbar"><a class="brand" href="${projectReturnHref}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置 · 工作规则")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${projectReturnHref}" aria-label="${L("关闭项目设置")}">${icon(desktopShell ? "x" : "tree")}<span>${L("Goal Tree")}</span></a></header>
   <main class="settings-shell">
-    ${settingsProject ? renderProjectSettingsNavigation("rules", settingsProject, desktopShell) : renderSettingsNavigation("projects", null, desktopShell)}
+    ${settingsProject ? renderProjectSettingsNavigation("rules", settingsProject, desktopShell, view.projects) : renderSettingsNavigation("projects", null, desktopShell, view.projects)}
     <div class="settings-content"><section class="settings-document" aria-labelledby="project-rules-title">
       <header class="settings-heading"><h1 id="project-rules-title">${L("项目工作规则")}</h1><p>${L("设置这个项目里所有 Goal 共同遵守的最低要求。单个 Goal 可以增加要求，但不能降低这里的规则。")}</p></header>
       <aside class="project-rules-receipt" data-project-rules-receipt role="status" tabindex="-1" hidden><strong data-project-rules-receipt-title></strong><span data-project-rules-receipt-detail></span></aside>
@@ -9826,7 +9802,7 @@ const PLANNING_ADOPTION_CLIENT_SCRIPT = `
 
 export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPack[],contextProject:WebProjectNavigation|null=null,controlToken="",desktopShell=false):string{
   const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);const navigation=contextProject?renderProjectSettingsNavigation("planning",contextProject,desktopShell):"";
-  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(contextProject?contextProject.display_name:L("规划方法"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell${contextProject?"":" settings-shell--standalone"}">${navigation}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(contextProject?contextProject.display_name:L("规划方法"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell${contextProject?"":" settings-shell--standalone"}">${navigation}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-instructions"><header><h2>${L("Runtime 方法说明")}</h2><p>${L("这是 Runtime 在拆分或调整 Goal Tree 前完整阅读的方法正文。")}</p></header><pre>${escapeHtml(method.instructions)}</pre></section><details class="planning-structured-summary"><summary>${L("查看用于检索与检查的结构化摘要")}</summary><div class="planning-structured-summary-body"><section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section></div></details>`}
 function renderPlanningSimpleRows(name:string,values:readonly string[],placeholder:string):string{const rows=values.length?values:[""];return `<div class="planning-row-list" data-planning-row-list="${name}">${rows.map((value)=>`<div class="planning-edit-row" data-planning-row><input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="${name}">${icon("plus")}${L("添加一项")}</button>`}
@@ -9844,7 +9820,7 @@ function renderPlanningEditForm(method:PlanningMethodPack|null,saveScope:"person
 
 export function renderGoalBoardPlanningMethodPage(method:PlanningMethodPack|null,mode:"detail"|"edit"|"new",saveScope:"personal"|"project",project:WebProjectNavigation|null,controlToken="",desktopShell=false):string{
   const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell):"";
-  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(project?.display_name??L("规划方法"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell${project?"":" settings-shell--standalone"}">${navigation}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(project?.display_name??L("规划方法"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell${project?"":" settings-shell--standalone"}">${navigation}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:readonly PlanningMethodPack[],controlToken="",desktopShell=false):string{
   const project=view.project;
@@ -9865,14 +9841,14 @@ export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:re
   const pagePath=desktopShell?withDesktopQuery(basePath):basePath;
   const returnHref=view.route_prefix||"/";
   const projectName=project?.display_name??L("当前项目");
-  const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell):renderSettingsNavigation("projects",null,desktopShell);
+  const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell,view.projects):renderSettingsNavigation("projects",null,desktopShell,view.projects);
   const compositionContent=selectedMethods.length
     ? `<div class="planning-composition-overview"><div><strong>${L("{count} 套方法共同生效",{count:selectedMethods.length})}</strong><p>${escapeHtml(listJoin(composition.method_names))}</p></div><div class="planning-composition-facts"><span>${L("{count} 个覆盖项",{count:composition.required_coverage.length})}</span><span>${L("{count} 条依赖规则",{count:composition.dependency_rules.length})}</span><span>${L("{count} 项完成检查",{count:composition.completion_checks.length})}</span></div></div><div class="planning-composition-list">${compositionRows}</div>`
     : `<div class="work-planning-empty"><h3>${L("尚未建立项目规划组合")}</h3><p>${L("Runtime 会先检查每个 Goal 的实际工作、专业领域、交付方式和风险，再选用所有相关方法；不预设类型或数量。你也可以把项目长期需要的方法加入组合，作为之后规划的共同基础。")}</p></div>`;
   const inactiveSection=inactiveProjectMethods.length
     ? `<section class="planning-inactive-section" aria-labelledby="planning-inactive-title"><div class="work-planning-section-header"><h2 id="planning-inactive-title">${L("未启用的方法")}</h2><p>${L("这些项目方法仍然保留，但不会参与当前组合；打开后可以重新启用。")}</p></div><div class="planning-composition-list">${inactiveRows}</div></section>`
     : "";
-  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规划")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head><body class="settings-page planning-page"${desktopShell?' data-desktop-shell="true"':""}>${renderIconSprite()}${planningTopbar(projectName,L("工作规划"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="work-planning"><header class="planning-page-header"><div><h1>${L("工作规划")}</h1><p>${L("为项目「{name}」组合多套规划方法。它们会共同检查同一棵 Goal Tree，不会被机械拆成串行步骤。",{name:projectName})}</p></div><div><a class="planning-secondary-action" href="${globalLibraryHref}">${L("浏览完整方法库")}</a> <a class="planning-primary-action" href="${newProjectHref}">${icon("plus")}${L("从空白新建")}</a></div></header><section class="planning-composition-section" aria-labelledby="planning-composition-title"><div class="work-planning-section-header"><h2 id="planning-composition-title">${L("当前规划组合")}</h2><p>${L("当前组合是规划下限，不是方法上限。Runtime 必须完整使用这组方法，并根据当前 Goal 的实际工作补充其他相关方法。")}</p></div>${compositionContent}</section><section class="planning-adoption-section" aria-labelledby="planning-adoption-title"><div class="work-planning-section-header"><h2 id="planning-adoption-title">${L("添加规划方法")}</h2><p>${L("可以继续加入多套互补方法。加入后会建立该项目的独立版本，原方法和其他项目不变。")}</p></div><div class="planning-adoption-tools"><nav class="planning-filters" aria-label="${L("筛选已有方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-adoption-grid">${adoptionCards}<p class="planning-filter-empty" data-planning-filter-empty${availableMethods.length?" hidden":""}>${L("这个分类里还没有可加入的方法。")}</p></div><p class="planning-adoption-error" data-planning-adoption-error role="alert" hidden></p></section>${inactiveSection}</section></div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${PLANNING_ADOPTION_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规划")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(projectName,L("工作规划"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="work-planning"><header class="planning-page-header"><div><h1>${L("工作规划")}</h1><p>${L("为项目「{name}」组合多套规划方法。它们会共同检查同一棵 Goal Tree，不会被机械拆成串行步骤。",{name:projectName})}</p></div><div><a class="planning-secondary-action" href="${globalLibraryHref}">${L("浏览完整方法库")}</a> <a class="planning-primary-action" href="${newProjectHref}">${icon("plus")}${L("从空白新建")}</a></div></header><section class="planning-composition-section" aria-labelledby="planning-composition-title"><div class="work-planning-section-header"><h2 id="planning-composition-title">${L("当前规划组合")}</h2><p>${L("当前组合是规划下限，不是方法上限。Runtime 必须完整使用这组方法，并根据当前 Goal 的实际工作补充其他相关方法。")}</p></div>${compositionContent}</section><section class="planning-adoption-section" aria-labelledby="planning-adoption-title"><div class="work-planning-section-header"><h2 id="planning-adoption-title">${L("添加规划方法")}</h2><p>${L("可以继续加入多套互补方法。加入后会建立该项目的独立版本，原方法和其他项目不变。")}</p></div><div class="planning-adoption-tools"><nav class="planning-filters" aria-label="${L("筛选已有方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-adoption-grid">${adoptionCards}<p class="planning-filter-empty" data-planning-filter-empty${availableMethods.length?" hidden":""}>${L("这个分类里还没有可加入的方法。")}</p></div><p class="planning-adoption-error" data-planning-adoption-error role="alert" hidden></p></section>${inactiveSection}</section></div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${PLANNING_ADOPTION_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToken = "", desktopShell = false): string {
   const title = view.section === "appearance"
@@ -9896,12 +9872,12 @@ export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToke
         : renderDiagnosticsSettings(view);
   return `<!doctype html>
 <html lang="${htmlLang()}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
-<body class="settings-page" data-settings-section="${view.section}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head>
+<body class="settings-page" data-settings-section="${view.section}" data-desktop-shell="true"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
   <header class="topbar"><a class="brand" href="${returnHref}" aria-label="${contextProject ? L("返回 Goal Tree") : L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("项目管理") : L("全局设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("创建、导入和维护项目") : title}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${returnHref}" aria-label="${L("关闭全局设置")}">${icon(desktopShell ? "x" : contextProject ? "tree" : "folder")}<span>${contextProject ? L("Goal Tree") : L("项目列表")}</span></a></header>
   <main class="settings-shell${projectManager ? " settings-shell--standalone" : ""}">
-    ${projectManager ? "" : renderSettingsNavigation(view.section, contextProject, desktopShell)}
+    ${projectManager ? "" : renderSettingsNavigation(view.section, contextProject, desktopShell, view.projects)}
     <div class="settings-content">${content}</div>
   </main>
   ${renderRuntimePlanDialog()}
@@ -9926,6 +9902,16 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
 /** Shared workbench presentation. Kept outside project HTML so the browser can reuse it. */
 export function renderGoalBoardWorkbenchStylesheet(): string {
   return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
+}
+
+/** Shared project index presentation. */
+export function renderGoalBoardProjectIndexStylesheet(): string {
+  return `${STYLES}${PROJECT_INDEX_STYLES}${VISUAL_FOUNDATION_STYLES}`;
+}
+
+/** Shared settings presentation, reused across project and global settings routes. */
+export function renderGoalBoardSettingsStylesheet(): string {
+  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}`;
 }
 
 /** Shared workbench behavior. Locale strings and project facts remain page-local. */
@@ -9993,8 +9979,7 @@ export function renderGoalBoardWeb(
       : L("在当前 Goal Tree 内搜索");
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
   const pendingCount = pendingDecisionCount(view);
-  const projectName = view.project?.display_name ?? L("当前项目");
-  const initialDesktopDirectory = desktopShell || decisionView ? "root" : "goals";
+  const initialDesktopDirectory: string = "root";
   const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
   const desktopAccountFooter = `<footer class="personal-sidebar-footer">
     <a class="personal-account" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开全局设置")}">
@@ -10018,9 +10003,8 @@ export function renderGoalBoardWeb(
   </section>`;
   const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
     <div class="navigator-project-primary">
-      ${desktopShell ? `<details class="navigator-project-menu" data-project-menu><summary class="navigator-project-selector" aria-label="${L("切换项目")}">${icon("database")}<strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>${icon("chevron-down")}</summary><div class="navigator-project-menu-popover"><span>${L("切换项目")}</span><nav>${projectOptions.map((project) => `<a class="navigator-project-option${project.project_id === view.project?.project_id ? " is-current" : ""}" href="/projects/${encodeURIComponent(project.project_id)}/"${project.project_id === view.project?.project_id ? ' aria-current="page"' : ""}><span>${icon("database")}<strong>${escapeHtml(project.display_name)}</strong></span>${project.project_id === view.project?.project_id ? icon("check") : ""}</a>`).join("")}</nav><a class="navigator-project-manage" href="__PROJECT_INDEX__">${icon("settings")}<span>${L("管理项目")}</span></a></div></details>${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}</a>` : ""}<div class="desktop-titlebar-drag desktop-titlebar-drag--left" data-tauri-drag-region aria-hidden="true"></div>` : `<span class="navigator-project-mark" aria-hidden="true">${icon("folder")}</span><strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>${view.project ? `<nav class="navigator-project-actions" aria-label="${L("当前项目")}"><a class="navigator-project-action" href="__PROJECT_INDEX__" aria-label="${L("切换项目")}" title="${L("切换项目")}">${icon("switch")}<span aria-hidden="true">${L("切换项目")}</span></a><a class="navigator-project-action" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}<span aria-hidden="true">${L("项目设置")}</span></a></nav>` : ""}`}
+      ${renderProjectSwitcher(view.project ?? null, projectOptions, desktopShell, "desktop-project-switcher", "__PROJECT_INDEX__")}${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}</a>` : ""}<div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
     </div>
-    ${desktopShell ? "" : `<div class="navigator-project-meta"><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a><span class="navigator-project-status">${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></span></div>`}
   </section>`;
   const showTui = !decisionView && !archiveView && !trashView;
   const desktopUtilityTitle = decisionView ? "Inbox" : collectionTitle;
@@ -10030,19 +10014,18 @@ export function renderGoalBoardWeb(
     focus: decisionView ? L("决定") : L("聚焦"),
     runtime: L("运行"),
   };
-  const desktopWorkbenchHeader = desktopShell ? `<div class="desktop-workbench-bar">
+  const desktopWorkbenchHeader = `<div class="desktop-workbench-bar">
     <div class="desktop-work-tabs" data-work-tabs role="tablist" aria-label="${escapeHtml(desktopTabsLabel)}">
       ${selected ? `<div class="desktop-work-tab is-selected" data-work-tab-shell="${escapeHtml(selected.goal.goal_id)}"><button type="button" role="tab" data-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-selected="true" aria-controls="goal-document-pane"><i aria-hidden="true"></i><span>${escapeHtml(selected.goal.title)}</span></button><button type="button" data-close-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-label="${L("关闭 {title}", { title: selected.goal.title })}">${icon("x")}</button></div>` : `<div class="desktop-work-tab is-selected is-utility"><span role="tab" aria-selected="true">${escapeHtml(desktopUtilityTitle)}</span></div>`}
     </div>
-    <div class="desktop-titlebar-drag" data-tauri-drag-region aria-hidden="true"></div>
+    <div class="desktop-titlebar-drag"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
     <div class="desktop-workbench-actions">
       <button type="button" data-directory-open="root" aria-label="${L("打开工作台目录")}" title="${L("打开工作台目录")}">${icon("panel")}</button>
       ${showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button><button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button></nav>` : ""}
-      ${!collectionView && !decisionView ? `<button type="button" data-open-create aria-label="${L("新建目标")}" title="${L("新建目标")}">${icon("plus")}</button>` : ""}
     </div>
-  </div>` : "";
+  </div>`;
   const renderedDocumentContent = decisionView
-    ? renderDecisionCenter(view, desktopShell)
+    ? renderDecisionCenter(view, true)
     : selected
       ? trashView
         ? renderTrashGoalDocument(selected, true)
@@ -10050,12 +10033,10 @@ export function renderGoalBoardWeb(
       : trashView
         ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`
         : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`;
-  const desktopDocumentContent = desktopShell
-    ? `<section class="desktop-work-surface" data-work-surface="${decisionView ? "inbox" : "goal"}" data-work-surface-label="${escapeHtml(desktopUtilityTitle)}">${renderedDocumentContent}</section>
+  const desktopDocumentContent = `<section class="desktop-work-surface" data-work-surface="${decisionView ? "inbox" : "goal"}" data-work-surface-label="${escapeHtml(desktopUtilityTitle)}">${renderedDocumentContent}</section>
       ${desktopUtilitySurface("feed", "Feed", L("消息与来源 Session"), L("等消息来源、Session 和归档规则确认后，再在这里接入真实 Feed；现在不展示假消息。"), "activity")}
       ${desktopUtilitySurface("promotion", "Promotion", L("把内容升格为 Goal"), L("等候选内容、团队决策和 Goal 创建边界确认后，再在这里接入升格流程；现在不伪造待处理项。"), "arrow")}
-      ${desktopUtilitySurface("visual", L("可视化工作区"), L("Goal 关系与规划画布"), L("等画布实体、关系编辑和保存契约确认后，再在这里接入真实可视化工作区。"), "workflow")}`
-    : renderedDocumentContent;
+      ${desktopUtilitySurface("visual", L("可视化工作区"), L("Goal 关系与规划画布"), L("等画布实体、关系编辑和保存契约确认后，再在这里接入真实可视化工作区。"), "workflow")}`;
   const html = `<!--
 THESIS: 只有一个目录入口，项目中的多条 Goal 在右侧复用；拒绝重复侧栏、轻首页大留白和后台管理式线框。
 OWN-WORLD: 石墨目录、深浅同源的柔和工作面、克制钴蓝焦点、系统字体、Lucide 图标、阴影与色面区分层级，尽量减少结构线。
@@ -10074,18 +10055,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
   <link rel="stylesheet" href="__WORKBENCH_CSS__">
 </head>
-<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ` data-desktop-shell="true" data-desktop-surface="${decisionView ? "inbox" : "goal"}"` : ""}>
+<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}" data-desktop-shell="true" data-desktop-surface="${decisionView ? "inbox" : "goal"}"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
   <div class="app">
-    ${desktopShell ? "" : `<header class="topbar">
-      <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
-      <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
-      <a class="top-action" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开系统设置")}">${icon("settings")}<span>${L("系统设置")}</span></a>
-    </header>`}
     <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
     <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree" data-workspace-mode="focus">
-      <aside class="tree-pane" id="goal-tree-pane"${desktopShell ? ` data-desktop-directory="${initialDesktopDirectory}"` : ""}>
-        ${desktopShell ? `${projectNavigatorLayer}
+      <aside class="tree-pane" id="goal-tree-pane" data-desktop-directory="${initialDesktopDirectory}">
+        ${projectNavigatorLayer}
         ${desktopRootDirectory}
         <section class="desktop-directory-panel desktop-goal-directory" data-directory-panel="goals"${initialDesktopDirectory === "goals" ? "" : " hidden"}>
           <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${collectionTitle === L("Goal Tree") ? "Goals" : collectionTitle}</strong><small>${collectionView ? collectionNote : L("Goal Tree")}</small></span></header>
@@ -10093,20 +10069,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
           <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
           <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
         </section>
-        ${desktopAccountFooter}` : `${projectNavigatorLayer}
-        <header class="desktop-pane-header desktop-pane-header--navigator"><strong data-navigator-heading>${L("目标导航")}</strong></header>
-        ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
-        <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
-        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>`}
+        ${desktopAccountFooter}
       </aside>
       <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <header class="workbench-header desktop-pane-header">
-        ${desktopShell ? desktopWorkbenchHeader : showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}">
-          <button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button>
-          <button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button>
-        </nav>` : `<strong>${decisionView ? L("决定中心") : L("目标聚焦")}</strong>`}
+        ${desktopWorkbenchHeader}
       </header>
-      <section class="document-pane" id="goal-document-pane" data-document-pane${desktopShell ? ` role="tabpanel" tabindex="0"${selected ? "" : ` aria-label="${escapeHtml(desktopUtilityTitle)}"`}` : ""}>
+      <section class="document-pane" id="goal-document-pane" data-document-pane role="tabpanel" tabindex="0"${selected ? "" : ` aria-label="${escapeHtml(desktopUtilityTitle)}"`}>
         ${desktopDocumentContent}
       </section>
       ${!archiveView && !trashView ? renderGoalGraph(view, selectedId, visibleGoals) : ""}

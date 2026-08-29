@@ -138,6 +138,9 @@ function escapeAttr(value: string): string {
 
 export const EN: Record<string, string> = {
   "界面语言": "Language",
+  "已迁移项目": "Migrated project",
+  "本地项目": "Local project",
+  "Goal、记录和项目设置保存在当前设备。": "Goals, records, and project settings stay on this device.",
   "就绪": "Ready",
   "进行中": "Active",
   "等待": "Waiting",

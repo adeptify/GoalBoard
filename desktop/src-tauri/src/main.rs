@@ -1,8 +1,11 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use semver::Version;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -207,6 +210,48 @@ fn embedded_goalboard_source(resource_dir: &Path) -> Option<(PathBuf, PathBuf)> 
     None
 }
 
+#[derive(Deserialize)]
+struct RuntimeVersionMetadata {
+    version: String,
+}
+
+fn read_runtime_version(path: &Path) -> Option<Version> {
+    let metadata = serde_json::from_slice::<RuntimeVersionMetadata>(&fs::read(path).ok()?).ok()?;
+    Version::parse(metadata.version.trim()).ok()
+}
+
+fn embedded_version_is_upgrade(embedded: &Version, installed: Option<&Version>) -> bool {
+    installed.map(|version| embedded > version).unwrap_or(true)
+}
+
+fn embedded_runtime_upgrade_available(resource_dir: &Path, home: &Path) -> bool {
+    let Some((source, _)) = embedded_goalboard_source(resource_dir) else {
+        return false;
+    };
+    let Some(embedded_version) = read_runtime_version(&source.join("package.json")) else {
+        return false;
+    };
+    let installed_version = read_runtime_version(&home.join("config").join("installation.json"));
+    embedded_version_is_upgrade(&embedded_version, installed_version.as_ref())
+}
+
+#[cfg(test)]
+mod embedded_runtime_version_tests {
+    use super::{embedded_version_is_upgrade, Version};
+
+    #[test]
+    fn only_missing_or_newer_embedded_runtimes_install() {
+        let old = Version::parse("0.1.4").unwrap();
+        let current = Version::parse("0.1.5").unwrap();
+        let newer = Version::parse("0.1.6").unwrap();
+
+        assert!(embedded_version_is_upgrade(&current, None));
+        assert!(embedded_version_is_upgrade(&newer, Some(&current)));
+        assert!(!embedded_version_is_upgrade(&current, Some(&current)));
+        assert!(!embedded_version_is_upgrade(&old, Some(&current)));
+    }
+}
+
 fn install_embedded_goalboard(resource_dir: &Path, home: &Path) -> Result<(), String> {
     let (source, node) = embedded_goalboard_source(resource_dir).ok_or_else(|| {
         "GoalBoard App 不含可用的 Runtime payload，请重新下载安装包。".to_string()
@@ -234,6 +279,53 @@ fn install_embedded_goalboard(resource_dir: &Path, home: &Path) -> Result<(), St
     })
 }
 
+fn restart_managed_web_service(home: &Path) -> bool {
+    let cli = home.join("bin").join("goalboard");
+    if !cli.is_file() {
+        return false;
+    }
+    Command::new(cli)
+        .args(["service", "restart", "--home"])
+        .arg(home)
+        .arg("--confirm")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn terminate_owned_web_child(child: &mut std::process::Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let pid = child.id().to_string();
+        let process_group = format!("-{}", child.id());
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", process_group.as_str()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", pid.as_str()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        for _ in 0..20 {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", process_group.as_str()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
 fn replace_owned_web_child(
     state: &WebServiceState,
     mut child: std::process::Child,
@@ -244,17 +336,13 @@ fn replace_owned_web_child(
         .map_err(|error| error.to_string())?;
     if state.shutting_down.load(Ordering::Acquire) {
         drop(owned_child);
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_owned_web_child(&mut child);
         return Err("GoalBoard 正在退出，不再启动 Web 服务".into());
     }
     let previous = owned_child.replace(child);
     drop(owned_child);
     if let Some(mut previous) = previous {
-        if previous.try_wait().ok().flatten().is_none() {
-            let _ = previous.kill();
-        }
-        let _ = previous.wait();
+        terminate_owned_web_child(&mut previous);
     }
     Ok(())
 }
@@ -266,10 +354,7 @@ fn stop_owned_web_service(state: &WebServiceState) -> bool {
         .ok()
         .and_then(|mut child| child.take());
     if let Some(mut child) = child {
-        if child.try_wait().ok().flatten().is_none() {
-            let _ = child.kill();
-        }
-        let _ = child.wait();
+        terminate_owned_web_child(&mut child);
         return true;
     }
     false
@@ -279,6 +364,16 @@ fn ensure_goalboard_web(
     resource_dir: Option<&Path>,
     service_state: &WebServiceState,
 ) -> Result<(), String> {
+    let home = goalboard_home();
+    let bin = home.join("bin").join("goalboard-web");
+    let upgraded_runtime = resource_dir
+        .filter(|resource_dir| embedded_runtime_upgrade_available(resource_dir, &home))
+        .map(|resource_dir| install_embedded_goalboard(resource_dir, &home))
+        .transpose()?
+        .is_some();
+    if upgraded_runtime {
+        let _ = restart_managed_web_service(&home);
+    }
     if web_healthy() {
         if !web_desktop_ready() {
             eprintln!(
@@ -287,12 +382,13 @@ fn ensure_goalboard_web(
         }
         return Ok(());
     }
-    let home = goalboard_home();
-    let bin = home.join("bin").join("goalboard-web");
-    if let Some(resource_dir) = resource_dir {
-        // The installer is idempotent. Running it before a stopped Web service also
-        // upgrades older source launchers to the App's self-contained runtime.
-        install_embedded_goalboard(resource_dir, &home)?;
+    if !bin.is_file() {
+        if let Some(resource_dir) = resource_dir {
+            // A first-run App can seed its self-contained Runtime. Existing installs are
+            // only replaced above when the bundled version is newer, so an older App can
+            // never overwrite a same-version local build while the service restarts.
+            install_embedded_goalboard(resource_dir, &home)?;
+        }
     }
     if !bin.is_file() {
         return Err(format!(
@@ -307,6 +403,7 @@ fn ensure_goalboard_web(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .map_err(|error| format!("无法启动 GoalBoard Web：{error}"))?;
     replace_owned_web_child(service_state, child)?;
@@ -1107,9 +1204,6 @@ fn main() {
     })
     .on_page_load(|window, payload| {
       if payload.event() == PageLoadEvent::Finished {
-        let _ = window.eval(
-          r#"document.cookie="goalboard_desktop=1; Path=/; Max-Age=31536000; SameSite=Lax";"#,
-        );
         if window.label() == "main" {
           let _ = window.eval(
             r#"(() => {

@@ -370,7 +370,7 @@ test("PTY PATH still finds node when NVM_BIN is absent", () => {
   }
 });
 
-test("Goal pages include the TUI pane in the browser and the desktop shell", () => {
+test("Web and Desktop share one project workbench; Desktop only adds native chrome hooks", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-desktop-render-"));
   const databasePath = join(directory, "demo.db");
   seedDemoBoard(databasePath);
@@ -387,10 +387,17 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     const desktop = `${renderGoalBoardWeb(view, undefined, false, false, false, "", true)}${workbenchAssets}`;
     const decisions = renderGoalBoardWeb(view, undefined, false, true);
     const desktopDecisions = renderGoalBoardWeb(view, undefined, false, true, false, "", true);
+    const browserMarkup = browser.slice(0, browser.indexOf("<style>"));
     assert.match(browser, /class="tui-pane"/);
     assert.match(browser, /推进这个 Goal/);
     assert.match(browser, /pty-client\.js/);
     assert.match(browser, /class="workspace is-desktop-tui"/);
+    assert.match(browser, /data-desktop-shell="true"/);
+    assert.doesNotMatch(browserMarkup, /data-native-desktop="true"|data-tauri-drag-region/);
+    assert.match(browser, /class="desktop-project-switcher navigator-project-menu"/);
+    assert.match(browser, /data-desktop-directory="root"/);
+    assert.match(browser, /class="desktop-workbench-bar"/);
+    assert.doesNotMatch(browser, /class="navigator-project-meta"|class="web-project-switcher"/);
     assert.doesNotMatch(browser, /class="personal-sidebar"|class="desktop-project-context"/);
     assert.doesNotMatch(decisions, /class="tui-pane"|推进这个 Goal|复制命令|pty-client\.js|data-mobile-target="tui"/);
     assert.match(desktopDecisions, /class="desktop-work-tabs" data-work-tabs role="tablist" aria-label="Inbox"/);
@@ -448,6 +455,7 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /class="workspace is-desktop-tui"/);
     assert.match(desktop, /src="\/desktop\/pty-client\.js"/);
     assert.match(desktop, /data-desktop-shell="true"/);
+    assert.match(desktop, /data-native-desktop="true"/);
     assert.doesNotMatch(desktop, /class="personal-sidebar"|class="personal-space-context"/);
     assert.match(desktop, /data-desktop-directory="root"/);
     assert.match(desktop, /data-directory-panel="root">/);
@@ -463,7 +471,7 @@ test("Goal pages include the TUI pane in the browser and the desktop shell", () 
     assert.match(desktop, /data-work-surface="promotion" data-work-surface-label="Promotion" hidden/);
     assert.match(desktop, /data-work-surface="visual" data-work-surface-label="可视化工作区" hidden/);
     assert.doesNotMatch(desktop, /data-directory-panel="feed"|data-directory-panel="promotion"|data-directory-panel="visual"/);
-    assert.match(desktop, /class="navigator-project-menu" data-project-menu/);
+    assert.match(desktop, /class="desktop-project-switcher navigator-project-menu" data-project-menu/);
     assert.match(desktop, /<summary class="navigator-project-selector"[^>]*aria-label="切换项目"/);
     assert.match(desktop, /class="navigator-project-menu-popover"/);
     assert.match(desktop, /class="desktop-titlebar-drag desktop-titlebar-drag--left" data-tauri-drag-region/);
@@ -527,21 +535,30 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.doesNotMatch(indexHtml, /class="tui-pane"|pty-client\.js/);
 
     const desktopIndex = await webFetch(`${origin}/?desktop=1`);
-    assert.match(String(desktopIndex.headers.get("set-cookie")), /goalboard_desktop=1/);
+    assert.equal(desktopIndex.headers.get("set-cookie"), null);
     const desktopIndexHtml = await desktopIndex.text();
     assert.match(desktopIndexHtml, /打开项目后，Goal 详情右侧会出现终端栏/);
     assert.match(desktopIndexHtml, new RegExp(`href="${prefix}\\?desktop=1"`));
 
-    const cookiePage = await (
-      await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
-        headers: { cookie: "goalboard_desktop=1" },
-      })
-    ).text();
+    const cookieResponse = await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
+      headers: { cookie: "goalboard_desktop=1" },
+    });
+    const cookiePage = await cookieResponse.text();
     assert.match(cookiePage, /data-tui-pane/);
     assert.match(cookiePage, /添加终端/);
+    assert.match(cookiePage, /data-desktop-shell="true"/);
+    assert.doesNotMatch(cookiePage, /data-native-desktop="true"|class="navigator-project-meta"/);
+    assert.equal(cookieResponse.headers.get("set-cookie"), null);
 
     const queryPage = await (await webFetch(`${origin}${prefix}/goals/TUI-GOAL?desktop=1`)).text();
     assert.match(queryPage, /data-tui-pane/);
+    assert.match(queryPage, /data-native-desktop="true"/);
+
+    const runtimeAvailability = await (
+      await webFetch(`${origin}${prefix}/api/runtime-availability`)
+    ).json() as Record<string, boolean>;
+    assert.deepEqual(Object.keys(runtimeAvailability).sort(), ["claude-code", "codex", "grok-build", "opencode", "pi-agent"]);
+    assert.ok(Object.values(runtimeAvailability).every((available) => typeof available === "boolean"));
 
     const desktopPage = await (
       await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, { headers: { "x-goalboard-desktop": "1" } })
@@ -549,6 +566,7 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.match(desktopPage, /data-tui-pane/);
     assert.match(desktopPage, /推进这个 Goal/);
     assert.match(desktopPage, /添加终端/);
+    assert.match(desktopPage, /data-native-desktop="true"/);
 
     const opened = await webFetch(panelsUrl, {
       method: "POST",

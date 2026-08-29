@@ -810,9 +810,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(recordsFragment, /执行与检查/);
   assert.match(recordsFragment, /变更历史/);
   assert.match(recordsFragment, /关联与规则记录/);
-  assert.match(html, /待决定/);
   assert.match(html, /打开不会自动发送或领取/);
-  assert.match(html, /示例数据/);
   assert.match(html, /data-tree-root/);
   assert.match(html, /class="goal-tree" data-tree-root/);
   assert.match(html, /class="tree-children"/);
@@ -831,9 +829,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((html.match(/<input type="search" data-global-search/g) ?? []).length, 1);
   assert.match(html, /data-settings-link/);
   assert.match(html, /class="navigator-project"/);
-  assert.match(projectPageHtml, /class="navigator-project-action"[^>]*aria-label="切换项目"[^>]*title="切换项目"[^>]*>[\s\S]*?icon-switch[\s\S]*?<span aria-hidden="true">切换项目<\/span>/);
-  assert.match(projectPageHtml, /class="navigator-project-action"[^>]*aria-label="打开当前项目设置"[^>]*title="项目设置"[^>]*>[\s\S]*?icon-tune[\s\S]*?<span aria-hidden="true">项目设置<\/span>/);
-  assert.match(html, /class="project-decisions/);
+  assert.match(projectPageHtml, /class="desktop-project-switcher navigator-project-menu"/);
+  assert.match(projectPageHtml, /class="navigator-project-settings"[^>]*aria-label="打开当前项目设置"[^>]*title="项目设置"/);
+  assert.doesNotMatch(html, /class="project-decisions|class="navigator-project-meta"|class="web-project-switcher"/);
   assert.match(html, /@media \(max-width: 1180px\)[\s\S]*\.top-action span \{ display: none; \}/);
   assert.doesNotMatch(html, /class="tree-heading"|class="global-search"|class="top-filter-control"/);
   assert.equal((html.match(/data-open-create aria-label="新建目标"/g) ?? []).length, 1);
@@ -870,7 +868,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /role="tablist" aria-label="移动端视图"/);
   assert.match(html, /role="tab" aria-selected="true" aria-controls="goal-tree-pane"/);
   assert.match(html, /button\.setAttribute\("aria-selected", String\(active\)\)/);
-  assert.match(html, /data-sync-state/);
+  assert.doesNotMatch(html, /class="sync-state"/);
   assert.match(html, /setInterval\(refreshBoard, 4000\)/);
   assert.match(html, /fetch\(route\("\/api\/board\/cursor"\)/);
   assert.match(html, /\/document\?view=" \+ documentCollection/);
@@ -929,7 +927,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-graph-node/);
   assert.match(html, /data-graph-edge/);
   assert.match(html, /data-graph-zoom="in"/);
-  assert.match(html, /data-navigator-heading/);
+  assert.match(html, /data-desktop-directory="root"/);
   assert.match(html, /data-companion-runtime/);
   assert.match(html, /data-companion-runtime-open/);
   assert.match(html, /desktopCompanionActive && selected \? "document"/);
@@ -1195,6 +1193,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const betaPrefix = `/projects/${encodeURIComponent(fixture.beta.project_id)}`;
 
     const projectIndex = await (await webFetch(`${origin}/`)).text();
+    const projectIndexStyles = await (await webFetch(`${origin}/assets/goalboard-project-index.css`)).text();
     assert.match(projectIndex, /选择一个项目/);
     assert.match(projectIndex, /产品 Alpha/);
     assert.match(projectIndex, /产品 Beta/);
@@ -1202,17 +1201,32 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(projectIndex, new RegExp(`href="${betaPrefix}"`));
     assert.doesNotMatch(projectIndex, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(projectIndex, /数据源:|board_id/);
-    assert.match(projectIndex, /\.project-index-page > \.topbar \{ height: 58px; \}/);
-    assert.match(projectIndex, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
-    assert.match(projectIndex, /\.project-list a:hover \{ background: color-mix\(in srgb, var\(--blue-soft\) 58%, var\(--paper\)\); \}/);
-    assert.match(projectIndex, /\.project-index-migration \{[^}]*background: var\(--rail\)/);
+    assert.match(projectIndex, /href="\/assets\/goalboard-project-index\.css"/);
+    assert.match(projectIndex, /class="project-card-grid"/);
+    assert.match(projectIndex, /class="project-card"/);
+    assert.doesNotMatch(projectIndex, /class="project-list"/);
+    assert.match(projectIndex, /<body class="project-index-page" data-desktop-shell="true">/);
+    assert.doesNotMatch(projectIndex, /data-native-desktop="true"|data-tauri-drag-region/);
+    assert.match(projectIndexStyles, /\.project-index-page > \.topbar \{ height: 58px; \}/);
+    assert.match(projectIndexStyles, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
+    assert.match(projectIndexStyles, /\.project-card-grid \{ display: grid;/);
+    assert.match(projectIndexStyles, /\.project-card-grid \{[^}]*minmax\(270px, 1fr\)[^}]*gap: 18px/);
+    assert.match(projectIndexStyles, /\.project-card \{[^}]*min-height: 196px;[^}]*padding: 24px;[^}]*box-shadow: var\(--shadow-soft\)/);
 
     const desktopProjectIndex = await (await webFetch(`${origin}/?desktop=1`)).text();
-    assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true">/);
+    assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true" data-native-desktop="true">/);
     assert.match(desktopProjectIndex, /<header class="topbar">/);
     assert.doesNotMatch(desktopProjectIndex, /<header class="topbar" data-tauri-drag-region>/);
     assert.match(desktopProjectIndex, /class="project-context" data-tauri-drag-region/);
     assert.match(desktopProjectIndex, /class="top-spacer" data-tauri-drag-region/);
+
+    const legacyCookieResponse = await webFetch(`${origin}${alphaPrefix}/`, {
+      headers: { cookie: "goalboard_desktop=1" },
+    });
+    const legacyCookiePage = await legacyCookieResponse.text();
+    assert.match(legacyCookiePage, /data-desktop-shell="true"/);
+    assert.doesNotMatch(legacyCookiePage, /data-native-desktop="true"|class="navigator-project-meta"/);
+    assert.equal(legacyCookieResponse.headers.get("set-cookie"), null);
 
     const capsulePage = await (await webFetch(`${origin}/desktop/capsule?desktop=1`)).text();
     assert.match(capsulePage, /工作胶囊/);
@@ -1229,6 +1243,9 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const alphaPage = await (await webFetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY`)).text();
     assert.match(alphaPage, /class="navigator-project"[\s\S]*title="产品 Alpha">产品 Alpha<\/strong>/);
     assert.match(alphaPage, /切换项目/);
+    assert.match(alphaPage, /class="desktop-project-switcher navigator-project-menu"/);
+    assert.match(alphaPage, /data-desktop-shell="true"/);
+    assert.doesNotMatch(alphaPage, /data-native-desktop="true"|class="navigator-project-meta"|class="web-project-switcher"/);
     assert.match(alphaPage, /仅 Alpha 可见的 Goal/);
     assert.doesNotMatch(alphaPage, /仅 Beta 可见的 Goal|数据源:|goalboard\.db/);
     assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
@@ -1391,12 +1408,15 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
+    const settingsStyles = await (await webFetch(`${origin}/assets/goalboard-settings.css`)).text();
 
     const redirect = await webFetch(`${origin}/settings`, { redirect: "manual" });
     assert.equal(redirect.status, 302);
     assert.equal(redirect.headers.get("location"), "/settings/appearance");
 
-    const appearancePage = await (await webFetch(`${origin}/settings/appearance`)).text();
+    const appearanceResponse = await webFetch(`${origin}/settings/appearance`);
+    assert.match(String(appearanceResponse.headers.get("content-security-policy")), /style-src 'self' 'unsafe-inline'/);
+    const appearancePage = await appearanceResponse.text();
     assertInlineScriptsCompile(appearancePage);
     assert.match(appearancePage, /<h1 id="settings-title">界面与语言<\/h1>/);
     assert.match(appearancePage, /href="\/settings\/appearance" aria-current="page"/);
@@ -1418,7 +1438,10 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(systemNavigation, /界面与语言/);
     assert.match(systemNavigation, /AI 与执行工具/);
     assert.match(systemNavigation, /诊断/);
-    assert.doesNotMatch(systemNavigation, /项目设置|规划方法/);
+    assert.match(systemNavigation, /class="settings-project-switcher navigator-project-menu"/);
+    assert.doesNotMatch(systemNavigation, />\s*<svg[^>]*>.*?<\/svg><span><strong>项目设置|<strong>规划方法/s);
+    assert.match(appearancePage, /<body class="settings-page"[^>]*data-desktop-shell="true"/);
+    assert.doesNotMatch(appearancePage, /data-native-desktop="true"|data-tauri-drag-region/);
 
     const contextualAppearancePage = await (await webFetch(
       `${origin}/settings/appearance?project=${fixture.alpha.project_id}`,
@@ -1429,22 +1452,17 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     const projectBoardPage = await (await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/`,
     )).text();
-    const projectBoardTopbar = projectBoardPage.slice(
-      projectBoardPage.indexOf('<header class="topbar"'),
-      projectBoardPage.indexOf('<nav class="mobile-switch"'),
-    );
     const projectNavigatorLayer = projectBoardPage.slice(
       projectBoardPage.indexOf('<section class="navigator-project"'),
-      projectBoardPage.indexOf('<header class="desktop-pane-header desktop-pane-header--navigator"'),
+      projectBoardPage.indexOf('<section class="desktop-directory-panel'),
     );
-    assert.match(projectBoardTopbar, /data-settings-link/);
-    assert.doesNotMatch(projectBoardTopbar, /产品 Alpha|切换项目|项目设置|project-decisions/);
+    assert.doesNotMatch(projectBoardPage, /<header class="topbar"|web-project-switcher/);
     assert.match(projectNavigatorLayer, /产品 Alpha/);
     assert.match(projectNavigatorLayer, new RegExp(`href="/projects/${fixture.alpha.project_id}/settings/rules"`));
     assert.match(projectNavigatorLayer, /切换项目/);
     assert.match(projectNavigatorLayer, /项目设置/);
-    assert.match(projectNavigatorLayer, /project-decisions/);
-    assert.doesNotMatch(projectNavigatorLayer, /#icon-settings/);
+    assert.doesNotMatch(projectNavigatorLayer, /project-decisions|navigator-project-meta/);
+    assert.match(projectBoardPage, /class="personal-account" data-settings-link/);
     assert.match(projectBoardPage, new RegExp(`data-settings-link href="/settings/appearance\\?project=${fixture.alpha.project_id}"`));
     assert.doesNotMatch(projectBoardPage, /class="locale-switch"|class="theme-picker"/);
 
@@ -1463,10 +1481,11 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(runtimePage, /已关联的 AI 会话/);
     assert.match(runtimePage, /工作目录关联/);
     assert.match(runtimePage, /不接入也能正常使用 Goal Tree、待决定和记录/);
-    assert.match(runtimePage, /.settings-page > \.topbar \{ height: 58px; \}/);
-    assert.match(runtimePage, /@media \(max-width: 760px\)[\s\S]*\.settings-page > \.topbar \{ height: 52px; \}/);
-    assert.match(runtimePage, /\.settings-page \.top-action span \{ display: none; \}/);
-    assert.match(runtimePage, /button:focus-visible[\s\S]*a:focus-visible/);
+    assert.match(runtimePage, /href="\/assets\/goalboard-settings\.css"/);
+    assert.match(settingsStyles, /.settings-page > \.topbar \{ height: 58px; \}/);
+    assert.match(settingsStyles, /@media \(max-width: 760px\)[\s\S]*\.settings-page > \.topbar \{ height: 52px; \}/);
+    assert.match(settingsStyles, /\.settings-page \.top-action span \{ display: none; \}/);
+    assert.match(settingsStyles, /button:focus-visible[\s\S]*a:focus-visible/);
     assert.doesNotMatch(runtimePage, /兼容模式|自动启用项目|单数据库工作区/);
 
     const projectPage = await (await webFetch(`${origin}/settings/projects`)).text();
@@ -1497,17 +1516,21 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectRulesNavigation, /产品 Alpha/);
     assert.match(projectRulesNavigation, /工作规则/);
     assert.match(projectRulesNavigation, /工作规划/);
-    assert.doesNotMatch(projectRulesNavigation, /全局设置|AI 与执行工具|诊断/);
+    assert.doesNotMatch(projectRulesNavigation, /<strong>AI 与执行工具<\/strong>|<strong>诊断<\/strong>/);
     const desktopProjectRulesPage = await (await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/settings/rules?desktop=1`,
     )).text();
-    assert.match(desktopProjectRulesPage, /<nav class="settings-navigation project-settings-navigation"[\s\S]*?<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"><\/div>[\s\S]*?<div class="settings-desktop-project">/);
+    assert.match(desktopProjectRulesPage, /<nav class="settings-navigation project-settings-navigation"[\s\S]*?<div class="settings-desktop-project">[\s\S]*?class="settings-project-switcher navigator-project-menu"/);
+    assert.doesNotMatch(desktopProjectRulesPage, /desktop-titlebar-safe|项目状态本地保存/);
     assert.doesNotMatch(desktopProjectRulesPage, /<header class="topbar" data-tauri-drag-region/);
     assert.match(desktopProjectRulesPage, /<header class="topbar">[\s\S]*?<div class="project-context" data-tauri-drag-region[\s\S]*?<div class="top-spacer" data-tauri-drag-region>[\s\S]*?<a class="top-action"/);
     const desktopGlobalSettingsPage = await (await webFetch(
       `${origin}/settings/appearance?desktop=1&project=${fixture.alpha.project_id}`,
     )).text();
-    assert.match(desktopGlobalSettingsPage, /<nav class="settings-navigation"[\s\S]*?<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"><\/div>[\s\S]*?<div class="settings-desktop-project">/);
+    assert.match(desktopGlobalSettingsPage, /<nav class="settings-navigation"[\s\S]*?<div class="settings-desktop-project">[\s\S]*?class="settings-project-switcher navigator-project-menu"/);
+    assert.match(desktopGlobalSettingsPage, /data-native-desktop="true"/);
+    assert.match(desktopGlobalSettingsPage, /data-tauri-drag-region/);
+    assert.doesNotMatch(desktopGlobalSettingsPage, /desktop-titlebar-safe|项目状态本地保存/);
     assert.match(projectRulesPage, /data-route-prefix="\/projects\//);
     assert.match(projectRulesPage, /name="scope" value="project_default"/);
     assert.doesNotMatch(projectRulesPage, /name="goal_id"/);
@@ -1517,13 +1540,13 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectRulesPage, /data-project-rules-receipt/);
     assert.match(projectRulesPage, /goalboard-project-rules-receipt:/);
     assert.match(projectRulesPage, /之后开始或重新领取的 Goal 会采用这些规则/);
-    assert.match(projectRulesPage, /\.policy-source \{[^}]*background: var\(--paper\)/);
-    assert.match(projectRulesPage, /\.policy-source > summary \{[^}]*background: color-mix\(in srgb, var\(--rail\)/);
-    assert.match(projectRulesPage, /\.project-rules-intro \{[^}]*background: var\(--rail\)/);
-    assert.match(projectRulesPage, /\.project-rules-intro li \{[^}]*background: var\(--paper\)/);
-    assert.match(projectRulesPage, /\.policy-mode-options label:hover > span \{[^}]*var\(--blue-soft\)/);
-    assert.match(projectRulesPage, /\.policy-mode-options input:disabled \+ span \{[^}]*background: var\(--rail\)/);
-    assert.match(projectRulesPage, /\.policy-input input, \.policy-reason textarea \{[^}]*color: var\(--ink\); background: var\(--paper\)/);
+    assert.match(settingsStyles, /\.policy-source \{[^}]*background: var\(--paper\)/);
+    assert.match(settingsStyles, /\.policy-source > summary \{[^}]*background: color-mix\(in srgb, var\(--rail\)/);
+    assert.match(settingsStyles, /\.project-rules-intro \{[^}]*background: var\(--rail\)/);
+    assert.match(settingsStyles, /\.project-rules-intro li \{[^}]*background: var\(--paper\)/);
+    assert.match(settingsStyles, /\.policy-mode-options label:hover > span \{[^}]*var\(--blue-soft\)/);
+    assert.match(settingsStyles, /\.policy-mode-options input:disabled \+ span \{[^}]*background: var\(--rail\)/);
+    assert.match(settingsStyles, /\.policy-input input, \.policy-reason textarea \{[^}]*color: var\(--ink\); background: var\(--paper\)/);
 
     const savedProjectRules = await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/api/policy-bindings`,
@@ -1576,7 +1599,7 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(workPlanningNavigation, /产品 Alpha/);
     assert.match(workPlanningNavigation, /工作规则/);
     assert.match(workPlanningNavigation, /工作规划/);
-    assert.doesNotMatch(workPlanningNavigation, /全局设置|AI 与执行工具|诊断/);
+    assert.doesNotMatch(workPlanningNavigation, /<strong>AI 与执行工具<\/strong>|<strong>诊断<\/strong>/);
     assert.doesNotMatch(workPlanningPage, /class="planning-layout"|class="planning-editor"/);
 
     const appliedPlanningMethod = await webFetch(
@@ -1620,7 +1643,7 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectPlanningDetailNavigation, /产品 Alpha/);
     assert.match(projectPlanningDetailNavigation, /工作规则/);
     assert.match(projectPlanningDetailNavigation, /工作规划/);
-    assert.doesNotMatch(projectPlanningDetailNavigation, /全局设置|AI 与执行工具|诊断/);
+    assert.doesNotMatch(projectPlanningDetailNavigation, /<strong>AI 与执行工具<\/strong>|<strong>诊断<\/strong>/);
 
     const planningLibrary = await (await webFetch(
       `${origin}/settings/planning?project=${fixture.alpha.project_id}`,
@@ -2370,7 +2393,7 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
     const origin = `http://127.0.0.1:${address.port}`;
 
     const indexResponse = await webFetch(`${origin}/`);
-    assert.match(indexResponse.headers.get("content-security-policy") ?? "", /script-src 'unsafe-inline'/);
+    assert.match(indexResponse.headers.get("content-security-policy") ?? "", /script-src(?: 'self')? 'unsafe-inline'/);
     assert.match(indexResponse.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
     const index = await indexResponse.text();
     assert.match(index, /迁移已有 GoalBoard 数据/);
@@ -4960,8 +4983,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       await webFetch(`${origin}/api/goals/POLICY-WEB/records?view=current`)
     ).text();
     assert.match(policyRecords, new RegExp(evidence.evidence_id));
-    assert.match(page, /data-decisions-link[^>]*aria-label="待决定 [0-9]+"/);
-    assert.match(page, /class="project-decisions/);
+    assert.match(page, /data-decisions-link[^>]*data-work-surface-link="inbox"/);
+    assert.doesNotMatch(page, /class="project-decisions|class="navigator-project-meta"/);
     assert.match(page, /class="tree-chrome"/);
 
     const reviewDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
@@ -5113,14 +5136,14 @@ test("Web result confirmation names the criterion that still lacks passing evide
     assert.ok(address && typeof address === "object");
     const page = await (await webFetch(`http://127.0.0.1:${address.port}/decisions`)).text();
     const group = page.match(
-      /<section class="decision-goal-group" id="decision-goal-REVIEW-NO-EVIDENCE"[\s\S]*?(?=<section class="decision-goal-group"|<\/main>)/,
+      /<details class="decision-goal-group inbox-group" id="decision-goal-REVIEW-NO-EVIDENCE"[\s\S]*?<\/details>/,
     )?.[0];
     assert.ok(group);
     assert.match(group, /拿当前完成标准和依据来说/);
     assert.match(group, /完成标准「用户能看到保存后的实际结果」还没有对应的通过依据/);
     assert.match(group, /现在不应选择“通过”/);
     assert.match(group, /即使选择“通过”[\s\S]*仍有 1 条完成标准缺少通过依据，不会完成/);
-    assert.match(group, /<option value="" selected disabled>请选择结论<\/option>/);
+    assert.match(page, /<option value="" selected disabled>请选择结论<\/option>/);
     assert.doesNotMatch(group, /建议确认通过/);
   } finally {
     await new Promise<void>((resolve, reject) =>

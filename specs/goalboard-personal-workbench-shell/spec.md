@@ -10,9 +10,16 @@
 - 主工作面没有项目级 Goal 标签，切换后难以保留多条正在查看的 Goal；
 - 根目录的 Feed、Promotion、可视化工作区目前只替换左栏目录，右侧仍停留在旧 Goal，形成“左侧已经切换、右侧没有响应”的错误状态；
 - 标题栏虽然声明了 Tauri 拖动权限，但左右实际可命中的空白拖动区分别只有最小 12px 和固定 48px，正常窗口宽度下近似不可用；
-- 标题栏把 `trafficLightPosition.y = 16` 错当成原生按钮中心线；当前 Tauri/Wry 实现实际用它计算 `close button height + y` 的标题栏容器 inset，导致原生红黄绿按钮比 48px Web 控件带的视觉中心高约 8px；
+- 标题栏曾把 `trafficLightPosition.y = 16` 错当成原生按钮中心线；改为 `24` 后，真实 2× Retina 安装包截图仍测得原生按钮中心约为 21.75 CSS px，而 Web 控件中心在 24px，相差 5 个物理像素。Web 控件因此需要独立校准到 21.5px，而不是继续假设配置值就是可见中心；
 - 本机同时存在 `~/Applications/GoalBoard.app` 与 `/Applications/GoalBoard.app` 时，启动脚本优先前者；若只更新后者，用户仍会打开旧版本；
+- 旧 Desktop App 在 4173 服务重启的短暂空窗中会重新运行其内置安装器；同版本内置 Runtime 因内容摘要不同而覆盖刚安装的本地新构建，造成源码、安装目录和实际页面反复回退；
+- Desktop 从本地开发安装启动 Web 时，Legacy Node launcher 会再 spawn 真正的 server；App 退出若只强杀 launcher，server 会变成 PPID 1 的孤儿并继续占用 4173，随后 LaunchAgent 无法接管；
 - Desktop 项目页当前把 `Goals` 作为初始左栏目录，并恢复旧版保存的 `directory: goals`；因此即使新包已经安装，用户打开项目仍直接看到 Goal Tree，根目录工作台被藏在返回箭头后，视觉上与旧版几乎一致；
+- Desktop 请求曾写入一年有效期的 `goalboard-desktop` Cookie，导致同一浏览器随后访问普通 Web 也被错误识别成 Desktop；响应式聚焦页因此丢失项目切换入口；
+- Desktop 与普通 Web 仍保留了两套项目壳层：Desktop 使用新版单目录工作台，Web 使用旧 Goal Tree。原生窗口一旦丢失 `desktop=1` 就直接暴露旧壳层；真实 Footballnia 页面已经复现。根因不是缺少更多身份补丁，而是同一个产品不该继续维护两套互相漂移的主界面；
+- Desktop 设置页仍使用“原生标题栏安全空行 + 下一行项目卡片”的旧结构，项目切换下沉并与设置标题重复；主工作台的项目控件左侧安全距离也不足，会与 traffic lights 重叠；
+- 普通项目首页和设置页把约 230KB 的共享视觉样式重复内联进 HTML，项目首页仍使用长列表；冷启动还需要同步探测本地 Runtime 命令，造成首次页面偶发接近 1 秒的等待；
+- Light 模式的大面积白卡同时使用描边和宽而重的阴影，层次漂浮且光源不一致；
 - 项目设置和全局设置入口、作用域与返回路径不统一；
 - Goal 详情虽然已补充 Contract 信息，但仍需放进更稳定、更简约的工作台结构。
 
@@ -20,13 +27,13 @@
 
 ## 完成等级
 
-本轮目标为 **Level 3：Desktop 工作台核心 UI 功能可用**。
+本轮目标为 **Level 3：Desktop 工作台核心 UI 功能可用，并修复同源 Web 回归**。
 
 - Goal、决定中心、项目切换、项目设置、全局设置和 Runtime 继续使用真实数据与现有行为；
 - Goal 标签按项目保存在当前设备，可打开、复用和关闭；
 - Feed、Promotion、Cloud/Team 等尚无领域能力的入口只表达规划位置，不伪装成已接通功能；
 - 根目录模块切换必须同步切换右侧工作面；返回 Goal 时恢复原 Goal、详情内页签、滚动位置和 Runtime，不重新创建领域状态；
-- 普通浏览器 Web 和 760px 以下 Companion 不改信息架构。
+- 普通浏览器 Web 与 Desktop 采用同一套工作台壳层；760px 以下 Companion 由同一 DOM 响应式折叠，并在目标、聚焦和运行任一工作面都能直接切换项目。
 
 ## 用户结果
 
@@ -54,7 +61,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 ### 1. 左侧唯一目录
 
-Desktop 宽屏只保留一个目录列：
+Desktop 与普通 Web 的宽屏界面共用一个目录列：
 
 - macOS Overlay 标题栏高 48px。红黄绿按钮占用左侧约 76px，项目选择器紧接其右侧并在原位打开项目下拉菜单；项目设置按钮紧邻项目选择器，不再另占一行；
 - 项目下拉直接列出真实项目，当前项目有可读选中态，选择后进入该项目工作台；菜单同时保留“管理项目”入口。标题栏空白区域仍可拖动窗口，项目选择、设置、Goal 标签、关闭和新建按钮保持纯交互语义；
@@ -108,8 +115,20 @@ Desktop 宽屏只保留一个目录列：
 - **全局设置**入口在左下账户区，只包含当前设备的“界面与语言 / AI 与执行工具 / 诊断”；
 - 两类设置在入口位置、目录标题、右侧标签和页面说明中都明确作用域；
 - 项目设置保存需要显式提交；全局外观偏好沿用现有即时保存行为；
-- Desktop 设置页使用同一目录和工作面语言，普通 Web 设置页保持现有结构。
-- Desktop 项目设置与全局设置沿用相同的 48px 原生标题栏安全带；左栏项目上下文从安全带下方开始，右侧顶部关闭/上下文栏保持在安全带同一行。
+- Desktop 与普通 Web 设置页使用同一目录和工作面语言；平台差异只用于原生窗口拖动区和 macOS traffic lights 安全距离；
+- Desktop 项目设置与全局设置沿用相同的 48px 原生标题栏：项目切换和设置按钮直接位于 traffic lights 右侧并与其视觉中心对齐，不再先渲染空安全行，也不在标题栏下面重复项目卡片；第二行直接开始“项目设置 / 全局设置”目录标题；
+- 项目管理页改为真实项目卡片网格，展示项目名、数据范围和打开动作；宽屏多列、窄屏单列，不使用贯穿页面的项目列表和巨大外框。
+
+### 4.1 Web / Desktop 同壳层与加载性能
+
+- 项目工作台、项目切换、单目录、Inbox、Goal 标签、Goal 内容和 Runtime 在 Desktop 与普通 Web 共用同一份 HTML 结构、CSS 和交互脚本；删除旧 Web Goal Tree 壳层和 `desktopShell ? 新壳层 : 旧壳层` 双分支；
+- `desktop=1` 或 Desktop 请求头只启用原生增强：macOS traffic lights 安全距离、可拖动标题栏和 Tauri 窗口能力。它们不再决定用户看到哪套产品界面；
+- 普通 Web 在宽屏直接使用同一项目下拉和单目录工作台；760px 以下继续折叠为同一 DOM 的 Companion 视图，不另建旧版导航；
+- 旧 `goalboard_desktop` Cookie 不再读取或写入，桌面正确性也不依赖每条链接都追加查询参数；
+- Desktop 内置 Runtime 只在首次缺失或版本号严格升级时写入本机安装；旧 App 不得以同版本内容覆盖本地新构建。内置版本升级后要重启已有的受管 Web 服务，让当前 App 与 4173 立即使用同一 release；
+- Desktop 自行启动的 Web launcher 使用独立进程组；窗口退出、替换或恢复时先向 launcher 与整个进程组发送 TERM，超时才 KILL，不能遗留占用 4173 的 server 孤儿进程；
+- 项目首页、项目设置和全局设置复用可缓存的静态样式资源，不在每个 HTML 响应中重复传输整份视觉基础样式；
+- 首屏不得为了 Runtime 可用性探测阻塞页面响应；探测结果允许在页面显示后补齐，但真正启动 Runtime 时仍使用现有校验与错误反馈。
 
 ### 5. 保留、替换、忽略
 
@@ -156,6 +175,8 @@ Desktop 宽屏只保留一个目录列：
 
 - `src/web/render.ts`
 - `src/web/visual-foundation.ts`
+- `src/web/desktop-shell.ts`
+- `src/web/server.ts`
 - `src/web/i18n.ts`
 - 相关 Web / Desktop / visual foundation 测试
 - 实现验证后的 `DESIGN.md` 与 `.impeccable/surfaces/src-web-render-ts.md`
@@ -165,7 +186,7 @@ Desktop 宽屏只保留一个目录列：
 - `src/v1/` 领域、SQLite、Goal 生命周期；
 - MCP、CLI、Runtime 绑定协议；
 - PTY/WebSocket 数据行为；
-- 普通 Web 的主信息架构。
+- 普通 Web 的目标、聚焦、运行主信息架构（仅恢复跨工作面项目切换入口）。
 
 ## 交互与无障碍
 
@@ -185,15 +206,22 @@ Desktop 宽屏只保留一个目录列：
 4. 打开两个不同 Goal 会生成两个可复用标签；重复打开不重复；刷新后按项目恢复。
 5. Goal 详情、异步切换、写操作、Inbox 中的待决定处理和 Runtime 主行为无回归；Inbox 列表用真实类型图标/标签区分内容，展开后可完成现有决定流程。
 6. 项目设置和全局设置在 Desktop 中视觉属于同一工作台，并显示正确目录和作用域；真实表单可继续保存。
-7. Light / Dark 均依靠色面与 active 状态建立层级，左栏没有 item 分割线、大块边框，也没有与右侧工作面之间贯穿窗口的常驻投影或分割线。
-8. 1440×900、1180×760 无横向溢出；760px 以下与普通 Web 保持既有结构。
-9. macOS Desktop 的 traffic lights 不与项目选择器、项目设置或目录内容重叠；原生按钮组使用经真实窗口校准的 `trafficLightPosition.y = 24px` inset，项目图标、名称、下拉箭头和设置按钮位于 48px Web 控件带的同一视觉中心，目标截图尺度下误差不超过 1px。项目控件可正常点击，下拉菜单不触发窗口拖动；左右标题栏把标签和操作之外的剩余宽度交给拖动区，用户可在明显空白处稳定拖动窗口。
+7. Light / Dark 均依靠色面与 active 状态建立层级，左栏没有 item 分割线、大块边框，也没有与右侧工作面之间贯穿窗口的常驻投影或分割线；Light 卡片使用统一、克制的局部阴影，不再同时叠加强描边和宽泛阴影。
+8. 1440×900、1180×760 无横向溢出；760px 以下保留目标 / 聚焦 / 运行结构，并能从任一工作面直接切换项目。
+9. macOS Desktop 的 traffic lights 不与项目选择器、项目设置或目录内容重叠；项目图标、名称、下拉箭头和设置按钮位于 48px Web 控件带与原生按钮组的同一视觉中心，真实截图尺度下误差不超过 1px。项目控件可正常点击，下拉菜单不触发窗口拖动；左右标题栏把标签和操作之外的剩余宽度交给拖动区，用户可在明显空白处稳定拖动窗口。Desktop 设置页不得在标题栏下方重复项目切换卡片。
 10. Dark 模式“完整记录 → 执行与检查”不出现浅色表头配浅灰文字；标题、标签、正文和次级信息均可清楚阅读。
 11. Desktop 的当前、上下文、进展、关系和记录标签内容默认撑满可用宽度和剩余视口高度；活动 section 覆盖整个 stage，非活动 section 不额外占用 Grid 行；高窗口不受 `590px / 760px` 一类固定上限截断，短内容不再在卡片下方留下大片无归属空白，窄屏不被强制拉高。
 12. 复合父 Goal 的 Runtime 可见界面只保留子 Goal 选择与必要说明，不显示添加终端、终端操作条、空终端画布和 Runtime 菜单；叶子 Goal 仍可正常打开终端。为支持同页切换回叶子 Goal，终端结构可以留在 DOM 中，但必须从布局和可访问树隐藏。
 13. 在 Goal 页选择 Feed、Promotion 或可视化工作区时，右侧显示同名 utility 标签与真实“规划中”占位工作面；切回任一 Goal 标签后，Goal 详情子页、滚动位置和 Runtime 状态保持。Inbox 与 Goals 相互切换时不互相覆盖各自的 session UI 状态。
 14. 本地安装验证必须读取实际启动优先级最高的 `~/Applications/GoalBoard.app` 版本和内置 Runtime 版本；重新打开后健康服务与页面静态资源来自本轮构建，不能只证明 DMG 已生成或 `/Applications` 中另一个副本已更新。
 15. Desktop 首次打开项目或从旧导航状态升级时，左栏默认展示 Inbox、Goals、Feed、Promotion、可视化工作区根目录，右侧仍显示最近 Goal；明确进入 Goals 后，在同一会话内切换 Goal、Feed、Promotion、Inbox 再返回时继续恢复 Goal Tree、详情页签、滚动位置和 Runtime 状态。
+16. 同一项目 URL 无论是否携带 `desktop=1`，都渲染同一套单目录工作台；带参数时只多出原生拖动区与 traffic lights 安全距离，不允许出现旧 Goal Tree 壳层。
+17. 项目管理页使用响应式项目卡片网格；项目首页与设置页的共享视觉 CSS 通过带 ETag 的静态资源复用，重复导航不再传输整份内联样式，页面 HTML 体积相较当前基线明显下降。
+18. 首次项目页面响应不被本地 CLI/Runtime 命令探测同步阻塞；页面导航用真实浏览器复测，暖加载目标 < 300ms，若冷加载仍超过 500ms 必须给出可定位的网络或服务端证据。
+19. 项目管理卡片在宽屏和窄屏均保留稳定的卡片间距与至少 20px 内边距，标题、项目类型和操作不贴边；Desktop 项目下拉作为左栏之上的独立浮层显示，长项目名在浮层内部省略，不能被右侧工作面裁切或遮挡。
+20. Goal 标题上方的状态 pill 对“待执行、待澄清、执行受阻、已完成”等所有状态统一保留至少 26px 高度、清楚的图文间距和左右内边距，不能让图标、文字或边框挤在一起。
+21. 打开旧 Desktop App、重启 4173 或执行同版本 `install:local` 时，本机 release 不会被旧 App 内置 Runtime 回写；安装更高版本 App 时才升级 Runtime，并重启已有受管服务。
+22. 没有 LaunchAgent 时由 Desktop 自行启动 Web，退出 App 后 launcher 与实际 server 都结束；重新启用 LaunchAgent 不出现 4173 端口冲突。
 
 ## 验证
 
@@ -207,6 +235,10 @@ Desktop 宽屏只保留一个目录列：
 - Desktop 真实窗口依次点击 Promotion → Feed → Goals → Inbox → Goals，核对左栏当前态、右侧标签/内容同步，并确认 Goal 详情页签、滚动位置和 Runtime 会话恢复；
 - 重新安装后读取 `~/Applications/GoalBoard.app/Contents/Info.plist` 与内置 `goalboard-runtime/package.json`，启动后核对 `/health` 和运行进程工作目录；
 - 普通 Web 与 720px Companion 回归；
+- 带旧 `goalboard-desktop` Cookie 的普通 Web 请求回归，确认 Cookie 不再参与界面分支且响应不再写 Cookie；
+- 记录项目首页、项目设置、Goal 页修改前后的 HTML 字节数、TTFB 和浏览器导航耗时；连续切换项目/设置/Goal 时检查没有重复同步 Runtime 探测；
+- 项目管理页宽屏三列/两列与窄屏单列卡片截图；Light 模式检查页面底色、卡片描边、阴影方向与强度一致；
+- Desktop 主页面与设置页打开项目下拉，检查浮层跨越左栏边界时仍完整可见，长项目名在菜单内部省略且不进入右侧内容层；
 - Impeccable 桌面/窄屏一轮截图审视，批量修复后最多一轮确认和终审。
 
 ## 假设与开放问题

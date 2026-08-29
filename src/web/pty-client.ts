@@ -174,6 +174,31 @@ if (pane) {
     });
   };
 
+  const refreshRuntimeAvailability = async () => {
+    const response = await fetch(route("/api/runtime-availability"), { headers: desktopHeaders() });
+    if (!response.ok) return;
+    const availability = await response.json() as Record<string, boolean>;
+    menu.querySelectorAll<HTMLButtonElement>("[data-tui-kind]:not([data-tui-kind=generic])").forEach((button) => {
+      const kind = button.dataset.tuiKind ?? "";
+      const available = availability[kind] !== false;
+      button.disabled = !available;
+      if (available) {
+        button.removeAttribute("title");
+        button.querySelector("small")?.remove();
+        return;
+      }
+      button.title = L("需要先安装 CLI");
+      if (!button.querySelector("small")) {
+        const hint = document.createElement("small");
+        hint.textContent = L("未安装");
+        button.append(hint);
+      }
+    });
+    if ((menu.querySelector(`[data-tui-kind="${selectedKind}"]`) as HTMLButtonElement | null)?.disabled) {
+      setKind((menu.querySelector("[data-tui-kind]:not(:disabled)") as HTMLButtonElement | null)?.dataset.tuiKind ?? "generic");
+    }
+  };
+
   const setStatus = (text: string, tone: "idle" | "busy" | "live" | "error" = "idle") => {
     if (!statusEl) return;
     statusEl.textContent = text;
@@ -868,6 +893,7 @@ if (pane) {
   });
 
   void (async () => {
+    void refreshRuntimeAvailability().catch(() => undefined);
     try {
       await connectPty();
     } catch (error) {

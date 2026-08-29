@@ -142,9 +142,9 @@ The palette uses cool neutrals for structure and one low-saturation cobalt for f
 
 On Desktop at 761px and above, the workspace has two regions: a single resizable directory approximately 286-334px wide, and the remaining width as the main workbench. The directory is the only persistent navigation column. A narrow resize affordance sits between the regions without becoming another visual pane.
 
-In macOS Overlay mode, `--desktop-titlebar-height` reserves a 48px native-chrome band. The Goal workspace puts the project selector and project-settings control directly in that band, to the right of the traffic lights, instead of consuming a second project row. The Web controls use a shared 32px row; the native group uses the screenshot-calibrated `trafficLightPosition.y = 24px` inset because Tauri/Wry treats that value as titlebar-container inset rather than the button center. Their visible centers align in the shipped window. The remaining left-side titlebar space and an elastic right workbench track with a 72px minimum may drag the window; interactive controls explicitly remain no-drag.
+In macOS Overlay mode, `--desktop-titlebar-height` reserves a 48px native-chrome band. The Goal workspace puts the project selector and project-settings control directly in that band, to the right of the traffic lights, instead of consuming a second project row. Tauri keeps the native `trafficLightPosition.y = 24px` inset, but a packaged 2× Retina capture places the visible traffic-light center at roughly 21.75 CSS px. Web project controls therefore use a separately screenshot-calibrated 21.5px center so the visible groups align within one physical pixel. The remaining left-side titlebar space and an elastic right workbench track with a 72px minimum may drag the window; interactive controls explicitly remain no-drag.
 
-Project and Global Settings use the same titlebar rhythm: 48px safe region, 50px project layer, and 50px scope heading in the directory, aligned with a 48px work-surface topbar. Settings and project-index topbars do not make their outer containers draggable; only plain-text context or otherwise empty spacer regions may drag the window. The directory resizer starts at grid row 2, below the titlebar band, and utility tabs stay on one line. These Overlay rules do not change ordinary Web or the Companion at 760px and below.
+Project and Global Settings use the same titlebar rhythm: the project selector and project-settings control live inside the 48px native band, followed by one 50px scope heading in the directory. There is no second project card or project-switching row. Settings and project-index topbars do not make their outer containers draggable; only plain-text context or otherwise empty spacer regions may drag the window. The directory resizer starts at grid row 2, below the titlebar band, and utility tabs stay on one line. These Overlay rules do not change ordinary Web or the Companion at 760px and below.
 
 The titlebar contains the current project selector, its real project dropdown, and a separate project-settings control. The directory root begins immediately below it with Inbox, Goals, Feed, Promotion, and Visual Workspace, without permanent group headings or a resident search field. Inbox exposes real pending decisions in a right-side tab while future synchronized input and promotion flows remain planned. Feed, Promotion, and Visual Workspace select the same-named utility tab and an honest reserved right work surface, but they never fabricate items, counts, or working flows. Switching back to a Goal restores its detail subtab, scroll position, open Goal tabs, and Focus or Runtime mode.
 
@@ -158,7 +158,7 @@ The Goal work surface retains the existing Detail blocks: status and facts, titl
 
 Project Settings and Global Settings reuse the same single-directory / work-surface language. Project Settings contains the current project's Work Rules and Work Planning; Global Settings contains device-level Appearance & Language, AI & Execution Tools, and Diagnostics. Headers, directory labels, close/return behavior, and explanatory copy state the active scope.
 
-At 760px and below, Desktop returns to the established Goals / Focus / Runtime Companion and does not force the directory or work-tab strip into the narrow layout. Ordinary browser Web retains its existing information architecture and does not render the Desktop single-directory shell.
+At 760px and below, the shared workbench returns to the established Goals / Focus / Runtime Companion and does not force the directory or work-tab strip into the narrow layout. Ordinary browser Web and Desktop render the same single-directory DOM; only native traffic-light spacing, drag regions, and Tauri abilities differ.
 
 Context, Progress, Relationships, and Record share one two-layer section-deck grammar. Equal-width summary cards form a stable selector row and never move when selection changes. The tallest real title or description sets the whole row height; summaries are never line-clamped or clipped to simulate uniformity. Icon, count, and caret align to the first content line. One full-width detail stage below the row reveals the selected body. At narrow widths the selector row wraps to two columns, then one only when necessary; the stage remains beneath it. Main-tab changes return the document to its readable top inset, and deep links reveal the owning stage before scrolling.
 
@@ -172,7 +172,7 @@ Context, Progress, Relationships, and Record share one two-layer section-deck gr
 
 ## Elevation & Depth
 
-The system uses shallow, persistent layering. The single directory casts a soft lateral shadow against the workbench; active directory items, selected Goal tabs, Contract panels, Next Step, completion, context, Runtime companion, and settings sections may use low diffuse shadows over tonal surfaces. Larger ambient elevation remains reserved for menus and dialogs. Light and Dark use the same hierarchy with theme-appropriate shadow color.
+The system uses shallow, persistent layering. The single directory and workbench separate through a quiet tonal shift without a standing divider shadow; active directory items, selected Goal tabs, Contract panels, Next Step, completion, context, Runtime companion, and settings sections may use low diffuse shadows over tonal surfaces. Larger ambient elevation remains reserved for menus and dialogs. Light and Dark use the same hierarchy with theme-appropriate shadow color.
 
 **The Soft Layer Rule.** Use a low shadow to separate one meaningful navigation or content level, not to make every row float.
 
@@ -209,7 +209,7 @@ Relationship records use one stable reading grid: bounded relation type, leading
 - Feed, Promotion, and Visual Workspace are reserved locations only. Their empty states explain that entities and workflows must be defined before real content appears.
 - Goals opens the existing Goal Tree in the same directory. Its heading owns the back action and compact tools; the tree retains its real hierarchy and state.
 - Selected and hovered items use paper-toned surfaces, slight lift, and stronger text rather than row dividers.
-- In ordinary Web, the established project layer above Goal navigation remains in place because the single-directory shell is Desktop-only.
+- In ordinary Web, the same compact project selector, single directory, project tabs, and work surfaces remain in place; responsive CSS folds that shared structure into Companion navigation below 760px.
 - Goal titles, child progress, dependency health, and status tags form four distinct reading levels; no metadata uses an inaccessible faint tone.
 - Compact parent progress uses a short accessible line instead of another text badge.
 
@@ -223,7 +223,7 @@ Relationship records use one stable reading grid: bounded relation type, leading
 
 ### Native Window Chrome
 
-- macOS Overlay uses a fixed 48px titlebar band. The Goal workspace places a 32px project-control row at its top so every project control centers at the native traffic-light `y=16px`; there is no second project row. Settings retains its scoped heading rhythm and aligns to a 48px work-surface topbar.
+- macOS Overlay uses a fixed 48px titlebar band. The Goal workspace places compact project controls on the screenshot-calibrated `y=21.5px` line that matches the visible native traffic-light center; there is no second project row. Settings follows the same rule, then begins its scoped heading below the titlebar.
 - The workbench bar contains tabs, one dedicated empty 48px drag slot, and actions. Utility tabs stay on one line.
 - Whole workbench, project-index, and Settings topbars are never drag regions. Only empty spacers or plain-text context may carry window drag behavior.
 - The directory resizer begins below the native titlebar at grid row 2 so resizing and macOS traffic-light interaction never compete.

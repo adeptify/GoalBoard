@@ -17,7 +17,7 @@ import {
 import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
-import { desktopCookieHeaders, isDesktopShellRequest } from "./desktop-shell.js";
+import { isDesktopShellRequest } from "./desktop-shell.js";
 import { goalTreeProposalItemValidationIssues } from "../v1/goal-tree-proposal-validation.js";
 import { goalTreeProposalDecompositionIssues } from "../v1/goal-decomposition-validation.js";
 import { isPtyCommandAvailable, type GoalBoardPtyHost } from "./pty-host.js";
@@ -41,6 +41,8 @@ import {
   renderGoalDocumentFragment,
   renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
+  renderGoalBoardProjectIndexStylesheet,
+  renderGoalBoardSettingsStylesheet,
   renderGoalBoardWorkbenchClientScript,
   renderGoalBoardWorkbenchStylesheet,
   renderGoalBoardWeb,
@@ -583,6 +585,10 @@ function serveWorkbenchAsset(
     ? { body: renderGoalBoardWorkbenchStylesheet(), contentType: "text/css; charset=utf-8" }
     : pathname === "/assets/goalboard-workbench.js"
       ? { body: renderGoalBoardWorkbenchClientScript(), contentType: "text/javascript; charset=utf-8" }
+      : pathname === "/assets/goalboard-project-index.css"
+        ? { body: renderGoalBoardProjectIndexStylesheet(), contentType: "text/css; charset=utf-8" }
+        : pathname === "/assets/goalboard-settings.css"
+          ? { body: renderGoalBoardSettingsStylesheet(), contentType: "text/css; charset=utf-8" }
       : null;
   if (!asset) return false;
   const etag = `"${createHash("sha256").update(asset.body).digest("base64url")}"`;
@@ -1179,8 +1185,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderCapsuleShell(resolved.projects));
           return;
@@ -1211,8 +1216,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(methodId
             ? renderGoalBoardPlanningMethodPage(
@@ -1265,8 +1269,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderGoalBoardSettings({
             section,
@@ -1604,8 +1607,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderGoalBoardProjectIndex(resolved.projects, controlToken, desktopShell));
           return;
@@ -1645,8 +1647,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderGoalBoardProjectSettings(
             readWebView(),
@@ -1670,8 +1671,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderGoalBoardPlanningMethodPage(
             method,
@@ -1688,8 +1688,7 @@ async function handleGoalBoardWebRequest(
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
-            ...desktopCookieHeaders(request, url),
+            "content-security-policy": PAGE_CSP,
           });
           response.end(renderGoalBoardPlanningSettings(
             view,
@@ -1788,6 +1787,16 @@ async function handleGoalBoardWebRequest(
             service_process_id: serviceProcessId(),
             board_id: options.boardId,
             desktop_tui: true,
+          });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/runtime-availability") {
+          sendJson(response, 200, {
+            "claude-code": isPtyCommandAvailable("claude"),
+            codex: isPtyCommandAvailable("codex"),
+            opencode: isPtyCommandAvailable("opencode"),
+            "pi-agent": isPtyCommandAvailable("pi"),
+            "grok-build": isPtyCommandAvailable("grok"),
           });
           return;
         }
@@ -2917,19 +2926,12 @@ async function handleGoalBoardWebRequest(
             trashView,
             controlToken,
             desktopShell,
-            {
-              "claude-code": isPtyCommandAvailable("claude"),
-              codex: isPtyCommandAvailable("codex"),
-              opencode: isPtyCommandAvailable("opencode"),
-              "pi-agent": isPtyCommandAvailable("pi"),
-              "grok-build": isPtyCommandAvailable("grok"),
-            },
+            {},
           );
           const headers: Record<string, string> = {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
             "content-security-policy": PAGE_CSP,
-            ...desktopCookieHeaders(request, url),
           };
           response.writeHead(200, headers);
           response.end(html);
