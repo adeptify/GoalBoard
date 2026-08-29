@@ -111,8 +111,11 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-selected \{[\s\S]*background: var\(--paper\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility \{[\s\S]*min-width: max-content;[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility > \[role="tab"\] \{[\s\S]*white-space: nowrap;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) 48px auto;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-titlebar-drag \{[\s\S]*width: 48px;[\s\S]*user-select: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*grid-template-columns: minmax\(0, max-content\) minmax\(72px, 1fr\) auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-titlebar-drag \{[\s\S]*min-width: 72px;[\s\S]*-webkit-app-region: drag;[\s\S]*user-select: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-surface\[hidden\] \{ display: none !important; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-utility-surface:not\(\[hidden\]\) \{ display: grid; gap: 34px; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\[data-desktop-surface\]:not\(\[data-desktop-surface="goal"\]\)[\s\S]*\.tui-pane \{ display: none !important; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-brief-item,[\s\S]*box-shadow:/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: max\(420px, calc\(100dvh - 340px\)\);[\s\S]*display: grid;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: max\(280px, calc\(100dvh - 510px\)\);[\s\S]*align-items: stretch;/);

@@ -8,6 +8,9 @@
 - 顶部项目、应用栏项目和 Goal Tree 项目上下文重复；
 - 左侧搜索、分组标题、结构线和固定工具持续占空间，视觉噪声高；
 - 主工作面没有项目级 Goal 标签，切换后难以保留多条正在查看的 Goal；
+- 根目录的 Feed、Promotion、可视化工作区目前只替换左栏目录，右侧仍停留在旧 Goal，形成“左侧已经切换、右侧没有响应”的错误状态；
+- 标题栏虽然声明了 Tauri 拖动权限，但左右实际可命中的空白拖动区分别只有最小 12px 和固定 48px，正常窗口宽度下近似不可用；
+- 本机同时存在 `~/Applications/GoalBoard.app` 与 `/Applications/GoalBoard.app` 时，启动脚本优先前者；若只更新后者，用户仍会打开旧版本；
 - 项目设置和全局设置入口、作用域与返回路径不统一；
 - Goal 详情虽然已补充 Contract 信息，但仍需放进更稳定、更简约的工作台结构。
 
@@ -20,6 +23,7 @@
 - Goal、决定中心、项目切换、项目设置、全局设置和 Runtime 继续使用真实数据与现有行为；
 - Goal 标签按项目保存在当前设备，可打开、复用和关闭；
 - Feed、Promotion、Cloud/Team 等尚无领域能力的入口只表达规划位置，不伪装成已接通功能；
+- 根目录模块切换必须同步切换右侧工作面；返回 Goal 时恢复原 Goal、详情内页签、滚动位置和 Runtime，不重新创建领域状态；
 - 普通浏览器 Web 和 760px 以下 Companion 不改信息架构。
 
 ## 用户结果
@@ -53,9 +57,10 @@ Desktop 宽屏只保留一个目录列：
 - 左侧目录从标题栏下方直接开始。普通模块行约 40px，目录标题约 40px，Goal 工具区约 30px；避免标题重复放大和无意义纵向空档；
 - 根目录不显示“工作台”“注意力入口”等分组标题，也不显示常驻搜索框；
 - 根目录依次提供 Inbox、Goals、Feed、Promotion、可视化工作区；Inbox 与当前 Goal 页面一样是右侧工作面入口，不再替换左栏目录；
+- 点击根目录模块时，左栏保持根目录并更新当前态，右侧打开或复用对应工作面标签；点击 Goals 时进入左栏 Goal Tree，并恢复最近一条 Goal 的右侧详情；
 - 点击 Inbox 打开或复用右侧 `Inbox` 标签，左栏保持根目录并显示 Inbox 当前态；Inbox 默认展示真实待决定事项列表，列表行通过图标和小型类型标签区分目标说明、新工作、Goal 关系、结果确认和风险。点击一行再展开现有真实处理表单；尚未接通的同步输入和升格流不伪装成数据；
 - Goals 进入原有 Goal Tree，保留父子展开、状态筛选、新建、列表/关系视图、归档和回收站；这些工具在目录标题区或按需状态出现，不再占据一整块搜索工具栏；
-- Goals 及其二、三级目录仍在左栏原位切换，并有“返回上一级”；Inbox 不进入左栏二级目录；
+- Goals 及其二、三级目录仍在左栏原位切换，并有“返回上一级”；Inbox、Feed、Promotion 和可视化工作区不再创建左栏二级占位目录；
 - 左栏主要依靠背景层次、轻阴影、hover 和 active 色面区分，不为每个 item 或区域画结构线；
 - 根目录和 Goal Tree 使用 Codex 式紧凑列表：hover 与 active 只使用克制的中性色面，不使用粗蓝描边、悬浮位移或卡片式大阴影；返回箭头保持小尺寸，并用内收 focus ring 表达键盘焦点；
 - 底部账户区始终贴底，显示本地身份；齿轮明确进入全局设置。
@@ -66,6 +71,8 @@ Desktop 宽屏只保留一个目录列：
 - 标签列表使用项目 ID 隔离并保存在当前设备，切换项目后恢复该项目的标签；
 - 关闭非当前标签只移除标签；关闭当前标签后选择相邻标签；至少保留当前可显示 Goal；
 - 选择 Goal 继续复用现有异步文档载入、History、Goal-bound Runtime 和写操作，不复制领域状态；
+- Feed、Promotion、可视化工作区作为项目内 utility 工作面打开；其占位内容、标签和左栏当前态同步切换，Goal 工作面继续留在 DOM 中。再次选择 Goal 标签或 Goals 目录时，恢复切换前的详情子页、滚动位置和 Runtime 会话；
+- Inbox 继续使用真实 `/decisions` 路由。离开 Goal 页面前保存项目级 Goal UI 状态，Inbox 使用独立的页面 UI 状态键，不能覆盖最近 Goal；从 Inbox 选择 Goals 时回到最近 Goal；
 - Inbox 当前使用 `/decisions` 作为真实数据路由，但用户界面统一命名为 `Inbox`；待决定处理仍写入原有 GoalBoard 领域状态，不创建第二份 Inbox 数据；
 - 设置页在 Desktop 中也表现为可关闭的工作面标签，关闭或返回后回到项目 Goal；
 - 窄屏继续使用现有 Goals / Focus / Runtime Companion，不强行显示桌面标签条。
@@ -132,8 +139,9 @@ Desktop 宽屏只保留一个目录列：
 
 ### 新增本地 UI 状态
 
-- 当前左侧目录（root / goals / placeholder；Inbox 为右侧工作面，不持有左栏二级目录）；
+- 当前左侧目录（root / goals；Inbox 与规划模块均为右侧工作面，不持有左栏二级目录）；
 - 每项目打开的 Goal tab ID 列表；
+- 当前右侧工作面（goal / inbox / feed / promotion / visual）及各工作面的滚动位置；
 - 当前设置工作面返回目标。
 
 这些状态只进入 `sessionStorage` 或 `localStorage`，不成为 GoalBoard SSOT，也不修改 SQLite。
@@ -156,6 +164,7 @@ Desktop 宽屏只保留一个目录列：
 ## 交互与无障碍
 
 - 左侧目录和右侧标签均可键盘操作；当前目录、当前 Goal 和当前设置具有可读状态；
+- 左侧模块当前态与右侧实际可见工作面必须来自同一个 UI 状态，不能出现 Promotion 已选中但右侧仍显示 Goal 的分裂状态；
 - icon-only 按钮必须有具体名称，例如“打开全局设置”“打开当前项目设置”；
 - 标签使用 `tablist / tab / tabpanel` 完整语义；关闭按钮不嵌套在 tab button 内；
 - 状态不只依赖颜色；hover 之外也保留键盘 focus-visible；
@@ -172,10 +181,12 @@ Desktop 宽屏只保留一个目录列：
 6. 项目设置和全局设置在 Desktop 中视觉属于同一工作台，并显示正确目录和作用域；真实表单可继续保存。
 7. Light / Dark 均依靠色面、阴影与 active 状态建立层级，左栏没有 item 分割线或大块边框。
 8. 1440×900、1180×760 无横向溢出；760px 以下与普通 Web 保持既有结构。
-9. macOS Desktop 的 traffic lights 不与项目选择器、项目设置或目录内容重叠；项目图标、名称、下拉箭头和设置按钮共用 `trafficLightPosition.y = 16px` 的垂直中心线，目标截图尺度下误差不超过 1px。项目控件位于同一 48px 标题栏并可正常点击，下拉菜单不触发窗口拖动，标题栏剩余空白区域仍可拖动窗口。
+9. macOS Desktop 的 traffic lights 不与项目选择器、项目设置或目录内容重叠；项目图标、名称、下拉箭头和设置按钮共用 `trafficLightPosition.y = 16px` 的垂直中心线，目标截图尺度下误差不超过 1px。项目控件位于同一 48px 标题栏并可正常点击，下拉菜单不触发窗口拖动；左右标题栏把标签和操作之外的剩余宽度交给拖动区，用户可在明显空白处稳定拖动窗口。
 10. Dark 模式“完整记录 → 执行与检查”不出现浅色表头配浅灰文字；标题、标签、正文和次级信息均可清楚阅读。
 11. Desktop 的当前、上下文、进展、关系和记录标签内容默认撑满可用宽度和剩余视口高度；活动 section 覆盖整个 stage，非活动 section 不额外占用 Grid 行；高窗口不受 `590px / 760px` 一类固定上限截断，短内容不再在卡片下方留下大片无归属空白，窄屏不被强制拉高。
 12. 复合父 Goal 的 Runtime 可见界面只保留子 Goal 选择与必要说明，不显示添加终端、终端操作条、空终端画布和 Runtime 菜单；叶子 Goal 仍可正常打开终端。为支持同页切换回叶子 Goal，终端结构可以留在 DOM 中，但必须从布局和可访问树隐藏。
+13. 在 Goal 页选择 Feed、Promotion 或可视化工作区时，右侧显示同名 utility 标签与真实“规划中”占位工作面；切回任一 Goal 标签后，Goal 详情子页、滚动位置和 Runtime 状态保持。Inbox 与 Goals 相互切换时不互相覆盖各自的 session UI 状态。
+14. 本地安装验证必须读取实际启动优先级最高的 `~/Applications/GoalBoard.app` 版本和内置 Runtime 版本；重新打开后健康服务与页面静态资源来自本轮构建，不能只证明 DMG 已生成或 `/Applications` 中另一个副本已更新。
 
 ## 验证
 
@@ -186,6 +197,8 @@ Desktop 宽屏只保留一个目录列：
 - 真实 Desktop Goal Detail：依次切换上下文、进展、关系、记录，检查 active 内容宽度、最小高度、长内容自然增长、Dark 执行表格对比度；
 - 复合父 Goal Runtime：只显示子 Goal 列表且无终端控件或空画布；叶子 Goal Runtime 回归添加终端与现有会话；
 - macOS Desktop 真实窗口：用截图测量 traffic lights 与项目图标、名称、下拉箭头、设置按钮的垂直中心误差（≤1px），并检查项目下拉、项目设置点击、空白处拖动窗口；
+- Desktop 真实窗口依次点击 Promotion → Feed → Goals → Inbox → Goals，核对左栏当前态、右侧标签/内容同步，并确认 Goal 详情页签、滚动位置和 Runtime 会话恢复；
+- 重新安装后读取 `~/Applications/GoalBoard.app/Contents/Info.plist` 与内置 `goalboard-runtime/package.json`，启动后核对 `/health` 和运行进程工作目录；
 - 普通 Web 与 720px Companion 回归；
 - Impeccable 桌面/窄屏一轮截图审视，批量修复后最多一轮确认和终审。
 

@@ -6293,6 +6293,7 @@ const CLIENT_SCRIPT = `
     const treeFilter = document.querySelector("[data-tree-filter]");
     const treeFilterTrigger = document.querySelector("[data-tree-filter-trigger]");
     const desktopDirectoryPanels = [...document.querySelectorAll("[data-directory-panel]")];
+    const desktopWorkSurfaces = [...document.querySelectorAll("[data-work-surface]")];
     const desktopProjectMenu = document.querySelector("[data-project-menu]");
     const workTabs = document.querySelector("[data-work-tabs]");
     const dialog = document.querySelector("[data-create-dialog]");
@@ -6315,9 +6316,13 @@ const CLIENT_SCRIPT = `
       ? location.pathname.slice(routePrefix.length) || "/"
       : location.pathname;
     const visibleGoals = (source = state) => trashView ? source.trashed_goals : archiveView ? source.archived_goals : source.goals;
-    const storageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
+    const goalUiStorageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
+    const storageKey = decisionView ? goalUiStorageKey + ":inbox" : goalUiStorageKey;
     const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
     let desktopDirectoryOrigin = null;
+    let activeDesktopSurface = decisionView ? "inbox" : "goal";
+    let desktopSurfaceScroll = {};
+    let goalWorkspaceMode = "focus";
     let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
     if (!decisionView) {
       const initialHistoryState = history.state && typeof history.state === "object" ? history.state : {};
@@ -6360,42 +6365,64 @@ const CLIENT_SCRIPT = `
     };
 
     const renderWorkTabs = () => {
-      if (!workTabs || decisionView || collectionView) return;
+      if (!workTabs) return;
       const byId = new Map(visibleGoals().map((item) => [item.goal.goal_id, item]));
-      openWorkTabs = openWorkTabs.filter((goalId) => byId.has(goalId));
-      if (selected && byId.has(selected) && !openWorkTabs.includes(selected)) openWorkTabs.push(selected);
       const fragment = document.createDocumentFragment();
-      openWorkTabs.forEach((goalId, index) => {
-        const item = byId.get(goalId);
-        if (!item) return;
-        const shell = document.createElement("div");
-        shell.className = "desktop-work-tab" + (goalId === selected ? " is-selected" : "");
-        shell.dataset.workTabShell = goalId;
-        const tab = document.createElement("button");
-        tab.type = "button";
-        tab.id = "desktop-work-tab-" + index;
-        tab.role = "tab";
-        tab.dataset.workTab = goalId;
-        tab.setAttribute("aria-selected", String(goalId === selected));
-        tab.setAttribute("aria-controls", "goal-document-pane");
-        tab.tabIndex = goalId === selected ? 0 : -1;
-        const dot = document.createElement("i");
-        dot.dataset.status = item.status;
-        dot.setAttribute("aria-hidden", "true");
-        const label = document.createElement("span");
-        label.textContent = item.goal.title;
-        tab.append(dot, label);
-        const close = document.createElement("button");
-        close.type = "button";
-        close.dataset.closeWorkTab = goalId;
-        close.setAttribute("aria-label", L("关闭 {title}", { title: item.goal.title }));
-        close.textContent = "×";
-        shell.append(tab, close);
-        fragment.append(shell);
-      });
+      if (!decisionView && !collectionView) {
+        openWorkTabs = openWorkTabs.filter((goalId) => byId.has(goalId));
+        if (selected && byId.has(selected) && !openWorkTabs.includes(selected)) openWorkTabs.push(selected);
+        openWorkTabs.forEach((goalId, index) => {
+          const item = byId.get(goalId);
+          if (!item) return;
+          const selectedTab = activeDesktopSurface === "goal" && goalId === selected;
+          const shell = document.createElement("div");
+          shell.className = "desktop-work-tab" + (selectedTab ? " is-selected" : "");
+          shell.dataset.workTabShell = goalId;
+          const tab = document.createElement("button");
+          tab.type = "button";
+          tab.id = "desktop-work-tab-" + index;
+          tab.role = "tab";
+          tab.dataset.workTab = goalId;
+          tab.setAttribute("aria-selected", String(selectedTab));
+          tab.setAttribute("aria-controls", "goal-document-pane");
+          tab.tabIndex = selectedTab ? 0 : -1;
+          const dot = document.createElement("i");
+          dot.dataset.status = item.status;
+          dot.setAttribute("aria-hidden", "true");
+          const label = document.createElement("span");
+          label.textContent = item.goal.title;
+          tab.append(dot, label);
+          const close = document.createElement("button");
+          close.type = "button";
+          close.dataset.closeWorkTab = goalId;
+          close.setAttribute("aria-label", L("关闭 {title}", { title: item.goal.title }));
+          close.textContent = "×";
+          shell.append(tab, close);
+          fragment.append(shell);
+        });
+      }
+      if (activeDesktopSurface !== "goal" || decisionView || collectionView) {
+        const surface = desktopWorkSurfaces.find((candidate) => candidate.dataset.workSurface === activeDesktopSurface);
+        if (surface) {
+          const utility = document.createElement("div");
+          utility.className = "desktop-work-tab is-selected is-utility";
+          const label = document.createElement("span");
+          label.id = "desktop-work-tab-utility";
+          label.role = "tab";
+          label.tabIndex = 0;
+          label.dataset.utilityWorkTab = activeDesktopSurface;
+          label.setAttribute("aria-selected", "true");
+          label.setAttribute("aria-controls", "goal-document-pane");
+          label.textContent = surface.dataset.workSurfaceLabel || activeDesktopSurface;
+          utility.append(label);
+          fragment.append(utility);
+        }
+      }
       workTabs.replaceChildren(fragment);
       const activeTab = workTabs.querySelector('[data-work-tab][aria-selected="true"]');
+      const activeUtilityTab = workTabs.querySelector('[data-utility-work-tab][aria-selected="true"]');
       if (activeTab?.id) documentPane.setAttribute("aria-labelledby", activeTab.id);
+      else if (activeUtilityTab?.id) documentPane.setAttribute("aria-labelledby", activeUtilityTab.id);
       else documentPane.removeAttribute("aria-labelledby");
       persistWorkTabs();
     };
@@ -6418,6 +6445,53 @@ const CLIENT_SCRIPT = `
           .find((candidate) => candidate.dataset.workTab === goalId);
         tab?.focus();
       });
+    };
+
+    const restoreLastGoal = (openGoalsDirectory = false) => {
+      let goalId = "";
+      try {
+        const goalUi = JSON.parse(sessionStorage.getItem(goalUiStorageKey) || "null");
+        goalId = String(goalUi?.selected || "");
+        if (openGoalsDirectory && goalUi && typeof goalUi === "object") {
+          sessionStorage.setItem(goalUiStorageKey, JSON.stringify({ ...goalUi, directory: "goals", workSurface: "goal" }));
+        }
+      } catch {}
+      const available = new Set(visibleGoals().map((item) => item.goal.goal_id));
+      if (!available.has(goalId)) goalId = state.active_goal_id || visibleGoals()[0]?.goal.goal_id || "";
+      location.assign(goalId ? route("/goals/" + encodeURIComponent(goalId)) : route("/"));
+    };
+
+    const setDesktopWorkSurface = (surface, persist = true, restoreScroll = true) => {
+      if (!desktopWorkSurfaces.length) return false;
+      const nextSurface = desktopWorkSurfaces.find((candidate) => candidate.dataset.workSurface === surface);
+      if (!nextSurface) {
+        if (surface === "goal") restoreLastGoal(true);
+        return false;
+      }
+      if (activeDesktopSurface && activeDesktopSurface !== surface) {
+        desktopSurfaceScroll[activeDesktopSurface] = documentPane.scrollTop;
+        if (activeDesktopSurface === "goal") goalWorkspaceMode = workspace.dataset.workspaceMode || "focus";
+      }
+      activeDesktopSurface = surface;
+      document.body.dataset.desktopSurface = surface;
+      desktopWorkSurfaces.forEach((candidate) => {
+        candidate.hidden = candidate !== nextSurface;
+      });
+      document.querySelectorAll("[data-work-surface-open], [data-work-surface-link]").forEach((item) => {
+        const active = (item.dataset.workSurfaceOpen || item.dataset.workSurfaceLink) === surface;
+        item.classList.toggle("is-current", active);
+        if (active) item.setAttribute("aria-current", "page");
+        else item.removeAttribute("aria-current");
+      });
+      setWorkspaceMode(surface === "goal" ? goalWorkspaceMode : "focus", false);
+      renderWorkTabs();
+      const label = nextSurface.dataset.workSurfaceLabel || surface;
+      documentPane.setAttribute("aria-label", label);
+      requestAnimationFrame(() => {
+        documentPane.scrollTop = restoreScroll ? Number(desktopSurfaceScroll[surface] || 0) : 0;
+      });
+      if (persist) queueSave();
+      return true;
     };
 
     const setDesktopDirectory = (directory, persist = true, focusTarget = true, origin = null) => {
@@ -7262,7 +7336,9 @@ const CLIENT_SCRIPT = `
       collapsed: [...document.querySelectorAll("[data-tree-item].is-collapsed")].map((item) => item.dataset.goalId),
       disclosures: [...document.querySelectorAll("[data-persist-open][open]")].map((item) => item.dataset.persistOpen),
       treeTop: treeScroll.scrollTop,
-      documentTop: documentPane.scrollTop,
+      documentTop: activeDesktopSurface === "goal" ? documentPane.scrollTop : Number(desktopSurfaceScroll.goal || 0),
+      workSurface: activeDesktopSurface,
+      surfaceScroll: { ...desktopSurfaceScroll, [activeDesktopSurface]: documentPane.scrollTop },
       treeWidth: parseFloat(workspace.style.getPropertyValue("--tree-width")) || treePane.getBoundingClientRect().width,
       tuiWidth: workspace.classList.contains("is-tui-collapsed")
         ? parseFloat(workspace.style.getPropertyValue("--tui-width")) || undefined
@@ -7271,7 +7347,7 @@ const CLIENT_SCRIPT = `
       statuses: [...selectedStatuses],
       mobileView: workspace.dataset.mobileView || "tree",
       navigatorView,
-      workspaceMode: workspace.dataset.workspaceMode || "focus",
+      workspaceMode: activeDesktopSurface === "goal" ? workspace.dataset.workspaceMode || "focus" : goalWorkspaceMode,
       graphFocusOnly,
       graphZoom,
       graphRelationTypes: [...graphRelationTypes],
@@ -7281,6 +7357,10 @@ const CLIENT_SCRIPT = `
     });
 
     const applyUiState = (ui) => {
+      desktopSurfaceScroll = ui?.surfaceScroll && typeof ui.surfaceScroll === "object" ? { ...ui.surfaceScroll } : {};
+      if (ui?.documentTop != null && desktopSurfaceScroll.goal == null) desktopSurfaceScroll.goal = Number(ui.documentTop || 0);
+      goalWorkspaceMode = ui?.workspaceMode || "focus";
+      const nextDesktopSurface = decisionView ? ui?.workSurface || "inbox" : ui?.workSurface || "goal";
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
       if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
       if (desktopDirectoryPanels.length) setDesktopDirectory(decisionView ? "root" : ui?.directory || treePane.dataset.desktopDirectory || "goals", false, false);
@@ -7304,15 +7384,18 @@ const CLIENT_SCRIPT = `
       graphRelationTypes = new Set(savedGraphTypes.length ? savedGraphTypes : ["part_of", "depends_on"]);
       filterTree(ui?.query || "");
       setWorkspaceMode(ui?.workspaceMode || (ui?.navigatorView === "graph" ? "graph" : "focus"), false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface(nextDesktopSurface, false, false);
       setGraphZoom(graphZoom, false);
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
       const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
       if (hashTarget) revealFocusTarget(hashTarget);
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
-      documentPane.scrollTop = hashTarget?.matches?.("[data-goal-panel]")
+      documentPane.scrollTop = hashTarget?.matches?.("[data-goal-panel]") && activeDesktopSurface === "goal"
         ? 0
-        : ui?.selected === selected ? Number(ui?.documentTop || 0) : 0;
+        : activeDesktopSurface === "goal" && ui?.selected === selected
+          ? Number(ui?.documentTop || 0)
+          : Number(desktopSurfaceScroll[activeDesktopSurface] || 0);
       if (hashTarget && !hashTarget.matches?.("[data-goal-panel]")) {
         requestAnimationFrame(() => hashTarget.scrollIntoView({ block: "start" }));
       }
@@ -7370,7 +7453,7 @@ const CLIENT_SCRIPT = `
       });
       if (navigatorView === "graph") updateGraphVisibility();
       document.title = item.goal.title + " · GoalBoard";
-      if (resetScroll) documentPane.scrollTop = 0;
+      if (resetScroll && activeDesktopSurface === "goal") documentPane.scrollTop = 0;
       renderWorkTabs();
       return true;
     };
@@ -7380,8 +7463,10 @@ const CLIENT_SCRIPT = `
       template.innerHTML = String(html || "").trim();
       const nextView = template.content.querySelector("[data-goal-view]");
       if (!nextView) throw new Error("Goal 正文响应不完整");
-      const paneHeader = documentPane.querySelector(":scope > .desktop-pane-header");
-      documentPane.replaceChildren(...(paneHeader ? [paneHeader, nextView] : [nextView]));
+      const goalSurface = documentPane.querySelector('[data-work-surface="goal"]');
+      const paneHeader = goalSurface ? null : documentPane.querySelector(":scope > .desktop-pane-header");
+      if (goalSurface) goalSurface.replaceChildren(nextView);
+      else documentPane.replaceChildren(...(paneHeader ? [paneHeader, nextView] : [nextView]));
       updateAllRelationFormPreviews();
       document.querySelectorAll("[data-risk-state-form]").forEach(updateRiskStatePreview);
       document.querySelectorAll(".risk-goal-picker").forEach(updateRiskGoalCount);
@@ -7399,9 +7484,10 @@ const CLIENT_SCRIPT = `
       indicator.dataset.goalDocumentLoading = "true";
       indicator.setAttribute("role", "status");
       indicator.textContent = L("正在载入 Goal…");
-      const paneHeader = documentPane.querySelector(":scope > .desktop-pane-header");
+      const goalSurface = documentPane.querySelector('[data-work-surface="goal"]');
+      const paneHeader = goalSurface ? null : documentPane.querySelector(":scope > .desktop-pane-header");
       if (paneHeader) paneHeader.after(indicator);
-      else documentPane.prepend(indicator);
+      else (goalSurface || documentPane).prepend(indicator);
     };
 
     const loadGoalDocument = async (goalId) => {
@@ -7605,7 +7691,13 @@ const CLIENT_SCRIPT = `
         const createDraft = dialog.open ? readCreateDraft() : null;
         documentPane.classList.add("is-syncing");
         treeScroll.innerHTML = nextTree.innerHTML;
-        documentPane.replaceChildren(...nextDocument.childNodes);
+        const currentPrimarySurface = documentPane.querySelector('[data-work-surface="' + (decisionView ? "inbox" : "goal") + '"]');
+        const nextPrimarySurface = nextDocument.querySelector('[data-work-surface="' + (decisionView ? "inbox" : "goal") + '"]');
+        if (currentPrimarySurface && nextPrimarySurface) {
+          currentPrimarySurface.replaceChildren(...nextPrimarySurface.childNodes);
+        } else {
+          documentPane.replaceChildren(...nextDocument.childNodes);
+        }
         if (nextFilter && treeFilter) treeFilter.innerHTML = nextFilter.innerHTML;
         document.querySelector("[data-tree-footer]").innerHTML = nextFooter.innerHTML;
         if (nextCount) document.querySelector("[data-tree-count]").textContent = nextCount.textContent;
@@ -7915,6 +8007,30 @@ const CLIENT_SCRIPT = `
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
       if (desktopProjectMenu?.open && !target.closest("[data-project-menu]")) desktopProjectMenu.open = false;
+      const surfaceLink = target.closest("[data-work-surface-link]");
+      if (surfaceLink) {
+        saveUiState();
+        const surface = surfaceLink.dataset.workSurfaceLink || "inbox";
+        if (desktopWorkSurfaces.some((candidate) => candidate.dataset.workSurface === surface)) {
+          event.preventDefault();
+          setDesktopDirectory("root", true, false, surfaceLink);
+          setDesktopWorkSurface(surface, true, true);
+        }
+        return;
+      }
+      const surfaceOpen = target.closest("[data-work-surface-open]");
+      if (surfaceOpen) {
+        const surface = surfaceOpen.dataset.workSurfaceOpen || "goal";
+        const available = desktopWorkSurfaces.some((candidate) => candidate.dataset.workSurface === surface);
+        if (!available && surface === "goal") {
+          saveUiState();
+          restoreLastGoal(true);
+          return;
+        }
+        setDesktopDirectory(surface === "goal" ? "goals" : "root", true, surface === "goal", surfaceOpen);
+        setDesktopWorkSurface(surface, true, true);
+        return;
+      }
       const directoryOpen = target.closest("[data-directory-open]");
       if (directoryOpen && desktopDirectoryPanels.length) {
         setDesktopDirectory(directoryOpen.dataset.directoryOpen || "root", true, true, directoryOpen);
@@ -7949,6 +8065,8 @@ const CLIENT_SCRIPT = `
       }
       const workTab = target.closest("[data-work-tab]");
       if (workTab) {
+        setDesktopDirectory("goals", true, false, workTab);
+        setDesktopWorkSurface("goal", true, true);
         await selectGoal(workTab.dataset.workTab);
         return;
       }
@@ -9149,6 +9267,7 @@ const CLIENT_SCRIPT = `
     if (!restoredUi) {
       setWorkspaceMode("focus", false);
       setGoalPanel(goalPanelFromHash() || "overview", false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface(decisionView ? "inbox" : "goal", false, false);
     }
     if (selected && tuiPane) {
       tuiPane.setAttribute("data-goal-id", selected);
@@ -9871,16 +9990,16 @@ export function renderGoalBoardWeb(
   </footer>`;
   const desktopRootDirectory = `<section class="desktop-directory-panel desktop-directory-root" data-directory-panel="root"${initialDesktopDirectory === "root" ? "" : " hidden"}>
     <nav class="desktop-module-list" aria-label="${L("工作台目录")}">
-      <a class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" data-decisions-link href="/decisions"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${pendingCount}</em></a>
-      <button class="desktop-module-item" type="button" data-directory-open="goals">${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
-      <button class="desktop-module-item" type="button" data-directory-open="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("消息与来源 Session")}</small></span><em>${L("规划中")}</em></button>
-      <button class="desktop-module-item" type="button" data-directory-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
-      <button class="desktop-module-item" type="button" data-directory-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
+      <a class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" data-decisions-link href="/decisions" data-work-surface-link="inbox"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${pendingCount}</em></a>
+      <button class="desktop-module-item${!decisionView ? " is-current" : ""}" type="button" data-directory-open="goals" data-work-surface-open="goal"${!decisionView ? ' aria-current="page"' : ""}>${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
+      <button class="desktop-module-item" type="button" data-work-surface-open="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("消息与来源 Session")}</small></span><em>${L("规划中")}</em></button>
+      <button class="desktop-module-item" type="button" data-work-surface-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
+      <button class="desktop-module-item" type="button" data-work-surface-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
     </nav>
   </section>`;
-  const desktopPlaceholderDirectory = (id: string, label: string, note: string, iconName: GoalBoardIcon) => `<section class="desktop-directory-panel desktop-directory-secondary" data-directory-panel="${id}" hidden>
-    <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${label}</strong><small>${note}</small></span></header>
-    <div class="desktop-directory-empty">${icon(iconName)}<strong>${L("位置已保留")}</strong><p>${L("实体和工作流确认后再接入真实内容。")}</p><span>${L("规划中")}</span></div>
+  const desktopUtilitySurface = (id: string, label: string, note: string, detail: string, iconName: GoalBoardIcon) => `<section class="desktop-work-surface desktop-utility-surface" data-work-surface="${id}" data-work-surface-label="${escapeHtml(label)}" hidden>
+    <div class="desktop-utility-heading">${icon(iconName)}<div><h1>${escapeHtml(label)}</h1><p>${note}</p></div><span>${L("规划中")}</span></div>
+    <div class="desktop-utility-note"><strong>${L("工作面已经留好")}</strong><p>${detail}</p></div>
   </section>`;
   const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
     <div class="navigator-project-primary">
@@ -9907,6 +10026,21 @@ export function renderGoalBoardWeb(
       ${!collectionView && !decisionView ? `<button type="button" data-open-create aria-label="${L("新建目标")}" title="${L("新建目标")}">${icon("plus")}</button>` : ""}
     </div>
   </div>` : "";
+  const renderedDocumentContent = decisionView
+    ? renderDecisionCenter(view, desktopShell)
+    : selected
+      ? trashView
+        ? renderTrashGoalDocument(selected, true)
+        : renderGoalDocument(selected, view, true)
+      : trashView
+        ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`
+        : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`;
+  const desktopDocumentContent = desktopShell
+    ? `<section class="desktop-work-surface" data-work-surface="${decisionView ? "inbox" : "goal"}" data-work-surface-label="${escapeHtml(desktopUtilityTitle)}">${renderedDocumentContent}</section>
+      ${desktopUtilitySurface("feed", "Feed", L("消息与来源 Session"), L("等消息来源、Session 和归档规则确认后，再在这里接入真实 Feed；现在不展示假消息。"), "activity")}
+      ${desktopUtilitySurface("promotion", "Promotion", L("把内容升格为 Goal"), L("等候选内容、团队决策和 Goal 创建边界确认后，再在这里接入升格流程；现在不伪造待处理项。"), "arrow")}
+      ${desktopUtilitySurface("visual", L("可视化工作区"), L("Goal 关系与规划画布"), L("等画布实体、关系编辑和保存契约确认后，再在这里接入真实可视化工作区。"), "workflow")}`
+    : renderedDocumentContent;
   const html = `<!--
 THESIS: 只有一个目录入口，项目中的多条 Goal 在右侧复用；拒绝重复侧栏、轻首页大留白和后台管理式线框。
 OWN-WORLD: 石墨目录、深浅同源的柔和工作面、克制钴蓝焦点、系统字体、Lucide 图标、阴影与色面区分层级，尽量减少结构线。
@@ -9925,7 +10059,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
   <link rel="stylesheet" href="__WORKBENCH_CSS__">
 </head>
-<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
+<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ` data-desktop-shell="true" data-desktop-surface="${decisionView ? "inbox" : "goal"}"` : ""}>
   ${renderIconSprite()}
   <div class="app">
     ${desktopShell ? "" : `<header class="topbar">
@@ -9938,9 +10072,6 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <aside class="tree-pane" id="goal-tree-pane"${desktopShell ? ` data-desktop-directory="${initialDesktopDirectory}"` : ""}>
         ${desktopShell ? `${projectNavigatorLayer}
         ${desktopRootDirectory}
-        ${desktopPlaceholderDirectory("feed", "Feed", L("消息与来源 Session"), "activity")}
-        ${desktopPlaceholderDirectory("promotion", "Promotion", L("把内容升格为 Goal"), "arrow")}
-        ${desktopPlaceholderDirectory("visual", L("可视化工作区"), L("Goal 关系与规划画布"), "workflow")}
         <section class="desktop-directory-panel desktop-goal-directory" data-directory-panel="goals"${initialDesktopDirectory === "goals" ? "" : " hidden"}>
           <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${collectionTitle === L("Goal Tree") ? "Goals" : collectionTitle}</strong><small>${collectionView ? collectionNote : L("Goal Tree")}</small></span></header>
           ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
@@ -9961,7 +10092,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         </nav>` : `<strong>${decisionView ? L("决定中心") : L("目标聚焦")}</strong>`}
       </header>
       <section class="document-pane" id="goal-document-pane" data-document-pane${desktopShell ? ` role="tabpanel" tabindex="0"${selected ? "" : ` aria-label="${escapeHtml(desktopUtilityTitle)}"`}` : ""}>
-        ${decisionView ? renderDecisionCenter(view, desktopShell) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
+        ${desktopDocumentContent}
       </section>
       ${!archiveView && !trashView ? renderGoalGraph(view, selectedId, visibleGoals) : ""}
       ${showTui ? renderTuiPane(selected, view, cliAvailability) : ""}

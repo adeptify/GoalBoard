@@ -4935,7 +4935,10 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(page, /name="max_lease_seconds"[^>]*max="1800"[^>]*data-policy-max="1800"/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /最终生效：按 Goal 工作/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /const loadGoalDocument = async \(goalId\) =>/);
-    assert.match(WORKBENCH_CLIENT_SCRIPT, /const paneHeader = documentPane\.querySelector\(":scope > \.desktop-pane-header"\)/);
+    assert.match(
+      WORKBENCH_CLIENT_SCRIPT,
+      /const paneHeader = goalSurface \? null : documentPane\.querySelector\(":scope > \.desktop-pane-header"\)/,
+    );
     assert.match(WORKBENCH_CLIENT_SCRIPT, /documentPane\.replaceChildren\(\.\.\.\(paneHeader \? \[paneHeader, nextView\] : \[nextView\]\)\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/document\?view=/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /\/api\/goals\/" \+ encodeURIComponent\(goalId\) \+ "\/records\?view=/);

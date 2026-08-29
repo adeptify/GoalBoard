@@ -5174,17 +5174,20 @@ export const VISUAL_FOUNDATION_STYLES = `
       min-width: 0;
       height: 38px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 48px auto;
+      grid-template-columns: minmax(0, max-content) minmax(72px, 1fr) auto;
       align-items: center;
       gap: 8px;
     }
     body[data-desktop-shell="true"] .desktop-titlebar-drag {
-      width: 48px;
+      min-width: 72px;
+      width: auto;
       height: 100%;
+      -webkit-app-region: drag;
       user-select: none;
     }
     body[data-desktop-shell="true"] .desktop-work-tabs {
       min-width: 0;
+      max-width: min(56vw, 680px);
       display: flex;
       align-items: center;
       gap: 5px;
@@ -5255,6 +5258,10 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .desktop-work-tab:focus-within > button:last-child { opacity: 1; }
     body[data-desktop-shell="true"] .desktop-work-tab > button:last-child:hover { color: var(--ink); background: var(--rail); }
     body[data-desktop-shell="true"] .desktop-workbench-actions { display: flex; align-items: center; gap: 4px; }
+    body[data-desktop-shell="true"] .navigator-project-selector,
+    body[data-desktop-shell="true"] .navigator-project-settings,
+    body[data-desktop-shell="true"] .desktop-work-tabs,
+    body[data-desktop-shell="true"] .desktop-workbench-actions { -webkit-app-region: no-drag; }
     body[data-desktop-shell="true"] .desktop-workbench-actions > button {
       width: 30px;
       height: 30px;
@@ -5281,6 +5288,72 @@ export const VISUAL_FOUNDATION_STYLES = `
       grid-row: 2;
       background: var(--page);
     }
+    body[data-desktop-shell="true"] .desktop-work-surface {
+      min-width: 0;
+      min-height: 100%;
+    }
+    body[data-desktop-shell="true"] .desktop-work-surface[hidden] { display: none !important; }
+    body[data-desktop-shell="true"] .desktop-utility-surface {
+      padding: clamp(28px, 5vw, 64px);
+      background: var(--page);
+      align-content: start;
+    }
+    body[data-desktop-shell="true"] .desktop-utility-surface:not([hidden]) { display: grid; gap: 34px; }
+    body[data-desktop-shell="true"] .desktop-utility-heading {
+      min-width: 0;
+      max-width: 760px;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 14px;
+    }
+    body[data-desktop-shell="true"] .desktop-utility-heading > svg {
+      width: 24px;
+      height: 24px;
+      margin-top: 2px;
+      color: var(--muted);
+    }
+    body[data-desktop-shell="true"] .desktop-utility-heading h1 {
+      margin: 0;
+      color: var(--ink);
+      font-size: clamp(22px, 2.2vw, 30px);
+      font-weight: 720;
+      letter-spacing: -.025em;
+      line-height: 1.15;
+    }
+    body[data-desktop-shell="true"] .desktop-utility-heading p {
+      margin: 7px 0 0;
+      max-width: 64ch;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    body[data-desktop-shell="true"] .desktop-utility-heading > span {
+      min-height: 24px;
+      padding: 0 9px;
+      border-radius: 7px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--ink) 6%, transparent);
+      display: inline-flex;
+      align-items: center;
+      font-size: 9px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+    body[data-desktop-shell="true"] .desktop-utility-note {
+      max-width: 760px;
+      padding: 20px 22px;
+      border-radius: 14px;
+      color: var(--ink-soft);
+      background: var(--paper);
+      box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow-color) 28%, transparent);
+    }
+    body[data-desktop-shell="true"] .desktop-utility-note strong { color: var(--ink); font-size: 12.5px; }
+    body[data-desktop-shell="true"] .desktop-utility-note p { margin: 7px 0 0; max-width: 68ch; color: var(--muted); font-size: 11.5px; line-height: 1.65; }
+    body[data-desktop-shell="true"][data-desktop-surface]:not([data-desktop-surface="goal"]) .desktop-workbench-actions .workbench-switch,
+    body[data-desktop-shell="true"][data-desktop-surface]:not([data-desktop-surface="goal"]) .desktop-workbench-actions [data-open-create],
+    body[data-desktop-shell="true"][data-desktop-surface]:not([data-desktop-surface="goal"]) .tui-resizer,
+    body[data-desktop-shell="true"][data-desktop-surface]:not([data-desktop-surface="goal"]) .tui-pane { display: none !important; }
     body[data-desktop-shell="true"] .goal-document {
       width: 100%;
       min-height: 100%;

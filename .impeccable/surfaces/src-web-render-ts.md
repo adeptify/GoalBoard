@@ -9,7 +9,7 @@ Scope and mode: GoalBoard local Web and macOS desktop workbench, Operate mode. T
 
 Audience and job: developers and product leads use GoalBoard either as a full desktop workstation or as a narrow companion beside Codex, Claude Code, or another Harness. They must locate the active Goal, understand its next action, and keep a Goal-bound Runtime visible without relearning the layout at each width.
 
-Chosen direction: Single-directory Project-Tab Workbench (`seed=goalboard-desktop-single-directory-project-tabs-2026-08-29`). The native titlebar owns project selection and project settings; one left directory owns the root work types, Goals, the Goal Tree, and settings navigation; the right workbench reuses multiple Goals from the current project as persistent tabs and opens Inbox as a utility tab. This is the sole persistent shell direction.
+Chosen direction: Single-directory Project-Tab Workbench (`seed=goalboard-desktop-single-directory-project-tabs-2026-08-29`). The native titlebar owns project selection and project settings; one left directory owns the root work types, Goals, the Goal Tree, and settings navigation; the right workbench reuses multiple Goals from the current project as persistent tabs and opens Inbox or planned modules as utility work surfaces. This is the sole persistent shell direction.
 
 Memorable moment: the user enters Goals inside the only directory, opens several Goals without losing the first, then moves among their project tabs while each Goal's result, reason, operating logic, next step, completion requirements, context, and Runtime remain intact.
 
@@ -21,15 +21,16 @@ Implementation inventory:
 | --- | --- |
 | Desktop two-region shell | One 286-334px resizable directory and one remaining tabbed workbench; no second left navigation column or repeated top breadcrumb |
 | macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row whose center is the native `trafficLightPosition.y = 16px`, with no separate project row; Settings keeps its scoped navigation and 48px work-surface topbar |
-| Drag ownership | Left safe regions and the workbench's dedicated empty 48px drag slot may drag; project-index and Settings use only plain-text context or empty spacers; outer topbars and the workbench bar remain interactive, not draggable |
+| Drag ownership | The remaining left titlebar space and an elastic right titlebar track of at least 72px may drag; project-index and Settings use only plain-text context or empty spacers; tabs, actions, dropdowns, outer topbars, and the workbench bar remain interactive, not draggable |
 | Titlebar interaction safety | The directory resizer begins at grid row 2 below native chrome, utility tabs remain one line, and interactive tabs and actions never enter the traffic-light safe zone |
 | Project controls | Current project selector, direct real-project dropdown, and current-project Settings control sit in the native titlebar to the right of the traffic lights |
 | Root directory | Inbox, Goals, Feed, Promotion, and Visual Workspace appear without permanent group headings or search chrome |
 | Inbox | Keeps the root directory visible and opens/reuses a right utility tab; real pending decisions use compact typed rows and expand into the existing decision workflow; synchronized input and promotion sources remain explicitly planned |
 | Goals drill-down | Replaces the root in the same directory with the existing parent-child Goal Tree and compact tools; Back returns one level |
-| Planned modules | Feed, Promotion, and Visual Workspace open honest reserved views with no fake entities, counts, or workflows |
+| Planned modules | Feed, Promotion, and Visual Workspace keep the root directory visible, select a same-named utility tab, and open an honest reserved right work surface with no fake entities, counts, or workflows |
 | Local identity footer | Fixed to the directory bottom; shows local identity and opens device-wide Global Settings |
-| Project Goal tabs | Up to eight per project; opening reuses, closing selects a neighbor when needed, and local storage restores each project's tab set |
+| Project Goal tabs | Up to eight per project; opening reuses, closing selects a neighbor when needed, and local storage restores each project's tab set; utility switches keep the Goal DOM, detail subtab, scroll position, and Runtime session alive |
+| Cross-module state | Inbox has a separate project-scoped session UI key so it cannot overwrite the last Goal; returning through Goals restores that Goal, opens the Goal Tree, and resumes its previous Focus or Runtime mode |
 | Goal Detail | Preserves status, facts, Contract, overview, completion, progress, relationships, records, decisions, evidence, risks, impacts, and Runtime behavior |
 | Detail work canvas | Current, Context, Progress, Relationships, and Record occupy the full Desktop width and remaining viewport height; inactive section bodies share the active body’s Grid cell instead of reserving extra rows, and tall windows are not capped at a fixed canvas height |
 | Dark record ledger | Execution headers and supporting text use theme tokens, preserving strong dark-surface contrast without hardcoded light header fills |
