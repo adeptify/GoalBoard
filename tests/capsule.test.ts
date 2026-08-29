@@ -269,6 +269,37 @@ test("capsule does not present an unclaimed prerequisite blocker as current work
   assert.deepEqual(result.tabs.map((tab) => tab.kind), ["execution_pending", "blocked"]);
 });
 
+test("capsule never replaces a current blocker with a released Run's historical reason", () => {
+  const record = goal("historical-run-blocker", "范围已经纠偏的目标");
+  const historicalRun = {
+    ...activeRun(record.goal_id, "2026-08-24T08:30:00.000Z"),
+    state: "blocked" as const,
+    block_reason: "旧范围要求补 Agent 成本和返工证据",
+    ended_at: "2026-08-24T08:45:00.000Z",
+  };
+  const item = webGoal(record, "completion_blocked", {
+    runs: [historicalRun],
+    reasons: [{
+      code: "risk.blocks_completion",
+      severity: "blocker",
+      subject_type: "risk",
+      subject_id: "current-coverage-risk",
+      message: "当前仍需处理来源覆盖风险",
+      remediation: "先处理当前覆盖风险，再重新完成。",
+    }],
+  });
+
+  const result = buildCapsuleSnapshot(
+    view([item], record.goal_id),
+    [],
+    new Date("2026-08-24T09:03:00.000Z"),
+  );
+
+  assert.equal(result.state.kind, "blocked");
+  assert.equal(result.state.blocker, "当前仍需处理来源覆盖风险");
+  assert.doesNotMatch(result.state.blocker, /Agent 成本和返工证据/);
+});
+
 test("capsule keeps an active current Goal focused and reports other running work", () => {
   const focusedRecord = goal("focused-live-goal", "用户正在关注的工作");
   const newerRecord = goal("newer-live-goal", "稍后启动的并行工作");

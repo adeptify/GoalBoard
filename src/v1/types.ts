@@ -31,6 +31,7 @@ export type GoalWorkState =
   | "revalidation_pending"
   | "revalidating"
   | "revalidation_blocked"
+  | "replaced"
   | "invalidated"
   | "satisfied"
   | "trashed"
@@ -648,6 +649,30 @@ export interface GoalTreeProposalDecisionRecord {
   created_at: string;
 }
 
+export interface GoalTreeProposalNarrative {
+  /** Why the proposal needs a decision now, rather than its implementation detail. */
+  why_now: string;
+  /** Which current user or product problem makes the old Goal Tree insufficient. */
+  problem: string;
+  /** The user-readable result chain after confirmation, in dependency order. */
+  main_path: string[];
+  /** What should become different for the user or downstream work. */
+  expected_effect: string;
+  /** Explicit boundaries that this proposal intentionally leaves unchanged. */
+  non_goals: string[];
+}
+
+export interface GoalTreeProposalItemExplanation {
+  /** The concrete problem this one change item addresses. */
+  problem: string;
+  /** The user-visible or downstream effect of this one change. */
+  expected_effect: string;
+  /** Boundaries that this one change intentionally leaves untouched. */
+  non_goals: string[];
+  /** Other item IDs whose semantic change this item relies on. */
+  depends_on_item_ids: string[];
+}
+
 export interface GoalTreeProposalItemRecord {
   item_id: string;
   proposal_id: string;
@@ -658,6 +683,7 @@ export interface GoalTreeProposalItemRecord {
   payload: Record<string, unknown>;
   source_refs: string[];
   reason: string;
+  explanation: GoalTreeProposalItemExplanation | null;
   confidence: number;
   affected_objects: ProposalAffectedObject[];
   baseline_versions: ProposalObjectVersion[];
@@ -684,6 +710,7 @@ export interface GoalTreeProposalRecord {
   supersedes_proposal_id: string | null;
   base_event_cursor: number;
   summary: string;
+  narrative: GoalTreeProposalNarrative | null;
   decision: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
@@ -699,6 +726,7 @@ export interface GoalTreeProposalItemInput {
   payload: Record<string, unknown>;
   source_refs: string[];
   reason: string;
+  explanation?: GoalTreeProposalItemExplanation | null;
   confidence: number;
   affected_objects: ProposalAffectedObject[];
   requires_user_confirmation?: boolean;
@@ -711,6 +739,7 @@ export interface GoalTreeProposalSubmitInput {
   discovered_in_run_id: string;
   root_goal_id?: string | null;
   summary: string;
+  narrative?: GoalTreeProposalNarrative | null;
   items: GoalTreeProposalItemInput[];
   base_event_cursor?: number;
   supersedes_proposal_id?: string | null;
@@ -846,7 +875,7 @@ export interface AvailableGoal extends Omit<ReadyGoal, "role"> {
 /** A Goal that is not claimable because its finished work is waiting on a completion gate. */
 export interface BlockedAvailableGoal {
   goal: GoalRecord;
-  work_state: "completion_blocked" | "waiting_for_human";
+  work_state: "completion_blocked" | "waiting_for_human" | "replaced";
   next_action: null;
   reasons: DecisionReason[];
   priority_hint: number;

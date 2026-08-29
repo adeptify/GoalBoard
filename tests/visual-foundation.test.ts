@@ -189,7 +189,10 @@ test("Goal Tree keeps each stable Goal id visible beside its title", () => {
   const goalIdRule = VISUAL_FOUNDATION_STYLES.match(/\.tree-copy > small \{([^}]*)\}/)?.[1] ?? "";
   assert.match(goalIdRule, /display:\s*block/);
   assert.doesNotMatch(goalIdRule, /display:\s*none/);
-  assert.match(goalIdRule, /text-overflow:\s*ellipsis/);
+  assert.match(goalIdRule, /min-width:\s*max-content/);
+  assert.match(goalIdRule, /max-width:\s*none/);
+  assert.match(goalIdRule, /overflow:\s*visible/);
+  assert.match(goalIdRule, /text-overflow:\s*clip/);
 });
 
 test("Goal Graph keeps each stable Goal id visible with its node title", () => {

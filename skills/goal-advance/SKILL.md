@@ -64,8 +64,8 @@ When a request crosses routes, read each relevant reference, but keep one conver
 For every complex decomposition or relation change, use this loop before proposing anything:
 
 1. Recover the user's original outcome. Identify the work types, professional domains, industries, situational overlays, usable deliverables, operating context, uncertainty, and risks actually present.
-2. Call `goalboard_v1_planning_methods`. Start with every project-required method, then add every available method whose distinct professional checks materially apply.
-3. Read every selected `methods[].instructions` body completely. Treat them as complementary planning Skills, not serial templates.
+2. Call `goalboard_v1_planning_methods` with `include_instructions=false` to read the lightweight catalog and the project-required `composition.method_pack_ids`. Start with every project-required method, then add every available method whose distinct professional checks materially apply.
+3. Call `goalboard_v1_planning_methods` again with exactly the selected `method_ids`. Require the same `catalog_id`, verify `returned_method_ids` contains every selected ID, and read every returned `methods[].instructions` body completely. Treat them as complementary planning Skills, not serial templates. If the catalog changed between calls, restart selection from the new catalog instead of mixing versions.
 4. Map each relevant theme to the result it provides, the theme that consumes it, and the concrete use. If a consumer needs a provider result whose theme is uncovered, scan the library again and add that method.
 5. For any complex project that expects parallel work, establish or verify a right-sized root SSOT, divide vertical outcome units from horizontal shared units, and give each unit one canonical SSOT with unique ownership, inputs, outputs, consumers, evidence, and Impact surfaces. Reuse trustworthy artifacts and keep unit detail out of the root. For technical work, apply the repository and module rules in the planning reference.
 6. Repeat selection and mapping until no required provider theme and no material professional check is uncovered.
@@ -115,6 +115,6 @@ Always follow the latest returned `work_state`:
 
 Use the full `goalboard_v1_` tool names. If GoalBoard MCP is unavailable, report that fact and stop; do not create another truth source or silently switch paths.
 
-During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Do not create background heartbeat loops.
+During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Reuse the Claim's exact actor; after compaction, `claim.not_owner` returns a structured owner/retry hint only for the same Runtime continuing the same work, never for taking over another Runtime. Do not create background heartbeat loops.
 
 When work state is `waiting_for_human`, report the returned human criterion IDs and action, then stop Runtime review work. Do not select another Runtime Review, infer the user's verdict, or treat engineering evidence as user acceptance.

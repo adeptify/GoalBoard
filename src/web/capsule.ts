@@ -193,10 +193,15 @@ function itemExplanation(view: GoalBoardWebView, item: WebGoalView) {
 }
 
 function primaryBlocker(item: WebGoalView): { message: string; remediation: string | null } {
-  const run = newestRun(item);
   const reason = item.reasons.find((candidate) => candidate.severity === "blocker") ?? item.reasons[0];
+  const run = item.active_claim == null
+    ? null
+    : item.runs.find((candidate) =>
+        candidate.claim_id === item.active_claim?.claim_id &&
+        (candidate.state === "started" || candidate.state === "blocked"),
+      ) ?? null;
   return {
-    message: run?.block_reason?.trim() || reason?.message?.trim() || L("打开目标详情查看具体原因"),
+    message: reason?.message?.trim() || run?.block_reason?.trim() || L("打开目标详情查看具体原因"),
     remediation: reason?.remediation?.trim() || null,
   };
 }
@@ -483,6 +488,7 @@ export function buildCapsuleSnapshot(
       "review_blocked",
       "waiting_for_human",
       "revalidation_blocked",
+      "replaced",
       "invalidated",
     ] as string[]).includes(item.work_state)
   )).map((item) => {

@@ -250,7 +250,7 @@ export class GoalBoardWebServiceManager {
         : null,
       detection,
       changes: serviceChanges(action, detection, status, this.plistPath),
-      confirmation: confirmationFor(action),
+      confirmation: confirmationFor(action, detection),
       message: planMessage(action, status, detection),
     };
     this.plans.set(plan.plan_id, {
@@ -633,8 +633,10 @@ function serviceChanges(
   return [{ operation: action, target: action === "remove" ? plistPath : SERVICE_LABEL }];
 }
 
-function confirmationFor(action: GoalBoardWebServiceAction): string {
-  if (action === "install") return "确认安装并启动 macOS 用户级常驻 Web 服务";
+function confirmationFor(action: GoalBoardWebServiceAction, detection: GoalBoardWebServiceDetection): string {
+  if (action === "install") return detection.state === "needs_repair"
+    ? "确认更新旧配置并重新加载 macOS 用户级常驻 Web 服务"
+    : "确认安装并启动 macOS 用户级常驻 Web 服务";
   if (action === "remove") return "确认停止并移除 GoalBoard 创建的 LaunchAgent（项目数据和日志保留）";
   return `确认${({ start: "启动", stop: "停止", restart: "重启" } as const)[action]} GoalBoard Web 常驻服务`;
 }
@@ -649,6 +651,7 @@ function planMessage(action: GoalBoardWebServiceAction, status: GoalBoardWebServ
   }
   if (status === "unsupported" || status === "conflict") return detection.message;
   if (status === "no_change") return `无需操作：${detection.message}`;
+  if (action === "install" && detection.state === "needs_repair") return "准备修复旧配置并重新加载 GoalBoard Web 常驻服务";
   return `准备${({ install: "安装并启动", start: "启动", stop: "停止", restart: "重启", remove: "移除" } as const)[action]} GoalBoard Web 常驻服务`;
 }
 

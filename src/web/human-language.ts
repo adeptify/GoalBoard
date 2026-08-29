@@ -170,6 +170,13 @@ const WORK_STATE_COPY: Record<GoalPresentationState, WorkStateCopy> = {
     howToContinue: "查看具体卡点，先补信息或处理关联事项。",
     actionKind: "resolve_blocker",
   },
+  replaced: {
+    label: "已被替代",
+    meaning: "用户已经确认由另一条 Goal 接替这项工作；旧 Contract 和历史仍保留，但不再允许 Runtime 领取。",
+    nextAction: "转到替代 Goal 继续",
+    howToContinue: "查看 Goal 关系中的替代方并推进新版；只有用户撤销替代关系后，旧 Goal 才会重新开放。",
+    actionKind: "none",
+  },
   invalidated: {
     label: "已失效",
     meaning: "新的事实已经让这条 Goal 或已有结果失效。",
@@ -269,6 +276,18 @@ export function explainParentCompletion(
   totalChildren: number,
 ): ParentCompletionExplanation {
   if (goal.definition_state === "accepted" && goal.decomposition_state === "closed_compound") {
+    const contractCoverage = goal.decomposition_review?.contract_coverage;
+    const incompleteContractCoverage = contractCoverage != null && [
+      ...contractCoverage.promised_outputs,
+      ...contractCoverage.acceptance_criteria,
+    ].some((entry) => entry.status !== "complete");
+    if (incompleteContractCoverage) {
+      return {
+        label: L("父级 Contract 仍有覆盖缺口"),
+        meaning: L("现有子 Goal 的完成数量不足以证明父级承诺已经实现；部分覆盖或仍需父级集成时，这条父 Goal 不会自动完成。"),
+        tone: "needs_confirmation",
+      };
+    }
     return goal.fulfillment_state === "satisfied"
       ? {
           label: L("父 Goal 已自动完成"),

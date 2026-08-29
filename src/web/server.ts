@@ -355,8 +355,6 @@ export function buildGoalBoardWebView(
     ...risk,
     goal_ids: riskGoalIds.get(risk.risk_id) ?? [],
   }));
-  const claimsByGoal = groupByKey(snapshot.claims, (item) => item.goal_id);
-  const runsByGoal = groupByKey(snapshot.runs, (item) => item.goal_id);
   const evidenceByGoal = groupByKey(snapshot.evidence, (item) => item.goal_id);
   const evidenceCorrectionsByGoal = groupByKey(snapshot.evidence_corrections, (item) => item.goal_id);
   const reviewObligationsByGoal = groupByKey(snapshot.review_obligations, (item) => item.goal_id);
@@ -439,8 +437,7 @@ export function buildGoalBoardWebView(
       snapshot,
       workState.reasons,
     );
-    const claims = claimsByGoal.get(goal.goal_id) ?? [];
-    const runs = runsByGoal.get(goal.goal_id) ?? [];
+    const { claims, runs } = coordinator.projectGoalLifecycle(snapshot, goal.goal_id);
     const evidence = evidenceByGoal.get(goal.goal_id) ?? [];
     const reviewObligations = reviewObligationsByGoal.get(goal.goal_id) ?? [];
     const reviews = reviewsByGoal.get(goal.goal_id) ?? [];
