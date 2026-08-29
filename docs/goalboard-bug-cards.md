@@ -15,21 +15,46 @@
 
 | ID | 标题 | 主要归因 | Bug 确认 | 修复决定 | 修复状态 | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- |
-| GB-20260828-01 | 当前消息已明确项目仍被重复确认 | GoalBoard Skill 授权识别缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260828-02 | 已完成执行被 Available 误导为再次执行 | GoalBoard 派生状态缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260828-03 | 项目内绝对路径被误报为项目范围外 | GoalBoard locator 设计缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260828-04 | 同一 LaunchAgent PID 被误报为端口冲突 | GoalBoard 服务归属兼容缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-01 | 当前消息已明确项目仍被重复确认 | GoalBoard Skill 授权识别缺陷 | 已确认 | 已批准 | Core 已安装，Codex Skill 待修复 | P1 |
+| GB-20260828-02 | 已完成执行被 Available 误导为再次执行 | GoalBoard 派生状态缺陷 | 已确认 | 已批准 | Core/App 已安装，Codex Skill 待修复 | P1 |
+| GB-20260828-03 | 项目内绝对路径被误报为项目范围外 | GoalBoard locator 设计缺陷 | 已确认 | 已批准 | Core/App 已安装，Codex Skill 待修复 | P1 |
+| GB-20260828-04 | 同一 LaunchAgent PID 被误报为端口冲突 | GoalBoard 服务归属兼容缺陷 | 已确认 | 已批准 | 已安装，产品部分实操 | P1 |
 | GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard Desktop CSS 回归 | 缺陷 | 已批准 | 已修复待发布 | P2 |
-| GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 已安装 | P1（发布门禁） |
-| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
-| GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | Core 已安装，Codex Skill 待修复 | P1 |
+| GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 发布门禁通过 | P1（发布门禁） |
+| GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | Core/App 已安装，Codex Skill 待修复 | P1 |
+| GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | Core/App 部分实操，Codex Skill 待修复 | P2 |
+| GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 产品主路径通过 | P1 |
+| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | Core/App 可见，Codex Skill 待修复 | P1 |
+| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | Core/App 已安装，Codex Skill 与真实接棒待修复 | P1 |
 | GB-20260829-13 | Opportunity 有引用但看不到研究过程与样本漏斗 | CGS 领域模型与编辑台设计债 | 设计债、接入问题 | 已批准 | 未开始（CGS） | P1（CGS） |
-| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-15 | 子 Goal 用样本验收却被理解成父级能力已经具备 | GoalBoard 跨层 Contract 覆盖设计债 + CGS 建模错误 | 设计债、接入问题 | 已批准 | 已安装 | P1 |
+| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | MCP 包已安装，Arena 未实操 | P1 |
+| GB-20260829-15 | 子 Goal 用样本验收却被理解成父级能力已经具备 | GoalBoard 跨层 Contract 覆盖设计债 + CGS 建模错误 | 设计债、接入问题 | 已批准 | Core/App 部分实操，Codex Skill 待修复 | P1 |
+| GB-20260829-16 | Core/App 已升级但 Codex Skill 仍指向旧 Release | 发布与 Runtime 接入验收缺陷 | 已确认 | 已批准 | 发布门禁已补齐，待新包接入 | P1 |
+
+---
+
+## 2026-08-29 v0.1.5 最终产物回归复核
+
+本轮不是复查“有没有修复 commit”，而是从远端 `main`、v0.1.5 Release、本机 Core、App 内嵌 Runtime、常驻服务、Codex 实际 Skill 链接和真实 CGS 页面逐层核对。`pnpm test` 当前覆盖 274/274，但这只支持工程层；下表单独记录最终产物与真实数据看到的结果。
+
+| Bug | 当前证据 | 回归结论 |
+| --- | --- | --- |
+| GB01 | v0.1.5 包内 Skill 有“当前消息明确选择则不重复确认”，但 Codex 实际 Skill 仍链接 `goalboard-0.1.1`，没有该规则 | 交付未完成，随 GB16 重开 |
+| GB02 | v0.1.5 Core 保留 `completion_blocked / completion_pending` 派生与默认回归；Codex 实际执行参考仍是旧版，不认识直接 `complete` 路径 | Core 未回归，消费者交付随 GB16 重开 |
+| GB03 | 直接调用 v0.1.5 安装产物的 locator 校验器，项目内绝对 `package.json` 返回 `verified` 并规范化为 `project://package.json`；旧 Skill 未说明该格式 | Core 未回归，协议发现性随 GB16 重开 |
+| GB04 | 官方 `service status --json` 在最终服务返回 `running / owned=true`；当前进程已是新版 health，无法再次覆盖旧 health 兼容窗口 | 未发现回归；保留异 PID 安全分支 `UNVERIFIED` |
+| GB05 | 真实 CGS HTML 含 `cgs-g2a-opportunity-intelligence` 与 `cgs-g2b-editorial-decision`，但 v0.1.5 Desktop CSS 后置规则把 `.tree-copy small` 隐藏 | 已确认回归；`48a2ca6` 已修复并合入 `main`，待新包实操 |
+| GB06 | v0.1.5 MCP 保留 `context_resolve_then_retry / requires_bind=false / retry_same_idempotency_key=true`；Codex 实际项目连接参考仍是旧版 | Core 未回归，恢复指引交付随 GB16 重开 |
+| GB07 | 修复提交在 v0.1.5，当前完整默认门禁通过，App/Core/服务可运行 | 未发现回归；仍不把 ad-hoc 包提升为 Apple 公证发布 |
+| GB08 | v0.1.5 Core 保留过期 Claim/Run 投影与确定恢复测试；当前真实 G2B 已无原冲突顶层状态，但未重新制造一次过期旅程 | 未发现代码回归；产品恢复旅程仍 `UNVERIFIED`，Skill 随 GB16 更新 |
+| GB09 | v0.1.5 locator 对 `repo:package.json` 返回 `verified`；真实 G2B 页面已有四条当前有效、可打开且 anchor 已验证的 Markdown Evidence；旧 Codex Skill 仍缺格式说明 | Core 与真实 Evidence 读取通过，消费者指引随 GB16 重开 |
+| GB10 | 当前服务为 `running`；历史真实 `needs_repair → 拒绝 restart → service install` 主路径已记录，未发现后续代码覆盖 | 未发现回归；未知监听者场景仍 `UNVERIFIED` |
+| GB11 | 真实 CGS App 显示“租约还剩 28 分钟 · 到期前续租可保持当前 Claim 和 Run”；v0.1.5 MCP 有 `claim_renew`，但 Codex 实际 Skill 没有续租动作 | UI/Core 有效，自动续租交付随 GB16 重开 |
+| GB12 | 真实 G2B 仍显示“待复核”；完整记录确认剩余条件是 `human_decision`，但历史 self-verifier verdict 为 `inconclusive`。代码按已记录边界要求再做一次仅覆盖工程项的显式复核后才转人工；旧 Codex Skill 又不认识 `waiting_for_human` | 不是 CSS 回归；历史接棒尚未实操，Skill 随 GB16 更新，不得称产品已修好 |
+| GB13 | 归因仍在 CGS；GoalBoard Core 没有对应实现承诺 | 未开始，不属于“已修复”复核集合 |
+| GB14 | v0.1.5 安装产物的 MCP schema 已对 8 种 kind 使用条件化 payload，并明确 `part_of / depends_on` 方向 | 未发现包内回归；Arena 新 Session 实操仍 `UNVERIFIED` |
+| GB15 | 真实 G2A 的“上下文 → 完成要求”显示“本 Goal 按当前 Contract 已满足，不自动等于父 Goal 完整能力”，并明确历史父 Goal 未记录覆盖 | 防误导文案已在最终 App 可见；新拆树阻断与 CGS Contract 纠偏仍 `UNVERIFIED`，Skill 随 GB16 更新 |
 
 ---
 
@@ -38,7 +63,7 @@
 **来源**：CGS 新 Session 消费者反馈 1
 **Bug 确认**：已确认，属于 GoalBoard Skill 的当前消息授权识别缺陷
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：源码与 v0.1.5 包已包含；Codex 实际 Skill 仍指向 0.1.1，消费者交付未完成，产品实操与最终验收未完成
 
 ### 1. 真实场景
 
@@ -92,7 +117,7 @@
 **来源**：CGS 新 Session 消费者反馈 2
 **Bug 确认**：已确认，属于 GoalBoard 派生状态和恢复动作表达缺陷
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：v0.1.5 Core/App 已包含；Codex 实际 Skill 仍缺完成门禁动作，消费者交付与产品实操未完成
 
 ### 1. 真实场景
 
@@ -146,7 +171,7 @@ GoalBoard 原本不持久化第二套工作状态，而是从 canonical Goal、R
 **来源**：CGS 新 Session 消费者反馈 3
 **Bug 确认**：已确认，属于 GoalBoard Evidence locator 的设计缺陷；不是旧 workspace 关联污染
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：v0.1.5 Core/App locator 已安装并通过安装产物冒烟；Codex 实际 Skill 仍缺规范格式，完整产品实操未完成
 
 ### 1. 真实场景
 
@@ -308,7 +333,7 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 **来源**：CGS 新 Session 消费者反馈 5
 **Bug 确认**：已确认 GoalBoard 的连接缓存与恢复语义存在缺陷；现场调用级 Session metadata 的具体断点尚无原始日志
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：v0.1.5 MCP Core 已安装；Codex 实际项目连接参考仍指向 0.1.1，恢复指引交付与产品实操未完成
 
 ### 1. 真实场景
 
@@ -416,7 +441,7 @@ GoalBoard 用调用级 Session key 隔离同一 MCP 进程中的不同 Runtime �
 **来源**：CGS G2B 主线消费者反馈 6
 **Bug 确认**：已确认，属于 GoalBoard 租约派生状态、物化时机与恢复动作不一致
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：v0.1.5 Core/App 已安装；Codex Skill 待随 GB16 更新，真实过期恢复旅程与最终验收未完成
 
 ### 1. 真实场景
 
@@ -470,7 +495,7 @@ executor 的 Claim 租约过期后，消费者读取同一 Goal 的 Contract。�
 **来源**：CGS G2B 主线消费者反馈 7
 **Bug 确认**：确认是 GoalBoard locator 协议可发现性和恢复提示设计债；不是现有校验器误判
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；安装版 locator 组件冒烟通过，完整产品实操与最终验收未完成
+**修复状态**：v0.1.5 locator 已安装，`repo:` 安装产物冒烟与真实 G2B 已验证 Evidence 读取通过；Codex Skill 待随 GB16 更新，最终验收未完成
 
 ### 1. 真实场景
 
@@ -578,7 +603,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 **来源**：CGS G2B executor + Grok 实现 + Codex 独立 review 消费者反馈
 **Bug 确认**：已确认，属于 GoalBoard 租约续期与剩余时间可见性的设计缺陷；不是 GB08 的过期后展示冲突重复项
 **修复决定**：用户已于 2026-08-29 批准修复
-**修复状态**：已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；工程验证通过，产品实操与用户验收待完成
+**修复状态**：v0.1.5 Core/App 已安装且真实租约提示可见；Codex 实际 Skill 没有续租动作，消费者交付待随 GB16 修复，完整长任务实操未完成
 
 ### 1. 真实场景
 
@@ -633,7 +658,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 **来源**：CGS G2B self_verifier 消费者反馈；Review `review-ad251867-5c49-4fab-8806-f98fcb9a3d93`
 **Bug 确认**：已确认，属于 GoalBoard Review obligation 条件路由与人工等待状态缺陷；不是 CGS 误用，也不是 `inconclusive` verdict 本身的缺陷
 **修复决定**：用户已于 2026-08-29 批准修复
-**修复状态**：已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；工程验证通过，产品实操与用户验收待完成
+**修复状态**：v0.1.5 Core/App 已安装；真实 G2B 历史数据仍处于一次显式 Runtime 复核之前，Codex Skill 又不认识 `waiting_for_human`，消费者接棒待随 GB16 修复，产品实操未完成
 
 ### 1. 真实场景
 
@@ -797,7 +822,7 @@ Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，�
 **来源**：CGS G2 / G2A 产品实操反馈
 **Bug 确认**：确认存在严重误导体验；主要归因是 GoalBoard 跨层 Contract 覆盖与 Risk 解决依据的设计债，同时存在 CGS 把能力目标降成样本验收的建模错误；不是 `satisfied` 状态机计算错误
 **修复决定**：Owner 已批准 GoalBoard Core 防误导修复；CGS Contract 纠偏仍需在 CGS 项目中单独推进
-**修复状态**：GoalBoard 修复已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；产品实操与 Owner 验收待完成
+**修复状态**：GoalBoard Core/App 已包含在 v0.1.5，真实 G2A 防误导文案已在最终 App 可见；Codex 规划 Skill 待随 GB16 更新，新拆树阻断、CGS Contract 纠偏与 Owner 验收未完成
 
 ### 1. 真实场景
 
@@ -844,3 +869,57 @@ GoalBoard 侧复用现有 decomposition review，新增 `contract_coverage`：�
 - **安装验证**：GitHub Actions `33256824008` 从 `main@97b971e` 构建 v0.1.5 arm64/x64，四个主产物均通过自带 SHA-256；本机云构建 arm64 App 的 bundle 版本为 0.1.5，Core 安装收据指向 `releases/goalboard-0.1.5`，owned LaunchAgent 与 HTTP 健康检查通过。此层不证明 CGS 的父子 Contract 已经完成真实纠偏。
 - **产品实操**：修复前的“样本合同通过但真实研究能力不存在”已由 CGS 编辑台实际使用暴露。修复后的 Web HTML、HTTP 写入和 packed-release 自动化链路已覆盖，但尚未在新安装的最终 GoalBoard App 中由真人走完“部分覆盖阻断 → 补全映射 → 父级收口”旅程，因此仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。打包安装后需用两条真实旅程验收：样本 spike 完成但父能力保持开放；所有父承诺确由子树覆盖后父级才收口。同时检查 Risk resolved 是否能看懂解决依据与剩余缺口，并由用户确认状态文案不会再把局部工程完成提升为能力完成。
+
+---
+
+## GB-20260829-16：Core/App 已升级但 Codex Skill 仍指向旧 Release
+
+**来源**：用户要求逐卡复核“已经修复”的最终产物后发现
+**Bug 确认**：已确认存在交付缺口；主要归因是发布与验收流程漏掉已连接 Runtime 的独立升级步骤，不是 Core 安装器越权失败
+**修复决定**：用户已要求本卡修完并继续复核
+**修复状态**：发布验收门禁与卡片口径已补齐并通过工程回归；当前 Codex 接入仍待新包发布后按官方预览/确认流程更新，最终新 Session 验收未完成
+
+### 1. 真实场景
+
+v0.1.5 的 GitHub Release、用户级 App、`~/.goalboard` Core 与常驻 Web service 都已更新，台账因此把多张 Runtime 消费体验卡写成“已安装”。但真实 Codex 使用的 `/Users/oreal/.codex/skills/goal-advance` 仍是一个指向 `goalboard-0.1.1` 的受管符号链接。新 Release 里的当前消息项目选择、完成门禁、Evidence locator、Claim 续租和人工等待说明没有进入 Codex 实际 Skill。
+
+### 2. 事实与归因
+
+可稳定复现。安装清单和 App 内嵌 Runtime 是 0.1.5；v0.1.5 Release 中的 `goal-advance/SKILL.md` 包含 `claim_renew` 与 `waiting_for_human`，其 SHA-256 与 Codex 当前 Skill 不同；`readlink` 明确指向 `~/.goalboard/releases/goalboard-0.1.1/skills/goal-advance`。GoalBoard 的“设置 → AI 与执行工具”已经正确把 Codex 显示为“需要修复”，说明领域服务检测没有失效。`goalboard install` 有意只升级本体，不静默改 Runtime 配置或 Skill，因此主要缺陷是本次发布执行与验收把“本体安装”错误提升成“Runtime 消费改进已安装”。
+
+### 3. 现有流程的问题
+
+发布流程验证了 tag、资产、校验和、App、Core 和 Web service，却没有检查每个已连接 Runtime 的集成状态，也没有在用户已经授权安装全部改进后完成“预览修复 → 确认 → 新 Session”这条独立链路。结果是 MCP 进程通过当前 launcher 使用新 Core，而 Agent 仍按旧 Skill 做决定；同一次会话里出现“工具支持新能力、行为说明却不知道如何使用”的混合版本。
+
+### 4. 设计根因与初衷
+
+本体安装与 Runtime 接入被刻意分开，是为了避免升级 App 时静默改写 `~/.codex/config.toml`、替换用户自定义 Skill 或影响其他 Runtime。受管旧链接可以被领域服务识别为 `managed / needs_repair`，未知同名链接则保持 `conflict`。这条授权和回滚边界正确；问题在于发布验收没有把它当作每次 MCP/Skill 变更后的必要交付层，也没有限制“已安装”结论的适用范围。
+
+### 5. 当前影响
+
+直接影响所有依赖 Skill 决策的修复：GB01 的同句项目授权、GB02 的完成门禁动作、GB03/09 的 locator 可发现性、GB06 的安全重试、GB08 的过期恢复、GB11 的续租时机、GB12 的人工接棒和 GB15 的规划覆盖规则。Core 仍能拒绝部分错误写入，但消费者会继续多问、重试、漏续租或走旧恢复路径。当前机器已经真实处于混合版本，因此不是理论风险。
+
+### 6. 复杂度审查
+
+- **当前必须**：把 Runtime 集成状态加入发布后验收；只有 GoalBoard 管理的旧链接经用户预览并确认更新、状态回到 `connected`，再用新 Session 读取当前 Skill 后，才可把 Runtime 相关修复写成“已安装”。本机最终发布后执行同一流程。
+- **可以延后**：在所有页面常驻展示 Runtime 版本横幅、跨机器集中升级、自动通知每个旧 Session。
+- **应当删除**：仅凭 Core/App/service 版本一致就宣称消费者协议已安装；为了省一步而让本体安装器静默改 Runtime；覆盖未知同名 Skill。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1。它横跨多张已批准的消费者体验卡，并会使修复在包内存在却在真实 Agent 行为中失效。最小修复不改变安全模型，只补齐发布验收、状态口径和一次受管接入更新。
+
+### 8. 修复前后体验差异
+
+- **修复前**：安装新 App/Core → 服务健康 → 宣称所有改进已安装 → 新 Codex 仍读取旧 Skill → 继续重复确认、漏续租或不认识人工等待。
+- **修复后**：安装新 App/Core → 设置页明确显示受管 Runtime 是否需要修复 → 用户确认后同时更新 MCP 配置与 Skill 链接 → 新开 Session 加载同一 Release → 只有真实消费链一致后才报告安装完成。
+
+### 9. 最小修复范围
+
+更新中英文安装文档的发布后最终产物门禁，并修正 Bug 台账中“已安装”的分层口径；最终打包安装后，使用现有 `RuntimeIntegrationService` 的预览与确认事务更新 Codex 受管链接，不直接执行 `ln -sfn`，不修改项目绑定，不热刷新旧 Session，不接管 Claude Code/Grok 等当前显示冲突的未知配置。若确认或验证失败，领域服务恢复原配置和 Skill 链接；文档变更可独立回滚。
+
+### 10. 验收边界
+
+- **工程验证**：通过。当前代码无需新增自动修复；安装 15/15、Runtime integration 12/12、Web 41/41 回归覆盖 managed 旧链接更新、未知链接冲突、MCP + Skill 事务验证、失败回滚、设置页检测和 GB05 最终样式门禁，`git diff --check` 通过。Web 测试在受限沙箱内因 SQLite 临时库不可写出现假失败，相同命令在正常本机权限下 41/41 全绿；不把该环境差异记为产品通过。
+- **产品实操**：修复前已在最终 v0.1.5 环境确认：设置页显示 Codex“需要修复”，实际 Skill 链接为 0.1.1。修复后的 `connected` 状态、当前 Release 链接和新 Session 行为尚为 `UNVERIFIED`，将在下一版安装后统一实操。
+- **Owner 最终验收**：未通过。需要新包安装后逐项确认 App/Core/service/Runtime Skill 同版，并由新 Codex Session 实际读取续租与人工等待规则；旧 Session 继续使用旧清单属于预期边界，不得拿来反证或冒充新版本验收。

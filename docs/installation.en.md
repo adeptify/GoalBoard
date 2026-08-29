@@ -45,7 +45,19 @@ pnpm install:local
 
 When status returns `needs_repair`, run `service install` directly instead of trying `restart` first. Install rewrites only GoalBoard-owned plist and receipt files, performs a controlled restart, and rolls back on failure; it still never takes over an unknown LaunchAgent or an external port listener.
 
+Updating GoalBoard Core never silently rewrites Runtime configuration or Skill links. Whenever a Release changes MCP behavior or `skills/goal-advance`, open GoalBoard's Settings → AI & Runtimes page as a separate acceptance step. A GoalBoard-managed Runtime that still targets an older Release is shown as `needs_repair`; preview the exact changes and let the user confirm the repair. A Runtime-dependent fix may be called installed only after this page returns to `connected` and the Skill link targets the current Release from the install manifest. Matching Core, App, and Web service versions do not replace this step, and unknown same-name configuration or Skills remain conflicts that must not be overwritten.
+
 After updating MCP or the Skill, also open a new Runtime Session, because an already-running Session does not reload tools. To make the built-in demo use the new example content, run `goalboard demo reset --confirm` separately; it clears changes inside the demo but never touches user projects.
+
+### Final-artifact acceptance after a Release
+
+A release operator may mark a consumer-visible fix installed only after checking every applicable layer:
+
+1. The Git tag, Release assets, and checksums come from the same commit; the App-embedded Runtime and the `~/.goalboard` install manifest report the same version.
+2. The persistent service follows the action returned by `status`, reaches `running`, and has one consistent LaunchAgent, listener, and `/health` identity.
+3. Every already-connected GoalBoard-managed Runtime is checked in Settings → AI & Runtimes. A `needs_repair` integration must be previewed and explicitly confirmed by the current user until it becomes `connected`. This transaction updates both MCP configuration and the Skill link and rolls back on failure.
+4. Close and create a new Runtime Session, then verify that it loaded the current Release's tool declaration and Skill. An old Session is never evidence for a new Release.
+5. Finally, use a real project and representative data to inspect the user-visible result. Source, automated tests, package strings, version numbers, and page HTML prove only their own layers; they do not replace the final App's computed styles or end-to-end journey.
 
 If an older Session then reports a catalog schema above its reader's supported range, the running MCP is stale; the database is not damaged. Do not roll back `catalog.db` or bypass writes through SQLite, CLI, or Web. Create or Fork a Session, confirm that messages actually have the new task focus, and perform a read-only GoalBoard project resolution before any write. A host navigation success alone does not prove that the next message will land in the new task.
 
