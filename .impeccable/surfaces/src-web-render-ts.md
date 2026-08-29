@@ -5,29 +5,45 @@ primary_target: "src/web/render.ts"
 related_targets: ["src/web/server.ts"]
 ---
 
-Scope and mode: GoalBoard local Web and macOS desktop workbench, Operate mode. This slice establishes the shared visual foundation; it does not redesign domain behavior.
+Scope and mode: GoalBoard local Web and macOS desktop workbench, Operate mode. The current artifact reaches Level 3 for the Desktop core shell: the single directory, project-scoped Goal tabs, Goal Detail, scoped Settings, and existing Runtime behavior use real application state. Ordinary Web and the narrow Companion remain intentionally unchanged.
 
 Audience and job: developers and product leads use GoalBoard either as a full desktop workstation or as a narrow companion beside Codex, Claude Code, or another Harness. They must locate the active Goal, understand its next action, and keep a Goal-bound Runtime visible without relearning the layout at each width.
 
-Chosen direction: Quiet Intent Workspace. The approved composition combines `.impeccable/mocks/goalboard-desktop-workstation-a.png` as the wide desktop thesis and `.impeccable/mocks/goalboard-harness-companion-b.png` as its compact responsive form. `.impeccable/mocks/goalboard-graph-workstation-c.png` supplies visual grammar only for the later Goal Graph Goal.
+Chosen direction: Single-directory Project-Tab Workbench (`seed=goalboard-desktop-single-directory-project-tabs-2026-08-29`). The native titlebar owns project selection and project settings; one left directory owns the root work types, Goals, the Goal Tree, and settings navigation; the right workbench reuses multiple Goals from the current project as persistent tabs and opens Inbox as a utility tab. This is the sole persistent shell direction.
 
-Memorable moment: one selected Goal forms a continuous line across Navigator, Focus, and Runtime; beside a Harness, the same Goal remains visible in a narrow native-feeling window.
+Memorable moment: the user enters Goals inside the only directory, opens several Goals without losing the first, then moves among their project tabs while each Goal's result, reason, operating logic, next step, completion requirements, context, and Runtime remain intact.
 
-Visual system: restrained graphite and cool paper surfaces, mineral blue for the current path and available action, semantic color only for state, native system typography, Lucide icons, 1px seams, 6–8px radii, and soft window-level elevation only. Light, Dark, and Follow System are first-class themes.
+Visual system: one 286-334px graphite directory beside a flexible light workbench. Restrained cobalt marks focus and available intent; semantic color is only for real state. Native system typography, Lucide icons, softly rounded 6-14px surfaces, related tonal fills, and low diffuse shadows define both Light and Dark Calm Desktop. Structural lines are intentionally rare. In macOS Overlay mode, a fixed 48px native-chrome band protects the traffic lights and creates one consistent top rhythm across the Goal workspace and scoped Settings.
 
 Implementation inventory:
 
 | Visible ingredient | Implementation |
 | --- | --- |
-| Wide three-pane workstation | Existing semantic workspace grid, retuned tokens and pane proportions |
-| Narrow Harness companion | Existing mobile view switch, restyled as Goals / Focus / Runtime |
+| Desktop two-region shell | One 286-334px resizable directory and one remaining tabbed workbench; no second left navigation column or repeated top breadcrumb |
+| macOS Overlay chrome | `--desktop-titlebar-height: 48px`; the Goal workspace places project controls in a 32px row whose center is the native `trafficLightPosition.y = 16px`, with no separate project row; Settings keeps its scoped navigation and 48px work-surface topbar |
+| Drag ownership | Left safe regions and the workbench's dedicated empty 48px drag slot may drag; project-index and Settings use only plain-text context or empty spacers; outer topbars and the workbench bar remain interactive, not draggable |
+| Titlebar interaction safety | The directory resizer begins at grid row 2 below native chrome, utility tabs remain one line, and interactive tabs and actions never enter the traffic-light safe zone |
+| Project controls | Current project selector, direct real-project dropdown, and current-project Settings control sit in the native titlebar to the right of the traffic lights |
+| Root directory | Inbox, Goals, Feed, Promotion, and Visual Workspace appear without permanent group headings or search chrome |
+| Inbox | Keeps the root directory visible and opens/reuses a right utility tab; real pending decisions use compact typed rows and expand into the existing decision workflow; synchronized input and promotion sources remain explicitly planned |
+| Goals drill-down | Replaces the root in the same directory with the existing parent-child Goal Tree and compact tools; Back returns one level |
+| Planned modules | Feed, Promotion, and Visual Workspace open honest reserved views with no fake entities, counts, or workflows |
+| Local identity footer | Fixed to the directory bottom; shows local identity and opens device-wide Global Settings |
+| Project Goal tabs | Up to eight per project; opening reuses, closing selects a neighbor when needed, and local storage restores each project's tab set |
+| Goal Detail | Preserves status, facts, Contract, overview, completion, progress, relationships, records, decisions, evidence, risks, impacts, and Runtime behavior |
+| Detail work canvas | Context, Progress, Relationships, and Record occupy the full Desktop width and a responsive minimum height; legacy relationship columns are reset before the shared stage is laid out |
+| Dark record ledger | Execution headers and supporting text use theme tokens, preserving strong dark-surface contrast without hardcoded light header fills |
+| First-viewport work | Next Step, completion requirements, compact context, and Runtime companion continue directly below the Contract |
+| Soft work surfaces | Contract, current-work, context, Runtime, active navigation, and selected tabs use tonal panels and low shadows instead of pervasive divider lines |
+| Scoped Settings | Project Settings contains Work Rules / Work Planning; Global Settings contains Appearance & Language / AI & Execution Tools / Diagnostics; both use the same Desktop workbench language |
+| Narrow Harness companion | At 760px and below the existing Goals / Focus / Runtime Companion remains; Desktop tabs and directory navigation do not intrude |
 | Light, Dark, System | Local presentation preference plus `prefers-color-scheme`; no domain persistence |
-| Goal Navigator | Existing Goal Tree content and actions, compact visual treatment only in this slice |
-| Goal Focus | Existing Goal document panels, hierarchy and surface treatment only in this slice |
 | Runtime Dock | Existing Goal-bound TUI, retained as the darkest working surface |
+| Compound-parent Runtime | A non-executable parent shows only owner guidance and real child Goal entries; tabs, controls, menus, and empty terminal canvas leave layout and accessibility until a leaf Goal is selected |
 | State communication | Existing icon and readable label, compact tag treatment; never color-only |
-| Desktop identity | Native window context remains outside the Web content; app shell uses matte seams and dense chrome |
+| Route boundary | Ordinary Web retains its existing information architecture and does not render the Desktop directory or project tab strip |
+| Native-chrome QA | Goal workspace project selector, chevron, and Settings control measure a `15.99px` center against native `y=16px`; no traffic-light overlap or horizontal overflow; the directory footer remains pinned to the bottom |
 
-Constraints: no feature, data, API, permission, state-machine, Goal lifecycle, or Runtime/TUI changes; no Graph implementation in this slice; no gradients, glass, dashboard cards, decorative glow, or copied Linear/Notion layouts; preserve keyboard, focus, responsive behavior and reduced motion.
+Constraints: no domain, data, API, permission, state-machine, Goal lifecycle, or Runtime/PTY protocol changes; parent read-only handling is presentation-only and leaf Runtime behavior remains intact. Work tabs remain project-local UI state and never become a second Goal source; planned modules remain honest placeholders; no fake Feed, Promotion, Cloud, Team, account, or synchronization data; no duplicate sidebars, lightweight-home whitespace, management-grid linework, gradients, glass, decorative glow, or copied Linear/Notion layouts; preserve keyboard semantics, focus, responsive behavior, reduced motion, and all existing Goal write paths. macOS Overlay drag ownership must remain confined to empty or plain-text titlebar regions; ordinary Web and the Companion at 760px and below keep their existing chrome and layout boundaries.
 
-Unresolved decisions: none before the first implementation pass. User review of the real rendered slice decides whether to continue the visual direction into the remaining UI Goals.
+Unresolved decisions: the entities and workflows for Feed, Promotion, and synchronized Inbox inputs remain future product work. Their directory locations are fixed, but this shell does not claim those capabilities exist.

@@ -3157,7 +3157,7 @@ function renderRecentDecisionResults(view: GoalBoardWebView): string {
   </section>`;
 }
 
-function renderDecisionCenter(view: GoalBoardWebView): string {
+function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): string {
   const groups = buildDecisionGroups(view);
   const count = pendingDecisionCount(view);
   const nativeGoalTreeProposals = view.snapshot.goal_tree_proposals.filter(
@@ -3170,13 +3170,46 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
     reviews: view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length,
     risks: view.snapshot.risks.filter(riskNeedsDecision).length,
   };
-  return `<article class="decision-center" data-decision-center>
-    <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("每一项都会说明你在决定什么、为什么现在要决定、有没有可靠建议，以及选择后会发生什么。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
+  const groupKinds = (group: DecisionGoalGroup) => [
+    { count: group.goalTreeProposals.length + group.contractProposals.length, label: L("目标说明"), icon: "clipboard" as GoalBoardIcon },
+    { count: group.candidates.length, label: L("新发现的工作"), icon: "plus" as GoalBoardIcon },
+    { count: group.rewires.length, label: L("Goal 关系"), icon: "link" as GoalBoardIcon },
+    { count: group.humanReview ? 1 : 0, label: L("结果确认"), icon: "user" as GoalBoardIcon },
+    { count: group.risks.length, label: L("风险处理"), icon: "risk" as GoalBoardIcon },
+  ].filter((item) => item.count > 0);
+  if (!desktopInbox) {
+    return `<article class="decision-center" data-decision-center>
+      <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("每一项都会说明你在决定什么、为什么现在要决定、有没有可靠建议，以及选择后会发生什么。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
+      <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>${L("目标说明")} <strong>${typeCounts.proposals}</strong></span><span>${L("新发现的工作")} <strong>${typeCounts.candidates}</strong></span><span>${L("Goal 关系")} <strong>${typeCounts.rewires}</strong></span><span>${L("结果确认")} <strong>${typeCounts.reviews}</strong></span><span>${L("风险处理")} <strong>${typeCounts.risks}</strong></span></div>
+      ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
+        const goalId = group.item?.goal.goal_id ?? "board";
+        return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
+          <header class="decision-owner"><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} ${L("项")}</small></header>
+          <div class="decision-stack">
+            ${group.goalTreeProposals.map((proposal) => renderGoalTreeProposalDecision(proposal, view)).join("")}
+            ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
+            ${group.item ? group.contractProposals.map((proposal) => renderContractProposal(proposal, group.item!.goal, view)).join("") : ""}
+            ${group.candidates.map((candidate) => renderCandidateDecision(candidate, view)).join("")}
+            ${group.humanReview && group.item ? renderHumanReview(group.item, view) : ""}
+            ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
+          </div>
+        </section>`;
+      }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("需要你确认目标、工作关系、结果或风险时，会自动出现在这里。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
+      ${renderRecentDecisionResults(view)}
+    </article>`;
+  }
+  return `<article class="decision-center inbox-workspace" data-decision-center>
+    <header class="decision-center-header inbox-header"><div><h1>Inbox</h1><p>${L("需要你判断后才能继续的事项，都集中在这里。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
     <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>${L("目标说明")} <strong>${typeCounts.proposals}</strong></span><span>${L("新发现的工作")} <strong>${typeCounts.candidates}</strong></span><span>${L("Goal 关系")} <strong>${typeCounts.rewires}</strong></span><span>${L("结果确认")} <strong>${typeCounts.reviews}</strong></span><span>${L("风险处理")} <strong>${typeCounts.risks}</strong></span></div>
     ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
       const goalId = group.item?.goal.goal_id ?? "board";
-      return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
-        <header class="decision-owner"><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} ${L("项")}</small></header>
+      const kinds = groupKinds(group);
+      const itemCount = kinds.reduce((total, kind) => total + kind.count, 0);
+      const primaryKind = kinds[0] ?? { count: itemCount, label: L("待决定"), icon: "input" as GoalBoardIcon };
+      const ownerTitle = group.item?.goal.title ?? L("整个项目的事项");
+      return `<details class="decision-goal-group inbox-group" id="decision-goal-${escapeHtml(goalId)}">
+        <summary class="inbox-item"><span class="inbox-item-icon" aria-hidden="true">${icon(primaryKind.icon)}</span><span class="inbox-item-copy"><strong>${escapeHtml(ownerTitle)}</strong><small>${escapeHtml(kinds.map((kind) => kind.label).join(currentLocale() === "en" ? ", " : " · "))}</small></span><span class="inbox-item-types">${kinds.map((kind) => `<span>${icon(kind.icon)}${escapeHtml(kind.label)}${kind.count > 1 ? `<em>${kind.count}</em>` : ""}</span>`).join("")}</span><b>${itemCount}</b>${icon("chevron-down")}</summary>
+        <div class="inbox-item-detail"><header class="decision-owner"><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${itemCount} ${L("项")}</small></header>
         <div class="decision-stack">
           ${group.goalTreeProposals.map((proposal) => renderGoalTreeProposalDecision(proposal, view)).join("")}
           ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
@@ -3184,8 +3217,8 @@ function renderDecisionCenter(view: GoalBoardWebView): string {
           ${group.candidates.map((candidate) => renderCandidateDecision(candidate, view)).join("")}
           ${group.humanReview && group.item ? renderHumanReview(group.item, view) : ""}
           ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
-        </div>
-      </section>`;
+        </div></div>
+      </details>`;
     }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("需要你确认目标、工作关系、结果或风险时，会自动出现在这里。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
     ${renderRecentDecisionResults(view)}
   </article>`;
@@ -3425,7 +3458,7 @@ function renderGoalFocusOverview(item: WebGoalView, view: GoalBoardWebView): str
   const passedCriteria = new Set(displayedPassedCriterionIds(item));
   const passed = passedCriteria.size;
   const remaining = Math.max(0, criteria.length - preview.length);
-  const owner = item.active_claim_actor ?? item.goal.accepted_by ?? L("未指定");
+  const owner = workbenchActorLabel(item.active_claim_actor ?? item.goal.accepted_by);
   const dependencies = activeOutgoingDependsOn(item).length;
   const contextRows = [
     [L("负责人"), owner],
@@ -3476,6 +3509,17 @@ function renderCompanionRuntime(item: WebGoalView): string {
     <dl><div><dt>${L("完成依据")}</dt><dd>${L("{count} 条", { count: item.evidence.length })}</dd></div><div><dt>${L("执行记录")}</dt><dd>${escapeHtml(run?.state ?? L("未开始"))}</dd></div></dl>
     <button type="button" data-companion-runtime-open>${L("在 Runtime 查看会话")}${icon("chevron-right")}</button>
   </section>`;
+}
+
+function workbenchActorLabel(actor: string | null | undefined): string {
+  if (!actor) return L("未指定");
+  const confirmedPrefix = "user-confirmed-via:";
+  if (!actor.startsWith(confirmedPrefix)) return actor;
+  const runtime = actor.slice(confirmedPrefix.length).trim();
+  const runtimeLabel = runtime.toLowerCase() === "codex"
+    ? "Codex"
+    : runtime.replaceAll("-", " ").replace(/^./, (value) => value.toUpperCase());
+  return runtimeLabel ? `${L("用户确认")} · ${runtimeLabel}` : L("用户确认");
 }
 
 function renderCompletionBoundaries(item: WebGoalView): string {
@@ -3646,6 +3690,7 @@ function renderGoalTechnicalDetails(item: WebGoalView, view: GoalBoardWebView): 
 
 function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
   const goal = item.goal;
+  const owner = workbenchActorLabel(item.active_claim_actor ?? goal.accepted_by);
   const activeGoalAction =
     goal.definition_state === "accepted" && !goal.archived_at && !goal.trashed_at
       ? view.snapshot.board.active_goal_id === goal.goal_id
@@ -3669,6 +3714,11 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     ["records", "history", L("记录")],
   ] as const;
   const tabNavigation = `<nav class="goal-workspace-nav" role="tablist" aria-label="${L("Goal 详情")}">${tabs.map(([key, iconName, label], index) => `<button id="goal-tab-${key}-${goalId}" type="button" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="goal-panel-${key}-${goalId}" tabindex="${index === 0 ? "0" : "-1"}" data-goal-tab="${key}">${icon(iconName)}<span>${label}</span></button>`).join("")}</nav>`;
+  const goalBrief = `<div class="goal-brief-grid" aria-label="${L("目标说明")}">
+    <section class="goal-brief-item goal-brief-item--outcome"><h2>${L("完成后会得到什么")}</h2><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section>
+    <section class="goal-brief-item"><h2>${L("为什么现在做")}</h2><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section>
+    <section class="goal-brief-item"><h2>${L("它会怎样运转")}</h2><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section>
+  </div>`;
   const purposeBody = `${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
     ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}`;
   const completionBody = `<div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
@@ -3680,18 +3730,19 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     { key: "completion", iconName: "clipboard", title: L("完成要求"), description: L("完成标准、工作边界、子 Goal 和前置事项"), body: completionBody, cardId: `completion-${goalId}`, cardAttributes: `data-goal-section="completion"` },
   ], L("上下文"), "focus-section-deck--context");
   return `<!--
-THESIS: Goal 的关键因素是工作本身，不是后台管理；拒绝把可修改事实和历史账本混在一起。
-OWN-WORLD: Calm Desktop 使用冷灰导航面、无边框白色 Goal 画布、清楚的排版层级和克制钴蓝焦点色。
-STORY: 先理解，再记录，最后查证。
-FIRST VIEWPORT: 五个稳定入口、标题区快速记录、一次一个工作面板。
-FORM: 这是既有 Goal 工作台的结构性延伸，不引入新视觉概念。
+THESIS: Goal 正文首先回答“做什么、为什么、怎么运转、下一步”；拒绝让大标题和卡片边距吃掉第一屏。
+OWN-WORLD: 连续白色工作面使用紧凑排版、细分隔线、克制钴蓝焦点和结构化 Contract 摘要。
+STORY: 先在一个视口读懂 Goal，再进入上下文、进展、关系与记录。
+FIRST VIEWPORT: 状态与事实行、紧凑标题、三段 Goal Contract、详情导航、下一步和完成要求连续出现。
+FORM: 既有 Goal 工作台的高密度 Operate 重排。
 unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 --><article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <section class="goal-hero" aria-labelledby="goal-title-${goalId}">
       <header class="goal-header">
-        <div class="goal-title-kicker">${renderStatus(item.status)}</div>
+        <div class="goal-title-kicker">${renderStatus(item.status)}<div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
         <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${quickRecordAction}${moreActions}</div></div>
       </header>
+      ${goalBrief}
       ${tabNavigation}
     </section>
     <div class="goal-workspace-panels">
@@ -4311,7 +4362,7 @@ const MORE_STYLES = `
   .runtime-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
   .runtime-grid > section { min-width: 0; min-height: 174px; padding: 13px 15px; border-right: 1px solid var(--line-strong); }
   .runtime-grid > section:last-child { border-right: 0; }
-  .runtime-grid h3 { margin: -13px -15px 12px; padding: 10px 15px; border-bottom: 1px solid var(--line); background: #fbfcfd; font-size: 14px; }
+  .runtime-grid h3 { margin: -13px -15px 12px; padding: 10px 15px; border-bottom: 1px solid var(--line); background: var(--rail); color: var(--ink); font-size: 14px; }
   .runtime-grid h3 span { color: var(--muted); font-weight: 500; }
   .runtime-facts, .policy-list { margin: 0; }
   .runtime-facts div, .policy-list div { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 8px; margin: 5px 0; }
@@ -6241,6 +6292,9 @@ const CLIENT_SCRIPT = `
     const treeSearch = globalSearch;
     const treeFilter = document.querySelector("[data-tree-filter]");
     const treeFilterTrigger = document.querySelector("[data-tree-filter-trigger]");
+    const desktopDirectoryPanels = [...document.querySelectorAll("[data-directory-panel]")];
+    const desktopProjectMenu = document.querySelector("[data-project-menu]");
+    const workTabs = document.querySelector("[data-work-tabs]");
     const dialog = document.querySelector("[data-create-dialog]");
     const form = document.querySelector("[data-create-form]");
     const formError = document.querySelector("[data-create-error]");
@@ -6249,7 +6303,7 @@ const CLIENT_SCRIPT = `
     const trashError = document.querySelector("[data-goal-trash-error]");
     const trashSubmit = document.querySelector("[data-goal-trash-submit]");
     const toast = document.querySelector("[data-toast]");
-    const syncState = document.querySelector("[data-sync-state]");
+    const syncStates = [...document.querySelectorAll("[data-sync-state]")];
     const archiveView = document.body.dataset.boardView === "archive";
     const trashView = document.body.dataset.boardView === "trash";
     const decisionView = document.body.dataset.boardView === "decisions";
@@ -6262,6 +6316,8 @@ const CLIENT_SCRIPT = `
       : location.pathname;
     const visibleGoals = (source = state) => trashView ? source.trashed_goals : archiveView ? source.archived_goals : source.goals;
     const storageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
+    const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
+    let desktopDirectoryOrigin = null;
     let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
     if (!decisionView) {
       const initialHistoryState = history.state && typeof history.state === "object" ? history.state : {};
@@ -6284,8 +6340,107 @@ const CLIENT_SCRIPT = `
     let graphZoom = 1;
     let desktopCompanionActive = document.body.dataset.desktopShell === "true" && matchMedia("(max-width: 760px)").matches;
     let graphRelationTypes = new Set(["part_of", "depends_on"]);
+    let openWorkTabs = [];
     const goalPanelKeys = ["overview", "completion", "progress", "factors", "records"];
     const goalFactorKeys = ["relations", "risks", "impacts", "rules"];
+
+    if (workTabs && !decisionView && !collectionView) {
+      try {
+        const storedTabs = JSON.parse(localStorage.getItem(workTabsStorageKey) || "[]");
+        if (Array.isArray(storedTabs)) openWorkTabs = storedTabs.map(String);
+      } catch {}
+      const available = new Set(visibleGoals().map((item) => item.goal.goal_id));
+      openWorkTabs = openWorkTabs.filter((goalId, index, all) => available.has(goalId) && all.indexOf(goalId) === index);
+      if (selected && !openWorkTabs.includes(selected)) openWorkTabs.push(selected);
+    }
+
+    const persistWorkTabs = () => {
+      if (!workTabs || decisionView || collectionView) return;
+      try { localStorage.setItem(workTabsStorageKey, JSON.stringify(openWorkTabs)); } catch {}
+    };
+
+    const renderWorkTabs = () => {
+      if (!workTabs || decisionView || collectionView) return;
+      const byId = new Map(visibleGoals().map((item) => [item.goal.goal_id, item]));
+      openWorkTabs = openWorkTabs.filter((goalId) => byId.has(goalId));
+      if (selected && byId.has(selected) && !openWorkTabs.includes(selected)) openWorkTabs.push(selected);
+      const fragment = document.createDocumentFragment();
+      openWorkTabs.forEach((goalId, index) => {
+        const item = byId.get(goalId);
+        if (!item) return;
+        const shell = document.createElement("div");
+        shell.className = "desktop-work-tab" + (goalId === selected ? " is-selected" : "");
+        shell.dataset.workTabShell = goalId;
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.id = "desktop-work-tab-" + index;
+        tab.role = "tab";
+        tab.dataset.workTab = goalId;
+        tab.setAttribute("aria-selected", String(goalId === selected));
+        tab.setAttribute("aria-controls", "goal-document-pane");
+        tab.tabIndex = goalId === selected ? 0 : -1;
+        const dot = document.createElement("i");
+        dot.dataset.status = item.status;
+        dot.setAttribute("aria-hidden", "true");
+        const label = document.createElement("span");
+        label.textContent = item.goal.title;
+        tab.append(dot, label);
+        const close = document.createElement("button");
+        close.type = "button";
+        close.dataset.closeWorkTab = goalId;
+        close.setAttribute("aria-label", L("关闭 {title}", { title: item.goal.title }));
+        close.textContent = "×";
+        shell.append(tab, close);
+        fragment.append(shell);
+      });
+      workTabs.replaceChildren(fragment);
+      const activeTab = workTabs.querySelector('[data-work-tab][aria-selected="true"]');
+      if (activeTab?.id) documentPane.setAttribute("aria-labelledby", activeTab.id);
+      else documentPane.removeAttribute("aria-labelledby");
+      persistWorkTabs();
+    };
+
+    const ensureWorkTab = (goalId) => {
+      if (!workTabs || decisionView || collectionView || !goalId) return;
+      if (!openWorkTabs.includes(goalId)) openWorkTabs.push(goalId);
+      if (openWorkTabs.length > 8) {
+        const removable = openWorkTabs.find((candidate) => candidate !== goalId && candidate !== selected);
+        if (removable) openWorkTabs = openWorkTabs.filter((candidate) => candidate !== removable);
+        else openWorkTabs = openWorkTabs.slice(-8);
+      }
+      renderWorkTabs();
+    };
+
+    const focusWorkTab = (goalId) => {
+      if (!workTabs || !goalId) return;
+      requestAnimationFrame(() => {
+        const tab = [...workTabs.querySelectorAll("[data-work-tab]")]
+          .find((candidate) => candidate.dataset.workTab === goalId);
+        tab?.focus();
+      });
+    };
+
+    const setDesktopDirectory = (directory, persist = true, focusTarget = true, origin = null) => {
+      if (!desktopDirectoryPanels.length || !treePane?.dataset.desktopDirectory) return;
+      const available = new Set(desktopDirectoryPanels.map((panel) => panel.dataset.directoryPanel));
+      const next = available.has(directory) ? directory : "root";
+      const current = treePane.dataset.desktopDirectory;
+      if (current === "root" && next !== "root" && origin?.closest?.('[data-directory-panel="root"]')) {
+        desktopDirectoryOrigin = origin;
+      }
+      treePane.dataset.desktopDirectory = next;
+      desktopDirectoryPanels.forEach((panel) => { panel.hidden = panel.dataset.directoryPanel !== next; });
+      if (focusTarget) {
+        requestAnimationFrame(() => {
+          const nextPanel = desktopDirectoryPanels.find((panel) => panel.dataset.directoryPanel === next);
+          const nextFocus = next === "root" && desktopDirectoryOrigin?.isConnected
+            ? desktopDirectoryOrigin
+            : nextPanel?.querySelector('[data-directory-back], [data-directory-open], a[href], button:not([disabled])');
+          nextFocus?.focus();
+        });
+      }
+      if (persist) queueSave();
+    };
 
     const updateRelationPreviews = () => {
       if (!form) return;
@@ -6593,9 +6748,11 @@ const CLIENT_SCRIPT = `
     };
 
     const setSyncState = (label, mode = "") => {
-      syncState.textContent = L(label);
-      syncState.classList.toggle("is-syncing", mode === "syncing");
-      syncState.classList.toggle("is-offline", mode === "offline");
+      syncStates.forEach((syncState) => {
+        syncState.textContent = L(label);
+        syncState.classList.toggle("is-syncing", mode === "syncing");
+        syncState.classList.toggle("is-offline", mode === "offline");
+      });
     };
 
     const setMobileView = (view) => {
@@ -7118,6 +7275,7 @@ const CLIENT_SCRIPT = `
       graphFocusOnly,
       graphZoom,
       graphRelationTypes: [...graphRelationTypes],
+      directory: treePane?.dataset.desktopDirectory || "goals",
       goalPanel: documentPane.querySelector('[data-goal-tab][aria-selected="true"]')?.dataset.goalTab || "overview",
       goalFactor: documentPane.querySelector('[data-goal-factor-tab][aria-selected="true"]')?.dataset.goalFactorTab || "relations",
     });
@@ -7125,6 +7283,7 @@ const CLIENT_SCRIPT = `
     const applyUiState = (ui) => {
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
       if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
+      if (desktopDirectoryPanels.length) setDesktopDirectory(decisionView ? "root" : ui?.directory || treePane.dataset.desktopDirectory || "goals", false, false);
       const collapsed = new Set(ui?.collapsed || []);
       document.querySelectorAll("[data-tree-item]").forEach((item) => {
         const isCollapsed = collapsed.has(item.dataset.goalId);
@@ -7212,6 +7371,7 @@ const CLIENT_SCRIPT = `
       if (navigatorView === "graph") updateGraphVisibility();
       document.title = item.goal.title + " · GoalBoard";
       if (resetScroll) documentPane.scrollTop = 0;
+      renderWorkTabs();
       return true;
     };
 
@@ -7293,6 +7453,7 @@ const CLIENT_SCRIPT = `
         if (selected === goalId && fallbackGoalId) applySelection(fallbackGoalId, false);
         return;
       }
+      ensureWorkTab(goalId);
       if (updateHistory) {
         history.pushState({ goalId }, "", goalPageUrl(goalId));
       }
@@ -7469,6 +7630,7 @@ const CLIENT_SCRIPT = `
         state = nextState;
         document.querySelector("#goalboard-data").textContent = JSON.stringify(nextState).replaceAll("<", "\\u003c");
         selected = nextSelected;
+        if (selected) ensureWorkTab(selected);
         if (!decisionView && selected) applySelection(selected, false);
         applyUiState(ui);
         updateAllRelationFormPreviews();
@@ -7752,6 +7914,49 @@ const CLIENT_SCRIPT = `
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
+      if (desktopProjectMenu?.open && !target.closest("[data-project-menu]")) desktopProjectMenu.open = false;
+      const directoryOpen = target.closest("[data-directory-open]");
+      if (directoryOpen && desktopDirectoryPanels.length) {
+        setDesktopDirectory(directoryOpen.dataset.directoryOpen || "root", true, true, directoryOpen);
+        return;
+      }
+      if (target.closest("[data-directory-back]") && desktopDirectoryPanels.length) {
+        setDesktopDirectory("root");
+        return;
+      }
+      const closeWorkTab = target.closest("[data-close-work-tab]");
+      if (closeWorkTab && workTabs && !decisionView && !collectionView) {
+        const goalId = closeWorkTab.dataset.closeWorkTab;
+        const index = openWorkTabs.indexOf(goalId);
+        if (index < 0) return;
+        if (openWorkTabs.length === 1) {
+          showToast(L("至少保留一个打开的 Goal"));
+          return;
+        }
+        openWorkTabs.splice(index, 1);
+        persistWorkTabs();
+        if (goalId === selected) {
+          const nextGoalId = openWorkTabs[Math.min(index, openWorkTabs.length - 1)];
+          if (nextGoalId) {
+            await selectGoal(nextGoalId);
+            focusWorkTab(nextGoalId);
+          }
+        } else {
+          renderWorkTabs();
+          focusWorkTab(selected);
+        }
+        return;
+      }
+      const workTab = target.closest("[data-work-tab]");
+      if (workTab) {
+        await selectGoal(workTab.dataset.workTab);
+        return;
+      }
+      if (target.closest("[data-personal-search]")) {
+        treeSearch?.focus();
+        treeSearch?.select();
+        return;
+      }
       const loadMoreEventsButton = target.closest("[data-load-more-goal-events]");
       if (loadMoreEventsButton) {
         await loadMoreGoalEvents(loadMoreEventsButton);
@@ -8835,6 +9040,21 @@ const CLIENT_SCRIPT = `
     });
     addEventListener("pagehide", saveUiState);
     addEventListener("keydown", (event) => {
+      const currentWorkTab = event.target?.closest?.("[data-work-tab]");
+      if (currentWorkTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        const tabs = [...currentWorkTab.closest('[role="tablist"]').querySelectorAll("[data-work-tab]")];
+        const currentIndex = tabs.indexOf(currentWorkTab);
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? tabs.length - 1
+            : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        const nextGoalId = nextTab.dataset.workTab;
+        void selectGoal(nextGoalId).then(() => focusWorkTab(nextGoalId));
+        return;
+      }
       const currentTab = event.target?.closest?.("[data-goal-tab]");
       if (currentTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
         const tabs = [...currentTab.closest('[role="tablist"]').querySelectorAll("[data-goal-tab]")];
@@ -8942,6 +9162,8 @@ const CLIENT_SCRIPT = `
         children: selectedItem?.children || [],
       } }));
     }
+    if (selected) ensureWorkTab(selected);
+    else renderWorkTabs();
     updateRelationPreviews();
     updateAllRelationFormPreviews();
     setInterval(refreshBoard, 4000);
@@ -8990,7 +9212,7 @@ export function renderGoalBoardProjectIndex(
 </head>
 <body class="project-index-page"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}>
+  <header class="topbar">
     <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
     <div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目列表")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
     <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
@@ -9308,12 +9530,16 @@ function renderSettingsNavigation(
 ): string {
   const globalHref = (path: string) => settingsContextHref(path, project, desktopShell);
   const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
+  const projectHome = project ? `/projects/${encodeURIComponent(project.project_id)}/` : "/";
+  const projectSettings = project ? `/projects/${encodeURIComponent(project.project_id)}/settings/rules` : "/settings/projects";
+  const desktopProjectContext = desktopShell ? `<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"></div><div class="settings-desktop-project"><a class="navigator-project-selector" href="${withDesktopQuery(projectHome)}" aria-label="${project ? L("返回当前项目") : L("选择项目")}">${icon("database")}<span><strong>${escapeHtml(project?.display_name ?? L("选择项目"))}</strong><small>${project ? L("项目状态本地保存") : L("打开项目列表")}</small></span>${icon("switch")}</a><a class="navigator-project-settings" href="${withDesktopQuery(projectSettings)}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("tune")}</a></div><header class="settings-desktop-heading"><a href="${withDesktopQuery(projectHome)}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>` : "";
+  const desktopFooter = desktopShell ? `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalHref("/settings/appearance")}" aria-current="page" aria-label="${L("全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>` : "";
   return `<nav class="settings-navigation" aria-label="${L("系统设置")}">
-    <section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("系统设置")}</span><small>${L("只影响当前设备")}</small></div>
+    ${desktopProjectContext}<div class="settings-nav-body"><section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("只影响当前设备")}</small></div>
       <a href="${globalHref("/settings/appearance")}"${current("appearance")}>${icon("system")}<span><strong>${L("界面与语言")}</strong><small>${L("语言、主题、终端与界面密度")}</small></span></a>
       <a href="${globalHref("/settings/runtimes")}"${current("runtimes")}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("连接 Runtime 与会话")}</small></span></a>
       <a href="${globalHref("/settings/diagnostics")}"${current("diagnostics")}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装、服务与环境")}</small></span></a>
-    </section>
+    </section></div>${desktopFooter}
   </nav>`;
 }
 
@@ -9325,12 +9551,15 @@ function renderProjectSettingsNavigation(
   const routePrefix = `/projects/${encodeURIComponent(project.project_id)}`;
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
+  const desktopProjectContext = desktopShell ? `<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"></div><div class="settings-desktop-project"><a class="navigator-project-selector" href="${href(`${routePrefix}/`)}" aria-label="${L("返回当前项目")}">${icon("database")}<span><strong>${escapeHtml(project.display_name)}</strong><small>${L("项目状态本地保存")}</small></span>${icon("switch")}</a><a class="navigator-project-settings" href="${href(`${routePrefix}/settings/rules`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("tune")}</a></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>` : "";
+  const globalSettingsHref = settingsContextHref("/settings/appearance", project, desktopShell);
+  const desktopFooter = desktopShell ? `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalSettingsHref}" aria-label="${L("打开全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>` : "";
   return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
-    <a class="project-settings-back" href="${href(`${routePrefix}/`)}">${icon("arrow")}<span><strong>${L("返回 Goal Tree")}</strong></span></a>
+    ${desktopProjectContext}<div class="settings-nav-body">${desktopShell ? "" : `<a class="project-settings-back" href="${href(`${routePrefix}/`)}">${icon("arrow")}<span><strong>${L("返回 Goal Tree")}</strong></span></a>`}
     <section class="settings-nav-group" aria-labelledby="settings-project-group"><div class="settings-nav-label" id="settings-project-group"><span>${L("项目设置")}</span><small>${escapeHtml(project.display_name)}</small></div>
       <a href="${href(`${routePrefix}/settings/rules`)}"${current("rules")}>${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("执行和复核底线")}</small></span></a>
       <a href="${href(`${routePrefix}/settings/planning`)}"${current("planning")}>${icon("workflow")}<span><strong>${L("工作规划")}</strong><small>${L("选择和调整规划方法")}</small></span></a>
-    </section>
+    </section></div>${desktopFooter}
   </nav>`;
 }
 
@@ -9342,6 +9571,7 @@ export function renderGoalBoardProjectSettings(
   const projectName = view.project?.display_name ?? L("当前项目");
   const settingsProject = view.project ?? null;
   const routePrefix = view.route_prefix;
+  const projectReturnHref = desktopShell ? withDesktopQuery(routePrefix || "/") : routePrefix || "/";
   const projectBinding = view.policy_bindings
     .filter((binding) => binding.scope === "project_default" && binding.goal_id == null && binding.state === "active")
     .at(-1);
@@ -9351,7 +9581,7 @@ export function renderGoalBoardProjectSettings(
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("工作规则")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
 <body class="settings-page project-rules-page" data-route-prefix="${escapeHtml(routePrefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${routePrefix || "/"}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${routePrefix || "/"}">${icon("tree")}<span>${L("Goal Tree")}</span></a></header>
+  <header class="topbar"><a class="brand" href="${projectReturnHref}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置 · 工作规则")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${projectReturnHref}" aria-label="${L("关闭项目设置")}">${icon(desktopShell ? "x" : "tree")}<span>${L("Goal Tree")}</span></a></header>
   <main class="settings-shell">
     ${settingsProject ? renderProjectSettingsNavigation("rules", settingsProject, desktopShell) : renderSettingsNavigation("projects", null, desktopShell)}
     <div class="settings-content"><section class="settings-document" aria-labelledby="project-rules-title">
@@ -9432,7 +9662,7 @@ function renderPlanningAdoptionCards(methods:readonly PlanningMethodPack[],proje
   const endpoint=`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods/apply`;
   return methods.map((method)=>{const detailHref=planningSettingsHref(`/settings/planning/${encodeURIComponent(method.method_id)}`,null,desktop);return `<article class="planning-adoption-card" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><header><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></header><div><h3><a href="${detailHref}">${escapeHtml(method.name)}</a></h3></div><p>${escapeHtml(method.summary)}</p><footer><span>${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span><button type="button" data-adopt-planning-method="${escapeHtml(method.method_id)}" data-adopt-endpoint="${endpoint}">${L("加入组合")}</button></footer></article>`}).join("")
 }
-function planningTopbar(title:string,subtitle:string,returnHref:string,_pagePath:string,desktop:boolean):string{return `<header class="topbar"${desktop?" data-tauri-drag-region":""}><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div><div class="top-spacer"></div><a class="top-action" href="${returnHref}">${icon(returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
+function planningTopbar(title:string,subtitle:string,returnHref:string,_pagePath:string,desktop:boolean):string{return `<header class="topbar"><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong${desktop?" data-tauri-drag-region":""}>${escapeHtml(title)}</strong><small${desktop?" data-tauri-drag-region":""}>${escapeHtml(subtitle)}</small></div><div class="top-spacer"${desktop?" data-tauri-drag-region":""}></div><a class="top-action" href="${returnHref}" aria-label="${L("关闭设置")}">${icon(desktop?"x":returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
 
 const PLANNING_SETTINGS_CLIENT_SCRIPT = `
 (()=>{document.querySelectorAll("[data-planning-filter]").forEach((button)=>button.addEventListener("click",()=>{const filter=button.dataset.planningFilter||"all";document.querySelectorAll("[data-planning-filter]").forEach((item)=>item.setAttribute("aria-pressed",String(item===button)));let visible=0;document.querySelectorAll("[data-planning-method]").forEach((item)=>{const matches=filter==="all"||item.dataset.kind===filter||(filter==="mine"&&item.dataset.scope!=="built_in");item.hidden=!matches;if(matches)visible+=1});const empty=document.querySelector("[data-planning-filter-empty]");if(empty)empty.hidden=visible!==0}));const form=document.querySelector("[data-planning-edit-form]");if(!form)return;const error=form.querySelector("[data-planning-method-error]");const cloneRow=(list)=>{const source=list.querySelector("[data-planning-row]");if(!source)return;const row=source.cloneNode(true);row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""});list.append(row);row.querySelector("input, textarea")?.focus({preventScroll:true})};form.addEventListener("click",(event)=>{const add=event.target.closest("[data-add-planning-row]");if(add){const list=form.querySelector('[data-planning-row-list="'+add.dataset.addPlanningRow+'"]');if(list)cloneRow(list);return}const remove=event.target.closest("[data-remove-planning-row]");if(!remove)return;const row=remove.closest("[data-planning-row]");const list=row?.parentElement;if(!row||!list)return;if(list.querySelectorAll("[data-planning-row]").length===1){row.querySelectorAll("input, textarea").forEach((input)=>{input.value=""})}else row.remove()});form.addEventListener("submit",async(event)=>{event.preventDefault();error.hidden=true;error.textContent="";const submit=form.querySelector('button[type="submit"]');submit.disabled=true;const values=(name)=>[...form.querySelectorAll('[name="'+name+'"]')].map((input)=>input.value.trim()).filter(Boolean);const internalId=(prefix,value,index)=>{const readable=String(value||"").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,32);return prefix+"-"+(readable||String(index+1))+"-"+String(index+1)};try{const coverage=[...form.querySelectorAll("[data-coverage-row]")].map((row,index)=>{const label=row.querySelector('[name="coverage_label"]').value.trim();const question=row.querySelector('[name="coverage_question"]').value.trim();return label||question?{area:internalId("coverage",label,index),label,question}:null}).filter(Boolean);const dependencies=[...form.querySelectorAll("[data-dependency-row]")].map((row,index)=>{const statement=row.querySelector('[name="dependency_statement"]').value.trim();const direction=row.querySelector('[name="dependency_direction"]').value.trim();return statement||direction?{rule_id:internalId("dependency",statement,index),statement,direction_hint:direction}:null}).filter(Boolean);const method={method_id:form.elements.method_id.value,kind:form.elements.kind.value,name:form.elements.name.value.trim(),summary:form.elements.summary.value.trim(),instructions:form.elements.instructions.value.trim(),applies_to:String(form.elements.applies_to.value||"").split(",").map((item)=>item.trim()).filter(Boolean),domain_tags:String(form.elements.domain_tags.value||"").split(",").map((item)=>item.trim()).filter(Boolean),steps:values("steps"),required_coverage:coverage,dependency_rules:dependencies,evidence_requirements:values("evidence_requirements"),completion_checks:values("completion_checks"),failure_modes:values("failure_modes"),source_refs:String(form.elements.source_refs.value||"").split(/\\n/).map((item)=>item.trim()).filter(Boolean),confidence:Number(form.elements.confidence.value),enabled:form.elements.enabled.checked};const response=await fetch(form.dataset.apiEndpoint,{method:"POST",headers:globalThis.goalboardControlHeaders(),body:JSON.stringify({scope:form.dataset.saveScope,method})});const payload=await response.json();if(!response.ok)throw new Error(payload.error||L("保存失败"));location.assign(form.dataset.returnHref)}catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;submit.disabled=false}})})();
@@ -9535,7 +9765,7 @@ export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToke
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${title} · ${L("GoalBoard 设置")}</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><style>${STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}</style></head>
 <body class="settings-page" data-settings-section="${view.section}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}><a class="brand" href="${returnHref}" aria-label="${contextProject ? L("返回 Goal Tree") : L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("项目管理") : L("系统设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("创建、导入和维护项目") : L("管理界面、Runtime 与本机服务")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${returnHref}">${icon(contextProject ? "tree" : "folder")}<span>${contextProject ? L("Goal Tree") : L("项目列表")}</span></a></header>
+  <header class="topbar"><a class="brand" href="${returnHref}" aria-label="${contextProject ? L("返回 Goal Tree") : L("返回 GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("项目管理") : L("全局设置")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${projectManager ? L("创建、导入和维护项目") : title}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${returnHref}" aria-label="${L("关闭全局设置")}">${icon(desktopShell ? "x" : contextProject ? "tree" : "folder")}<span>${contextProject ? L("Goal Tree") : L("项目列表")}</span></a></header>
   <main class="settings-shell${projectManager ? " settings-shell--standalone" : ""}">
     ${projectManager ? "" : renderSettingsNavigation(view.section, contextProject, desktopShell)}
     <div class="settings-content">${content}</div>
@@ -9549,7 +9779,7 @@ export function renderGoalBoardSettings(view: GoalBoardSettingsView, controlToke
 
 function prefixLocalLinks(html: string, routePrefix: string, desktopShell = false): string {
   const prefixed = routePrefix
-    ? html.replace(/href="\/(?!locale(?:\?|"))/g, `href="${routePrefix}/`)
+    ? html.replace(/href="\/(?!locale(?:\?|")|projects\/)/g, `href="${routePrefix}/`)
     : html;
   const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
@@ -9579,7 +9809,6 @@ export function renderGoalBoardWeb(
   desktopShell = false,
   cliAvailability: Record<string, boolean> = {},
 ): string {
-  const desktopDragRegion = desktopShell ? " data-tauri-drag-region" : "";
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
   const collectionTitle = trashView ? L("回收站") : archiveView ? L("已归档") : L("Goal Tree");
@@ -9631,29 +9860,59 @@ export function renderGoalBoardWeb(
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
   const pendingCount = pendingDecisionCount(view);
   const projectName = view.project?.display_name ?? L("当前项目");
+  const initialDesktopDirectory = decisionView ? "root" : "goals";
+  const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
+  const desktopAccountFooter = `<footer class="personal-sidebar-footer">
+    <a class="personal-account" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开全局设置")}">
+      <span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span>
+      <span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span>
+      <span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span>
+    </a>
+  </footer>`;
+  const desktopRootDirectory = `<section class="desktop-directory-panel desktop-directory-root" data-directory-panel="root"${initialDesktopDirectory === "root" ? "" : " hidden"}>
+    <nav class="desktop-module-list" aria-label="${L("工作台目录")}">
+      <a class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" data-decisions-link href="/decisions"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${pendingCount}</em></a>
+      <button class="desktop-module-item" type="button" data-directory-open="goals">${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
+      <button class="desktop-module-item" type="button" data-directory-open="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("消息与来源 Session")}</small></span><em>${L("规划中")}</em></button>
+      <button class="desktop-module-item" type="button" data-directory-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
+      <button class="desktop-module-item" type="button" data-directory-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
+    </nav>
+  </section>`;
+  const desktopPlaceholderDirectory = (id: string, label: string, note: string, iconName: GoalBoardIcon) => `<section class="desktop-directory-panel desktop-directory-secondary" data-directory-panel="${id}" hidden>
+    <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${label}</strong><small>${note}</small></span></header>
+    <div class="desktop-directory-empty">${icon(iconName)}<strong>${L("位置已保留")}</strong><p>${L("实体和工作流确认后再接入真实内容。")}</p><span>${L("规划中")}</span></div>
+  </section>`;
   const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
     <div class="navigator-project-primary">
-      <span class="navigator-project-mark" aria-hidden="true">${icon("folder")}</span>
-      <strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>
-      ${view.project ? `<nav class="navigator-project-actions" aria-label="${L("当前项目")}"><a class="navigator-project-action" href="__PROJECT_INDEX__" aria-label="${L("切换项目")}" title="${L("切换项目")}">${icon("switch")}<span aria-hidden="true">${L("切换项目")}</span></a><a class="navigator-project-action" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}<span aria-hidden="true">${L("项目设置")}</span></a></nav>` : ""}
+      ${desktopShell ? `<details class="navigator-project-menu" data-project-menu><summary class="navigator-project-selector" aria-label="${L("切换项目")}">${icon("database")}<strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>${icon("chevron-down")}</summary><div class="navigator-project-menu-popover"><span>${L("切换项目")}</span><nav>${projectOptions.map((project) => `<a class="navigator-project-option${project.project_id === view.project?.project_id ? " is-current" : ""}" href="/projects/${encodeURIComponent(project.project_id)}/"${project.project_id === view.project?.project_id ? ' aria-current="page"' : ""}><span>${icon("database")}<strong>${escapeHtml(project.display_name)}</strong></span>${project.project_id === view.project?.project_id ? icon("check") : ""}</a>`).join("")}</nav><a class="navigator-project-manage" href="__PROJECT_INDEX__">${icon("settings")}<span>${L("管理项目")}</span></a></div></details>${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}</a>` : ""}<div class="desktop-titlebar-drag desktop-titlebar-drag--left" data-tauri-drag-region aria-hidden="true"></div>` : `<span class="navigator-project-mark" aria-hidden="true">${icon("folder")}</span><strong title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</strong>${view.project ? `<nav class="navigator-project-actions" aria-label="${L("当前项目")}"><a class="navigator-project-action" href="__PROJECT_INDEX__" aria-label="${L("切换项目")}" title="${L("切换项目")}">${icon("switch")}<span aria-hidden="true">${L("切换项目")}</span></a><a class="navigator-project-action" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}<span aria-hidden="true">${L("项目设置")}</span></a></nav>` : ""}`}
     </div>
-    <div class="navigator-project-meta">
-      <a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a>
-      <span class="navigator-project-status">${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></span>
-    </div>
+    ${desktopShell ? "" : `<div class="navigator-project-meta"><a class="project-decisions${decisionView ? " is-current" : ""}${pendingCount > 0 ? " has-pending" : ""}" data-decisions-link href="/decisions" aria-label="${L("待决定")} ${pendingCount}"${decisionView ? ' aria-current="page"' : ""}>${icon("user")}<span>${L("待决定")}</span><strong>${pendingCount}</strong></a><span class="navigator-project-status">${view.demo ? `<small class="project-demo">${L("示例数据")}</small>` : ""}<span class="sync-state" data-sync-state>${L("已同步")}</span></span></div>`}
   </section>`;
   const showTui = !decisionView && !archiveView && !trashView;
+  const desktopUtilityTitle = decisionView ? "Inbox" : collectionTitle;
+  const desktopTabsLabel = decisionView ? "Inbox" : L("已打开的 Goal");
   const compactNavigation = {
     tree: L("目标"),
     focus: decisionView ? L("决定") : L("聚焦"),
     runtime: L("运行"),
   };
+  const desktopWorkbenchHeader = desktopShell ? `<div class="desktop-workbench-bar">
+    <div class="desktop-work-tabs" data-work-tabs role="tablist" aria-label="${escapeHtml(desktopTabsLabel)}">
+      ${selected ? `<div class="desktop-work-tab is-selected" data-work-tab-shell="${escapeHtml(selected.goal.goal_id)}"><button type="button" role="tab" data-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-selected="true" aria-controls="goal-document-pane"><i aria-hidden="true"></i><span>${escapeHtml(selected.goal.title)}</span></button><button type="button" data-close-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-label="${L("关闭 {title}", { title: selected.goal.title })}">${icon("x")}</button></div>` : `<div class="desktop-work-tab is-selected is-utility"><span role="tab" aria-selected="true">${escapeHtml(desktopUtilityTitle)}</span></div>`}
+    </div>
+    <div class="desktop-titlebar-drag" data-tauri-drag-region aria-hidden="true"></div>
+    <div class="desktop-workbench-actions">
+      <button type="button" data-directory-open="root" aria-label="${L("打开工作台目录")}" title="${L("打开工作台目录")}">${icon("panel")}</button>
+      ${showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button><button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button></nav>` : ""}
+      ${!collectionView && !decisionView ? `<button type="button" data-open-create aria-label="${L("新建目标")}" title="${L("新建目标")}">${icon("plus")}</button>` : ""}
+    </div>
+  </div>` : "";
   const html = `<!--
-THESIS: 选中的 Goal 贯穿 Navigator、Focus 与 Runtime；拒绝监控台式的蓝色高亮、密集线框和卡片堆叠。
-OWN-WORLD: Calm Desktop 使用冷灰导航面、无边框白色 Goal 画布、克制钴蓝焦点色、系统字体、Lucide 图标与 6/8/10px 圆角系统。
-STORY: 先在连续的 Project 与 Goal 目录中定位，再在无边框主画布上理解和判断，最后进入同一 Goal 的深色 Runtime 执行。
-FIRST VIEWPORT: GoalBoard 左对齐在桌面框架中，左侧是冷灰目录，中间是完整白色 Goal 画布，Runtime 在需要时作为深色执行区出现；紧凑模式只压缩节奏，不压平层级。
-FORM: Operate 模式的连续桌面工作台，seed=user-pinned-youmind-2026-08-28；方向由用户提供的低噪桌面参考锁定，保留现有 GoalBoard 信息架构与行为。
+THESIS: 只有一个目录入口，项目中的多条 Goal 在右侧复用；拒绝重复侧栏、轻首页大留白和后台管理式线框。
+OWN-WORLD: 石墨目录、深浅同源的柔和工作面、克制钴蓝焦点、系统字体、Lucide 图标、阴影与色面区分层级，尽量减少结构线。
+STORY: 先选择项目和工作类型，再在 Goals 中展开真实 Goal Tree；打开的 Goal 作为项目标签留在右侧，详情首屏直接回答结果、原因、运转和下一步。
+FIRST VIEWPORT: 约 310px 单目录与剩余标签工作面；项目切换位于 macOS 标题栏红黄绿按钮右侧，账户和全局设置贴左下，Inbox / Goal 标签在右上，Goal 详情以柔和分块连续展开。
+FORM: Operate 模式的 single-directory project-tab workbench，方向由 2026-08-29 用户确认的交互原型锁定（seed=goalboard-desktop-single-directory-project-tabs-2026-08-29）。
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <!doctype html>
@@ -9669,29 +9928,40 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 <body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}"${desktopShell ? ' data-desktop-shell="true"' : ""}>
   ${renderIconSprite()}
   <div class="app">
-    <header class="topbar"${desktopShell ? " data-tauri-drag-region" : ""}>
-      <div class="brand"${desktopDragRegion}>${icon("brand")}<strong${desktopDragRegion}>GoalBoard</strong></div>
+    ${desktopShell ? "" : `<header class="topbar">
+      <div class="brand">${icon("brand")}<strong>GoalBoard</strong></div>
       <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
       <a class="top-action" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开系统设置")}">${icon("settings")}<span>${L("系统设置")}</span></a>
-    </header>
+    </header>`}
     <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
     <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree" data-workspace-mode="focus">
-      <aside class="tree-pane" id="goal-tree-pane">
-        ${projectNavigatorLayer}
+      <aside class="tree-pane" id="goal-tree-pane"${desktopShell ? ` data-desktop-directory="${initialDesktopDirectory}"` : ""}>
+        ${desktopShell ? `${projectNavigatorLayer}
+        ${desktopRootDirectory}
+        ${desktopPlaceholderDirectory("feed", "Feed", L("消息与来源 Session"), "activity")}
+        ${desktopPlaceholderDirectory("promotion", "Promotion", L("把内容升格为 Goal"), "arrow")}
+        ${desktopPlaceholderDirectory("visual", L("可视化工作区"), L("Goal 关系与规划画布"), "workflow")}
+        <section class="desktop-directory-panel desktop-goal-directory" data-directory-panel="goals"${initialDesktopDirectory === "goals" ? "" : " hidden"}>
+          <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${collectionTitle === L("Goal Tree") ? "Goals" : collectionTitle}</strong><small>${collectionView ? collectionNote : L("Goal Tree")}</small></span></header>
+          ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
+          <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
+          <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
+        </section>
+        ${desktopAccountFooter}` : `${projectNavigatorLayer}
         <header class="desktop-pane-header desktop-pane-header--navigator"><strong data-navigator-heading>${L("目标导航")}</strong></header>
         ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
         <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
-        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
+        <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>`}
       </aside>
       <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
       <header class="workbench-header desktop-pane-header">
-        ${showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}">
+        ${desktopShell ? desktopWorkbenchHeader : showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}">
           <button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button>
           <button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button>
         </nav>` : `<strong>${decisionView ? L("决定中心") : L("目标聚焦")}</strong>`}
       </header>
-      <section class="document-pane" id="goal-document-pane" data-document-pane>
-        ${decisionView ? renderDecisionCenter(view) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
+      <section class="document-pane" id="goal-document-pane" data-document-pane${desktopShell ? ` role="tabpanel" tabindex="0"${selected ? "" : ` aria-label="${escapeHtml(desktopUtilityTitle)}"`}` : ""}>
+        ${decisionView ? renderDecisionCenter(view, desktopShell) : selected ? trashView ? renderTrashGoalDocument(selected, true) : renderGoalDocument(selected, view, true) : trashView ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>` : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
       </section>
       ${!archiveView && !trashView ? renderGoalGraph(view, selectedId, visibleGoals) : ""}
       ${showTui ? renderTuiPane(selected, view, cliAvailability) : ""}

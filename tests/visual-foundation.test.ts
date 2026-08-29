@@ -90,6 +90,42 @@ test("visual foundation defines one wide workbench and one narrow companion", ()
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /linear-gradient/);
 });
 
+test("desktop shell uses one project directory, project tabs, and soft work surfaces", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /Personal workbench v3: one directory, project-scoped tabs, and soft work surfaces/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-traffic-light-center-y: 16px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-traffic-light-center-y\) \* 2\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*grid-template-rows: auto minmax\(0, 1fr\) auto !important/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*padding: 0 8px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-resizer \{[\s\S]*grid-row: 2 \/ -1;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 72px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-menu-popover \{[\s\S]*position: absolute;[\s\S]*box-shadow: 0 14px 34px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-directory-panel\[hidden\] \{ display: none !important; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-module-item \{[\s\S]*min-height: 40px;[\s\S]*border-radius: 8px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-module-item\.is-current \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 8%, transparent\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.inbox-item \{[\s\S]*min-height: 46px;[\s\S]*grid-template-columns: 22px minmax\(0, 1fr\) auto 22px 14px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-goal-directory \.tree-search \{ display: none; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.personal-sidebar-footer \{[\s\S]*grid-row: 3;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-selected \{[\s\S]*background: var\(--paper\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility \{[\s\S]*min-width: max-content;[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility > \[role="tab"\] \{[\s\S]*white-space: nowrap;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) 48px auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-titlebar-drag \{[\s\S]*width: 48px;[\s\S]*user-select: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-brief-item,[\s\S]*box-shadow:/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: clamp\(420px, calc\(100dvh - 340px\), 760px\);[\s\S]*display: grid;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: clamp\(280px, calc\(100dvh - 510px\), 590px\);[\s\S]*align-items: stretch;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-deck \{[\s\S]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-pane\[data-tui-read-only\] \.tui-tabs,[\s\S]*\.tui-menu \{[\s\S]*display: none !important;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /body\.settings-page\[data-desktop-shell="true"\]:has\(\.settings-navigation\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /> \.topbar \{[\s\S]*height: var\(--desktop-titlebar-height\);[\s\S]*min-height: 48px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*grid-template-rows: var\(--desktop-titlebar-height\) 50px 50px minmax\(0, 1fr\) auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe \{ grid-row: 1; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-heading \{ margin-bottom: 18px; padding: 0 2px; border: 0; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.preference-section \{ padding: 18px 0; border: 0; \}/);
+});
+
 test("runtime workbench becomes a two-column layout with a dock at standard widths", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /@media \(min-width: 761px\) and \(max-width: 1180px\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /workspace\.is-desktop-tui\.is-tui-collapsed[\s\S]*grid-template-columns: var\(--tree-width,[\s\S]*minmax\(0, 1fr\)/);

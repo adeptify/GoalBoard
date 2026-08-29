@@ -683,7 +683,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((html.match(/data-goal-section=/g) ?? []).length, 6);
   assert.match(html, /role="tablist" aria-label="Goal 详情"/);
   assert.equal((html.match(/data-goal-tab="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
-  assert.equal((html.match(/data-goal-panel="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
+  assert.equal((pageHtml.match(/data-goal-panel="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.match(html, /data-goal-tab="overview"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-goal-tab="overview"/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, true\)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /const activateFocusSection = \(trigger\) =>/);
@@ -706,6 +706,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /下一步/);
   assert.match(html, /class="goal-focus-layout"/);
   assert.ok(html.indexOf('class="goal-hero"') < html.indexOf('class="goal-workspace-panels"'));
+  assert.match(html, /\.runtime-grid h3 \{[^}]*background: var\(--rail\);[^}]*color: var\(--ink\);/);
   assert.ok(html.indexOf('class="goal-focus-main"') < html.indexOf('class="goal-focus-aside"'));
   assert.match(html, /<header><h2[^>]*>下一步<\/h2><\/header>/);
   assert.doesNotMatch(html, /<header><h2[^>]*>下一步<\/h2><span class="goal-status"/);
@@ -1208,7 +1209,9 @@ test("Web project catalog switches browser scope without exposing storage or cha
 
     const desktopProjectIndex = await (await webFetch(`${origin}/?desktop=1`)).text();
     assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true">/);
-    assert.match(desktopProjectIndex, /<header class="topbar" data-tauri-drag-region>/);
+    assert.match(desktopProjectIndex, /<header class="topbar">/);
+    assert.doesNotMatch(desktopProjectIndex, /<header class="topbar" data-tauri-drag-region>/);
+    assert.match(desktopProjectIndex, /class="project-context" data-tauri-drag-region/);
     assert.match(desktopProjectIndex, /class="top-spacer" data-tauri-drag-region/);
 
     const capsulePage = await (await webFetch(`${origin}/desktop/capsule?desktop=1`)).text();
@@ -1495,6 +1498,16 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(projectRulesNavigation, /工作规则/);
     assert.match(projectRulesNavigation, /工作规划/);
     assert.doesNotMatch(projectRulesNavigation, /全局设置|AI 与执行工具|诊断/);
+    const desktopProjectRulesPage = await (await webFetch(
+      `${origin}/projects/${fixture.alpha.project_id}/settings/rules?desktop=1`,
+    )).text();
+    assert.match(desktopProjectRulesPage, /<nav class="settings-navigation project-settings-navigation"[\s\S]*?<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"><\/div>[\s\S]*?<div class="settings-desktop-project">/);
+    assert.doesNotMatch(desktopProjectRulesPage, /<header class="topbar" data-tauri-drag-region/);
+    assert.match(desktopProjectRulesPage, /<header class="topbar">[\s\S]*?<div class="project-context" data-tauri-drag-region[\s\S]*?<div class="top-spacer" data-tauri-drag-region>[\s\S]*?<a class="top-action"/);
+    const desktopGlobalSettingsPage = await (await webFetch(
+      `${origin}/settings/appearance?desktop=1&project=${fixture.alpha.project_id}`,
+    )).text();
+    assert.match(desktopGlobalSettingsPage, /<nav class="settings-navigation"[\s\S]*?<div class="desktop-titlebar-safe" data-tauri-drag-region aria-hidden="true"><\/div>[\s\S]*?<div class="settings-desktop-project">/);
     assert.match(projectRulesPage, /data-route-prefix="\/projects\//);
     assert.match(projectRulesPage, /name="scope" value="project_default"/);
     assert.doesNotMatch(projectRulesPage, /name="goal_id"/);
