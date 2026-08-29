@@ -4281,6 +4281,62 @@ test("new task decomposition checks the shared result chain before each task-spe
   store.close();
 });
 
+test("Goal Tree proposals reject incomplete relation payloads before storing them", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-relation-author",
+    rough_idea: "把子 Goal 和依赖方向写进一份可确认的 Goal Tree。",
+    goal_id: "relation-contract-root",
+    idempotency_key: "relation-contract-dialogue",
+  });
+  const submit = (
+    kind: "relation" | "dependency",
+    payload: Record<string, unknown>,
+    idempotencyKey: string,
+  ) => coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-relation-author",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "relation-contract-root",
+    summary: "提交一条关系供用户确认。",
+    items: [goalTreeProposalItem({
+      item_id: `${kind}-missing-fields`,
+      kind,
+      operation: "create",
+      payload,
+      object_type: "relation",
+      object_id: `relation:new:${kind}`,
+    })],
+    idempotency_key: idempotencyKey,
+  });
+
+  assert.throws(
+    () => submit("relation", { from_goal_id: "child-goal" }, "relation-missing-fields-submit"),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.relation_required");
+      assert.match(error.message, /缺少字段：to_goal_id、type/);
+      assert.match(error.message, /子 Goal → 父 Goal/);
+      assert.match(error.message, /"from_goal_id":"child-goal"/);
+      return true;
+    },
+  );
+  assert.throws(
+    () => submit("dependency", { from_goal_id: "consumer-goal" }, "dependency-missing-fields-submit"),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.dependency_required");
+      assert.match(error.message, /缺少字段：to_goal_id/);
+      assert.match(error.message, /消费方\/依赖方 Goal → 提供方\/前置 Goal/);
+      assert.match(error.message, /"to_goal_id":"provider-goal"/);
+      return true;
+    },
+  );
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 0);
+  store.close();
+});
+
 test("separate foundation Goals need an explicit dependency from core work to foundation output", () => {
   const { store, coordinator } = fixture();
   const rootGoalId = "foundation-path-root";

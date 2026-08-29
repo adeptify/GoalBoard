@@ -72,6 +72,208 @@ const GOAL_TREE_AFFECTED_OBJECT = {
   },
   required: ["object_type", "object_id"],
 };
+const GOAL_TREE_ACCEPTANCE_CRITERION = {
+  type: "object",
+  properties: {
+    criterion_id: V1_STRING,
+    statement: V1_STRING,
+    decision_method: {
+      type: "string",
+      enum: ["automated_check", "inspection", "measurement", "human_decision"],
+    },
+    pass_condition: V1_STRING,
+    target: { type: ["object", "null"] },
+    required_evidence: V1_STRING_ARRAY,
+  },
+  required: ["statement", "decision_method", "pass_condition", "required_evidence"],
+};
+const GOAL_TREE_GOAL_PROPERTIES = {
+  goal_id: {
+    type: "string",
+    description: "稳定 Goal ID。新建 Goal 必填；更新 Contract 时用于定位目标 Goal。",
+  },
+  title: V1_STRING,
+  outcome: V1_STRING,
+  why: V1_STRING,
+  business_logic: V1_STRING,
+  in_scope: V1_STRING_ARRAY,
+  out_of_scope: V1_STRING_ARRAY,
+  constraints: V1_STRING_ARRAY,
+  required_inputs: V1_STRING_ARRAY,
+  promised_outputs: V1_STRING_ARRAY,
+  definition_state: { type: "string", enum: ["draft", "accepted"] },
+  decomposition_state: {
+    type: "string",
+    enum: ["abstract", "frontier_open", "closed_leaf", "closed_compound"],
+  },
+  decomposition_review: { type: "object" },
+  leaf_readiness: { type: "object" },
+  priority: { type: "number" },
+  acceptance_criteria: { type: "array", items: GOAL_TREE_ACCEPTANCE_CRITERION },
+};
+const GOAL_TREE_GOAL_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=goal 的规范 payload。Draft 最少提供 goal_id、title；accepted Goal 还应给出完整 Contract 和验收条件。parent_goal_id 不会创建层级，父子关系必须另提 relation 条目。",
+  properties: GOAL_TREE_GOAL_PROPERTIES,
+  required: ["goal_id", "title"],
+  examples: [{ goal_id: "child-goal", title: "交付可验收的子结果", definition_state: "draft" }],
+};
+const GOAL_TREE_CONTRACT_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=contract 的规范 payload。goal_id 指向现有 Goal，其余字段是待用户确认的 Contract 版本；accepted Contract 需要完整业务与验收字段。",
+  properties: GOAL_TREE_GOAL_PROPERTIES,
+  required: ["goal_id"],
+  examples: [{ goal_id: "existing-goal", title: "更新后的目标标题", definition_state: "draft" }],
+};
+const GOAL_TREE_RELATION_PROPERTIES = {
+  action: { type: "string", enum: ["add", "deactivate"] },
+  relation_id: {
+    type: "string",
+    description: "停用已有关系时可直接提供；新增关系不使用。",
+  },
+  from_goal_id: V1_STRING,
+  to_goal_id: V1_STRING,
+  type: {
+    type: "string",
+    enum: [
+      "part_of",
+      "depends_on",
+      "conflicts_with",
+      "mitigates",
+      "extends",
+      "replaces",
+      "corrects",
+      "invalidates",
+      "migrates_from",
+    ],
+  },
+  reason: V1_STRING,
+};
+const GOAL_TREE_RELATION_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=relation 的规范 payload。create/update 需要 from_goal_id、to_goal_id、type；deactivate 可用 relation_id，或完整三元组。方向语义：part_of 为子 Goal → 父 Goal；depends_on 为消费方/依赖方 Goal → 提供方/前置 Goal。",
+  properties: GOAL_TREE_RELATION_PROPERTIES,
+  anyOf: [
+    { required: ["from_goal_id", "to_goal_id", "type"] },
+    { required: ["relation_id"] },
+  ],
+  examples: [{ from_goal_id: "child-goal", to_goal_id: "parent-goal", type: "part_of" }],
+};
+const GOAL_TREE_DEPENDENCY_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=dependency 专用于 depends_on。create/update 需要 from_goal_id、to_goal_id；type 可省略，若提供只能是 depends_on。方向固定为消费方/依赖方 Goal → 提供方/前置 Goal。deactivate 可用 relation_id 或同一方向的端点。",
+  properties: {
+    ...GOAL_TREE_RELATION_PROPERTIES,
+    type: { type: "string", enum: ["depends_on"] },
+  },
+  anyOf: [
+    { required: ["from_goal_id", "to_goal_id"] },
+    { required: ["relation_id"] },
+  ],
+  examples: [{ from_goal_id: "consumer-goal", to_goal_id: "provider-goal", type: "depends_on" }],
+};
+const GOAL_TREE_RISK_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=risk。create/update 需要关联 Goal 与完整风险事实；update/deactivate 还需要 risk_id。treatment 是处理策略，state 是生命周期。",
+  properties: {
+    risk_id: V1_STRING,
+    goal_ids: V1_STRING_ARRAY,
+    description: V1_STRING,
+    probability: V1_STRING,
+    impact: V1_STRING,
+    affected_surfaces: V1_STRING_ARRAY,
+    trigger: V1_STRING,
+    treatment: { type: "string", enum: ["accept", "mitigate", "avoid", "defer"] },
+    treatment_plan: V1_STRING,
+    blocking_mode: {
+      type: "string",
+      enum: ["none", "claim", "completion", "invalidate_on_trigger"],
+    },
+    revisit_condition: V1_STRING,
+    owner: V1_STRING,
+    state: { type: "string", enum: ["open", "triggered", "resolved", "accepted", "expired"] },
+  },
+  examples: [{
+    goal_ids: ["goal-a"],
+    description: "关键输入可能不可用",
+    probability: "medium",
+    impact: "high",
+    trigger: "输入连续两次读取失败",
+    treatment: "mitigate",
+    blocking_mode: "completion",
+    revisit_condition: "替代输入完成验证后复查",
+    owner: "runtime-clarifier",
+  }],
+};
+const GOAL_TREE_POLICY_FIELDS = {
+  goal_mode: { type: "string", enum: ["disabled", "preferred", "required"] },
+  required_capabilities: V1_STRING_ARRAY,
+  self_verification: { type: "boolean" },
+  cross_reviewers: { type: "integer", minimum: 0 },
+  adversarial_reviewers: { type: "integer", minimum: 0 },
+  human_approval: { type: "boolean" },
+  max_lease_seconds: { type: "integer", minimum: 1 },
+};
+const GOAL_TREE_POLICY_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=policy。create/update 可提供 goal_id（省略表示项目默认）和 policy 对象；兼容直接平铺 policy 字段。deactivate 需要 policy_binding_id。",
+  properties: {
+    goal_id: V1_STRING,
+    policy_binding_id: V1_STRING,
+    policy: { type: "object", properties: GOAL_TREE_POLICY_FIELDS },
+    ...GOAL_TREE_POLICY_FIELDS,
+  },
+  examples: [{ goal_id: "goal-a", policy: { goal_mode: "required", self_verification: true } }],
+};
+const GOAL_TREE_CANDIDATE_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=candidate。create 提供 candidate_id（可选）与 proposed_goal；晋升已有 pending Candidate 时使用 update，并提供 candidate_id、最终 proposed_goal、proposed_relations（可为空列表）。",
+  properties: {
+    candidate_id: V1_STRING,
+    proposed_goal: GOAL_TREE_GOAL_PAYLOAD,
+    proposed_relations: { type: "array", items: GOAL_TREE_RELATION_PAYLOAD },
+    proposed_impacts: { type: "array", items: { type: "object" } },
+    proposed_risks: { type: "array", items: { type: "object" } },
+    blocking_mode: { type: "string", enum: ["none", "current_run", "dependent_claims"] },
+    formal_goal_id: V1_STRING,
+    materialized_by_proposal_id: V1_STRING,
+  },
+  examples: [{
+    candidate_id: "candidate-a",
+    proposed_goal: { goal_id: "goal-a", title: "晋升后的 Goal" },
+    proposed_relations: [],
+  }],
+};
+const GOAL_TREE_REWIRE_PAYLOAD = {
+  type: "object",
+  description:
+    "kind=rewire。create/update 提供 relations 数组；update/deactivate 需要 rewire_id。每条关系沿用 relation 的方向语义。",
+  properties: {
+    rewire_id: V1_STRING,
+    relations: { type: "array", items: GOAL_TREE_RELATION_PAYLOAD },
+  },
+  examples: [{
+    rewire_id: "rewire-a",
+    relations: [{ from_goal_id: "child-goal", to_goal_id: "parent-goal", type: "part_of" }],
+  }],
+};
+const GOAL_TREE_PAYLOAD_BY_KIND = [
+  ["goal", GOAL_TREE_GOAL_PAYLOAD],
+  ["contract", GOAL_TREE_CONTRACT_PAYLOAD],
+  ["relation", GOAL_TREE_RELATION_PAYLOAD],
+  ["dependency", GOAL_TREE_DEPENDENCY_PAYLOAD],
+  ["risk", GOAL_TREE_RISK_PAYLOAD],
+  ["policy", GOAL_TREE_POLICY_PAYLOAD],
+  ["candidate", GOAL_TREE_CANDIDATE_PAYLOAD],
+  ["rewire", GOAL_TREE_REWIRE_PAYLOAD],
+] as const;
 const GOAL_TREE_ITEM = {
   type: "object",
   properties: {
@@ -94,6 +296,10 @@ const GOAL_TREE_ITEM = {
     supersedes_item_id: { type: ["string", "null"] },
   },
   required: ["kind", "operation", "payload", "source_refs", "reason", "confidence", "affected_objects"],
+  allOf: GOAL_TREE_PAYLOAD_BY_KIND.map(([kind, payload]) => ({
+    if: { properties: { kind: { const: kind } }, required: ["kind"] },
+    then: { properties: { payload } },
+  })),
 };
 const GOAL_TREE_ITEM_DECISION = {
   type: "object",

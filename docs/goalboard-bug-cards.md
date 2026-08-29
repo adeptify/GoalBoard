@@ -25,8 +25,10 @@
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
 | GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 待审批 | 未开始 | P1 |
-| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 待审批 | 未开始 | P1 |
+| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
+| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
+| GB-20260829-13 | Opportunity 有引用但看不到研究过程与样本漏斗 | CGS 领域模型与编辑台设计债 | 设计债、接入问题 | 已批准 | 未开始（CGS） | P1（CGS） |
+| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 
 ---
 
@@ -675,3 +677,111 @@ Runtime 已完成所有自己有权完成的复核，却没有一个规范动作
 - **工程验证**：通过。混合 inspection + `human_decision` Goal 会生成分离的 Runtime 与 `human_approver` obligation；Runtime 部分通过后派生 `waiting_for_human`，Available 不再提供 Runtime Review action，Blocked/Explain 返回 `review.user_approval_required`、criterion、obligation 和 `open_goalboard`；只有 Human Review 而缺少 human-verdict Evidence 时仍等待，两者齐备才进入 `completion_pending`。纯 Runtime criterion 的 `inconclusive` 仍可重试；历史混合 obligation 会在下一次安全选择时拆分。完整回归为 V1 86/86、MCP 29/29、Web 39/39，TypeScript 和 `git diff --check` 通过。受限沙箱的临时目录曾使 MCP/Web 夹具出现位置漂移的 `SQLITE_CANTOPEN`，相同命令在正常文件系统环境全绿，确认不是本卡代码回归。
 - **产品实操**：真实 G2B 已复现修复前循环；修复后的 Web 人工待办、Runtime 停止领取、用户提交真实决定并回到完成判定均为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。仍需在最终安装产物中用真实 G2B Goal 走完“工程复核结束 → 明确等待王一骏 → 本人操作与验收 → Goal 完成”，并确认不会新增重复 Claim、Run 或 Review。用户本人是否认可文案和入口也仍属于用户验收。
+
+---
+
+## GB-20260829-13：Opportunity 有引用但看不到研究过程与样本漏斗
+
+**来源**：CGS 选题编辑台消费者反馈
+**Bug 确认**：确认存在可复现的产品体验问题；主要归因是 CGS 的领域模型与编辑台设计债、GoalBoard 接入层信息缺失，不是 GoalBoard Core 缺陷
+**修复决定**：已批准纳入 bugfix；GoalBoard 侧只记录归因与边界，实际产品修复应在 CGS 完成
+**修复状态**：GoalBoard 归因与卡片已完成；CGS 源码修复未开始，工程验证、产品实操与最终验收均未完成
+
+### 1. 真实场景
+
+用户在 CGS 选题编辑台查看一个 Opportunity，能读到事实、推断、反证、来源链接和粗略来源边界，却无法知道这轮研究使用了哪些查询词、经过哪些检索渠道、看过和淘汰了多少结果、哪些渠道没有覆盖，以及眼前的来源是从较大候选池中筛出，还是研究者只看了这些页面。正式研究候选、团队输入与 Owner 直输因此容易被理解成相同强度的市场研究。
+
+### 2. 事实与归因
+
+当前实现可以稳定复现。GoalBoard Core 的 `EvidenceRecord` 只保存证据种类、定位符、验证状态、摘要、结果、生产者和关联验收条件等跨领域字段；它没有、也不应内置内容研究专用的查询日志和样本漏斗。CGS 的 `OpportunityV1` 已区分 `OPEN_RESEARCH`、`TEAM_INPUT` 与 `SEMI_DIRECTED`，Open Research 也保存时间窗、检索时间、采样表面和 coverage limits，但没有结构化保存查询词、渠道级结果数、筛除数和未覆盖渠道；编辑台详情页甚至没有展示已经存在的 `sourceContext`。主要归因因此是 CGS 领域模型与 UI 设计债，并伴随 GoalBoard 接入层没有把领域证据展开给用户；不是用户误用，也不是 GoalBoard 通用 Evidence 模型缺字段。
+
+### 3. 现有流程的问题
+
+用户若要判断研究是否充分，只能从少量引用和一段自由文本边界反推研究过程，或离开编辑台追问执行者。流程没有明确增加一个按钮点击，而是缺少一个关键判断层：引用的“存在”被视觉上提升为研究覆盖度的“充分”，用户无法发现选择偏差、复现搜索或从缺口处继续研究。
+
+### 4. 设计根因与初衷
+
+GoalBoard 将 Evidence 设计成跨项目的验收与追溯容器，初衷是让不同领域用统一生命周期登记可核验产物，避免 Core 被内容研究、代码测试或运营数据各自的专用字段绑死。CGS 则把 Opportunity 设计成精炼的决策卡，优先展示事实、判断和行动，避免编辑台被研究日志淹没。这两个初衷都合理；缺陷在于 CGS 只收敛了阅读表面，没有保留和渐进展示支撑结论所需的研究过程，导致“简洁”变成“证据强度不可辨认”。
+
+### 5. 当前影响
+
+影响所有需要凭 Opportunity 做 SELECT / DEFER / REJECT 的 Owner、复核者和后续研究者，尤其影响 `OPEN_RESEARCH` 候选。它不会直接破坏数据或发布内容，但会降低选题决定的可信度，阻断研究复现与接续，并可能让普通输入被误判为已充分搜索的市场机会。该问题已在真实 CGS 编辑台阅读中出现，频率随研究候选数量增加而增加。
+
+### 6. 复杂度审查
+
+- **当前必须**：在 CGS 的 Open Research 来源上下文中结构化保存查询词、渠道、搜索时间、可获得的结果浏览/保留/淘汰数量和明确覆盖缺口；编辑台以默认折叠的“研究过程”渐进展示这些信息；候选类型继续显著区分正式研究、团队输入与 Owner 直输；未知数量必须显示为“未记录”，不能伪造精确值。
+- **可以延后**：逐条结果的完整淘汰理由、跨轮次差异比较、研究日志导出、自动覆盖评分、渠道排行榜和查询效果分析。
+- **应当删除**：在 GoalBoard Core 新建通用研究数据库、爬虫或渠道适配层；为了显得严谨而要求所有渠道都有数字；用一个不透明的综合分数替代查询、覆盖和缺口事实。
+
+### 7. 修复必要性与优先级
+
+需要修复，CGS 侧 P1；GoalBoard Core 不改。它直接影响用户是否能对 Opportunity 的来源强度作出正确判断，并影响长期证据链是否可复现。最小修复可以沿用 CGS 现有 `sourceContext` 与编辑台详情页完成，不需要扩大成跨领域基础设施。
+
+### 8. 修复前后体验差异
+
+- **修复前**：用户看到若干引用和结论 → 无法判断搜索范围与筛选过程 → 只能把“有来源”当作“研究充分”，或离开编辑台追问。
+- **修复后**：用户先看到同样精炼的 Opportunity 摘要 → 需要判断可信度时展开“研究过程” → 看到查询词、渠道、时间窗、结果漏斗和明确缺口 → 知道哪些结论来自正式检索、哪些只是团队或 Owner 输入，并能从缺口处继续研究。
+
+### 9. 最小修复范围
+
+只修改 CGS 的 Open Research 数据契约、样本/写入校验和 Opportunity 详情展示：在现有 `sourceContext` 下新增可选且可向后兼容的结构化研究过程，默认折叠展示；旧数据缺字段时明确显示“未记录查询过程”，不补写猜测数据。TEAM_INPUT 与 Owner 直输继续使用各自来源类型，不强行填写搜索漏斗。GoalBoard 的 Evidence schema、Review 状态机和通用 Web 证据卡均不改。回滚时可隐藏新增面板并停止写入可选字段，旧数据仍可读取。
+
+### 10. 验收边界
+
+- **工程验证**：本轮只完成 GoalBoard 与 CGS 源码的只读归因核对；尚无 CGS 代码改动、测试或数据迁移，因此不能报告工程验证通过。
+- **产品实操**：已通过当前 CGS 详情页实现与真实代表样本确认修复前的问题存在；修复后的折叠层级、旧数据提示、候选类型区分和研究接续旅程均为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需 CGS 实现后，由 Owner 用正式研究候选、团队输入和本人直输各一条实操，确认首屏仍简洁、展开后足以判断覆盖度和选择偏差，且不会把“未记录”误呈现为零。
+
+---
+
+## GB-20260829-14：Goal Tree 提案 payload 需要查源码才能构造
+
+**来源**：Arena Goal Tree 拆分消费者反馈
+**Bug 确认**：已确认，属于 GoalBoard MCP 工具契约自描述缺陷；不是 Arena 接入误用
+**修复决定**：已批准修复
+**修复状态**：源码已实现并完成工程验证；尚未打包、安装、完成 Arena 产品实操或 Owner 最终验收
+
+### 1. 真实场景
+
+Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，准备通过 `goalboard_v1_goal_tree_propose` 提交整棵待确认树。工具声明只告诉它 item 有 `kind`、`operation` 和任意对象 `payload`，没有说明 goal、relation、dependency 等 kind 的字段、枚举、最小格式和方向。为了不把父子或依赖接反，消费者只能离开 MCP 契约去读 GoalBoard TypeScript 源码。
+
+### 2. 事实与归因
+
+可稳定复现。修复前 `GOAL_TREE_ITEM.payload` 只有 `type=object` 和 Risk 的一段说明，TypeScript 输入也只是 `Record<string, unknown>`；`kind` 枚举虽然完整，却没有与 payload 形成可判别约束。`part_of` 和 `depends_on` 的真实方向只存在于 Coordinator、规划校验和测试里。缺字段的 relation/dependency 还能越过提交入口，被保存为 pending Proposal，直到后续 check/decision/materialization 才可能报“需要起点、终点和类型”。主要归因是 GoalBoard MCP 契约缺陷，而不是 Agent 理解能力、Arena 接入或用户误用。
+
+### 3. 现有流程的问题
+
+基础拆树需要额外执行“定位 GoalBoard 仓库 → 搜索 materializer/测试 → 推断 canonical payload → 返回 Arena 提交”，把实现源码变成隐藏文档。若消费者不查源码，最危险的结果不是立即失败，而是字段形式合法、领域语义错误：例如把 `part_of` 写成父到子，或把 `depends_on` 写成提供者到消费者。缺字段条目进入用户待确认队列还会把本应由机器提前指出的格式错误转嫁给用户决定阶段。
+
+### 4. 设计根因与初衷
+
+统一 Goal Tree Proposal 最初使用开放 `payload`，是为了让 goal、contract、relation、risk、policy、candidate、rewire 在一个原子提案中演进，避免每增加一种条目都复制一套工具；宽松读取也能兼容早期直接 payload、嵌套 `goal`、单条 relation 和 `relations[]` 等历史格式。这个兼容目标合理。缺陷是“运行时可宽松读取”同时变成了“对消费者没有规范写法”：服务端没有另外暴露 canonical 写入契约，也没有在用户决定前验证最常见的关系结构。
+
+### 5. 当前影响
+
+影响所有原生 Goal Tree 提案消费者，首次接入、跨仓库 Agent 和只拿到 MCP declaration 的集成方最明显。每次构造新 kind 都可能产生查源码与试错成本；relation/dependency 方向错误会直接改变 Goal 层级、执行顺序和阻塞关系。本次已真实阻断 Arena 提案提交前的自主推进，但尚未写入错误 canonical 关系，数据未受损。
+
+### 6. 复杂度审查
+
+- **当前必须**：为 8 种现有 kind 暴露可判别的 payload schema、字段枚举和最小示例；明确 `part_of` 是子 Goal → 父 Goal，`depends_on` 是消费方/依赖方 Goal → 提供方/前置 Goal；relation/dependency 缺字段时在 Proposal 入队前返回缺失字段、规范示例和方向，不留下 pending 记录。
+- **可以延后**：把所有历史宽松格式迁移成唯一存储格式、为每个 operation 建立完全独立的 TypeScript 判别联合、根据 schema 自动生成 Web 表单和外部 SDK。
+- **应当删除**：新建第二套 Goal Tree API；要求消费者继续读取源码；为追求 schema 纯度而拒绝读取已有 pending Proposal；把 planning_methods 当成 payload 字典并复制同一份字段事实。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1。该缺陷让 GoalBoard 的主要原生规划入口无法只凭工具契约安全使用，并可能生成方向相反的 canonical 关系。修复直接发生在现有 MCP schema 与 Proposal 入口，不增加数据库、服务或工作流，收益明确且回滚简单。
+
+### 8. 修复前后体验差异
+
+- **修复前**：读取工具 → 只看到 `payload: object` → 查 GoalBoard 源码或猜字段 → 可能先保存坏 Proposal → 到 check/decision 才遇到泛化错误。
+- **修复后**：读取工具 → 按 kind 看到对应字段、枚举和最小示例 → 直接确认父子与依赖方向并提交；若漏写 `to_goal_id` 或 `type`，提交立即指出具体缺失字段、给出可复制格式和方向，用户待确认队列保持干净。
+
+### 9. 最小修复范围
+
+只修改 `goalboard_v1_goal_tree_propose` 的 item schema、relation/dependency 提交前校验和对应回归测试。schema 通过 kind 条件分支覆盖 goal、contract、relation、dependency、risk、policy、candidate、rewire，保留现有宽松读取和数据库格式；不改 Proposal 原子性、用户确认边界、materializer、planning_methods 或已有记录。旧客户端按原格式提交仍可工作，只要 relation/dependency 本身完整；回滚只需还原工具声明和前置校验，不涉及数据迁移。
+
+### 10. 验收边界
+
+- **工程验证**：通过。工具列表真实返回 8 个 kind 的条件化 payload schema；Goal schema 暴露最小字段与验收条件，relation/dependency 暴露枚举、示例和双向语义；缺字段 relation/dependency 会在存储前分别返回 `goal_tree_proposal.relation_required` / `goal_tree_proposal.dependency_required`，指出字段与示例，并保证 pending Proposal 数仍为零。定向 MCP + V1 为 116/116，TypeScript 通过；完整回归在正常本地权限下为 271/271。受限环境首次出现的 12 项失败均为临时 SQLite 与 npm 日志不可写，同一代码在正常权限下全绿。
+- **产品实操**：修复前已由 Arena 消费者真实复现；修复后的新 MCP declaration 是否足以让一个不读源码的新 Session 构造 7 个一级 Draft Goal、父子关系和依赖关系，仍为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需要打包安装后新开 Session，在 Arena 仅依赖工具声明提交一次整树提案，并由用户检查 Goal Tree 层级与依赖方向；当前 Session 不会热加载这次 schema 变更。

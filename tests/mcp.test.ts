@@ -69,6 +69,51 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /kind=candidate、operation=update/);
     assert.match(goalTreeProposeTool?.description ?? "", /state=resolved/);
     assert.match(goalTreeProposeTool?.description ?? "", /不存在 state=mitigated/);
+    const goalTreeItemSchema = goalTreeProposeTool?.inputSchema.properties?.items as {
+      items?: {
+        allOf?: Array<{
+          if?: { properties?: { kind?: { const?: string } } };
+          then?: {
+            properties?: {
+              payload?: {
+                description?: string;
+                properties?: Record<string, { enum?: string[] }>;
+                required?: string[];
+                examples?: Array<Record<string, unknown>>;
+              };
+            };
+          };
+        }>;
+      };
+    } | undefined;
+    const payloadBranches = goalTreeItemSchema?.items?.allOf ?? [];
+    assert.deepEqual(
+      payloadBranches.map((branch) => branch.if?.properties?.kind?.const),
+      ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
+    );
+    const payloadFor = (kind: string) => payloadBranches.find(
+      (branch) => branch.if?.properties?.kind?.const === kind,
+    )?.then?.properties?.payload;
+    assert.deepEqual(payloadFor("goal")?.required, ["goal_id", "title"]);
+    assert.ok(payloadFor("goal")?.properties?.acceptance_criteria);
+    assert.match(payloadFor("goal")?.description ?? "", /父子关系必须另提 relation 条目/);
+    assert.ok(payloadFor("relation")?.properties?.from_goal_id);
+    assert.ok(payloadFor("relation")?.properties?.to_goal_id);
+    assert.deepEqual(payloadFor("relation")?.properties?.type?.enum, [
+      "part_of",
+      "depends_on",
+      "conflicts_with",
+      "mitigates",
+      "extends",
+      "replaces",
+      "corrects",
+      "invalidates",
+      "migrates_from",
+    ]);
+    assert.match(payloadFor("relation")?.description ?? "", /子 Goal → 父 Goal/);
+    assert.deepEqual(payloadFor("dependency")?.properties?.type?.enum, ["depends_on"]);
+    assert.match(payloadFor("dependency")?.description ?? "", /消费方.*→.*提供方/);
+    assert.ok((payloadFor("dependency")?.examples?.length ?? 0) > 0);
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
     assert.match(availableTool?.description ?? "", /next_action=complete/);
     assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
