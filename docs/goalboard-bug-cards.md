@@ -19,7 +19,7 @@
 | GB-20260828-02 | 已完成执行被 Available 误导为再次执行 | GoalBoard 派生状态缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260828-03 | 项目内绝对路径被误报为项目范围外 | GoalBoard locator 设计缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260828-04 | 同一 LaunchAgent PID 被误报为端口冲突 | GoalBoard 服务归属兼容缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard 可引用性设计债 | 设计债 | 已批准 | 已安装 | P2 |
+| GB-20260828-05 | 对话使用 G2A/G2B，Goal Tree 隐藏对应 ID | GoalBoard Desktop CSS 回归 | 缺陷 | 已批准 | 已修复待发布 | P2 |
 | GB-20260828-06 | 已绑定 Session 的生命周期调用偶发误报未连接 | GoalBoard 连接缓存与恢复语义缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260828-07 | 内嵌 Node 测试把 Homebrew Node 误当成可搬移运行时 | GoalBoard 测试夹具可移植性缺陷 | 非产品 Bug | 已批准 | 已安装 | P1（发布门禁） |
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
@@ -252,9 +252,9 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 ## GB-20260828-05：对话使用 G2A/G2B，Goal Tree 隐藏对应 ID
 
 **来源**：用户截图直接反馈
-**Bug 确认**：已确认是 GoalBoard 可引用性设计债；Goal 内容没有丢失
+**Bug 确认**：已确认最初是 GoalBoard 可引用性设计债；v0.1.5 又发生 Desktop CSS 回归，Goal 内容没有丢失
 **修复决定**：用户已批准
-**修复状态**：已安装到 v0.1.3；尚未完成产品实操或最终验收
+**修复状态**：v0.1.3 的基础显示修复已进入 v0.1.5，但后续 Desktop Workbench 样式再次隐藏 ID；回归已修复并通过工程门禁，尚未重新打包安装
 
 ### 1. 真实场景
 
@@ -262,7 +262,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 
 ### 2. 事实与归因
 
-截图与源码一致。CGS 的 canonical ID 包含 `cgs-g2a-opportunity-intelligence`、`cgs-g2b-editorial-decision`；Goal Tree renderer 也把 `goal_id` 输出到标题下方，但视觉层明确设置 `.tree-copy > small { display: none; }`，因此用户看不到。主要归因是 GoalBoard UI 设计债，不是 CGS 内容缺失，也不是 Runtime 错造编号。
+最初截图与源码一致。CGS 的 canonical ID 包含 `cgs-g2a-opportunity-intelligence`、`cgs-g2b-editorial-decision`；Goal Tree renderer 也把 `goal_id` 输出到标题下方。基础样式修复已把 `.tree-copy > small` 设为 `display: block`，且提交 `b64899a` 已进入 v0.1.5；但之后的 Desktop Workbench 提交 `705ce64` 又增加更高优先级的 `body[data-desktop-shell="true"] .tree-copy small { display: none; }`。安装版 v0.1.5 的源码、App 内嵌 Runtime 和真实 CGS 页面均复现该覆盖：HTML 有两个 canonical ID，最终 Desktop CSS 把它们隐藏。归因从单纯设计债更新为 GoalBoard Desktop CSS 回归与测试覆盖缺口，不是 CGS 内容缺失、Runtime 错造编号或安装了旧版本。
 
 ### 3. 现有流程的问题
 
@@ -270,7 +270,7 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 
 ### 4. 设计根因与初衷
 
-Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只保留自然语言标题和状态。这个设计适合单纯浏览，但忽略了 GoalBoard 同时承担“人和 Runtime 用同一个稳定引用沟通”的职责；标题可读性和引用可定位性不应二选一。
+Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只保留自然语言标题和状态。基础修复已经承认 GoalBoard 同时承担“人和 Runtime 用同一个稳定引用沟通”的职责；但后续 Desktop Workbench 重设计再次以密度为由隐藏 `<small>`。原回归只检查第一条基础规则是否显示，没有检查后置 Desktop 高优先级规则，也未在最终 App 的真实 CGS 页面检查 computed style，导致“源码中存在显示规则”被误当成“最终用户可见”。
 
 ### 5. 当前影响
 
@@ -278,7 +278,7 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 
 ### 6. 复杂度审查
 
-- **当前必须**：在列表和关系图中恢复一个低噪音、可复制的稳定 Goal 引用；本次最小做法是显示现有 `goal_id`，其中已经包含 G2A/G2B。
+- **当前必须**：删除 Desktop Shell 对 Goal ID 的隐藏覆盖，让既有低强调、单行截断规则在最终 App 生效，并增加能捕获后置 CSS 级联覆盖的默认门禁。
 - **可以延后**：新增独立的短编号/别名字段、编号自动分配、别名历史和跨项目唯一性治理。
 - **应当删除**：所有密度模式下一律隐藏 Goal ID 的 CSS 规则。
 
@@ -293,12 +293,12 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 
 ### 9. 最小修复范围
 
-只调整 Goal Tree/关系图的 ID 展示样式、窄栏截断与可访问名称，并补中文、英文、紧凑密度和长 ID 的视觉回归。不修改 Goal schema、现有 ID、排序、标题或 CGS 数据。回滚是一条展示规则，不涉及数据迁移。
+只删除 Desktop Shell 隐藏 Goal ID 的覆盖规则，并在默认 Web 测试中增加 Desktop Workbench 回归；保留现有低强调、单行截断和悬停完整值。不修改 Goal schema、现有 ID、排序、标题、关系图或 CGS 数据。回滚只恢复一条展示规则，不涉及数据迁移。
 
 ### 10. 验收边界
 
-- **工程验证**：列表与关系图回归验证稳定 ID 以低强调、单行截断样式显示，完整值保留在悬停标题中；视觉基础和 Web renderer 测试通过。正常本机权限下整仓门禁 261/261、TypeScript 和 Skill 校验通过。
-- **产品实操**：`UNVERIFIED`。v0.1.3 已安装；尚未在用户截图对应的 Content Growth Studio 列表中检查真实长标题、紧凑密度、选中态和关系图拥挤程度。
+- **工程验证**：回归先在 v0.1.5 源码上稳定失败，明确命中 Desktop 高优先级 `display: none`；删除覆盖后定向测试转绿。正常本机权限下 Web + 视觉测试 56/56、默认整仓构建与测试 274/274、TypeScript 类型检查通过。
+- **产品实操**：修复前已在安装版 v0.1.5 的真实 Content Growth Studio 页面复现：G2A/G2B ID 存在于 HTML，但 Desktop CSS 隐藏。修复后的最终 App、长标题、紧凑密度、选中态和关系图仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。最终视觉密度和“G2A/G2B 一眼能对应”需要用户本人在安装产物中确认。
 
 ---
