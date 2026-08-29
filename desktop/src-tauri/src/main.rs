@@ -669,7 +669,8 @@ const CAPSULE_MIN_HEIGHT: f64 = 252.0;
 const CAPSULE_MAX_HEIGHT: f64 = 476.0;
 const CAPSULE_EDGE_MARGIN: i32 = 8;
 const CAPSULE_TRAY_GAP: i32 = 5;
-const WEB_FAILURES_BEFORE_RECOVERY: u8 = 2;
+const APP_OWNED_WEB_FAILURES_BEFORE_RECOVERY: u8 = 2;
+const MANAGED_WEB_FAILURES_BEFORE_FALLBACK: u8 = 10;
 
 fn capsule_menu_bar_icon() -> Image<'static> {
     const SIZE: u32 = 36;
@@ -819,8 +820,13 @@ fn should_keep_window_on_close(label: &str) -> bool {
     label == "main"
 }
 
-fn should_attempt_web_recovery(consecutive_failures: u8) -> bool {
-    consecutive_failures >= WEB_FAILURES_BEFORE_RECOVERY
+fn should_attempt_web_recovery(consecutive_failures: u8, owns_web_child: bool) -> bool {
+    let threshold = if owns_web_child {
+        APP_OWNED_WEB_FAILURES_BEFORE_RECOVERY
+    } else {
+        MANAGED_WEB_FAILURES_BEFORE_FALLBACK
+    };
+    consecutive_failures >= threshold
 }
 
 fn goalboard_reload_url(current: Option<Url>, fallback: &str) -> Option<Url> {
@@ -865,7 +871,12 @@ fn start_web_health_monitor(app: tauri::AppHandle, resource_dir: Option<PathBuf>
                     continue;
                 }
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                if !should_attempt_web_recovery(consecutive_failures) {
+                let owns_web_child = service_state
+                    .owned_child
+                    .lock()
+                    .map(|child| child.is_some())
+                    .unwrap_or(false);
+                if !should_attempt_web_recovery(consecutive_failures, owns_web_child) {
                     continue;
                 }
                 let capsule_state = app.state::<CapsuleStatusState>();
@@ -1376,9 +1387,11 @@ mod tests {
     }
 
     #[test]
-    fn desktop_lifecycle_waits_for_a_real_outage_and_keeps_main_reopenable() {
-        assert!(!should_attempt_web_recovery(1));
-        assert!(should_attempt_web_recovery(2));
+    fn desktop_recovery_gives_managed_service_transitions_a_wider_grace_period() {
+        assert!(!should_attempt_web_recovery(1, true));
+        assert!(should_attempt_web_recovery(2, true));
+        assert!(!should_attempt_web_recovery(9, false));
+        assert!(should_attempt_web_recovery(10, false));
         assert!(should_keep_window_on_close("main"));
         assert!(!should_keep_window_on_close("capsule"));
     }
