@@ -433,6 +433,73 @@ interface NormalizedGoalTreeProposalItem {
   supersedes_item_id: string | null;
 }
 
+function goalTreeProposalRelationPayloads(
+  item: GoalTreeProposalItemInput,
+  itemIndex: number,
+): Record<string, unknown>[] {
+  const source = item.payload.relations ?? item.payload.relation ?? item.payload;
+  const values = Array.isArray(source) ? source : [source];
+  if (values.length === 0) {
+    throw new GoalBoardV1Error(
+      "goal_tree_proposal.relations_required",
+      `第 ${itemIndex + 1} 个 ${item.kind} 条目至少需要一条关系；请在 payload 直接提供关系字段，或使用 relations 数组。`,
+    );
+  }
+  return values.map((value, relationIndex) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.item_payload_invalid",
+        `第 ${itemIndex + 1} 个 ${item.kind} 条目的第 ${relationIndex + 1} 条关系必须是结构化对象。`,
+      );
+    }
+    return value as Record<string, unknown>;
+  });
+}
+
+function validateGoalTreeProposalRelationPayload(
+  item: GoalTreeProposalItemInput,
+  itemIndex: number,
+): void {
+  if (item.kind !== "relation" && item.kind !== "dependency") return;
+  for (const [relationIndex, relation] of goalTreeProposalRelationPayloads(item, itemIndex).entries()) {
+    const location = `第 ${itemIndex + 1} 个 ${item.kind} 条目的第 ${relationIndex + 1} 条关系`;
+    const action = String(relation.action ?? (item.operation === "deactivate" ? "deactivate" : "add"));
+    if (action !== "add" && action !== "deactivate") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.relation_action_invalid",
+        `${location} 的 action 必须是 add 或 deactivate。`,
+      );
+    }
+    const relationId = String(relation.relation_id ?? "").trim();
+    const fromGoalId = String(relation.from_goal_id ?? "").trim();
+    const toGoalId = String(relation.to_goal_id ?? "").trim();
+    const relationType = String(relation.type ?? "").trim();
+    if (item.kind === "dependency" && relationType && relationType !== "depends_on") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.dependency_type_invalid",
+        `${location} 的 type 只能是 depends_on；kind=dependency 已固定该类型。方向是消费方/依赖方 Goal → 提供方/前置 Goal。`,
+      );
+    }
+    if (action === "deactivate" && relationId) continue;
+    const missing = [
+      ...(!fromGoalId ? ["from_goal_id"] : []),
+      ...(!toGoalId ? ["to_goal_id"] : []),
+      ...(item.kind === "relation" && !relationType ? ["type"] : []),
+    ];
+    if (missing.length === 0) continue;
+    if (item.kind === "dependency") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.dependency_required",
+        `${location}缺少字段：${missing.join("、")}。规范格式示例：{"from_goal_id":"consumer-goal","to_goal_id":"provider-goal","type":"depends_on"}；方向是消费方/依赖方 Goal → 提供方/前置 Goal。`,
+      );
+    }
+    throw new GoalBoardV1Error(
+      "goal_tree_proposal.relation_required",
+      `${location}缺少字段：${missing.join("、")}。规范格式示例：{"from_goal_id":"child-goal","to_goal_id":"parent-goal","type":"part_of"}；part_of 方向是子 Goal → 父 Goal。`,
+    );
+  }
+}
+
 interface NormalizedGoalTreeProposalDecision {
   item_id: string;
   decision: GoalTreeProposalItemDecisionInput["decision"];
@@ -553,6 +620,7 @@ function normalizeGoalTreeProposalItems(
     if (!item.payload || typeof item.payload !== "object" || Array.isArray(item.payload)) {
       throw new GoalBoardV1Error("goal_tree_proposal.item_payload_invalid", `第 ${index + 1} 个条目必须带结构化内容`);
     }
+    validateGoalTreeProposalRelationPayload(item, index);
     const itemId = item.item_id?.trim() || `goal-tree-proposal-item-${randomUUID()}`;
     if (ids.has(itemId)) {
       throw new GoalBoardV1Error("goal_tree_proposal.item_id_duplicate", "同一份提案中的 item_id 不能重复");

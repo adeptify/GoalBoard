@@ -28,6 +28,7 @@
 | GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260829-13 | Opportunity 有引用但看不到研究过程与样本漏斗 | CGS 领域模型与编辑台设计债 | 设计债、接入问题 | 已批准 | 未开始（CGS） | P1（CGS） |
+| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 
 ---
 
@@ -730,3 +731,57 @@ GoalBoard 将 Evidence 设计成跨项目的验收与追溯容器，初衷是让
 - **工程验证**：本轮只完成 GoalBoard 与 CGS 源码的只读归因核对；尚无 CGS 代码改动、测试或数据迁移，因此不能报告工程验证通过。
 - **产品实操**：已通过当前 CGS 详情页实现与真实代表样本确认修复前的问题存在；修复后的折叠层级、旧数据提示、候选类型区分和研究接续旅程均为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。需 CGS 实现后，由 Owner 用正式研究候选、团队输入和本人直输各一条实操，确认首屏仍简洁、展开后足以判断覆盖度和选择偏差，且不会把“未记录”误呈现为零。
+
+---
+
+## GB-20260829-14：Goal Tree 提案 payload 需要查源码才能构造
+
+**来源**：Arena Goal Tree 拆分消费者反馈
+**Bug 确认**：已确认，属于 GoalBoard MCP 工具契约自描述缺陷；不是 Arena 接入误用
+**修复决定**：已批准修复
+**修复状态**：源码已实现并完成工程验证；尚未打包、安装、完成 Arena 产品实操或 Owner 最终验收
+
+### 1. 真实场景
+
+Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，准备通过 `goalboard_v1_goal_tree_propose` 提交整棵待确认树。工具声明只告诉它 item 有 `kind`、`operation` 和任意对象 `payload`，没有说明 goal、relation、dependency 等 kind 的字段、枚举、最小格式和方向。为了不把父子或依赖接反，消费者只能离开 MCP 契约去读 GoalBoard TypeScript 源码。
+
+### 2. 事实与归因
+
+可稳定复现。修复前 `GOAL_TREE_ITEM.payload` 只有 `type=object` 和 Risk 的一段说明，TypeScript 输入也只是 `Record<string, unknown>`；`kind` 枚举虽然完整，却没有与 payload 形成可判别约束。`part_of` 和 `depends_on` 的真实方向只存在于 Coordinator、规划校验和测试里。缺字段的 relation/dependency 还能越过提交入口，被保存为 pending Proposal，直到后续 check/decision/materialization 才可能报“需要起点、终点和类型”。主要归因是 GoalBoard MCP 契约缺陷，而不是 Agent 理解能力、Arena 接入或用户误用。
+
+### 3. 现有流程的问题
+
+基础拆树需要额外执行“定位 GoalBoard 仓库 → 搜索 materializer/测试 → 推断 canonical payload → 返回 Arena 提交”，把实现源码变成隐藏文档。若消费者不查源码，最危险的结果不是立即失败，而是字段形式合法、领域语义错误：例如把 `part_of` 写成父到子，或把 `depends_on` 写成提供者到消费者。缺字段条目进入用户待确认队列还会把本应由机器提前指出的格式错误转嫁给用户决定阶段。
+
+### 4. 设计根因与初衷
+
+统一 Goal Tree Proposal 最初使用开放 `payload`，是为了让 goal、contract、relation、risk、policy、candidate、rewire 在一个原子提案中演进，避免每增加一种条目都复制一套工具；宽松读取也能兼容早期直接 payload、嵌套 `goal`、单条 relation 和 `relations[]` 等历史格式。这个兼容目标合理。缺陷是“运行时可宽松读取”同时变成了“对消费者没有规范写法”：服务端没有另外暴露 canonical 写入契约，也没有在用户决定前验证最常见的关系结构。
+
+### 5. 当前影响
+
+影响所有原生 Goal Tree 提案消费者，首次接入、跨仓库 Agent 和只拿到 MCP declaration 的集成方最明显。每次构造新 kind 都可能产生查源码与试错成本；relation/dependency 方向错误会直接改变 Goal 层级、执行顺序和阻塞关系。本次已真实阻断 Arena 提案提交前的自主推进，但尚未写入错误 canonical 关系，数据未受损。
+
+### 6. 复杂度审查
+
+- **当前必须**：为 8 种现有 kind 暴露可判别的 payload schema、字段枚举和最小示例；明确 `part_of` 是子 Goal → 父 Goal，`depends_on` 是消费方/依赖方 Goal → 提供方/前置 Goal；relation/dependency 缺字段时在 Proposal 入队前返回缺失字段、规范示例和方向，不留下 pending 记录。
+- **可以延后**：把所有历史宽松格式迁移成唯一存储格式、为每个 operation 建立完全独立的 TypeScript 判别联合、根据 schema 自动生成 Web 表单和外部 SDK。
+- **应当删除**：新建第二套 Goal Tree API；要求消费者继续读取源码；为追求 schema 纯度而拒绝读取已有 pending Proposal；把 planning_methods 当成 payload 字典并复制同一份字段事实。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1。该缺陷让 GoalBoard 的主要原生规划入口无法只凭工具契约安全使用，并可能生成方向相反的 canonical 关系。修复直接发生在现有 MCP schema 与 Proposal 入口，不增加数据库、服务或工作流，收益明确且回滚简单。
+
+### 8. 修复前后体验差异
+
+- **修复前**：读取工具 → 只看到 `payload: object` → 查 GoalBoard 源码或猜字段 → 可能先保存坏 Proposal → 到 check/decision 才遇到泛化错误。
+- **修复后**：读取工具 → 按 kind 看到对应字段、枚举和最小示例 → 直接确认父子与依赖方向并提交；若漏写 `to_goal_id` 或 `type`，提交立即指出具体缺失字段、给出可复制格式和方向，用户待确认队列保持干净。
+
+### 9. 最小修复范围
+
+只修改 `goalboard_v1_goal_tree_propose` 的 item schema、relation/dependency 提交前校验和对应回归测试。schema 通过 kind 条件分支覆盖 goal、contract、relation、dependency、risk、policy、candidate、rewire，保留现有宽松读取和数据库格式；不改 Proposal 原子性、用户确认边界、materializer、planning_methods 或已有记录。旧客户端按原格式提交仍可工作，只要 relation/dependency 本身完整；回滚只需还原工具声明和前置校验，不涉及数据迁移。
+
+### 10. 验收边界
+
+- **工程验证**：通过。工具列表真实返回 8 个 kind 的条件化 payload schema；Goal schema 暴露最小字段与验收条件，relation/dependency 暴露枚举、示例和双向语义；缺字段 relation/dependency 会在存储前分别返回 `goal_tree_proposal.relation_required` / `goal_tree_proposal.dependency_required`，指出字段与示例，并保证 pending Proposal 数仍为零。定向 MCP + V1 为 116/116，TypeScript 通过；完整回归在正常本地权限下为 271/271。受限环境首次出现的 12 项失败均为临时 SQLite 与 npm 日志不可写，同一代码在正常权限下全绿。
+- **产品实操**：修复前已由 Arena 消费者真实复现；修复后的新 MCP declaration 是否足以让一个不读源码的新 Session 构造 7 个一级 Draft Goal、父子关系和依赖关系，仍为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需要打包安装后新开 Session，在 Arena 仅依赖工具声明提交一次整树提案，并由用户检查 Goal Tree 层级与依赖方向；当前 Session 不会热加载这次 schema 变更。
