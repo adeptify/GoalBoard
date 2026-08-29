@@ -700,6 +700,7 @@ export const EN: Record<string, string> = {
   "Goal 数据保存在本机": "Goal data stays on this device",
   "先记录需求事实，再由澄清者补全 Contract 与拆分。": "Record the demand first. A clarifier then completes the Contract and split.",
   "Goal ID": "Goal ID",
+  "Goal 编号": "Goal code",
   "例如 GOAL-AUTHORING": "For example GOAL-AUTHORING",
   "目标名称": "Goal title",
   "一句话说明要完成什么": "One sentence for what should be finished",

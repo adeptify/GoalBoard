@@ -277,9 +277,9 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 ## GB-20260828-05：对话使用 G2A/G2B，Goal Tree 隐藏对应 ID
 
 **来源**：用户截图直接反馈
-**Bug 确认**：已确认最初是 GoalBoard 可引用性设计债；v0.1.5 又发生 Desktop CSS 回归，Goal 内容没有丢失
+**Bug 确认**：已确认最初是 GoalBoard 可引用性设计债；v0.1.5 隐藏编号，v0.1.6 又把完整内部 ID 塞进窄栏并挤没中文标题，Goal 内容没有丢失
 **修复决定**：用户已批准
-**修复状态**：v0.1.3 的基础显示修复已进入 v0.1.5，但后续 Desktop Workbench 样式再次隐藏 ID；回归已修复并通过工程门禁，尚未重新打包安装
+**修复状态**：再次打开。短编号修正已在源码与真实 CGS 数据的 355 CSS px 窄屏中实操，尚未进入新的最终安装包
 
 ### 1. 真实场景
 
@@ -287,15 +287,15 @@ Runtime 从 shell 和工具结果自然获得绝对路径，但提交时必须�
 
 ### 2. 事实与归因
 
-最初截图与源码一致。CGS 的 canonical ID 包含 `cgs-g2a-opportunity-intelligence`、`cgs-g2b-editorial-decision`；Goal Tree renderer 也把 `goal_id` 输出到标题下方。基础样式修复已把 `.tree-copy > small` 设为 `display: block`，且提交 `b64899a` 已进入 v0.1.5；但之后的 Desktop Workbench 提交 `705ce64` 又增加更高优先级的 `body[data-desktop-shell="true"] .tree-copy small { display: none; }`。安装版 v0.1.5 的源码、App 内嵌 Runtime 和真实 CGS 页面均复现该覆盖：HTML 有两个 canonical ID，最终 Desktop CSS 把它们隐藏。归因从单纯设计债更新为 GoalBoard Desktop CSS 回归与测试覆盖缺口，不是 CGS 内容缺失、Runtime 错造编号或安装了旧版本。
+最初截图与源码一致。CGS 的 canonical ID 包含 `cgs-g2a-opportunity-intelligence`、`cgs-g2b-editorial-decision`。v0.1.5 的 Desktop CSS 把 renderer 已输出的 ID 隐藏；删除隐藏规则后，v0.1.6 的真实 App 又直接常驻显示完整 canonical ID。用户 2026-08-30 的窄窗口截图复现第二层回归：标题、完整 ID 和右侧状态争夺同一行，深层 Goal 的中文标题只剩一两个字，ID 也被截成 `cgs-g2c-re…`，既不可读也不能直接对应会话中的 `G2C`。归因是同一张 bug 卡的过度修复和最终窄屏验收缺口，不是数据乱码、CGS 标题丢失或编码损坏。
 
 ### 3. 现有流程的问题
 
-对话、文档、Evidence 和工具调用可以用稳定 ID 或简称引用 Goal，列表却只显示会变化且可能相似的自然语言标题。用户只能猜标题、逐条点开详情或回到对话询问，降低 Goal Tree 作为跨 Session 共同索引的作用。
+v0.1.5 时，列表没有可对应编号；v0.1.6 时，编号虽然出现，却以完整内部 slug 抢占标题空间。用户仍看不清 `G2A/G2B`，还会把大量省略号误解成乱码或数据损坏。两种状态都使 Goal Tree 无法承担人和 Runtime 之间的共同索引。
 
 ### 4. 设计根因与初衷
 
-Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只保留自然语言标题和状态。基础修复已经承认 GoalBoard 同时承担“人和 Runtime 用同一个稳定引用沟通”的职责；但后续 Desktop Workbench 重设计再次以密度为由隐藏 `<small>`。原回归只检查第一条基础规则是否显示，没有检查后置 Desktop 高优先级规则，也未在最终 App 的真实 CGS 页面检查 computed style，导致“源码中存在显示规则”被误当成“最终用户可见”。
+Goal Tree 最初为降低视觉噪音和提高窄栏密度而隐藏机器 ID；第一次修复则把“稳定 ID 可见”直接等同于“完整 canonical ID 常驻可读”。两者都忽略了用户真正需要的是会话里正在使用的短引用 `G2A/G2B`，而不是内部 slug。原测试只检查 `<small>` 没被 `display:none`，没有检查真实长中文、深层缩进、状态徽标和 320 至 355 CSS px 窄宽下的信息层级，因此把“元素存在”误报成“体验修好”。
 
 ### 5. 当前影响
 
@@ -303,27 +303,28 @@ Goal Tree 曾为降低视觉噪音和提高窄栏密度而隐藏机器 ID，只�
 
 ### 6. 复杂度审查
 
-- **当前必须**：删除 Desktop Shell 对 Goal ID 的隐藏覆盖，让既有低强调、单行截断规则在最终 App 生效，并增加能捕获后置 CSS 级联覆盖的默认门禁。
-- **可以延后**：新增独立的短编号/别名字段、编号自动分配、别名历史和跨项目唯一性治理。
-- **应当删除**：所有密度模式下一律隐藏 Goal ID 的 CSS 规则。
+- **当前必须**：从既有 canonical ID 中只提取确定的层级短编号，例如 `cgs-g2a-* → G2A`；中文标题保持主视觉，完整 ID 仍可搜索并通过悬停读取；覆盖真实长中文和窄屏。
+- **可以延后**：新增可编辑的正式别名字段、编号自动分配、别名历史和跨项目唯一性治理。
+- **应当删除**：完整内部 `goal_id` 在 Goal Tree 每一行常驻占位，以及所有密度模式下一律隐藏编号的规则。
 
 ### 7. 修复必要性与优先级
 
-需要修复，P2，已批准。它不破坏执行数据，但直接影响 GoalBoard 的核心可理解性和跨 Session 对应。先显示已有稳定 ID 即可解决当前案例，不为这个显示问题引入新的编号系统。
+需要修复，P1，已批准。v0.1.6 已把核心导航显示成用户认为的“乱码”，直接破坏 Goal Tree 的可理解性；同时不应为当前案例立即引入 schema 迁移。确定性提取现有 `G2A/G2B` 是更小且可回滚的修复。
 
 ### 8. 修复前后体验差异
 
-- **修复前**：会话说 G2A/G2B → Goal Tree 只有标题 → 用户必须猜或逐条打开。
-- **修复后**：每个标题旁或下方显示低强调的稳定 ID，例如 `cgs-g2b-editorial-decision` → 用户一眼看到其中的 G2B 并完成对应；窄栏仍以标题为主，ID 可截断但可通过悬停或详情读取完整值。
+- **修复前（v0.1.5）**：会话说 G2A/G2B → Goal Tree 只有标题 → 用户必须猜或逐条打开。
+- **错误修复（v0.1.6）**：每行显示 `cgs-g2b-editorial-decision` → 窄屏中文标题和 ID 都变成省略号，仍无法对应。
+- **本次修复后**：每行只显示 `G2A/G2B` 短编号和中文标题；完整 ID 不占主布局，但仍能搜索并在悬停读取。
 
 ### 9. 最小修复范围
 
-只删除 Desktop Shell 隐藏 Goal ID 的覆盖规则，并在默认 Web 测试中增加 Desktop Workbench 回归；保留现有低强调、单行截断和悬停完整值。不修改 Goal schema、现有 ID、排序、标题、关系图或 CGS 数据。回滚只恢复一条展示规则，不涉及数据迁移。
+只新增一个纯展示映射：从 `goal_id` 的独立段中识别 `G数字+可选字母`，短 ID 如 `V1` 原样保留，其余 UUID/slug 不在树中常驻显示；完整 ID 继续进入搜索文本和 `title`。不修改 Goal schema、canonical ID、排序、标题、关系、Runtime 输出或 CGS 数据。回滚只恢复 renderer 的显示内容，不涉及数据迁移。
 
 ### 10. 验收边界
 
-- **工程验证**：回归先在 v0.1.5 源码上稳定失败，明确命中 Desktop 高优先级 `display: none`；删除覆盖后定向测试转绿。正常本机权限下 Web + 视觉测试 56/56、默认整仓构建与测试 274/274、TypeScript 类型检查通过。
-- **产品实操**：修复前已在安装版 v0.1.5 的真实 Content Growth Studio 页面复现：G2A/G2B ID 存在于 HTML，但 Desktop CSS 隐藏。修复后的最终 App、长标题、紧凑密度、选中态和关系图仍为 `UNVERIFIED`。
+- **工程验证**：历史隐藏回归已通过 Web + 视觉测试 56/56、整仓 274/274 和 TypeScript；本次又先以缺少短编号映射稳定失败，再验证 `cgs-g2a-* → G2A`、`cgs-g12f-* → G12F`、`V1 → V1`、`draft-UUID → 不常驻显示`。Web 42/42、英文静态标签 7/7、整仓构建与测试 275/275、TypeScript 与 diff check 均通过。
+- **产品实操**：v0.1.6 最终 App 的用户截图已复现完整 ID 挤没中文标题。修正后的源码服务已用真实 Content Growth Studio 数据在约 355 CSS px 宽度实操：13 条 Goal 均保留中文标题，G2、G2A、G2B、G2C、G2D、G2E、G2F 与 G1/G3-G6 可见，完整 ID 仍在搜索和悬停属性中。新的最终 App 尚未打包安装，故最终产物仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。最终视觉密度和“G2A/G2B 一眼能对应”需要用户本人在安装产物中确认。
 
 ---

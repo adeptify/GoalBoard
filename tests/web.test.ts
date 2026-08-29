@@ -18,6 +18,7 @@ import {
   activeOutgoingDependsOn,
   displayedPassedCriterionIds,
   firstBlockedDescendant,
+  goalTreeReferenceLabel,
   renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
   renderGoalBoardWorkbenchClientScript,
@@ -45,6 +46,14 @@ test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
     WORKBENCH_STYLES,
     /body\[data-desktop-shell="true"\] \.tree-copy small \{[^}]*display:\s*none/,
   );
+});
+
+test("Goal Tree uses compact Runtime references instead of long internal ids", () => {
+  assert.equal(goalTreeReferenceLabel("cgs-g2a-opportunity-intelligence"), "G2A");
+  assert.equal(goalTreeReferenceLabel("cgs-g2b-editorial-decision"), "G2B");
+  assert.equal(goalTreeReferenceLabel("cgs-g12f-topic-analysis"), "G12F");
+  assert.equal(goalTreeReferenceLabel("V1"), "V1");
+  assert.equal(goalTreeReferenceLabel("draft-e5f42553-1111-2222-3333-444444444444"), null);
 });
 
 test("completed Goal presentation closes criteria without inventing Evidence", () => {
@@ -1046,7 +1055,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /querySelector\("\[data-tree-resizer\]"\)/);
   assert.match(html, /treeResizer\??\.addEventListener\("pointermove"/);
   assert.match(html, /treeResizer\??\.addEventListener\("keydown"/);
-  assert.match(html, /tree-copy"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><small title="Goal ID: V1">V1<\/small>/);
+  assert.match(html, /tree-copy"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><small title="Goal ID: V1" aria-label="Goal 编号 V1">V1<\/small>/);
   assert.match(html, /icon-search/);
   assert.match(html, /data-goal-section="progress"/);
   assert.match(html, /data-goal-section="now"/);

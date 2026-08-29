@@ -627,7 +627,9 @@ export const VISUAL_FOUNDATION_STYLES = `
     white-space: nowrap;
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
+    font-size: 10px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
     letter-spacing: 0;
   }
   .tree-progress {
