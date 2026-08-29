@@ -144,6 +144,8 @@ describe("mcp server", () => {
     assert.match(explainTool?.description ?? "", /ready 只表示执行 Claim 就绪/);
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
+    const goalTreeCheckTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_check");
+    assert.match(goalTreeCheckTool?.description ?? "", /物化不变量/);
     assert.ok(names.includes("goalboard_v1_planning_methods"));
     const planningMethodsTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_methods");
     assert.match(planningMethodsTool?.description ?? "", /methods\[\].*instructions/);
@@ -239,6 +241,7 @@ describe("mcp server", () => {
     const trashListTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_trash_list");
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
+    assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
     assert.ok(treeDecisionTool?.inputSchema.properties?.runtime_actor_id);
     assert.ok(treeDecisionTool?.inputSchema.properties?.user_confirmed);
     assert.ok(treeDecisionTool?.inputSchema.properties?.confirmation_summary);
@@ -445,6 +448,8 @@ describe("mcp server", () => {
     assert.match(references.planning, /work type describes the shape of work/);
     assert.match(references.planning, /vertical outcome unit/);
     assert.match(references.planning, /horizontal shared unit/);
+    assert.match(references.planning, /confirm_all_pending.*all-or-nothing/);
+    assert.match(references.planning, /failed whole change set.*implicit partial application/);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references["service-start"], /service status --home "\$HOME\/\.goalboard" --json/);

@@ -927,6 +927,60 @@ v0.1.5 的 GitHub Release、用户级 App、`~/.goalboard` Core 与常驻 Web se
 
 ---
 
+## GB-20260829-18：整份 Goal Tree 确认会在决定阶段部分落地
+
+**来源**：CGS 18 项 Goal Tree 变更与 Arena 7 个一级 Goal 拆分实操；两条反馈属于同一缺陷族，已去重
+**Bug 确认**：已确认，属于 GoalBoard Proposal 原子性、预检一致性和乐观并发基准缺陷；accepted Contract 不可静默改写本身是预期安全边界
+**修复决定**：需要修复，P1
+**修复状态**：源码修复、全仓工程回归和代表性 18 项 Web 产品实操已通过；最终安装 App / 新 Session 与 Owner 验收待完成
+
+### 1. 真实场景
+
+CGS Runtime 提交一份包含父 Contract 重写、新 Goal、关系和 Risk 的 18 项提案；`goal_tree_check` 返回无冲突，用户确认整份提案后，16 项已写入，两个 accepted Goal 的 Contract 更新到决定阶段才被拒绝。Arena 的整树提案也在等待用户确认期间发生根 Goal baseline 变化；决定后 7 个子 Goal 和依赖已创建，根 Contract 与全部 `part_of` 冲突，留下没有父级归属的子图。两次用户确认的都是完整 change set，而不是“能写多少先写多少”。
+
+### 2. 事实与归因
+
+两条路径均可由当前实现解释并回归复现。`goal_tree_check` 只检查条目格式、Risk 校验和调用方提供的对象 hash，没有运行决定阶段的 materialization invariant，因此 accepted Contract 的 `goal.accepted_compound_closure_invalid` 只能在 decide 暴露。`confirm_all_pending` 随后被展开成普通逐项 confirm；materializer 遇到冲突时记录该 item，继续写入其余条目，最终形成 `partially_applied`。Goal baseline 又对完整 `GoalRecord` 做 hash，把 `updated_at`、`fulfillment_state` 等不属于该 Contract / relation 条目写入面的字段也算作并发变更；关系端点是否进入 affected objects 还依赖消费者手填。主要归因是 GoalBoard Core 缺陷。accepted Goal 只能做已允许的 compound closure、不能借需求变化静默重写已接受业务 Contract，是保护历史 Evidence 与用户承诺的预期行为；缺陷在于系统在确认前不说明、确认后又只落一半。
+
+### 3. 现有流程的问题
+
+Runtime 按规范 propose → read → check → 请求用户确认，仍无法知道整份方案不可应用。用户确认后 canonical tree 才暴露错误，而且已写入的 Goal、依赖、Risk 与未写入的核心 Contract 形成语义不一致。Runtime 不知道应重试、修改原 Goal、创建 successor 还是回滚已落结构；`revision_proposals=[]` 也没有直接恢复路径。Arena 中普通等待和租约到期还会让与 Contract 无关的根版本自然漂移，迫使用户再次确认。
+
+### 4. 设计根因与初衷
+
+逐项 materialization 的初衷是让一份复杂提案中的独立安全条目不会被另一个并发冲突永久拖住；全对象 optimistic hash 的初衷是简单、保守地阻止在旧事实上覆盖新状态；accepted Contract 不可变则防止已经执行和验收过的承诺被改写。这些保护在“用户逐项决定”时合理。缺陷是 `confirm_all_pending` 沿用了逐项容错语义，系统没有表达“用户决定的原子单位”；同时保守 hash 没有按 item 的真实写入面收敛，正常运行态变化也被误当成业务冲突。
+
+### 5. 当前影响
+
+影响所有包含多 Goal、多关系和 Contract 更新的整树提案，等待用户确认越久、条目越多，触发概率越高。它不会破坏 SQLite 事务完整性，但会破坏用户确认的语义完整性：用户批准一条新主链路，系统却生成一半新结构和一半旧合同。后续 Agent 可能在孤立或错误归属的 Goal 上继续执行，`planning_graph_check` 仍可能因没有循环和缺失引用而显示绿色。本次已分别在 CGS 与 Arena 真实阻断规划闭环。
+
+### 6. 复杂度审查
+
+- **当前必须**：`confirm_all_pending` 全有或全无；任一 baseline、规划或 materialization 冲突都回滚整次决定并明确下一步。`goal_tree_check` 在可回滚 savepoint 中按真实物化顺序运行同一不变量。新 Proposal 的对象版本按 item 真正依赖的 canonical 字段计算，排除时间戳和执行派生状态；旧 Proposal 保持 legacy hash 兼容。relation / dependency 自动把两端 Goal 加入 affected objects，不再依赖消费者手填完整。
+- **可以延后**：自动创建 successor Goal、把 accepted Contract 的需求变更自动翻译成 revision/successor 提案、历史 `partially_applied` 的一键补偿、跨 Proposal 事务、在通用 graph check 中推断所有业务孤儿。
+- **应当删除**：把整份确认静默降级成逐项尽力写入；check 只看格式和 hash 却展示为“可应用”；用 `updated_at`、Claim / Run 派生状态或无关完成状态让 Contract Proposal 自然失效；依赖消费者记住把每个关系端点重复写进 affected objects。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1。问题直接破坏用户确认与 canonical 写入之间的一致性，并已经留下真实部分结构。最小修复可以复用现有 SQLite immediate transaction、materializer 和 savepoint，不需要新增数据库、队列或第二套 Proposal 模型。accepted Goal 的需求变化策略仍需由规划层显式选择 successor 或允许的收口，本卡不放宽不可变边界。
+
+### 8. 修复前后体验差异
+
+- **修复前**：Runtime check 显示无冲突 → 用户确认 18 项整体方向 → 16 项已落、2 项才报错 → 用户面对不一致的半棵树，并被迫猜恢复方式。
+- **修复后**：Runtime check 在确认前指出具体不可应用条目及原 invariant → Runtime 先修订或改用 successor，再请求用户确认；即使跳过 check 直接整份确认，任何冲突也会返回“本次没有写入任何变更”。只有用户明确逐项选择时，互不依赖的安全条目才允许分别落地。等待期间的 Claim、Run、时间戳或完成派生状态不再让无关 Contract / relation baseline 失效。
+
+### 9. 最小修复范围
+
+只修改 Goal Tree Proposal 的 normalize、baseline、check 和 decide：关系条目自动补齐端点 affected objects；新 baseline 写入带版本前缀的语义 hash，旧无前缀 baseline 继续按旧方式比较；check 在数据库 savepoint 内调用现有 materializer，逐条回滚预检写入；whole confirmation 遇到任何冲突抛出结构化 `goal_tree_proposal.whole_confirmation_conflict`，由外层 immediate transaction 回滚所有已模拟或已物化条目。保留显式逐项 decisions 的 `partially_applied` 语义，不修改 accepted Contract 不可变规则，不自动删除两次真实事故已落地的数据。回滚无需 schema migration。
+
+### 10. 验收边界
+
+- **工程验证**：通过。新增回归证明 check 能在决定前发现 accepted Contract 的 materialization conflict；跳过 check 的整份确认会抛出结构化冲突，安全 Goal、item decision 与 Proposal state 全部保持未写入；新语义 baseline 忽略 `fulfillment_state / updated_at`，但 Contract 标题变化仍只冲突 Contract item；relation 自动记录两端 Goal，且根标题变化不会误伤关系；已部分落地的旧 Proposal 不能再次伪装成整份原子确认。原有显式逐项部分落地测试保持通过，TypeScript 构建、typecheck、`git diff --check` 与全仓 278/278 通过。首次沙箱运行因测试临时 SQLite 与 `~/.npm` 日志无写权限出现 21 个环境失败，已在正常权限下完整重跑归零；没有把环境失败计作通过。
+- **产品实操**：源码构建下通过代表性主路径。用同一真实 Web 决定页同时放入合法 18 项 Proposal 与含 accepted Contract 冲突的 Proposal：合法方案填写理由并点击一次“采用整份方案”后，18/18 item、9 个子 Goal 与 9 条 `part_of` 同时落地；冲突方案在确认前显示具体 invariant 与 successor / replacement 恢复建议，确认按钮不可用，直接调用整份确认接口也返回 400，安全 Goal 未创建、原 accepted Contract 未改、所有 decision 仍为空；浏览器 console 无 warning/error。真实 CGS / Arena 历史 `partially_applied` 数据不在本卡自动补偿范围，最终安装 App / 新 Session 仍为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需在最终安装包的新 Session 中分别验证“合法大型整份提案一次落地”和“一个 accepted Contract 不可修改时整份零写入”，并由用户确认错误说明足以判断该修订原 Goal、创建 successor 还是放弃变更。
+
+---
+
 ## GB-20260830-19：桌面健康恢复与 LaunchAgent 修复互相抢占 4173
 
 **来源**：v0.1.6 最终 App 安装后的服务修复实操

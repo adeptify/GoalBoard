@@ -645,7 +645,8 @@ function normalizeGoalTreeProposalItems(
       );
     }
     const seenObjects = new Set<string>();
-    const affectedObjects = item.affected_objects.map((object, objectIndex) => {
+    const affectedObjects: ProposalAffectedObject[] = [];
+    const addAffectedObject = (object: ProposalAffectedObject, objectIndex: number): void => {
       if (!PROPOSAL_AFFECTED_OBJECT_TYPES.has(object.object_type)) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.affected_object_type_invalid",
@@ -660,10 +661,21 @@ function normalizeGoalTreeProposalItems(
         );
       }
       const key = `${object.object_type}:${objectId}`;
-      if (seenObjects.has(key)) return null;
+      if (seenObjects.has(key)) return;
       seenObjects.add(key);
-      return { object_type: object.object_type, object_id: objectId };
-    }).filter((object): object is ProposalAffectedObject => object != null);
+      affectedObjects.push({ object_type: object.object_type, object_id: objectId });
+    };
+    item.affected_objects.forEach(addAffectedObject);
+    if (item.kind === "relation" || item.kind === "dependency") {
+      for (const relation of goalTreeProposalRelationPayloads(item, index)) {
+        const relationId = String(relation.relation_id ?? "").trim();
+        const fromGoalId = String(relation.from_goal_id ?? "").trim();
+        const toGoalId = String(relation.to_goal_id ?? "").trim();
+        if (relationId) addAffectedObject({ object_type: "relation", object_id: relationId }, affectedObjects.length);
+        if (fromGoalId) addAffectedObject({ object_type: "goal", object_id: fromGoalId }, affectedObjects.length);
+        if (toGoalId) addAffectedObject({ object_type: "goal", object_id: toGoalId }, affectedObjects.length);
+      }
+    }
     if (affectedObjects.length === 0) {
       throw new GoalBoardV1Error("goal_tree_proposal.affected_objects_required", `第 ${index + 1} 个条目必须标出受影响对象`);
     }
@@ -3177,7 +3189,7 @@ export class GoalBoardCoordinator {
       `);
       for (const [index, item] of items.entries()) {
         const baselineVersions = item.affected_objects.map((object) =>
-          this.proposalObjectVersion(input.board_id, object),
+          this.proposalObjectVersion(input.board_id, object, item),
         );
         insertItem.run(
           item.item_id,
@@ -3289,7 +3301,7 @@ export class GoalBoardCoordinator {
       if (replay) return replay;
       const proposal = this.readNativeGoalTreeProposal(input.board_id, proposalId);
       const now = this.clock().toISOString();
-      const conflictItemIds: string[] = [];
+      const conflictItemIdSet = new Set<string>();
       const updateItem = this.store.db.prepare(`
         UPDATE goal_tree_proposal_items
         SET state = ?, conflict_json = ?, updated_at = ?
@@ -3299,7 +3311,7 @@ export class GoalBoardCoordinator {
         if (item.state !== "pending" && item.state !== "conflict") continue;
         const validationIssue = goalTreeProposalItemValidationIssues(item)[0];
         const baselineConflicts = item.baseline_versions.flatMap((baseline) => {
-          const current = this.proposalObjectVersion(input.board_id, baseline);
+          const current = this.proposalObjectVersionForBaseline(input.board_id, baseline, item);
           return baseline.exists === current.exists && baseline.version === current.version
             ? []
             : [{ object: { object_type: baseline.object_type, object_id: baseline.object_id }, baseline, current }];
@@ -3314,9 +3326,26 @@ export class GoalBoardCoordinator {
           : baselineConflicts.length > 0
             ? { objects: baselineConflicts }
             : null;
-        if (conflict) conflictItemIds.push(item.item_id);
+        if (conflict) conflictItemIdSet.add(item.item_id);
         updateItem.run(conflict ? "conflict" : "pending", conflict ? sqliteJson(conflict) : null, now, item.item_id, proposalId);
       }
+      const checkedItems = this.readNativeGoalTreeProposal(input.board_id, proposalId).items;
+      const materializationConflicts = this.preflightGoalTreeProposalMaterialization(
+        input.board_id,
+        checkedItems.filter((item) => item.state === "pending"),
+        actorId,
+        now,
+      );
+      for (const item of checkedItems) {
+        const conflict = materializationConflicts.get(item.item_id);
+        if (!conflict) continue;
+        conflictItemIdSet.add(item.item_id);
+        updateItem.run("conflict", sqliteJson(conflict), now, item.item_id, proposalId);
+      }
+      const conflictItemIds = proposal.items
+        .filter((item) => conflictItemIdSet.has(item.item_id))
+        .map((item) => item.item_id);
+      const planningIssues = this.goalTreePlanningIssues(input.board_id, proposal.items);
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -3329,14 +3358,14 @@ export class GoalBoardCoordinator {
           : "当前 Runtime 检查到 Goal Tree 提案的各条目基准仍有效",
         payload: {
           conflict_item_ids: conflictItemIds,
-          planning_issue_codes: this.goalTreePlanningIssues(input.board_id, proposal.items).map((issue) => issue.code),
+          planning_issue_codes: planningIssues.map((issue) => issue.code),
         },
         at: now,
       });
       const outcome: GoalTreeProposalCheckResult = {
         proposal: this.readNativeGoalTreeProposal(input.board_id, proposalId),
         conflict_item_ids: conflictItemIds,
-        planning_issues: this.goalTreePlanningIssues(input.board_id, proposal.items),
+        planning_issues: planningIssues,
         observed_event_cursor: cursor,
       };
       this.remember(
@@ -3353,12 +3382,13 @@ export class GoalBoardCoordinator {
   }
 
   /**
-   * Applies only the user-confirmed subset of one native Goal Tree proposal.
-   * A stale or structurally unsafe item becomes a persisted conflict while
-   * independent confirmed items in the same composite decision still land.
+   * Applies either an explicitly selected subset or one pristine whole proposal.
+   * Subset decisions preserve independent-item conflict handling; whole confirmation
+   * is all-or-nothing and rolls the transaction back when any item cannot land.
    */
   decideGoalTreeProposal(input: GoalTreeProposalDecideInput): GoalTreeProposalDecisionResult {
     const authority = normalizeGoalTreeProposalDecisionAuthority(input.authority);
+    const wholeConfirmation = input.confirm_all_pending === true;
     const proposalId = requiredDialogueText(
       input.proposal_id,
       "goal_tree_proposal.id_required",
@@ -3372,7 +3402,7 @@ export class GoalBoardCoordinator {
       authority,
       decisions: input.decisions ?? [],
       reason: input.reason ?? null,
-      confirm_all_pending: input.confirm_all_pending === true,
+      confirm_all_pending: wholeConfirmation,
     });
     return this.store.immediate(() => {
       const replay = this.replay<Omit<GoalTreeProposalDecisionResult, "replayed">>(
@@ -3392,13 +3422,41 @@ export class GoalBoardCoordinator {
           "只有仍有待处理条目的 Goal Tree 提案可以继续决定",
         );
       }
+      const abortWholeConfirmation = (
+        item: GoalTreeProposalItemRecord,
+        conflict: Record<string, unknown>,
+      ): never => {
+        const detail = String(conflict.message ?? conflict.code ?? "当前事实与提案不一致");
+        const recovery = String(conflict.recovery ?? this.goalTreeProposalConflictRecovery(conflict));
+        throw new GoalBoardV1Error(
+          "goal_tree_proposal.whole_confirmation_conflict",
+          `整份提案中的条目「${item.item_id}」暂时不能采用：${detail}。本次整份确认没有写入任何变更；${recovery}`,
+          {
+            item_id: item.item_id,
+            original_code: conflict.code ?? null,
+            conflict,
+            next_action: "check_and_revise",
+          },
+        );
+      };
 
       let decisions = normalizeGoalTreeProposalDecisions(input.decisions, input.reason);
-      if (input.confirm_all_pending === true) {
+      if (wholeConfirmation) {
         if (decisions.length > 0) {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.whole_confirmation_mixed",
             "整份确认不能同时携带逐项决定；请二选一",
+          );
+        }
+        if (proposal.state !== "pending") {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.whole_confirmation_requires_pristine_proposal",
+            "这份提案已经有条目落地，不能再作为一份完整变更原子确认；请基于当前 Goal Tree 生成只包含未落地内容的修订提案",
+            {
+              proposal_id: proposal.proposal_id,
+              state: proposal.state,
+              next_action: "create_revision_from_current_tree",
+            },
           );
         }
         const activeProposals = this.store
@@ -3410,14 +3468,20 @@ export class GoalBoardCoordinator {
           );
         if (
           authority.whole_confirmation_prompted !== true ||
-          activeProposals.length !== 1 ||
-          activeProposals[0]?.proposal_id !== proposal.proposal_id ||
-          proposal.items.some((item) => item.state === "conflict")
+          (authority.authority_source === "runtime_dialogue" &&
+            (activeProposals.length !== 1 || activeProposals[0]?.proposal_id !== proposal.proposal_id))
         ) {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.whole_confirmation_ambiguous",
             "简短确认只有在上一问明确请求确认唯一整份提案时才能生效；请说明要确认哪些条目",
           );
+        }
+        const existingConflict = proposal.items.find((item) => item.state === "conflict");
+        if (existingConflict) {
+          abortWholeConfirmation(existingConflict, existingConflict.conflict ?? {
+            code: "goal_tree_proposal.item_conflict",
+            message: "条目与当前 GoalBoard 事实不一致",
+          });
         }
         const sharedReason = requiredDialogueText(
           input.reason ?? "",
@@ -3524,6 +3588,15 @@ export class GoalBoardCoordinator {
         if (decision.decision === "revise") continue;
         const planningConflict = planningConflicts.get(item.item_id);
         if (planningConflict) {
+          if (wholeConfirmation) {
+            abortWholeConfirmation(item, {
+              code: planningConflict.code,
+              message: planningConflict.message,
+              goal_ids: planningConflict.goal_ids,
+              relation_ids: planningConflict.relation_ids,
+              path: planningConflict.path,
+            });
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -3549,6 +3622,13 @@ export class GoalBoardCoordinator {
         }
         const conflicts = this.goalTreeProposalItemConflicts(input.board_id, item);
         if (conflicts.length > 0) {
+          if (wholeConfirmation) {
+            abortWholeConfirmation(item, {
+              code: "goal_tree_proposal.baseline_changed",
+              message: "条目依赖的 GoalBoard 事实已经变化",
+              objects: conflicts,
+            });
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -3578,6 +3658,7 @@ export class GoalBoardCoordinator {
         for (const entry of confirmed.filter((candidate) => kinds.includes(candidate.item.kind))) {
           const conflict = this.goalTreeProposalMaterializationConflict(input.board_id, entry.item);
           if (conflict) {
+            if (wholeConfirmation) abortWholeConfirmation(entry.item, conflict);
             this.recordGoalTreeProposalItemDecision({
               board_id: input.board_id,
               proposal_id: proposal.proposal_id,
@@ -3595,13 +3676,25 @@ export class GoalBoardCoordinator {
             conflictItemIds.push(entry.item.item_id);
             continue;
           }
-          const materializedObjects = this.materializeGoalTreeProposalItem(
-            input.board_id,
-            entry.item,
-            authority.actor_id,
-            entry.decision.reason,
-            now,
-          );
+          let materializedObjects: ProposalAffectedObject[];
+          try {
+            materializedObjects = this.materializeGoalTreeProposalItem(
+              input.board_id,
+              entry.item,
+              authority.actor_id,
+              entry.decision.reason,
+              now,
+            );
+          } catch (error) {
+            if (wholeConfirmation && error instanceof GoalBoardV1Error) {
+              abortWholeConfirmation(entry.item, {
+                code: error.code,
+                message: error.message,
+                ...(error.details ?? {}),
+              });
+            }
+            throw error;
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -6871,7 +6964,11 @@ export class GoalBoardCoordinator {
     return proposal;
   }
 
-  private proposalObjectVersion(boardId: string, object: ProposalAffectedObject): ProposalObjectVersion {
+  private proposalObjectVersion(
+    boardId: string,
+    object: ProposalAffectedObject,
+    item?: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): ProposalObjectVersion {
     const snapshot = this.store.snapshot(boardId);
     let current: unknown = null;
     switch (object.object_type) {
@@ -6900,8 +6997,76 @@ export class GoalBoardCoordinator {
       object_type: object.object_type,
       object_id: object.object_id,
       exists: current != null,
-      version: current == null ? "absent" : requestHash(current),
+      version: current == null
+        ? "absent"
+        : item
+          ? `semantic-v1:${requestHash(this.proposalSemanticObject(current, object, item))}`
+          : requestHash(current),
     };
+  }
+
+  private proposalObjectVersionForBaseline(
+    boardId: string,
+    baseline: ProposalObjectVersion,
+    item: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): ProposalObjectVersion {
+    return this.proposalObjectVersion(
+      boardId,
+      baseline,
+      baseline.version === "absent" || baseline.version.startsWith("semantic-v1:") ? item : undefined,
+    );
+  }
+
+  private proposalSemanticObject(
+    current: unknown,
+    object: ProposalAffectedObject,
+    item: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): unknown {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return current;
+    const record = current as Record<string, unknown>;
+    if (object.object_type === "goal" && (item.kind === "goal" || item.kind === "contract")) {
+      const fields = [
+        "goal_id",
+        "board_id",
+        "title",
+        "outcome",
+        "why",
+        "business_logic",
+        "in_scope",
+        "out_of_scope",
+        "constraints",
+        "required_inputs",
+        "promised_outputs",
+        "decomposition_review",
+        "definition_state",
+        "decomposition_state",
+        "trashed_at",
+        "trashed_by",
+        "archived_at",
+        "archived_by",
+        "priority",
+        "acceptance_criteria",
+      ];
+      return Object.fromEntries(fields.map((field) => [field, record[field]]));
+    }
+    if (object.object_type === "goal") {
+      return {
+        goal_id: record.goal_id,
+        board_id: record.board_id,
+        definition_state: record.definition_state,
+        decomposition_state: record.decomposition_state,
+        trashed_at: record.trashed_at,
+        archived_at: record.archived_at,
+      };
+    }
+    return Object.fromEntries(
+      Object.entries(record).filter(([field]) => ![
+        "created_at",
+        "updated_at",
+        "decided_at",
+        "deactivated_at",
+      ].includes(field)),
+    );
   }
 
   private goalTreeProposalItemConflicts(
@@ -6909,7 +7074,7 @@ export class GoalBoardCoordinator {
     item: GoalTreeProposalItemRecord,
   ): Array<Record<string, unknown>> {
     return item.baseline_versions.flatMap((baseline) => {
-      const current = this.proposalObjectVersion(boardId, baseline);
+      const current = this.proposalObjectVersionForBaseline(boardId, baseline, item);
       return baseline.exists === current.exists && baseline.version === current.version
         ? []
         : [{
@@ -7147,7 +7312,7 @@ export class GoalBoardCoordinator {
     `);
     for (const [index, revision] of revisions.entries()) {
       const item = revision.revised_item;
-      const baselineVersions = item.affected_objects.map((object) => this.proposalObjectVersion(boardId, object));
+      const baselineVersions = item.affected_objects.map((object) => this.proposalObjectVersion(boardId, object, item));
       insertItem.run(
         item.item_id,
         proposalId,
@@ -7833,6 +7998,62 @@ export class GoalBoardCoordinator {
         : null;
     }
     return null;
+  }
+
+  private preflightGoalTreeProposalMaterialization(
+    boardId: string,
+    items: GoalTreeProposalItemRecord[],
+    actorId: string,
+    at: string,
+  ): Map<string, Record<string, unknown>> {
+    const conflicts = new Map<string, Record<string, unknown>>();
+    const materializationOrder: GoalTreeProposalItemRecord["kind"][][] = [
+      ["goal", "contract", "candidate"],
+      ["policy", "risk"],
+      ["relation", "dependency", "rewire"],
+    ];
+    this.store.db.exec("SAVEPOINT goal_tree_materialization_preflight");
+    try {
+      for (const kinds of materializationOrder) {
+        for (const item of items.filter((candidate) => kinds.includes(candidate.kind))) {
+          this.store.db.exec("SAVEPOINT goal_tree_item_preflight");
+          try {
+            const conflict = this.goalTreeProposalMaterializationConflict(boardId, item);
+            if (conflict) {
+              conflicts.set(item.item_id, {
+                ...conflict,
+                recovery: this.goalTreeProposalConflictRecovery(conflict),
+              });
+              this.store.db.exec("ROLLBACK TO goal_tree_item_preflight");
+              this.store.db.exec("RELEASE goal_tree_item_preflight");
+              continue;
+            }
+            this.materializeGoalTreeProposalItem(boardId, item, actorId, "Goal Tree 提案只读预检", at);
+            this.store.db.exec("RELEASE goal_tree_item_preflight");
+          } catch (error) {
+            this.store.db.exec("ROLLBACK TO goal_tree_item_preflight");
+            this.store.db.exec("RELEASE goal_tree_item_preflight");
+            if (!(error instanceof GoalBoardV1Error)) throw error;
+            conflicts.set(item.item_id, {
+              code: error.code,
+              message: error.message,
+              ...(error.details ?? {}),
+              recovery: this.goalTreeProposalConflictRecovery({ code: error.code }),
+            });
+          }
+        }
+      }
+    } finally {
+      this.store.db.exec("ROLLBACK TO goal_tree_materialization_preflight");
+      this.store.db.exec("RELEASE goal_tree_materialization_preflight");
+    }
+    return conflicts;
+  }
+
+  private goalTreeProposalConflictRecovery(conflict: Record<string, unknown>): string {
+    return String(conflict.code ?? "").startsWith("goal.accepted_")
+      ? "已接受 Goal 的业务 Contract 不能原地重写；若需求已经变化，请创建 successor / replacement Goal，或只提交允许的 closed_compound 收口，再让用户确认。当前 Goal Tree 尚未改变。"
+      : "请先运行 goal_tree_check 并修订这个条目，再让用户决定整份提案。当前 Goal Tree 尚未改变。";
   }
 
   private materializeGoalTreeProposalItem(

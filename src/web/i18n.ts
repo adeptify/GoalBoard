@@ -2247,7 +2247,7 @@ Object.assign(EN, {
   "其中 {count} 条风险信息需要 Runtime 修正。这些风险还没有写入 GoalBoard，所以不会出现单独的“风险处理”入口。": "The Runtime must correct {count} risk items. These risks have not been added to GoalBoard yet, so they do not have separate risk-decision entries.",
   "其中 {count} 个 Goal 还没有交代产品关键路径，或下面仍有目标没有拆完。": "{count} Goal(s) still lack clear product-path ownership or contain child Goals that need more breakdown.",
   "其中 {count} 个 Goal 还没有交代通用结果链、当前任务的必要路径，或下面仍有目标没有拆完。": "{count} Goal(s) still lack the shared result chain, task-specific paths, or contain child Goals that need more breakdown.",
-  "其中有风险信息或 Goal 拆解需要 Runtime 修正，修正前不会写入 Goal Tree。": "The Runtime must correct risk information or Goal breakdowns before anything can be written to the Goal Tree.",
+  "当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree。": "Some content does not meet GoalBoard's write rules. Nothing will be written to the Goal Tree until it is corrected.",
   "你现在需要做：写明退回原因，然后点击“退回并要求修正”。": "What to do now: explain what needs correction, then select “Return for correction.”",
   "有 {count} 项需要先修正": "{count} items need correction first",
   "退回并要求修正": "Return for correction",
