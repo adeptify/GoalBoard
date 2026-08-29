@@ -137,6 +137,11 @@ function escapeAttr(value: string): string {
 }
 
 export const EN: Record<string, string> = {
+  "等待你验收": "Waiting for your acceptance",
+  "Runtime 能完成的检查已经结束，现在只剩你本人操作、判断或确认的完成标准。": "Runtime-checkable review is complete. Only the criteria that require your own action, judgment, or confirmation remain.",
+  "完成真实操作并提交验收决定": "Complete the real action and submit your acceptance decision",
+  "在待决定中提交你的判断；如果完成标准要求验收依据，也一并登记真实操作结果。": "Submit your judgment in Decisions. If the criterion requires acceptance evidence, record the real result there as well.",
+  "完成验收": "Complete acceptance",
   "界面语言": "Language",
   "已迁移项目": "Migrated project",
   "本地项目": "Local project",

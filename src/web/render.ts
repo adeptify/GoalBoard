@@ -84,6 +84,7 @@ export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "review_pending",
   "reviewing",
   "review_blocked",
+  "waiting_for_human",
   "revalidation_pending",
   "revalidating",
   "revalidation_blocked",
@@ -266,6 +267,7 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   review_pending: "review",
   reviewing: "review",
   review_blocked: "blocked",
+  waiting_for_human: "user",
   revalidation_pending: "refresh",
   revalidating: "refresh",
   revalidation_blocked: "blocked",
@@ -420,6 +422,7 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "handoff_pending",
   "review_pending",
   "reviewing",
+  "waiting_for_human",
   "revalidation_pending",
   "revalidating",
   "clarification_decision_pending",
@@ -3418,6 +3421,9 @@ function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): str
   if (explanation.actionKind === "archive" && !item.goal.archived_at) {
     return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}" aria-label="${L("归档这条已完成的 Goal")}" title="${L("归档这条已完成的 Goal")}">${icon("archive")}<span>${L("归档 Goal")}</span></button>`;
   }
+  if (item.status === "waiting_for_human") {
+    return `<a class="goal-primary-action" href="#acceptance-${escapeHtml(goalId)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("user")}<span>${L("完成验收")}</span></a>`;
+  }
   const target = explanation.actionKind === "resolve_blocker" || explanation.actionKind === "view_progress" || explanation.actionKind === "review" || explanation.actionKind === "revalidate"
     ? `#progress-${goalId}`
     : `#completion-${goalId}`;
@@ -4024,7 +4030,7 @@ const STYLES = `
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
-  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
+  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--waiting_for_human, .goal-status--revalidation_pending { color: #1768bf; }
   .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
   .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }

@@ -2264,10 +2264,13 @@ export class GoalBoardCoordinator {
     const blocked: BlockedAvailableGoal[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
-      if (workState.work_state === "completion_blocked") {
+      if (
+        workState.work_state === "completion_blocked" ||
+        workState.work_state === "waiting_for_human"
+      ) {
         blocked.push({
           goal,
-          work_state: "completion_blocked",
+          work_state: workState.work_state,
           next_action: null,
           reasons: workState.reasons,
           priority_hint: goal.priority,
@@ -2382,7 +2385,10 @@ export class GoalBoardCoordinator {
     const workState = this.getGoalWorkState({ board_id: input.board_id, goal_id: input.goal_id });
     const completionReasons = role === "executor"
       ? this.executorHandoffReasons(workState)
-      : [];
+      : workState.work_state === "waiting_for_human" &&
+          (role === "self_verifier" || role === "cross_reviewer" || role === "adversarial_reviewer")
+        ? workState.reasons
+        : [];
     const reasons = [...evaluation.reasons, ...completionReasons]
       .filter(
         (item, index, items) =>
@@ -3689,7 +3695,13 @@ export class GoalBoardCoordinator {
           now,
           expiresAt,
         );
-      if (role === "executor" || role === "revalidator") {
+      if (
+        role === "executor" ||
+        role === "revalidator" ||
+        role === "self_verifier" ||
+        role === "cross_reviewer" ||
+        role === "adversarial_reviewer"
+      ) {
         this.ensureReviewObligations(request.board_id, request.goal_id, evaluation.policy, now);
       }
       this.store.appendEvent({
@@ -3875,7 +3887,8 @@ export class GoalBoardCoordinator {
           );
           if (
             workState.work_state === "completion_pending" ||
-            workState.work_state === "completion_blocked"
+            workState.work_state === "completion_blocked" ||
+            workState.work_state === "waiting_for_human"
           ) {
             const reasons = this.executorHandoffReasons(workState);
             const outcome: ClaimRunDecision = {
@@ -6483,39 +6496,83 @@ export class GoalBoardCoordinator {
     policy: GoalPolicy,
     at: string,
   ): void {
+    const criteria = this.store.getGoal(goalId)?.acceptance_criteria ?? [];
+    const runtimeCriterionIds = criteria
+      .filter((criterion) => criterion.decision_method !== "human_decision")
+      .map((criterion) => criterion.criterion_id);
+    const humanCriterionIds = criteria
+      .filter((criterion) => criterion.decision_method === "human_decision")
+      .map((criterion) => criterion.criterion_id);
+    const allCriterionIds = criteria.map((criterion) => criterion.criterion_id);
     const obligations: Array<{
       role: "self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver";
       count: number;
       independence: string;
+      criterionIds: string[];
     }> = [];
-    if (policy.self_verification) {
-      obligations.push({ role: "self_verifier", count: 1, independence: "executor_allowed" });
+    if (policy.self_verification && runtimeCriterionIds.length > 0) {
+      obligations.push({
+        role: "self_verifier",
+        count: 1,
+        independence: "executor_allowed",
+        criterionIds: runtimeCriterionIds,
+      });
     }
-    if (policy.cross_reviewers > 0) {
+    if (policy.cross_reviewers > 0 && runtimeCriterionIds.length > 0) {
       obligations.push({
         role: "cross_reviewer",
         count: policy.cross_reviewers,
         independence: "actor_must_differ_from_executor",
+        criterionIds: runtimeCriterionIds,
       });
     }
-    if (policy.adversarial_reviewers > 0) {
+    if (policy.adversarial_reviewers > 0 && runtimeCriterionIds.length > 0) {
       obligations.push({
         role: "adversarial_reviewer",
         count: policy.adversarial_reviewers,
         independence: "actor_must_differ_from_executor",
+        criterionIds: runtimeCriterionIds,
       });
     }
-    if (policy.human_approval) {
-      obligations.push({ role: "human_approver", count: 1, independence: "user_authority" });
+    if (policy.human_approval || humanCriterionIds.length > 0) {
+      obligations.push({
+        role: "human_approver",
+        count: 1,
+        independence: "user_authority",
+        criterionIds: policy.human_approval ? allCriterionIds : humanCriterionIds,
+      });
     }
-    const criterionIds = this.store
-      .getGoal(goalId)
-      ?.acceptance_criteria.map((criterion) => criterion.criterion_id) ?? [];
+
+    const desiredRoles = new Set(obligations.map((obligation) => obligation.role));
+    const existingRuntimeObligations = this.store.db
+      .prepare(`
+        SELECT obligation_id, role, state
+        FROM review_obligations
+        WHERE goal_id = ?
+          AND role IN ('self_verifier', 'cross_reviewer', 'adversarial_reviewer')
+      `)
+      .all(goalId) as Row[];
+    for (const existing of existingRuntimeObligations) {
+      if (desiredRoles.has(asText(existing.role) as typeof obligations[number]["role"])) continue;
+      if (asText(existing.state) !== "pending") continue;
+      this.store.db
+        .prepare("UPDATE review_obligations SET criterion_scope_json = '[]', state = 'waived' WHERE obligation_id = ?")
+        .run(asText(existing.obligation_id));
+    }
+
     for (const obligation of obligations) {
       const existing = this.store.db
-        .prepare("SELECT obligation_id FROM review_obligations WHERE goal_id = ? AND role = ?")
-        .get(goalId, obligation.role);
-      if (existing) continue;
+        .prepare("SELECT obligation_id, criterion_scope_json FROM review_obligations WHERE goal_id = ? AND role = ?")
+        .get(goalId, obligation.role) as Row | undefined;
+      if (existing) {
+        const currentScope = parseJson<string[]>(existing.criterion_scope_json, []);
+        if (JSON.stringify(currentScope) !== JSON.stringify(obligation.criterionIds)) {
+          this.store.db
+            .prepare("UPDATE review_obligations SET criterion_scope_json = ? WHERE obligation_id = ?")
+            .run(sqliteJson(obligation.criterionIds), asText(existing.obligation_id));
+        }
+        continue;
+      }
       this.store.db
         .prepare(`
           INSERT INTO review_obligations (
@@ -6530,7 +6587,7 @@ export class GoalBoardCoordinator {
           obligation.role,
           obligation.count,
           obligation.independence,
-          sqliteJson(criterionIds),
+          sqliteJson(obligation.criterionIds),
           at,
         );
     }
@@ -8997,25 +9054,64 @@ export class GoalBoardCoordinator {
     }
 
     const reworkRequested = this.hasPostExecutionNeedsChanges(boardId, goal.goal_id);
-    if (pendingReviewObligations.length > 0 && reviewReady && !reworkRequested) {
-      const action = pendingReviewObligations
+    const pendingRuntimeReviewObligations = pendingReviewObligations.filter(
+      (obligation) => obligation.role !== "human_approver",
+    );
+    const pendingHumanReviewObligations = pendingReviewObligations.filter(
+      (obligation) => obligation.role === "human_approver",
+    );
+    if (pendingRuntimeReviewObligations.length > 0 && reviewReady && !reworkRequested) {
+      const action = pendingRuntimeReviewObligations
         .map((obligation) => this.reviewActionFor(obligation))
         .find((candidate): candidate is AvailableAction => candidate !== null);
       const reasons = action?.role
         ? this.workStatePhaseReasons(boardId, goal.goal_id, action.role, now, snapshot)
-        : [
-            reason(
-              "review.user_approval_required",
-              "review",
-              pendingReviewObligations[0]!.obligation_id,
-              "当前只剩用户确认的 Review，Runtime 不能代替用户决定",
-            ),
-          ];
+        : [];
       return {
         ...base,
         work_state: reasons.length > 0 ? "review_blocked" : "review_pending",
         next_action: "review",
         reasons: phaseReasons(reasons),
+      };
+    }
+
+    const uncoveredHumanCriterionIds = goal.acceptance_criteria
+      .filter((criterion) => criterion.decision_method === "human_decision")
+      .filter((criterion) => !snapshot.evidence.some(
+        (evidence) =>
+          evidence.goal_id === goal.goal_id &&
+          evidence.lifecycle_state === "effective" &&
+          evidence.result === "passed" &&
+          evidence.criterion_ids.includes(criterion.criterion_id),
+      ))
+      .map((criterion) => criterion.criterion_id);
+    if (
+      reviewReady &&
+      !reworkRequested &&
+      (pendingHumanReviewObligations.length > 0 || uncoveredHumanCriterionIds.length > 0)
+    ) {
+      const criterionIds = unique([
+        ...pendingHumanReviewObligations.flatMap((obligation) => obligation.criterion_scope),
+        ...uncoveredHumanCriterionIds,
+      ]).sort();
+      return {
+        ...base,
+        work_state: "waiting_for_human",
+        next_action: null,
+        reasons: [
+          reason(
+            "review.user_approval_required",
+            "goal",
+            goal.goal_id,
+            "Runtime 可承担的检查已经结束，当前只剩用户本人验收与决定",
+            {
+              criterion_ids: criterionIds,
+              obligation_ids: pendingHumanReviewObligations.map((item) => item.obligation_id),
+              next_action: "open_goalboard",
+            },
+            "请用户在 GoalBoard 中完成真实操作、提交决定及相应验收依据；Runtime 不要重复领取 Review。",
+          ),
+        ],
       };
     }
 
@@ -9218,7 +9314,10 @@ export class GoalBoardCoordinator {
   }
 
   private executorHandoffReasons(workState: GoalWorkStateView): DecisionReason[] {
-    if (workState.work_state === "completion_blocked") return workState.reasons;
+    if (
+      workState.work_state === "completion_blocked" ||
+      workState.work_state === "waiting_for_human"
+    ) return workState.reasons;
     if (workState.work_state !== "completion_pending") return [];
     return [
       reason(

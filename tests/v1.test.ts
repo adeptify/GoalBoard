@@ -7359,6 +7359,367 @@ test("unified Available lets the Runtime choose across clarification, execution,
   store.close();
 });
 
+test("human_decision criteria wait for the user without reoffering Runtime review", () => {
+  const { store, coordinator } = fixture();
+  coordinator.createGoal(
+    "board-1",
+    {
+      goal_id: "human-decision-routing",
+      title: "先完成工程复核，再由用户决定",
+      outcome: "Runtime 和用户各自只判断自己有权判断的条件",
+      why: "避免 Runtime 在只剩人工决定时反复领取",
+      business_logic: "Runtime 检查工程结果；用户本人完成最终操作与体验决定。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "human-routing-inspection",
+          statement: "工程结果通过独立检查",
+          decision_method: "inspection",
+          pass_condition: "检查者确认实现与浏览器路径可用",
+          required_evidence: ["inspection"],
+        },
+        {
+          criterion_id: "human-routing-owner-decision",
+          statement: "用户本人完成真实操作并认可体验",
+          decision_method: "human_decision",
+          pass_condition: "用户提交真实决定与验收依据",
+          required_evidence: ["human_verdict"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "human-routing-create" },
+  );
+
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "human-routing-execute",
+  });
+  const obligations = store.snapshot("board-1").review_obligations
+    .filter((item) => item.goal_id === "human-decision-routing")
+    .map((item) => [item.role, item.criterion_scope])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  assert.deepEqual(obligations, [
+    ["human_approver", ["human-routing-owner-decision"]],
+    ["self_verifier", ["human-routing-inspection"]],
+  ]);
+
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    idempotency_key: "human-routing-execute-complete",
+  });
+  const inspectionEvidence = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["human-routing-inspection"],
+    kind: "inspection",
+    locator: "review://human-routing-engineering",
+    result: "passed",
+    idempotency_key: "human-routing-inspection-evidence",
+  }).evidence;
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "工程执行完成，进入结构化复核",
+    idempotency_key: "human-routing-execute-release",
+  });
+
+  const selfObligation = store.snapshot("board-1").review_obligations
+    .find((item) => item.goal_id === "human-decision-routing" && item.role === "self_verifier")!;
+  const reviewRun = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "runtime-reviewer",
+    role: "self_verifier",
+    idempotency_key: "human-routing-review-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    obligation_id: selfObligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    actor_kind: "runtime",
+    verdict: "pass",
+    evidence_refs: [inspectionEvidence.evidence_id],
+    reasoning: "工程与浏览器检查已经通过；人工决定由用户本人完成。",
+    idempotency_key: "human-routing-review-pass",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: reviewRun.run!.run_id,
+    actor_id: "runtime-reviewer",
+    state: "completed",
+    idempotency_key: "human-routing-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: reviewRun.claim!.claim_id,
+    actor_id: "runtime-reviewer",
+    reason: "Runtime 可判断的复核已经完成",
+    idempotency_key: "human-routing-review-release",
+  });
+
+  const waiting = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+  });
+  assert.equal(waiting.work_state, "waiting_for_human");
+  assert.equal(waiting.next_action, null);
+  assert.deepEqual(waiting.reasons[0]?.facts?.criterion_ids, ["human-routing-owner-decision"]);
+  assert.equal(waiting.reasons[0]?.facts?.next_action, "open_goalboard");
+
+  const available = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-next",
+  });
+  assert.equal(available.available.some((item) => item.goal.goal_id === "human-decision-routing"), false);
+  assert.equal(
+    available.blocked.find((item) => item.goal.goal_id === "human-decision-routing")?.work_state,
+    "waiting_for_human",
+  );
+  const explained = coordinator.explainGoal({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "runtime-next",
+    role: "self_verifier",
+  });
+  assert.equal(explained.ready, false);
+  assert.ok(explained.reasons.some((item) => item.code === "review.user_approval_required"));
+  const executorRetry = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "runtime-next",
+    role: "executor",
+    idempotency_key: "human-routing-executor-retry",
+  });
+  assert.equal(executorRetry.allowed, false);
+  assert.equal(executorRetry.work_state?.work_state, "waiting_for_human");
+  assert.ok(executorRetry.reasons.some((item) => item.code === "review.user_approval_required"));
+
+  const humanObligation = store.snapshot("board-1").review_obligations
+    .find((item) => item.goal_id === "human-decision-routing" && item.role === "human_approver")!;
+  const humanReview = coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    obligation_id: humanObligation.obligation_id,
+    actor_id: "user-1",
+    actor_kind: "user",
+    verdict: "pass",
+    reasoning: "本人已完成真实操作并认可体验。",
+    idempotency_key: "human-routing-user-review",
+  }).review;
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
+    "waiting_for_human",
+    "人工 Review 不能替代该 criterion 要求的真实验收依据",
+  );
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+    actor_id: "user-1",
+    review_id: humanReview.review_id,
+    criterion_ids: ["human-routing-owner-decision"],
+    kind: "human_verdict",
+    locator: `review://${humanReview.review_id}`,
+    result: "passed",
+    idempotency_key: "human-routing-user-evidence",
+  });
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
+    "completion_pending",
+  );
+  store.close();
+});
+
+test("inconclusive remains retryable when every criterion is Runtime-reviewable", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "runtime-inconclusive");
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "runtime-inconclusive",
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "runtime-inconclusive-execute",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    idempotency_key: "runtime-inconclusive-execute-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "交给 Runtime 自检",
+    idempotency_key: "runtime-inconclusive-execute-release",
+  });
+  const obligation = store.snapshot("board-1").review_obligations
+    .find((item) => item.goal_id === "runtime-inconclusive" && item.role === "self_verifier")!;
+  const review = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "runtime-inconclusive",
+    actor_id: "runtime-reviewer",
+    role: "self_verifier",
+    idempotency_key: "runtime-inconclusive-review",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "runtime-inconclusive",
+    obligation_id: obligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    actor_kind: "runtime",
+    verdict: "inconclusive",
+    reasoning: "当前工程依据不足，仍需 Runtime 补齐后重试。",
+    idempotency_key: "runtime-inconclusive-submit",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: review.run!.run_id,
+    actor_id: "runtime-reviewer",
+    state: "completed",
+    idempotency_key: "runtime-inconclusive-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: review.claim!.claim_id,
+    actor_id: "runtime-reviewer",
+    reason: "证据不足，交给后续 Runtime 重试",
+    idempotency_key: "runtime-inconclusive-review-release",
+  });
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "runtime-inconclusive" }).work_state,
+    "review_pending",
+  );
+  assert.equal(
+    coordinator.explainGoal({
+      board_id: "board-1",
+      goal_id: "runtime-inconclusive",
+      actor_id: "runtime-next",
+      role: "self_verifier",
+    }).ready,
+    true,
+  );
+  assert.ok(coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-next" }).available
+    .some((item) => item.goal.goal_id === "runtime-inconclusive" && item.role === "self_verifier"));
+  store.close();
+});
+
+test("a historical mixed Review obligation is split on the next safe Review selection", () => {
+  const { store, coordinator } = fixture();
+  coordinator.createGoal(
+    "board-1",
+    {
+      goal_id: "historical-mixed-review",
+      title: "兼容旧的混合复核义务",
+      outcome: "旧数据在一次明确复核后进入人工等待",
+      why: "不解析历史 reasoning，也不无限重试",
+      business_logic: "Runtime 重新确认可判断部分，人工部分继续由用户负责。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "historical-runtime-check",
+          statement: "Runtime 检查工程结果",
+          decision_method: "inspection",
+          pass_condition: "工程检查通过",
+        },
+        {
+          criterion_id: "historical-human-check",
+          statement: "用户本人决定",
+          decision_method: "human_decision",
+          pass_condition: "用户提交决定",
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "historical-mixed-create" },
+  );
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "historical-mixed-review",
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "historical-mixed-execute",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    idempotency_key: "historical-mixed-execute-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "模拟历史执行完成",
+    idempotency_key: "historical-mixed-execute-release",
+  });
+  const selfObligation = store.snapshot("board-1").review_obligations
+    .find((item) => item.goal_id === "historical-mixed-review" && item.role === "self_verifier")!;
+  store.db.prepare("DELETE FROM review_obligations WHERE goal_id = ? AND role = 'human_approver'")
+    .run("historical-mixed-review");
+  store.db.prepare("UPDATE review_obligations SET criterion_scope_json = ? WHERE obligation_id = ?")
+    .run(JSON.stringify(["historical-runtime-check", "historical-human-check"]), selfObligation.obligation_id);
+
+  const legacyReview = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "historical-mixed-review",
+    actor_id: "runtime-legacy-reviewer",
+    role: "self_verifier",
+    idempotency_key: "historical-mixed-legacy-select",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "historical-mixed-review",
+    obligation_id: selfObligation.obligation_id,
+    actor_id: "runtime-legacy-reviewer",
+    actor_kind: "runtime",
+    verdict: "pass",
+    reasoning: "只确认 Runtime 有权判断的工程条件；人工条件不在本结论内。",
+    idempotency_key: "historical-mixed-runtime-pass",
+  });
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: legacyReview.run!.run_id,
+    actor_id: "runtime-legacy-reviewer",
+    state: "completed",
+    idempotency_key: "historical-mixed-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: legacyReview.claim!.claim_id,
+    actor_id: "runtime-legacy-reviewer",
+    reason: "旧混合义务已按结构化 scope 收敛",
+    idempotency_key: "historical-mixed-review-release",
+  });
+
+  const reconciled = store.snapshot("board-1").review_obligations
+    .filter((item) => item.goal_id === "historical-mixed-review");
+  assert.deepEqual(
+    reconciled.find((item) => item.role === "self_verifier")?.criterion_scope,
+    ["historical-runtime-check"],
+  );
+  assert.equal(reconciled.filter((item) => item.role === "human_approver").length, 1);
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "historical-mixed-review" }).work_state,
+    "waiting_for_human",
+  );
+  assert.equal(coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-next" }).available
+    .some((item) => item.goal.goal_id === "historical-mixed-review"), false);
+  store.close();
+});
+
 test("a completion Risk after finished work stays out of executor Available and exposes recovery", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completion-risk-handoff", 40);

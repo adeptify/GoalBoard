@@ -663,6 +663,23 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
     projects: [{ project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" }],
   });
   const corePageHtml = renderGoalBoardWeb(view, "CORE");
+  const waitingForHumanView = structuredClone(view);
+  const waitingForHumanGoal = waitingForHumanView.goals.find((item) => item.goal.goal_id === "CORE");
+  assert.ok(waitingForHumanGoal);
+  waitingForHumanGoal.status = "waiting_for_human";
+  waitingForHumanGoal.work_state = "waiting_for_human";
+  waitingForHumanGoal.reasons = [{
+    code: "review.user_approval_required",
+    severity: "blocker",
+    subject_type: "goal",
+    subject_id: "CORE",
+    message: "Runtime 可承担的检查已经结束，当前只剩用户本人验收与决定",
+    facts: { criterion_ids: ["CORE-HUMAN"], next_action: "open_goalboard" },
+    remediation: "请用户完成真实操作并提交验收依据。",
+  }];
+  waitingForHumanGoal.review_obligations = waitingForHumanGoal.review_obligations
+    .filter((item) => item.role !== "human_approver");
+  const waitingForHumanHtml = renderGoalBoardWeb(waitingForHumanView, "CORE");
   // Keep this broad presentation contract checking the same assembled workbench
   // surface even though production now serves the shared assets separately.
   const html = `${pageHtml}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
@@ -932,6 +949,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-companion-runtime-open/);
   assert.match(coreHtml, /租约还剩 \d+ 分钟/);
   assert.match(coreHtml, /到期前续租可保持当前 Claim 和 Run/);
+  assert.match(waitingForHumanHtml, /goal-status--waiting_for_human/);
+  assert.match(waitingForHumanHtml, /等待你验收/);
+  assert.match(waitingForHumanHtml, /完成真实操作并提交验收决定/);
   assert.match(html, /desktopCompanionActive && selected \? "document"/);
   assert.match(html, /const setWorkspaceMode =/);
   assert.match(html, /workspace\.dataset\.workspaceMode = nextMode/);

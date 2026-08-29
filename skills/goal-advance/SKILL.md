@@ -112,3 +112,5 @@ Always follow the latest returned `work_state`:
 Use the full `goalboard_v1_` tool names. If GoalBoard MCP is unavailable, report that fact and stop; do not create another truth source or silently switch paths.
 
 During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Do not create background heartbeat loops.
+
+When work state is `waiting_for_human`, report the returned human criterion IDs and action, then stop Runtime review work. Do not select another Runtime Review, infer the user's verdict, or treat engineering evidence as user acceptance.

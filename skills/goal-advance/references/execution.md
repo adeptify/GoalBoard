@@ -34,6 +34,7 @@ If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推�
 | `completion_pending` | Execution, Evidence, and required Reviews are already done. Call `goalboard_v1_complete` directly; do not select, Claim, or rerun the Goal. |
 | `completion_blocked` | Do not select executor work. Report the returned completion-gate reason and remediation; after that canonical gate is resolved, re-read Available and call `complete`. |
 | `reviewing` / `review_pending` | Inspect the Contract and submitted evidence; perform only the Review this Runtime may provide. |
+| `waiting_for_human` | Runtime-checkable Review is finished. Report the returned human criteria and user action; do not select another Runtime Review or impersonate the user's decision. |
 | `revalidating` / `revalidation_pending` | Recheck the Contract, active dependencies, Risks, and cited evidence; use `goalboard_v1_revalidate` only from the active revalidator Run. |
 | Any other `*_blocked` | Call `goalboard_v1_explain`, report the concrete blocker, then choose other eligible work or ask for the missing decision. |
 | `satisfied`, `archived`, `invalidated` | Do not claim it. Explain the state or choose other work. |

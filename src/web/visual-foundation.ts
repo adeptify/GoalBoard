@@ -2603,6 +2603,7 @@ export const VISUAL_FOUNDATION_STYLES = `
   .goal-status--execution_pending,
   .goal-status--completion_pending,
   .goal-status--review_pending,
+  .goal-status--waiting_for_human,
   .goal-status--revalidation_pending { --goal-status-tone: var(--blue-dark); }
   .goal-status--clarification_blocked,
   .goal-status--execution_blocked,

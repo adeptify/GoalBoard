@@ -481,6 +481,7 @@ export function buildCapsuleSnapshot(
       "execution_blocked",
       "completion_blocked",
       "review_blocked",
+      "waiting_for_human",
       "revalidation_blocked",
       "invalidated",
     ] as string[]).includes(item.work_state)

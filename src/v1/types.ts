@@ -27,6 +27,7 @@ export type GoalWorkState =
   | "review_pending"
   | "reviewing"
   | "review_blocked"
+  | "waiting_for_human"
   | "revalidation_pending"
   | "revalidating"
   | "revalidation_blocked"
@@ -727,7 +728,7 @@ export interface AvailableGoal extends Omit<ReadyGoal, "role"> {
 /** A Goal that is not claimable because its finished work is waiting on a completion gate. */
 export interface BlockedAvailableGoal {
   goal: GoalRecord;
-  work_state: "completion_blocked";
+  work_state: "completion_blocked" | "waiting_for_human";
   next_action: null;
   reasons: DecisionReason[];
   priority_hint: number;

@@ -322,6 +322,8 @@ describe("mcp server", () => {
     assert.match(skill, /explicit value only to shorten/);
     assert.match(skill, /active_claim_lease/);
     assert.match(skill, /goalboard_v1_claim_renew/);
+    assert.match(skill, /waiting_for_human/);
+    assert.match(skill, /do not select another Runtime Review/i);
   });
 
   it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {

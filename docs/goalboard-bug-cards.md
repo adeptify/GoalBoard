@@ -628,8 +628,8 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 
 **来源**：CGS G2B self_verifier 消费者反馈；Review `review-ad251867-5c49-4fab-8806-f98fcb9a3d93`
 **Bug 确认**：已确认，属于 GoalBoard Review obligation 条件路由与人工等待状态缺陷；不是 CGS 误用，也不是 `inconclusive` verdict 本身的缺陷
-**修复决定**：待用户审批
-**修复状态**：未开始；当前只能由消费者识别 reasoning 后停止再次领取，并把人工验收交给用户
+**修复决定**：用户已于 2026-08-29 批准修复
+**修复状态**：已修复（工程验证通过，产品实操与用户验收待完成）；Runtime 与人工验收已按结构化 criterion 分流，并新增 `waiting_for_human` 状态
 
 ### 1. 真实场景
 
@@ -659,7 +659,7 @@ Runtime 已完成所有自己有权完成的复核，却没有一个规范动作
 
 ### 7. 修复必要性与优先级
 
-建议修复，P1，等待审批。它不是文案瑕疵，而是责任边界被错误路由后形成的稳定无效循环，并阻断人类拥有最终决定权的正常闭环。最小修复应依赖结构化的 criterion `decision_method` 和既有用户权限，不需要语义分析 reasoning，也不需要新增通用工作流引擎。
+已批准修复，P1。它不是文案瑕疵，而是责任边界被错误路由后形成的稳定无效循环，并阻断人类拥有最终决定权的正常闭环。修复依赖结构化的 criterion `decision_method` 和既有用户权限，没有语义分析 reasoning，也没有新增通用工作流引擎。
 
 ### 8. 修复前后体验差异
 
@@ -668,10 +668,10 @@ Runtime 已完成所有自己有权完成的复核，却没有一个规范动作
 
 ### 9. 最小修复范围
 
-修改 Review obligation 的 criterion scope 派生、Goal 工作状态与 Available/Explain 的动作路由，并补 Web/MCP/Skill 的人工等待文案和入口说明。优先复用现有 `human_approver` 权限防线；是否新增 `waiting_for_human` 工作状态，以兼容性审查为准，但对外至少必须返回机器可读的 `review.user_approval_required`、具体 `criterion_ids` 和 `next_action`。不解析 reasoning，不自动通过人工条件，不改变普通 `inconclusive` 对 Runtime 可判定条件的重试语义。对历史混合 obligation 采用派生兼容或幂等重整；不删除既有 Review 记录，回滚不需要还原用户数据。
+修改 Review obligation 的 criterion scope 派生、Goal 工作状态与 Available/Explain 的动作路由，并补 Web/MCP/Skill 的人工等待文案和入口说明。复用现有 `human_approver` 权限防线，新增 `waiting_for_human` 工作状态；对外返回机器可读的 `review.user_approval_required`、具体 `criterion_ids`、`obligation_ids` 和 `next_action=open_goalboard`。不解析 reasoning，不自动通过人工条件，不改变普通 `inconclusive` 对 Runtime 可判定条件的重试语义。历史混合 obligation 在下一次安全的 Review 领取点幂等拆分；旧 `inconclusive` 不能从自由文本安全推断为 pass，因此历史数据可能需要一次显式 Runtime 复核后才进入人工等待。不删除既有 Review 记录，回滚不需要还原用户数据。
 
 ### 10. 验收边界
 
-- **工程验证**：尚未开始。需构造同时包含 inspection 与 `human_decision` 的 Goal，先复现 self_verifier scope 混入两类条件、`inconclusive` 后 Explain 再次 ready；修复后验证 Runtime obligation 不再承载人工条件、Available 不再返回重复 self_verifier、人工待办含 criterion 与明确动作，且纯 Runtime criterion 的 `inconclusive` 仍可重试。还需覆盖历史混合 obligation 和 `policy.human_approval` 已开启时不产生重复人工门禁。
+- **工程验证**：通过。混合 inspection + `human_decision` Goal 会生成分离的 Runtime 与 `human_approver` obligation；Runtime 部分通过后派生 `waiting_for_human`，Available 不再提供 Runtime Review action，Blocked/Explain 返回 `review.user_approval_required`、criterion、obligation 和 `open_goalboard`；只有 Human Review 而缺少 human-verdict Evidence 时仍等待，两者齐备才进入 `completion_pending`。纯 Runtime criterion 的 `inconclusive` 仍可重试；历史混合 obligation 会在下一次安全选择时拆分。完整回归为 V1 86/86、MCP 29/29、Web 39/39，TypeScript 和 `git diff --check` 通过。受限沙箱的临时目录曾使 MCP/Web 夹具出现位置漂移的 `SQLITE_CANTOPEN`，相同命令在正常文件系统环境全绿，确认不是本卡代码回归。
 - **产品实操**：真实 G2B 已复现修复前循环；修复后的 Web 人工待办、Runtime 停止领取、用户提交真实决定并回到完成判定均为 `UNVERIFIED`。
-- **Owner 最终验收**：未通过。需用户批准后，在最终安装产物中用真实 G2B Goal 走完“工程复核结束 → 明确等待王一骏 → 本人操作与验收 → Goal 完成”，并确认不会新增重复 Claim、Run 或 Review。
+- **Owner 最终验收**：未通过。仍需在最终安装产物中用真实 G2B Goal 走完“工程复核结束 → 明确等待王一骏 → 本人操作与验收 → Goal 完成”，并确认不会新增重复 Claim、Run 或 Review。用户本人是否认可文案和入口也仍属于用户验收。
