@@ -3523,7 +3523,23 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
     ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
   );
   assert.ok(submitted.proposal.items.every((item) => item.requires_user_confirmation));
-  assert.ok(submitted.proposal.items.every((item) => item.baseline_versions.length === 1));
+  assert.deepEqual(
+    submitted.proposal.items.find((item) => item.item_id === "item-parent-child")?.affected_objects,
+    [
+      { object_type: "relation", object_id: "relation:new:first-use-guide:tree-root:part_of" },
+      { object_type: "goal", object_id: "first-use-guide" },
+      { object_type: "goal", object_id: "tree-root" },
+    ],
+  );
+  assert.deepEqual(
+    submitted.proposal.items.find((item) => item.item_id === "item-dependency")?.affected_objects,
+    [
+      { object_type: "relation", object_id: "relation:new:first-use-guide:runtime-connection:depends_on" },
+      { object_type: "goal", object_id: "first-use-guide" },
+      { object_type: "goal", object_id: "runtime-connection" },
+    ],
+  );
+  assert.ok(submitted.proposal.items.every((item) => item.baseline_versions.length >= 1));
   assert.equal(submitted.proposal.base_event_cursor, dialogue.observed_event_cursor);
   const replay = coordinator.submitGoalTreeProposal(proposalInput);
   assert.equal(replay.replayed, true);
@@ -3548,7 +3564,12 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
     actor_id: "runtime-clarifier",
     idempotency_key: "tree-proposal-check",
   });
-  assert.deepEqual(checked.conflict_item_ids, ["item-root-contract"]);
+  assert.deepEqual(checked.conflict_item_ids, [
+    "item-root-contract",
+    "item-dependency",
+    "item-candidate",
+    "item-rewire",
+  ]);
   assert.equal(
     checked.proposal.items.find((item) => item.item_id === "item-root-contract")?.state,
     "conflict",
@@ -6223,6 +6244,242 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
   );
   assert.equal(store.getGoal("ambiguity-a-goal"), null);
   assert.equal(store.getGoal("ambiguity-b-goal"), null);
+  store.close();
+});
+
+test("whole Goal Tree confirmation preflights invariants and never leaves a partial tree", () => {
+  const buildInvalidProposal = () => {
+    const fixtureResult = fixture();
+    const { store, coordinator } = fixtureResult;
+    createAcceptedCompoundParent(coordinator, "atomic-confirm-parent");
+    const dialogue = coordinator.startDraftDialogue({
+      board_id: "board-1",
+      actor_id: "runtime-atomic-confirm",
+      rough_idea: "一次确认整份 Goal Tree 时，任何冲突都不能留下半棵树。",
+      goal_id: "atomic-confirm-context",
+      idempotency_key: "atomic-confirm-dialogue",
+    });
+    const proposal = coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-atomic-confirm",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "atomic-confirm-context",
+      summary: "新增一个安全子 Goal，同时错误地改写已接受父 Goal 的 Contract。",
+      items: [
+        goalTreeProposalItem({
+          item_id: "atomic-safe-child",
+          kind: "goal",
+          operation: "create",
+          payload: treeGoalPayload({
+            goal_id: "atomic-confirm-child",
+            title: "本不应被单独创建的安全子 Goal",
+            definition_state: "draft",
+            decomposition_state: "abstract",
+          }),
+          object_type: "goal",
+          object_id: "atomic-confirm-child",
+        }),
+        goalTreeProposalItem({
+          item_id: "atomic-invalid-contract",
+          kind: "contract",
+          operation: "update",
+          payload: treeGoalPayload({
+            goal_id: "atomic-confirm-parent",
+            title: "试图改写已接受父 Goal",
+            definition_state: "accepted",
+            decomposition_state: "frontier_open",
+          }),
+          object_type: "goal",
+          object_id: "atomic-confirm-parent",
+        }),
+      ],
+      idempotency_key: "atomic-confirm-submit",
+    }).proposal;
+    return { store, coordinator, proposal };
+  };
+
+  const checkedFixture = buildInvalidProposal();
+  const cursorBeforeCheck = checkedFixture.store.snapshot("board-1").cursor;
+  const checked = checkedFixture.coordinator.checkGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: checkedFixture.proposal.proposal_id,
+    actor_id: "runtime-atomic-confirm",
+    idempotency_key: "atomic-confirm-check",
+  });
+  assert.deepEqual(checked.conflict_item_ids, ["atomic-invalid-contract"]);
+  assert.equal(checked.proposal.items.find((item) => item.item_id === "atomic-invalid-contract")?.conflict?.code,
+    "goal.accepted_compound_closure_invalid");
+  assert.equal(checked.observed_event_cursor, cursorBeforeCheck + 1);
+  assert.equal(checkedFixture.store.getGoal("atomic-confirm-child"), null);
+  checkedFixture.store.close();
+
+  const decidedFixture = buildInvalidProposal();
+  assert.throws(
+    () => decidedFixture.coordinator.decideGoalTreeProposal({
+      board_id: "board-1",
+      proposal_id: decidedFixture.proposal.proposal_id,
+      runtime_actor_id: "runtime-atomic-confirm",
+      authority: {
+        actor_id: "user-1",
+        actor_kind: "user",
+        authority_source: "runtime_dialogue",
+        conversation_ref: "conversation://atomic-confirm",
+        message_ref: "message://atomic-confirm",
+        whole_confirmation_prompted: true,
+      },
+      reason: "确认整份提案。",
+      confirm_all_pending: true,
+      idempotency_key: "atomic-confirm-decide",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalBoardV1Error);
+      assert.equal(error.code, "goal_tree_proposal.whole_confirmation_conflict");
+      assert.match(error.message, /没有写入任何变更/);
+      assert.match(error.message, /atomic-invalid-contract/);
+      return true;
+    },
+  );
+  assert.equal(decidedFixture.store.getGoal("atomic-confirm-child"), null);
+  const unchanged = decidedFixture.coordinator.listGoalTreeProposals({
+    board_id: "board-1",
+    proposal_id: decidedFixture.proposal.proposal_id,
+    include_legacy: false,
+  }).proposals[0]!;
+  assert.equal(unchanged.state, "pending");
+  assert.ok(unchanged.items.every((item) => item.state === "pending" && item.decision == null));
+  decidedFixture.store.close();
+
+  const partialFixture = buildInvalidProposal();
+  const partial = partialFixture.coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: partialFixture.proposal.proposal_id,
+    runtime_actor_id: "runtime-atomic-confirm",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://atomic-confirm-partial",
+      message_ref: "message://atomic-confirm-partial-item",
+    },
+    decisions: [{ item_id: "atomic-safe-child", decision: "confirm", reason: "先逐项采用安全条目。" }],
+    idempotency_key: "atomic-confirm-partial-item",
+  });
+  assert.equal(partial.proposal.state, "partially_applied");
+  assert.throws(
+    () => partialFixture.coordinator.decideGoalTreeProposal({
+      board_id: "board-1",
+      proposal_id: partialFixture.proposal.proposal_id,
+      runtime_actor_id: "runtime-atomic-confirm",
+      authority: {
+        actor_id: "user-1",
+        actor_kind: "user",
+        authority_source: "runtime_dialogue",
+        conversation_ref: "conversation://atomic-confirm-partial",
+        message_ref: "message://atomic-confirm-partial-whole",
+        whole_confirmation_prompted: true,
+      },
+      reason: "再确认剩余内容。",
+      confirm_all_pending: true,
+      idempotency_key: "atomic-confirm-partial-whole",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error &&
+      error.code === "goal_tree_proposal.whole_confirmation_requires_pristine_proposal",
+  );
+  partialFixture.store.close();
+});
+
+test("Goal Tree baselines ignore unrelated Goal runtime state but retain Contract and relation endpoint facts", () => {
+  const { store, coordinator } = fixture();
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-semantic-baseline",
+    rough_idea: "等待用户确认期间，租约等运行态变化不能让 Contract 提案自然过期。",
+    goal_id: "semantic-baseline-root",
+    idempotency_key: "semantic-baseline-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-semantic-baseline",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "semantic-baseline-root",
+    summary: "更新 Draft Contract 并把新子 Goal 归入根 Goal。",
+    items: [
+      goalTreeProposalItem({
+        item_id: "semantic-root-contract",
+        kind: "contract",
+        operation: "update",
+        payload: treeGoalPayload({
+          goal_id: "semantic-baseline-root",
+          title: "等待确认的语义化 Draft Contract",
+          definition_state: "draft",
+          decomposition_state: "abstract",
+        }),
+        object_type: "goal",
+        object_id: "semantic-baseline-root",
+      }),
+      goalTreeProposalItem({
+        item_id: "semantic-child",
+        kind: "goal",
+        operation: "create",
+        payload: treeGoalPayload({
+          goal_id: "semantic-baseline-child",
+          title: "等待确认的新子 Goal",
+          definition_state: "draft",
+          decomposition_state: "abstract",
+        }),
+        object_type: "goal",
+        object_id: "semantic-baseline-child",
+      }),
+      goalTreeProposalItem({
+        item_id: "semantic-part-of",
+        kind: "relation",
+        operation: "create",
+        payload: {
+          from_goal_id: "semantic-baseline-child",
+          to_goal_id: "semantic-baseline-root",
+          type: "part_of",
+          reason: "新子 Goal 属于当前 Root Draft。",
+        },
+        object_type: "relation",
+        object_id: "relation:new:semantic-child:semantic-root:part_of",
+      }),
+    ],
+    idempotency_key: "semantic-baseline-submit",
+  }).proposal;
+  assert.ok(proposal.items.flatMap((item) => item.baseline_versions).every((baseline) =>
+    baseline.version === "absent" || baseline.version.startsWith("semantic-v1:")));
+  assert.deepEqual(
+    proposal.items.find((item) => item.item_id === "semantic-part-of")?.affected_objects,
+    [
+      { object_type: "relation", object_id: "relation:new:semantic-child:semantic-root:part_of" },
+      { object_type: "goal", object_id: "semantic-baseline-child" },
+      { object_type: "goal", object_id: "semantic-baseline-root" },
+    ],
+  );
+
+  store.db
+    .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
+    .run("2026-08-15T00:30:00.000Z", "semantic-baseline-root");
+  const runtimeOnlyCheck = coordinator.checkGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-semantic-baseline",
+    idempotency_key: "semantic-baseline-runtime-check",
+  });
+  assert.deepEqual(runtimeOnlyCheck.conflict_item_ids, []);
+
+  store.db
+    .prepare("UPDATE goals SET title = ?, updated_at = ? WHERE goal_id = ?")
+    .run("真正改变 Contract 的另一个标题", "2026-08-15T00:31:00.000Z", "semantic-baseline-root");
+  const contractCheck = coordinator.checkGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-semantic-baseline",
+    idempotency_key: "semantic-baseline-contract-check",
+  });
+  assert.deepEqual(contractCheck.conflict_item_ids, ["semantic-root-contract"]);
+  assert.equal(contractCheck.proposal.items.find((item) => item.item_id === "semantic-part-of")?.state, "pending");
   store.close();
 });
 

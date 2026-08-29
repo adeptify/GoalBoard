@@ -2765,7 +2765,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
   }
 });
 
-test("Web optionally uses the same Goal Tree decision path without enabling ambiguous whole confirmation", async () => {
+test("Web uses the named Goal Tree decision page for atomic whole confirmation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-web-tree-decision-"));
   const databasePath = join(directory, "goalboard.db");
   const store = new SqliteGoalBoardStore(databasePath);
@@ -2822,6 +2822,31 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     ],
     idempotency_key: "web-tree-propose",
   }).proposal;
+  const otherDialogue = coordinator.startDraftDialogue({
+    board_id: "web-tree-board",
+    actor_id: "runtime-other-clarifier",
+    goal_id: "web-tree-other-root",
+    rough_idea: "另一份同时等待决定的方案不能让当前 Web 页面确认变得含糊。",
+    idempotency_key: "web-tree-other-dialogue",
+  });
+  const otherProposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-tree-board",
+    actor_id: "runtime-other-clarifier",
+    discovered_in_run_id: otherDialogue.run!.run_id,
+    root_goal_id: "web-tree-other-root",
+    summary: "另一份独立等待决定的方案。",
+    items: [{
+      item_id: "web-tree-other-child",
+      kind: "goal",
+      operation: "create",
+      payload: { goal_id: "web-tree-other-child", title: "另一份方案里的 Draft" },
+      source_refs: ["conversation://web-tree-other"],
+      reason: "验证 Web 页面按明确 proposal_id 原子确认，而不是依赖全局唯一提案。",
+      confidence: 1,
+      affected_objects: [{ object_type: "goal", object_id: "web-tree-other-child" }],
+    }],
+    idempotency_key: "web-tree-other-propose",
+  }).proposal;
   store.close();
   const server = createGoalBoardWebServer({ databasePath, boardId: "web-tree-board" });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -2846,6 +2871,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     assert.match(decisionPage, /展开查看每项变化/);
     assert.match(decisionPage, /data-goal-tree-decision-form[\s\S]*novalidate/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /goalTreeDecisionForm[\s\S]*请填写决定理由或修改意见/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /decision === "confirm"[\s\S]*confirm_all_pending: true/);
     assert.match(rootPage, /查看并决定这份方案/);
     assert.match(rootPage, /处理 1 项决定/);
     assert.match(rootPage, /goal-status--clarification_decision_pending[^>]*[\s\S]*?<span>待你确认<\/span>/);
@@ -2853,16 +2879,6 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     assert.match(rootPage, /这条 Goal 不是还要继续澄清，而是在等你确认整理后的结果、范围和子 Goal/);
     assert.doesNotMatch(rootPage, /<div class="draft-gaps"><div><strong>这条 Goal 还没说清楚/);
     assert.doesNotMatch(rootPage, /<div class="goal-purpose">/);
-    const ambiguous = await webFetch(
-      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirm_all_pending: true, reason: "确认" }),
-      },
-    );
-    assert.equal(ambiguous.status, 400);
-    assert.match(await ambiguous.text(), /不能验证上一轮/);
     const blankSubjectiveRejection = await webFetch(
       `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
@@ -2883,18 +2899,8 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          decisions: [
-            {
-              item_id: "web-tree-child",
-              decision: "confirm",
-              reason: "用户从可选 Web 页面确认保留这个 Draft 分支。",
-            },
-            {
-              item_id: "web-tree-child-relation",
-              decision: "confirm",
-              reason: "用户确认这条新工作属于当前 Goal。",
-            },
-          ],
+          confirm_all_pending: true,
+          reason: "用户在这份方案的 Web 决定页采用整份变更。",
           idempotency_key: "web-tree-decide",
         }),
       },
@@ -2919,14 +2925,176 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     const persisted = board.snapshot.goal_tree_proposals.find((item) => item.proposal_id === proposal.proposal_id);
     assert.equal(persisted?.items[0]?.decision?.authority_source, "web");
     assert.equal(persisted?.items[0]?.decision?.actor_id, "web-user");
+    const otherPersisted = board.snapshot.goal_tree_proposals.find(
+      (item) => item.proposal_id === otherProposal.proposal_id,
+    );
+    assert.ok(otherPersisted?.items.every((item) => item.decision === null));
     const updatedRootPage = await (await webFetch(`${origin}/goals/web-tree-root`)).text();
-    assert.match(updatedRootPage, /goal-status--clarifying[^>]*[\s\S]*?<span>目标澄清中<\/span>/);
-    assert.doesNotMatch(updatedRootPage, /<span class="goal-status goal-status--clarification_decision_pending"/);
+    const updatedRootStart = updatedRootPage.indexOf('<article class="goal-document" data-goal-view="web-tree-root"');
+    assert.ok(updatedRootStart >= 0);
+    const updatedRootHeaderEnd = updatedRootPage.indexOf("</header>", updatedRootStart);
+    assert.ok(updatedRootHeaderEnd >= 0);
+    const updatedRootDocument = updatedRootPage.slice(updatedRootStart, updatedRootHeaderEnd);
+    assert.match(updatedRootDocument, /goal-status--clarifying[^>]*[\s\S]*?<span>目标澄清中<\/span>/);
+    assert.doesNotMatch(updatedRootDocument, /goal-status--clarification_decision_pending/);
     const resultPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(resultPage, /最近处理结果/);
     assert.match(resultPage, /Goal 方案/);
     assert.match(resultPage, /已采用 2 项变化/);
-    assert.match(resultPage, /用户从可选 Web 页面确认保留这个 Draft 分支/);
+    assert.match(resultPage, /用户在这份方案的 Web 决定页采用整份变更/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web explains a materialization conflict before the user confirms a whole Goal Tree proposal", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-tree-preflight-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "web-tree-preflight-board",
+    title: "Web Tree Preflight",
+    actor_id: "web-user",
+    idempotency_key: "web-tree-preflight-init",
+  });
+  coordinator.createGoal(
+    "web-tree-preflight-board",
+    {
+      goal_id: "web-tree-accepted-parent",
+      title: "已经接受的父 Goal",
+      outcome: "保留已经确认的业务承诺",
+      why: "避免历史执行和验收对应的 Contract 被静默改写",
+      business_logic: "需求变化需要 successor，原 Goal 只允许明确的拆分收口。",
+      in_scope: ["保留已接受 Contract"],
+      out_of_scope: ["不原地重写业务承诺"],
+      required_inputs: ["用户已经接受的 Contract"],
+      promised_outputs: ["可追溯的原业务承诺"],
+      definition_state: "accepted",
+      decomposition_state: "abstract",
+      acceptance_criteria: [{
+        criterion_id: "web-tree-accepted-parent-contract",
+        statement: "原业务承诺保持可追溯",
+        decision_method: "inspection",
+        pass_condition: "已接受 Contract 不被原地改写",
+      }],
+    },
+    { actor_id: "web-user", idempotency_key: "web-tree-accepted-parent-create" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "web-tree-preflight-board",
+    actor_id: "runtime-tree-preflight",
+    goal_id: "web-tree-preflight-context",
+    rough_idea: "需求变化后尝试改写一个已经接受的父 Goal。",
+    idempotency_key: "web-tree-preflight-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-tree-preflight-board",
+    actor_id: "runtime-tree-preflight",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "web-tree-preflight-context",
+    summary: "错误示例：原地改写已接受父 Goal，而不是创建 successor。",
+    items: [
+      {
+        item_id: "web-tree-safe-child",
+        kind: "goal",
+        operation: "create",
+        payload: {
+          goal_id: "web-tree-safe-child",
+          title: "不能被半途创建的安全子 Goal",
+        },
+        source_refs: ["conversation://web-tree-preflight"],
+        reason: "验证整份确认失败时安全条目也不会单独落地。",
+        confidence: 1,
+        affected_objects: [{ object_type: "goal", object_id: "web-tree-safe-child" }],
+      },
+      {
+        item_id: "web-tree-invalid-accepted-update",
+        kind: "contract",
+        operation: "update",
+        payload: {
+          goal_id: "web-tree-accepted-parent",
+          title: "试图覆盖的全新业务承诺",
+          outcome: "把新需求写回旧 Goal",
+          why: "错误示例",
+          business_logic: "错误示例",
+          in_scope: ["新需求"],
+          out_of_scope: [],
+          required_inputs: ["新需求"],
+          promised_outputs: ["新结果"],
+          definition_state: "accepted",
+          decomposition_state: "frontier_open",
+          acceptance_criteria: [{
+            criterion_id: "web-tree-accepted-parent-contract",
+            statement: "新需求已经覆盖旧承诺",
+            decision_method: "inspection",
+            pass_condition: "错误示例",
+          }],
+        },
+        source_refs: ["conversation://web-tree-preflight"],
+        reason: "验证用户确认前能看到不可应用原因。",
+        confidence: 1,
+        affected_objects: [{ object_type: "goal", object_id: "web-tree-accepted-parent" }],
+      },
+    ],
+    idempotency_key: "web-tree-preflight-propose",
+  }).proposal;
+  const checked = coordinator.checkGoalTreeProposal({
+    board_id: "web-tree-preflight-board",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-tree-preflight",
+    idempotency_key: "web-tree-preflight-check",
+  });
+  assert.deepEqual(checked.conflict_item_ids, ["web-tree-invalid-accepted-update"]);
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "web-tree-preflight-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const page = await (await webFetch(`${origin}/decisions`)).text();
+    assert.match(page, /这份方案暂时不能采用/);
+    assert.match(page, /当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree/);
+    assert.doesNotMatch(page, /其中有风险信息或 Goal 拆解需要 Runtime 修正/);
+    assert.match(page, /已接受父 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
+    assert.match(page, /创建 successor \/ replacement Goal/);
+    assert.match(page, /当前 Goal Tree 尚未改变/);
+    assert.match(page, /value="confirm" disabled aria-disabled="true"/);
+    assert.match(page, /value="reject">退回修正/);
+    const directWholeConfirmation = await webFetch(
+      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          confirm_all_pending: true,
+          reason: "即使直接调用 Web 接口，也必须保证整份方案原子落地。",
+          idempotency_key: "web-tree-preflight-atomic-decision",
+        }),
+      },
+    );
+    assert.equal(directWholeConfirmation.status, 400);
+    const directError = await directWholeConfirmation.text();
+    assert.match(directError, /本次整份确认没有写入任何变更/);
+    assert.match(directError, /创建 successor \/ replacement Goal/);
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        goals: Array<{ goal_id: string }>;
+        goal_tree_proposals: Array<{
+          proposal_id: string;
+          state: string;
+          items: Array<{ state: string; decision: unknown }>;
+        }>;
+      };
+    };
+    assert.equal(board.snapshot.goals.some((goal) => goal.goal_id === "web-tree-safe-child"), false);
+    const stored = board.snapshot.goal_tree_proposals.find((item) => item.proposal_id === proposal.proposal_id);
+    assert.equal(stored?.state, "pending");
+    assert.equal(stored?.items.some((item) => item.decision != null), false);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

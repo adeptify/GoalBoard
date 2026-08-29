@@ -2684,7 +2684,14 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
   }
   const issuesByItem = new Map<string, Array<{ message: string; recovery: string }>>();
   for (const item of undecidedItems) {
+    const persistedConflict = item.state === "conflict"
+      ? [{
+          message: String(item.conflict?.message ?? L("这份方案仍有不能安全写入的内容，需要修正后再确认。")),
+          recovery: String(item.conflict?.recovery ?? L("当前 Goal Tree 不会改变；Runtime 会根据你的意见重新整理方案。")),
+        }]
+      : [];
     const issues = [
+      ...persistedConflict,
       ...(riskIssuesByItem.get(item.item_id) ?? []).map(goalTreeProposalIssueCopy),
       ...(decompositionIssuesByItem.get(item.item_id) ?? []).map((issue) =>
         goalTreeDecompositionIssueCopy(issue, view, proposal)),
@@ -2781,7 +2788,7 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
         ? L("这些 Goal 仍包含多个可独立交付的结果，或没有说明唯一主要结果和完成依据。", { count: leafInvalidItemCount })
         : decompositionOnly
         ? L("其中 {count} 个 Goal 还没有交代通用结果链、当前任务的必要路径，或下面仍有目标没有拆完。", { count: invalidItemCount })
-        : L("其中有风险信息或 Goal 拆解需要 Runtime 修正，修正前不会写入 Goal Tree。");
+        : L("当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree。");
   const invalidWhy = repairableRiskItemCount
     ? L("风险怎么处理应当由你决定。GoalBoard 会把处理类别和具体措施分开保存，并保留方案的其他内容。")
     : riskOnly
@@ -8589,7 +8596,9 @@ const CLIENT_SCRIPT = `
             method: "POST",
             headers: goalboardControlHeaders(),
             body: JSON.stringify({
-              decisions: itemIds.map((itemId) => ({ item_id: itemId, decision, reason })),
+              ...(decision === "confirm"
+                ? { confirm_all_pending: true }
+                : { decisions: itemIds.map((itemId) => ({ item_id: itemId, decision, reason })) }),
               reason,
             }),
           });

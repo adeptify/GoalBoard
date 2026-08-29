@@ -2756,18 +2756,13 @@ async function handleGoalBoardWebRequest(
             }
             return;
           }
-          if (body.confirm_all_pending === true) {
-            sendJson(response, 400, {
-              error: "Web 入口不能验证上一轮是否明确请求整份确认；请逐项选择，或在当前 Runtime 对话中确认整份提案。",
-            });
-            return;
-          }
           if (body.decisions != null && !Array.isArray(body.decisions)) {
             sendJson(response, 400, { error: "decisions 必须是条目决定列表" });
             return;
           }
           try {
             const proposalId = decodeURIComponent(goalTreeProposalMatch[1]);
+            const confirmsWholeProposal = body.confirm_all_pending === true;
             let decisions = body.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"];
             let decisionReason = typeof body.reason === "string" ? body.reason.trim() : "";
             if (Array.isArray(decisions) && decisions.length > 0 && decisions.every((decision) => decision.decision === "reject")) {
@@ -2808,9 +2803,11 @@ async function handleGoalBoardWebRequest(
                 authority_source: "web",
                 conversation_ref: `web:${options.boardId}`,
                 message_ref: `web-decision:${randomUUID()}`,
+                whole_confirmation_prompted: confirmsWholeProposal,
               },
               decisions,
               reason: decisionReason || undefined,
+              confirm_all_pending: confirmsWholeProposal,
               idempotency_key: String(body.idempotency_key ?? `web-goal-tree-decision-${randomUUID()}`),
             });
             sendJson(response, 200, result);
