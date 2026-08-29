@@ -39,6 +39,14 @@ const WORKBENCH_CLIENT_SCRIPT = renderGoalBoardWorkbenchClientScript();
 const WORKBENCH_STYLES = renderGoalBoardWorkbenchStylesheet();
 let webRequestSequence = 0;
 
+test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
+  assert.match(WORKBENCH_STYLES, /\.tree-copy > small \{[^}]*display:\s*block/);
+  assert.doesNotMatch(
+    WORKBENCH_STYLES,
+    /body\[data-desktop-shell="true"\] \.tree-copy small \{[^}]*display:\s*none/,
+  );
+});
+
 test("completed Goal presentation closes criteria without inventing Evidence", () => {
   const item = {
     status: "satisfied",

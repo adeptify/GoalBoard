@@ -4993,7 +4993,6 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .tree-node:focus-visible { outline: 0; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--blue) 62%, transparent); }
     body[data-desktop-shell="true"] .tree-node.is-selected { background: transparent; box-shadow: none; }
     body[data-desktop-shell="true"] .tree-copy strong { font-size: 11.5px; font-weight: 590; }
-    body[data-desktop-shell="true"] .tree-copy small { display: none; }
     body[data-desktop-shell="true"] .tree-node .goal-status { font-size: 8.5px; }
     body[data-desktop-shell="true"] .tree-footer {
       min-height: 28px;
