@@ -600,6 +600,16 @@ function renderTreeChildProgress(children: readonly WebGoalView[]): string {
   </span>`;
 }
 
+export function goalTreeReferenceLabel(goalId: string): string | null {
+  const normalized = goalId.trim();
+  const hierarchicalCode = normalized
+    .split(/[-_.:/\s]+/)
+    .find((segment) => /^g\d+[a-z]?$/i.test(segment));
+  if (hierarchicalCode) return hierarchicalCode.toUpperCase();
+  if (/^[a-z]{1,3}\d+[a-z]?$/i.test(normalized)) return normalized.toUpperCase();
+  return null;
+}
+
 function renderGoalTree(
   view: GoalBoardWebView,
   selectedGoalId: string,
@@ -628,6 +638,10 @@ function renderGoalTree(
     const nodeChildren = sortGoals(children.get(item.goal.goal_id) ?? []);
     const hasChildren = nodeChildren.length > 0;
     const searchValue = `${item.goal.goal_id} ${item.goal.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
+    const referenceLabel = goalTreeReferenceLabel(item.goal.goal_id);
+    const reference = referenceLabel == null
+      ? ""
+      : `<small title="Goal ID: ${escapeHtml(item.goal.goal_id)}" aria-label="${L("Goal 编号")} ${escapeHtml(referenceLabel)}">${escapeHtml(referenceLabel)}</small>`;
     return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
       <div class="tree-row">
         ${
@@ -636,7 +650,7 @@ function renderGoalTree(
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
         <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
-          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong><small title="Goal ID: ${escapeHtml(item.goal.goal_id)}">${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
+          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong>${reference}${renderTreeChildProgress(nodeChildren)}</span>
           ${renderStatus(item.status)}
         </button>
       </div>
