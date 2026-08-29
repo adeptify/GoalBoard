@@ -137,6 +137,8 @@ function escapeAttr(value: string): string {
 }
 
 export const EN: Record<string, string> = {
+  "租约还剩 {count} 分钟": "{count} minutes left on the lease",
+  "到期前续租可保持当前 Claim 和 Run": "Renew before expiry to keep the current Claim and Run",
   "等待你验收": "Waiting for your acceptance",
   "Runtime 能完成的检查已经结束，现在只剩你本人操作、判断或确认的完成标准。": "Runtime-checkable review is complete. Only the criteria that require your own action, judgment, or confirmation remain.",
   "完成真实操作并提交验收决定": "Complete the real action and submit your acceptance decision",
