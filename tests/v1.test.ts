@@ -623,6 +623,27 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   reopened.close();
 });
 
+test("migration 17 repairs a missing evidence corrections table even when its ledger entry remains", () => {
+  const { store } = fixture();
+  const databasePath = store.path;
+  assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 17").get());
+  store.db.exec("DROP TABLE evidence_corrections");
+  store.close();
+
+  const repaired = new SqliteGoalBoardStore(databasePath);
+  assert.ok(
+    repaired.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_corrections'")
+      .get(),
+  );
+  const migrationCount = repaired.db
+    .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE migration_id = 17")
+    .get() as { count: number };
+  assert.equal(migrationCount.count, 1);
+  assert.doesNotThrow(() => repaired.snapshot("board-1"));
+  repaired.close();
+});
+
 test("migration 12 reconciles historical Runs and clarification sessions exactly once", () => {
   const { store, coordinator } = fixture();
   const dialogue = coordinator.startDraftDialogue({
