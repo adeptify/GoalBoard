@@ -25,11 +25,11 @@
 | GB-20260829-08 | 租约过期后 Contract 同时显示失效与 active/started | GoalBoard 租约派生与物化一致性缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260829-09 | `repo:` 项目内 Evidence 被降级且没有可修正格式 | GoalBoard locator 协议可发现性设计债 | 设计债 | 已批准 | 已安装 | P2 |
 | GB-20260829-10 | 升级后的旧服务配置允许 restart 但无法完成修复 | GoalBoard 服务恢复动作缺陷 | 已确认 | 已批准 | 已安装 | P1 |
-| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
+| GB-20260829-11 | 活跃长任务无续租入口，执行中静默过期 | GoalBoard 租约续期与可见性设计缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 已安装 | P1 |
 | GB-20260829-13 | Opportunity 有引用但看不到研究过程与样本漏斗 | CGS 领域模型与编辑台设计债 | 设计债、接入问题 | 已批准 | 未开始（CGS） | P1（CGS） |
-| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
-| GB-20260829-15 | 子 Goal 用样本验收却被理解成父级能力已经具备 | GoalBoard 跨层 Contract 覆盖设计债 + CGS 建模错误 | 设计债、接入问题 | 待审批 | 未开始 | P1 |
+| GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 已安装 | P1 |
+| GB-20260829-15 | 子 Goal 用样本验收却被理解成父级能力已经具备 | GoalBoard 跨层 Contract 覆盖设计债 + CGS 建模错误 | 设计债、接入问题 | 已批准 | 已安装 | P1 |
 
 ---
 
@@ -578,7 +578,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 **来源**：CGS G2B executor + Grok 实现 + Codex 独立 review 消费者反馈
 **Bug 确认**：已确认，属于 GoalBoard 租约续期与剩余时间可见性的设计缺陷；不是 GB08 的过期后展示冲突重复项
 **修复决定**：用户已于 2026-08-29 批准修复
-**修复状态**：已修复（工程验证通过，产品实操与用户验收待完成）；已新增 owner-only 幂等续租、剩余时间/临期动作、Runtime MCP/Skill 路由和 Web 提示
+**修复状态**：已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；工程验证通过，产品实操与用户验收待完成
 
 ### 1. 真实场景
 
@@ -622,6 +622,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 ### 10. 验收边界
 
 - **工程验证**：通过本卡定向验证。原 actor 到期前续租保持同一 Claim/Run，`expires_at/renewed_at` 与单一 `claim.renewed` 事件一致，幂等重放不重复写；他人、超策略、过期和释放后续租均被拒绝；Contract 返回剩余秒数、临期窗口和 `next_action=renew_claim`；MCP schema、Skill 与 Web 提示均有回归覆盖；仓库现成 `tsc --noEmit` 通过。分文件回归为 MCP 29/29、Web 38/39、V1 81/83；剩余 3 项均在使用当前 Runtime 已移除的静态 `databasePath/boardId` Server 测试夹具时得到 `SQLITE_CANTOPEN`，与本卡新增续租路径无调用交集，未据此宣称全仓绿灯。
+- **安装验证**：v0.1.5 全仓测试在正常文件系统权限下 273/273 通过；GitHub Actions `33256824008` 从 `main@97b971e` 生成 arm64/x64 DMG 与 App ZIP，四个主产物均通过自带 SHA-256 校验。本机已安装云构建 arm64 App 与 0.1.5 Core，修复自有 LaunchAgent 后 `service status=running`、`/health` 正常、根页面 HTTP 200。此层只证明最终二进制与服务已安装并可启动，不代替长任务产品旅程。
 - **产品实操**：问题已在真实 G2B 长链路中复现；续租后的同 Run 连续执行、临期提示和掉线后过期恢复均为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。仍需在最终安装产物中，用超过原 30 分钟窗口或可控时钟的完整实现 + review 旅程验证一次；用户本人是否认为提示时机和续租频率不打扰，仍需用户验收。
 
@@ -632,7 +633,7 @@ GoalBoard 把未知 scheme 当作不透明外部 locator，是为了不调用任
 **来源**：CGS G2B self_verifier 消费者反馈；Review `review-ad251867-5c49-4fab-8806-f98fcb9a3d93`
 **Bug 确认**：已确认，属于 GoalBoard Review obligation 条件路由与人工等待状态缺陷；不是 CGS 误用，也不是 `inconclusive` verdict 本身的缺陷
 **修复决定**：用户已于 2026-08-29 批准修复
-**修复状态**：已修复（工程验证通过，产品实操与用户验收待完成）；Runtime 与人工验收已按结构化 criterion 分流，并新增 `waiting_for_human` 状态
+**修复状态**：已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；工程验证通过，产品实操与用户验收待完成
 
 ### 1. 真实场景
 
@@ -676,6 +677,7 @@ Runtime 已完成所有自己有权完成的复核，却没有一个规范动作
 ### 10. 验收边界
 
 - **工程验证**：通过。混合 inspection + `human_decision` Goal 会生成分离的 Runtime 与 `human_approver` obligation；Runtime 部分通过后派生 `waiting_for_human`，Available 不再提供 Runtime Review action，Blocked/Explain 返回 `review.user_approval_required`、criterion、obligation 和 `open_goalboard`；只有 Human Review 而缺少 human-verdict Evidence 时仍等待，两者齐备才进入 `completion_pending`。纯 Runtime criterion 的 `inconclusive` 仍可重试；历史混合 obligation 会在下一次安全选择时拆分。完整回归为 V1 86/86、MCP 29/29、Web 39/39，TypeScript 和 `git diff --check` 通过。受限沙箱的临时目录曾使 MCP/Web 夹具出现位置漂移的 `SQLITE_CANTOPEN`，相同命令在正常文件系统环境全绿，确认不是本卡代码回归。
+- **安装验证**：v0.1.5 全仓测试在正常文件系统权限下 273/273 通过；GitHub Actions `33256824008` 的双架构产物与 SHA-256 已复核，本机 0.1.5 App、Core 和 owned Web service 已安装并健康。尚未用真实 mixed Review Goal 完成人工接棒旅程。
 - **产品实操**：真实 G2B 已复现修复前循环；修复后的 Web 人工待办、Runtime 停止领取、用户提交真实决定并回到完成判定均为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。仍需在最终安装产物中用真实 G2B Goal 走完“工程复核结束 → 明确等待王一骏 → 本人操作与验收 → Goal 完成”，并确认不会新增重复 Claim、Run 或 Review。用户本人是否认可文案和入口也仍属于用户验收。
 
@@ -740,7 +742,7 @@ GoalBoard 将 Evidence 设计成跨项目的验收与追溯容器，初衷是让
 **来源**：Arena Goal Tree 拆分消费者反馈
 **Bug 确认**：已确认，属于 GoalBoard MCP 工具契约自描述缺陷；不是 Arena 接入误用
 **修复决定**：已批准修复
-**修复状态**：源码已实现并完成工程验证；尚未打包、安装、完成 Arena 产品实操或 Owner 最终验收
+**修复状态**：已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；Arena 产品实操与 Owner 最终验收待完成
 
 ### 1. 真实场景
 
@@ -784,6 +786,7 @@ Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，�
 ### 10. 验收边界
 
 - **工程验证**：通过。工具列表真实返回 8 个 kind 的条件化 payload schema；Goal schema 暴露最小字段与验收条件，relation/dependency 暴露枚举、示例和双向语义；缺字段 relation/dependency 会在存储前分别返回 `goal_tree_proposal.relation_required` / `goal_tree_proposal.dependency_required`，指出字段与示例，并保证 pending Proposal 数仍为零。定向 MCP + V1 为 116/116，TypeScript 通过；完整回归在正常本地权限下为 271/271。受限环境首次出现的 12 项失败均为临时 SQLite 与 npm 日志不可写，同一代码在正常权限下全绿。
+- **安装验证**：v0.1.5 最终全仓回归为 273/273；GitHub Actions `33256824008` 双架构产物及 SHA-256 已复核，本机 0.1.5 App、Core 与 Web service 已安装并健康。当前 Session 不会热加载新 MCP schema，产品实操仍需新开 Session。
 - **产品实操**：修复前已由 Arena 消费者真实复现；修复后的新 MCP declaration 是否足以让一个不读源码的新 Session 构造 7 个一级 Draft Goal、父子关系和依赖关系，仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。需要打包安装后新开 Session，在 Arena 仅依赖工具声明提交一次整树提案，并由用户检查 Goal Tree 层级与依赖方向；当前 Session 不会热加载这次 schema 变更。
 
@@ -794,7 +797,7 @@ Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，�
 **来源**：CGS G2 / G2A 产品实操反馈
 **Bug 确认**：确认存在严重误导体验；主要归因是 GoalBoard 跨层 Contract 覆盖与 Risk 解决依据的设计债，同时存在 CGS 把能力目标降成样本验收的建模错误；不是 `satisfied` 状态机计算错误
 **修复决定**：Owner 已批准 GoalBoard Core 防误导修复；CGS Contract 纠偏仍需在 CGS 项目中单独推进
-**修复状态**：GoalBoard 源码与数据库迁移已实现，工程验证通过；尚未打新版本、安装最终 App，也未完成产品实操或 Owner 验收
+**修复状态**：GoalBoard 修复已包含在 v0.1.5 Preview 并安装到本机 App、Core 与常驻服务；产品实操与 Owner 验收待完成
 
 ### 1. 真实场景
 
@@ -838,5 +841,6 @@ GoalBoard 侧复用现有 decomposition review，新增 `contract_coverage`：�
 ### 10. 验收边界
 
 - **工程验证**：通过。TDD 覆盖缺失映射、部分映射、错误后代引用、完整映射持久化、子 Contract 反向投影、部分覆盖的派生阻断和父级自动完成防线；Risk 覆盖直接状态写入、Goal Tree 提案、Web 表单、readback 与历史无依据展示；migration 21 从缺列旧库恢复。`pnpm test` 完成构建、安装包回归及全部 273/273 测试，`pnpm typecheck` 与 `git diff --check` 通过。
+- **安装验证**：GitHub Actions `33256824008` 从 `main@97b971e` 构建 v0.1.5 arm64/x64，四个主产物均通过自带 SHA-256；本机云构建 arm64 App 的 bundle 版本为 0.1.5，Core 安装收据指向 `releases/goalboard-0.1.5`，owned LaunchAgent 与 HTTP 健康检查通过。此层不证明 CGS 的父子 Contract 已经完成真实纠偏。
 - **产品实操**：修复前的“样本合同通过但真实研究能力不存在”已由 CGS 编辑台实际使用暴露。修复后的 Web HTML、HTTP 写入和 packed-release 自动化链路已覆盖，但尚未在新安装的最终 GoalBoard App 中由真人走完“部分覆盖阻断 → 补全映射 → 父级收口”旅程，因此仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。打包安装后需用两条真实旅程验收：样本 spike 完成但父能力保持开放；所有父承诺确由子树覆盖后父级才收口。同时检查 Risk resolved 是否能看懂解决依据与剩余缺口，并由用户确认状态文案不会再把局部工程完成提升为能力完成。
