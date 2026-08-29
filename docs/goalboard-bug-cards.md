@@ -29,6 +29,7 @@
 | GB-20260829-12 | Runtime 反复领取只剩人工判断的复核 | GoalBoard Review 条件路由与人工等待状态缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
 | GB-20260829-13 | Opportunity 有引用但看不到研究过程与样本漏斗 | CGS 领域模型与编辑台设计债 | 设计债、接入问题 | 已批准 | 未开始（CGS） | P1（CGS） |
 | GB-20260829-14 | Goal Tree 提案 payload 需要查源码才能构造 | GoalBoard MCP 契约自描述缺陷 | 已确认 | 已批准 | 工程验证通过 | P1 |
+| GB-20260829-15 | 子 Goal 用样本验收却被理解成父级能力已经具备 | GoalBoard 跨层 Contract 覆盖设计债 + CGS 建模错误 | 设计债、接入问题 | 待审批 | 未开始 | P1 |
 
 ---
 
@@ -785,3 +786,57 @@ Arena 的 clarifier 已把一个 Root Draft 澄清成 7 个一级 Draft Goal，�
 - **工程验证**：通过。工具列表真实返回 8 个 kind 的条件化 payload schema；Goal schema 暴露最小字段与验收条件，relation/dependency 暴露枚举、示例和双向语义；缺字段 relation/dependency 会在存储前分别返回 `goal_tree_proposal.relation_required` / `goal_tree_proposal.dependency_required`，指出字段与示例，并保证 pending Proposal 数仍为零。定向 MCP + V1 为 116/116，TypeScript 通过；完整回归在正常本地权限下为 271/271。受限环境首次出现的 12 项失败均为临时 SQLite 与 npm 日志不可写，同一代码在正常权限下全绿。
 - **产品实操**：修复前已由 Arena 消费者真实复现；修复后的新 MCP declaration 是否足以让一个不读源码的新 Session 构造 7 个一级 Draft Goal、父子关系和依赖关系，仍为 `UNVERIFIED`。
 - **Owner 最终验收**：未通过。需要打包安装后新开 Session，在 Arena 仅依赖工具声明提交一次整树提案，并由用户检查 Goal Tree 层级与依赖方向；当前 Session 不会热加载这次 schema 变更。
+
+---
+
+## GB-20260829-15：子 Goal 用样本验收却被理解成父级能力已经具备
+
+**来源**：CGS G2 / G2A 产品实操反馈
+**Bug 确认**：确认存在严重误导体验；主要归因是 GoalBoard 跨层 Contract 覆盖与 Risk 解决依据的设计债，同时存在 CGS 把能力目标降成样本验收的建模错误；不是 `satisfied` 状态机计算错误
+**修复决定**：待 Owner 审批；CGS Contract 纠偏与 GoalBoard Core 防误导修复需要分别推进
+**修复状态**：已完成只读复现与归因，尚未修改源码、打包、安装或完成任何验收
+
+### 1. 真实场景
+
+CGS 父 Goal G2 承诺把开放研究等来源变成可解释的内容机会。子 Goal G2A 却把完成条件收缩成“开放研究、半命题信号、团队输入各有一个结构化样本”，并只把需求、供给缺口、热点和 KOL 关注保存成标签。样本与 schema 测试通过后，G2A 显示 `satisfied`，来源覆盖 Risk 也被更新为 `resolved`；用户进入真实编辑台才发现多源搜索、需求/供给分析、反证覆盖、研究缺口和机会形成过程并不存在，第一步实际只是 demo / contract spike。
+
+### 2. 事实与归因
+
+CGS 当前 README、G2A 合同和代表性扫描都确认首轮目标是三类来源各一个代表性样本，并明确没有登录态平台搜索、账号后台、搜索量和完整供给样本；这与“具备开放研究到可解释机会的能力”不是同一层结果。GoalBoard 当前叶子检查只验证该叶子自己的 promised outputs、验收条件和 Evidence 是否自洽；复合父 Goal 收口只要求通用路径有子 Goal 归属、没有开放子树，之后 `satisfyClosedCompoundGoalIfReady` 只看全部 active child 是否 `satisfied`。系统没有保存“父 promised output / criterion 由哪些子 output / criterion 覆盖、是完整还是部分覆盖”的 canonical 映射。`setRiskState(... resolved ...)` 也只校验合法状态和非空理由，不要求解决证据或剩余缺口。因而 G2A 对它被批准的样本 Contract 来说确实完成，状态机没有算错；错误来自 CGS Contract 语义降级，以及 GoalBoard 未防止这种降级被当成父级能力证据。
+
+### 3. 现有流程的问题
+
+Runtime 可以把父级能力拆成一个名字相近但验收更窄的子 Goal，用户确认时只看到每条 Contract 本身成立，却看不到父承诺被哪些子结果完整覆盖。执行者随后按较窄 Contract 正确交付，GoalBoard 又用绿色 `satisfied` 和 `resolved` 表达局部事实，界面没有明确“只完成样本合同，不代表父能力具备”。错误直到用户操作最终产品才暴露；此时后续编辑台、制作和策略 Goal 已经可能把假机会当成可信输入。
+
+### 4. 设计根因与初衷
+
+GoalBoard 把自然语言 Contract 的含义与取舍交给用户确认，而不是让系统用模型相似度代替人的业务判断；accepted Contract 保持不可静默修改，closed compound 依赖用户确认“这棵树已经拆完整”，所有子项完成后再自动汇总。这能避免系统擅自发明验收语义。Risk 同样采用显式状态加理由，避免自动化替用户宣称风险已消失。初衷合理。缺陷是用户确认前缺少一层结构化责任链：父承诺和父验收没有逐项委托到子结果，Risk 的 resolved 也没有结构化解决依据，因此“人确认语义”退化成“人只能凭标题猜语义”。
+
+### 5. 当前影响
+
+影响所有通过子 Goal 交付父级能力的复杂工作，尤其是研究、数据、AI 评测和运营能力建设。单个叶子可以在工程上完全通过，却让执行者、Owner 和后续 Goal 误以为更高层能力已经建立；这会污染优先级、依赖和决策输入，并把真实缺口推迟到产品实操阶段。本次已在 CGS 真实使用中发生，阻断可信的机会发现闭环。数据记录本身没有损坏，但状态表达与能力事实之间出现了高风险差距。
+
+### 6. 复杂度审查
+
+- **当前必须**：在父 Goal 收口时，要求每个 parent promised output 和 acceptance criterion 显式映射到一个或多个子 Goal 的具体 promised output / criterion，标明完整、部分或仍需集成验收；存在部分或未覆盖项时不能成为 `closed_compound`。该映射必须成为可读取的 canonical 事实，并在父子详情中显示。子 Goal 的绿色状态要写成“本 Goal 按当前 Contract 已满足”，同时展示对父级的覆盖与剩余差距。Risk 进入 `resolved` 时要提供结构化 resolution basis、Evidence 引用和 residual gaps；不能通过解析风险描述自由文本自动判断。
+- **可以延后**：对父子自然语言做相似度提醒、跨多层自动汇总覆盖率、历史 Goal 的批量审计、按行业生成能力模板和对未解决风险自动催办。
+- **应当删除**：用 LLM / embedding 分数自动裁定子 Contract 是否语义等价；因为父级仍有缺口就否认子 Goal 对其局部 Contract 的真实完成；自动把历史 `satisfied` 或 `resolved` 改回去；把三个样本、标签数量或测试通过数包装成能力覆盖率。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1，但需 Owner 审批具体数据模型。CGS 应立即把当前 G2A 明确定性为“Opportunity 合同与代表样本验证”，并把真实多源研究与机会分析补成新的可执行 Goal，或经用户确认重开原 Contract；原 source coverage Risk 若描述的是完整能力，也应重新打开。GoalBoard Core 需要阻止今后的跨层静默降级并诚实展示局部完成，不能替 CGS 自动补齐研究能力。
+
+### 8. 修复前后体验差异
+
+- **修复前**：用户看到 G2A `satisfied`、Risk `resolved` → 自然理解为机会研究能力已完成 → 进入编辑台才发现只有三个样本和标签。
+- **修复后**：三个样本仍可被真实标记为“本 Goal Contract 已满足” → 同一页面明确显示它只覆盖父级的合同/样本验证，真实多源搜索、供需判断和机会形成仍是部分或未覆盖 → 父 Goal 不能收口，Risk 若解决依据不足仍保持 open → 用户可以选择补建研究 Goal，或明确缩小父级承诺后再确认。
+
+### 9. 最小修复范围
+
+GoalBoard 侧在现有 Goal Tree decomposition review 上新增结构化 parent result / acceptance coverage，并在用户确认 closed compound 时持久化；父级收口与自动完成读取该映射，Web、Contract、Available/Explain 展示局部完成和剩余覆盖。Risk 状态转换对新的 `resolved` 写入新增 resolution basis、Evidence refs 与 residual gaps，历史记录缺失时只显示“未记录解决依据”，不自动篡改状态。保留既有叶子 Evidence、Review 和 `satisfied` 事实，不做语义模型、向量索引或第二套规划系统。CGS 源码和 GoalBoard Core 分仓修改、分开提交；回滚时保留新增字段为可选历史事实，并恢复旧派生逻辑，不删除用户记录。
+
+### 10. 验收边界
+
+- **工程验证**：本轮仅完成源码与 CGS 合同/样本的只读核对。已确认当前父级自动完成只依赖 active children 的 fulfillment，Risk resolved 只依赖状态与理由；尚无失败测试或实现，不能报告工程验证通过。
+- **产品实操**：修复前的“样本合同通过但真实研究能力不存在”已由 CGS 编辑台实际使用暴露；修复后的跨层覆盖展示、父级阻断、Risk 解决依据和历史兼容均为 `UNVERIFIED`。
+- **Owner 最终验收**：未通过。需先审批数据模型与 CGS 纠偏方式；实现后用“样本 spike 完成但父能力未完成”和“所有父承诺确实由子树覆盖”两条真实旅程验收，并由用户确认状态文案不会再次把局部工程完成提升为能力完成。
