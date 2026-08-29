@@ -114,8 +114,10 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-workbench-bar \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) 48px auto;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-titlebar-drag \{[\s\S]*width: 48px;[\s\S]*user-select: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-brief-item,[\s\S]*box-shadow:/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: clamp\(420px, calc\(100dvh - 340px\), 760px\);[\s\S]*display: grid;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: clamp\(280px, calc\(100dvh - 510px\), 590px\);[\s\S]*align-items: stretch;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: max\(420px, calc\(100dvh - 340px\)\);[\s\S]*display: grid;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: max\(280px, calc\(100dvh - 510px\)\);[\s\S]*align-items: stretch;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-stage > \.focus-section-card-reveal \{[\s\S]*grid-area: 1 \/ 1;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel\[data-goal-panel="overview"\]:not\(\[hidden\]\) \.goal-focus-main,[\s\S]*\.goal-focus-aside \{[\s\S]*grid-template-rows: auto minmax\(0, 1fr\);[\s\S]*align-content: stretch;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-deck \{[\s\S]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tui-pane\[data-tui-read-only\] \.tui-tabs,[\s\S]*\.tui-menu \{[\s\S]*display: none !important;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /body\.settings-page\[data-desktop-shell="true"\]:has\(\.settings-navigation\)/);

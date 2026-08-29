@@ -31,7 +31,7 @@ Implementation inventory:
 | Local identity footer | Fixed to the directory bottom; shows local identity and opens device-wide Global Settings |
 | Project Goal tabs | Up to eight per project; opening reuses, closing selects a neighbor when needed, and local storage restores each project's tab set |
 | Goal Detail | Preserves status, facts, Contract, overview, completion, progress, relationships, records, decisions, evidence, risks, impacts, and Runtime behavior |
-| Detail work canvas | Context, Progress, Relationships, and Record occupy the full Desktop width and a responsive minimum height; legacy relationship columns are reset before the shared stage is laid out |
+| Detail work canvas | Current, Context, Progress, Relationships, and Record occupy the full Desktop width and remaining viewport height; inactive section bodies share the active body’s Grid cell instead of reserving extra rows, and tall windows are not capped at a fixed canvas height |
 | Dark record ledger | Execution headers and supporting text use theme tokens, preserving strong dark-surface contrast without hardcoded light header fills |
 | First-viewport work | Next Step, completion requirements, compact context, and Runtime companion continue directly below the Contract |
 | Soft work surfaces | Contract, current-work, context, Runtime, active navigation, and selected tabs use tonal panels and low shadows instead of pervasive divider lines |

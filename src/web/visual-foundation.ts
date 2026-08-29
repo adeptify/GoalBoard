@@ -5331,7 +5331,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .goal-workspace-nav button::after { display: none; }
     body[data-desktop-shell="true"] .goal-workspace-nav button[aria-selected="true"] { color: var(--ink); background: var(--paper); box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 50%, transparent); }
     body[data-desktop-shell="true"] .goal-workspace-panels {
-      min-height: clamp(420px, calc(100dvh - 340px), 760px);
+      min-height: max(420px, calc(100dvh - 340px));
       padding: 8px 8px 40px;
       display: grid;
       align-items: stretch;
@@ -5363,8 +5363,11 @@ export const VISUAL_FOUNDATION_STYLES = `
       align-content: stretch;
     }
     body[data-desktop-shell="true"] .goal-workspace-panel:not([hidden]) .focus-section-stage {
-      min-height: clamp(280px, calc(100dvh - 510px), 590px);
+      min-height: max(280px, calc(100dvh - 510px));
       align-items: stretch;
+    }
+    body[data-desktop-shell="true"] .goal-workspace-panel:not([hidden]) .focus-section-stage > .focus-section-card-reveal {
+      grid-area: 1 / 1;
     }
     body[data-desktop-shell="true"] .goal-workspace-panel:not([hidden]) .focus-section-card-reveal.is-active {
       width: 100%;
@@ -5373,6 +5376,19 @@ export const VISUAL_FOUNDATION_STYLES = `
     }
     body[data-desktop-shell="true"] .goal-workspace-panel:not([hidden]) .focus-section-card-reveal.is-active .focus-section-card-content {
       width: 100%;
+      min-height: 100%;
+    }
+    body[data-desktop-shell="true"] .goal-workspace-panel[data-goal-panel="overview"]:not([hidden]) .goal-focus-layout {
+      min-height: 100%;
+      align-items: stretch;
+    }
+    body[data-desktop-shell="true"] .goal-workspace-panel[data-goal-panel="overview"]:not([hidden]) .goal-focus-main,
+    body[data-desktop-shell="true"] .goal-workspace-panel[data-goal-panel="overview"]:not([hidden]) .goal-focus-aside {
+      grid-template-rows: auto minmax(0, 1fr);
+      align-content: stretch;
+    }
+    body[data-desktop-shell="true"] .goal-workspace-panel[data-goal-panel="overview"]:not([hidden]) .goal-focus-criteria,
+    body[data-desktop-shell="true"] .goal-workspace-panel[data-goal-panel="overview"]:not([hidden]) .companion-runtime {
       min-height: 100%;
     }
     body[data-desktop-shell="true"] .goal-focus-layout { gap: 10px; }
