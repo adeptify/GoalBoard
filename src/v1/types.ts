@@ -43,6 +43,98 @@ export type RiskBlockingMode =
   | "completion"
   | "invalidate_on_trigger";
 export type GoalMode = "disabled" | "preferred" | "required";
+export type ProjectGuidanceKind =
+  | "context"
+  | "requirement"
+  | "constraint"
+  | "convention"
+  | "workflow"
+  | "quality_bar";
+
+export interface ProjectGuidanceEntryRecord {
+  guidance_id: string;
+  board_id: string;
+  position: number;
+  revision: number;
+  active: boolean;
+  kind: ProjectGuidanceKind;
+  content: string;
+  content_hash: string;
+  source_refs: string[];
+  created_by: string;
+  confirmation_summary: string;
+  reason: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+}
+
+export type ProjectGuidanceChangeKind = "created" | "edited" | "deactivated" | "restored";
+
+export interface ProjectGuidanceRevisionRecord {
+  revision_id: string;
+  guidance_id: string;
+  board_id: string;
+  revision: number;
+  kind: ProjectGuidanceKind;
+  content: string;
+  content_hash: string;
+  source_refs: string[];
+  active: boolean;
+  changed_by: string;
+  change_kind: ProjectGuidanceChangeKind;
+  confirmation_summary: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface ProjectGuidanceView {
+  entries: ProjectGuidanceEntryRecord[];
+  inactive_entries: ProjectGuidanceEntryRecord[];
+  revisions: ProjectGuidanceRevisionRecord[];
+  virtual_document: string;
+  runtime_prompt_prefix: string;
+}
+
+export interface AddProjectGuidanceInput {
+  board_id: string;
+  actor_id: string;
+  kind: ProjectGuidanceKind;
+  content: string;
+  source_refs?: string[];
+  reason: string;
+  confirmation_summary: string;
+  user_confirmed: boolean;
+  idempotency_key: string;
+}
+
+export interface AddProjectGuidanceResult {
+  entry: ProjectGuidanceEntryRecord;
+  created: boolean;
+  observed_event_cursor: number;
+  replayed: boolean;
+}
+
+export interface UpdateProjectGuidanceInput {
+  board_id: string;
+  guidance_id: string;
+  actor_id: string;
+  action: "edit" | "deactivate" | "restore";
+  kind?: ProjectGuidanceKind;
+  content?: string;
+  source_refs?: string[];
+  reason: string;
+  confirmation_summary: string;
+  user_confirmed: boolean;
+  idempotency_key: string;
+}
+
+export interface UpdateProjectGuidanceResult {
+  entry: ProjectGuidanceEntryRecord;
+  revision: ProjectGuidanceRevisionRecord;
+  observed_event_cursor: number;
+  replayed: boolean;
+}
 
 export interface AcceptanceCriterion {
   criterion_id: string;
@@ -801,6 +893,7 @@ export interface BoardSnapshot {
   clarification_turns: ClarificationTurnRecord[];
   goal_tree_proposals: GoalTreeProposalRecord[];
   planning_method_packs: PlanningMethodPack[];
+  project_guidance: ProjectGuidanceEntryRecord[];
 }
 
 export interface GoalContractView {
@@ -832,6 +925,7 @@ export interface GoalContractView {
   clarification_sessions: ClarificationSessionRecord[];
   clarification_turns: ClarificationTurnRecord[];
   goal_tree_proposals: GoalTreeProposalRecord[];
+  project_guidance: ProjectGuidanceEntryRecord[];
 }
 
 export interface CreateGoalInput {

@@ -830,13 +830,23 @@ fn should_attempt_web_recovery(consecutive_failures: u8, owns_web_child: bool) -
 }
 
 fn goalboard_reload_url(current: Option<Url>, fallback: &str) -> Option<Url> {
-    current
+    let mut url = current
         .filter(|url| {
             url.scheme() == "http"
                 && url.host_str() == Some("127.0.0.1")
                 && url.port_or_known_default() == Some(4173)
         })
-        .or_else(|| Url::parse(fallback).ok())
+        .or_else(|| Url::parse(fallback).ok())?;
+    let query = url
+        .query_pairs()
+        .filter(|(key, _)| key != "desktop")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.query_pairs_mut()
+        .clear()
+        .extend_pairs(query)
+        .append_pair("desktop", "1");
+    Some(url)
 }
 
 fn reload_goalboard_webviews(app: &tauri::AppHandle) {
@@ -1383,6 +1393,15 @@ mod tests {
             .unwrap()
             .as_str(),
             "http://127.0.0.1:4173/?desktop=1"
+        );
+        assert_eq!(
+            goalboard_reload_url(
+                Url::parse("http://127.0.0.1:4173/projects/project-a/goals/goal-a#records").ok(),
+                "http://127.0.0.1:4173/?desktop=1"
+            )
+            .unwrap()
+            .as_str(),
+            "http://127.0.0.1:4173/projects/project-a/goals/goal-a?desktop=1#records"
         );
     }
 

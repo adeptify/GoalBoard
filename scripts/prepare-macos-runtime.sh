@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESOURCE_DIR="$REPO_ROOT/desktop/src-tauri/resources/goalboard-runtime"
-NODE_VERSION="${GOALBOARD_NODE_VERSION:-22.23.2}"
+NODE_VERSION="${GOALBOARD_NODE_VERSION:-24.14.0}"
 REQUESTED_ARCH="${GOALBOARD_MACOS_ARCH:-$(uname -m)}"
 
 case "$REQUESTED_ARCH" in
@@ -42,6 +42,9 @@ find "$RESOURCE_DIR" -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} +
 mkdir -p "$RESOURCE_DIR/runtime"
 cp -R "$REPO_ROOT/dist" "$RESOURCE_DIR/dist"
 cp -R "$REPO_ROOT/skills" "$RESOURCE_DIR/skills"
+if [[ -d "$REPO_ROOT/vendor" ]]; then
+  cp -R "$REPO_ROOT/vendor" "$RESOURCE_DIR/vendor"
+fi
 cp "$REPO_ROOT/package.json" "$RESOURCE_DIR/package.json"
 cp "$NODE_HOME/bin/node" "$RESOURCE_DIR/runtime/node"
 chmod 755 "$RESOURCE_DIR/runtime/node"

@@ -1,0 +1,29 @@
+{
+  "schema": "search-evidence-package-provenance-v1",
+  "package": {
+    "name": "@adeptify/search-evidence-layer",
+    "version": "0.4.1",
+    "license": "MIT",
+    "node": ">=24"
+  },
+  "source": {
+    "repository": "git+https://github.com/adeptify/trick-catalog.git",
+    "path": "search-evidence-layer",
+    "commit": "149a69e2d3c1e2329aa4aa9c51ed8634c80b6108",
+    "dirty": false,
+    "dirtyPaths": []
+  },
+  "artifact": {
+    "file": "adeptify-search-evidence-layer-0.4.1.tgz",
+    "bytes": 268243,
+    "sha256": "6b8b26164d1a493039dcaac663166c92ff3a4723bb65a18740fb7ea22685eda7",
+    "integrity": "sha512-Ift5hvW+T4O6n1n3akUmyNeqg0V+BgI34Hjnly8ldYS77OJHlDtlBxS/QI8ozGaE/8aGk0cV0lR8ppVobpwgfw=="
+  },
+  "build": {
+    "node": "24.19.0",
+    "pnpm": "11.9.0",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "generatedAt": "2026-08-14T08:44:15.962Z"
+  }
+}

@@ -8,6 +8,8 @@ import {
 import {
   DEFAULT_GOAL_POLICY,
   type AvailableGoal,
+  type AddProjectGuidanceInput,
+  type AddProjectGuidanceResult,
   type BoardSnapshot,
   type BlockedAvailableGoal,
   type ClaimDecision,
@@ -55,13 +57,24 @@ import {
   type ImpactAccess,
   type ImpactBindingRecord,
   type ParallelExecutionSuggestion,
+  type ProjectGuidanceView,
   type ReadyGoal,
   type RevalidationDecision,
   type ReviewRecord,
   type RewireRecord,
   type RiskRecord,
   type RunRecord,
+  type ValidityState,
+  type UpdateProjectGuidanceInput,
+  type UpdateProjectGuidanceResult,
 } from "./types.js";
+import {
+  isProjectGuidanceKind,
+  normalizeProjectGuidanceContent,
+  PROJECT_GUIDANCE_ENTRY_MAX_CHARS,
+  PROJECT_GUIDANCE_TOTAL_MAX_CHARS,
+  projectGuidanceView,
+} from "./project-guidance.js";
 import { requiresParentCompletionConfirmation } from "./parent-completion.js";
 import {
   goalTreeProposalItemValidationIssues,
@@ -434,6 +447,11 @@ interface NormalizedGoalTreeProposalItem {
   supersedes_item_id: string | null;
 }
 
+type GoalTreeProposalItemShape = Pick<
+  GoalTreeProposalItemRecord,
+  "item_id" | "kind" | "operation" | "payload"
+>;
+
 function goalTreeProposalRelationPayloads(
   item: GoalTreeProposalItemInput,
   itemIndex: number,
@@ -783,6 +801,368 @@ export class GoalBoardCoordinator {
         hash,
         outcome,
         at,
+      );
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  readProjectGuidance(boardId: string): ProjectGuidanceView {
+    this.requireBoard(boardId);
+    const board = this.store.db
+      .prepare("SELECT title FROM boards WHERE board_id = ?")
+      .get(boardId) as Row;
+    return projectGuidanceView({
+      projectTitle: asText(board.title),
+      entries: this.store.listProjectGuidanceEntries(boardId, true),
+      revisions: this.store.listProjectGuidanceRevisions(boardId),
+    });
+  }
+
+  addProjectGuidance(input: AddProjectGuidanceInput): AddProjectGuidanceResult {
+    const kind = String(input.kind).trim();
+    const content = normalizeProjectGuidanceContent(input.content);
+    const reason = input.reason.trim();
+    const confirmationSummary = input.confirmation_summary.trim();
+    const sourceRefs = unique((input.source_refs ?? []).map((item) => item.trim()).filter(Boolean));
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardV1Error(
+        "project_guidance.user_confirmation_required",
+        "项目长期说明必须先向用户展示精确分类和原文，并获得明确同意后才能写入",
+      );
+    }
+    if (!isProjectGuidanceKind(kind)) {
+      throw new GoalBoardV1Error("project_guidance.kind_invalid", `不支持的项目说明分类: ${kind}`);
+    }
+    if (!content || !reason || !confirmationSummary) {
+      throw new GoalBoardV1Error(
+        "project_guidance.invalid",
+        "项目说明内容、持久化原因和用户确认摘要不能为空",
+      );
+    }
+    if (content.length > PROJECT_GUIDANCE_ENTRY_MAX_CHARS) {
+      throw new GoalBoardV1Error(
+        "project_guidance.entry_too_large",
+        `单条项目说明不能超过 ${PROJECT_GUIDANCE_ENTRY_MAX_CHARS} 个字符`,
+      );
+    }
+    const contentHash = createHash("sha256").update(content).digest("hex");
+    const normalized = {
+      board_id: input.board_id,
+      kind,
+      content,
+      source_refs: sourceRefs,
+      reason,
+      confirmation_summary: confirmationSummary,
+      user_confirmed: true,
+    };
+    const hash = requestHash(normalized);
+    return this.store.immediate(() => {
+      const replay = this.replay<Omit<AddProjectGuidanceResult, "replayed">>(
+        input.board_id,
+        input.actor_id,
+        "add_project_guidance",
+        input.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      this.requireBoard(input.board_id);
+      const existing = this.store
+        .listProjectGuidanceEntries(input.board_id, true)
+        .find((entry) => entry.kind === kind && entry.content_hash === contentHash);
+      const now = this.clock().toISOString();
+      if (existing) {
+        const outcome = {
+          entry: existing,
+          created: false,
+          observed_event_cursor: this.store.eventCursor(input.board_id),
+        };
+        this.remember(
+          input.board_id,
+          input.actor_id,
+          "add_project_guidance",
+          input.idempotency_key,
+          hash,
+          outcome,
+          now,
+        );
+        return { ...outcome, replayed: false };
+      }
+      const entries = this.store.listProjectGuidanceEntries(input.board_id, true);
+      const totalChars = entries
+        .filter((entry) => entry.active)
+        .reduce((sum, entry) => sum + entry.content.length, 0) + content.length;
+      if (totalChars > PROJECT_GUIDANCE_TOTAL_MAX_CHARS) {
+        throw new GoalBoardV1Error(
+          "project_guidance.total_too_large",
+          `项目说明总长度不能超过 ${PROJECT_GUIDANCE_TOTAL_MAX_CHARS} 个字符`,
+        );
+      }
+      const guidanceId = randomUUID();
+      const position = entries.reduce((max, entry) => Math.max(max, entry.position), 0) + 1;
+      this.store.db
+        .prepare(`
+          INSERT INTO project_guidance_entries (
+            guidance_id, board_id, position, revision, active, kind, content, content_hash,
+            source_refs_json, created_by, confirmation_summary, reason, created_at, updated_by, updated_at
+          ) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          guidanceId,
+          input.board_id,
+          position,
+          kind,
+          content,
+          contentHash,
+          sqliteJson(sourceRefs),
+          input.actor_id,
+          confirmationSummary,
+          reason,
+          now,
+          input.actor_id,
+          now,
+        );
+      this.store.db
+        .prepare(`
+          INSERT INTO project_guidance_revisions (
+            revision_id, guidance_id, board_id, revision, kind, content, content_hash,
+            source_refs_json, active, changed_by, change_kind, confirmation_summary, reason, created_at
+          ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1, ?, 'created', ?, ?, ?)
+        `)
+        .run(
+          randomUUID(),
+          guidanceId,
+          input.board_id,
+          kind,
+          content,
+          contentHash,
+          sqliteJson(sourceRefs),
+          input.actor_id,
+          confirmationSummary,
+          reason,
+          now,
+        );
+      this.store.db
+        .prepare("UPDATE boards SET updated_at = ? WHERE board_id = ?")
+        .run(now, input.board_id);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: "project.guidance_added",
+        objectType: "project_guidance",
+        objectId: guidanceId,
+        reason,
+        payload: { kind, content_hash: contentHash, position, revision: 1, source_refs: sourceRefs },
+        at: now,
+      });
+      const entry = this.store
+        .listProjectGuidanceEntries(input.board_id, true)
+        .find((candidate) => candidate.guidance_id === guidanceId)!;
+      const outcome = { entry, created: true, observed_event_cursor: cursor };
+      this.remember(
+        input.board_id,
+        input.actor_id,
+        "add_project_guidance",
+        input.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
+      return { ...outcome, replayed: false };
+    });
+  }
+
+  updateProjectGuidance(input: UpdateProjectGuidanceInput): UpdateProjectGuidanceResult {
+    const action = String(input.action).trim() as UpdateProjectGuidanceInput["action"];
+    const reason = input.reason.trim();
+    const confirmationSummary = input.confirmation_summary.trim();
+    const requestedKind = input.kind == null ? null : String(input.kind).trim();
+    const requestedContent = input.content == null ? null : normalizeProjectGuidanceContent(input.content);
+    const requestedSourceRefs = input.source_refs == null
+      ? null
+      : unique(input.source_refs.map((item) => item.trim()).filter(Boolean));
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardV1Error(
+        "project_guidance.user_confirmation_required",
+        "项目说明修改必须来自用户在当前对话的明确确认，或用户在项目说明页面的直接提交",
+      );
+    }
+    if (!(["edit", "deactivate", "restore"] as const).includes(action)) {
+      throw new GoalBoardV1Error("project_guidance.action_invalid", `不支持的项目说明操作: ${action}`);
+    }
+    if (!input.guidance_id.trim() || !reason || !confirmationSummary) {
+      throw new GoalBoardV1Error(
+        "project_guidance.invalid",
+        "项目说明 ID、变更原因和用户确认摘要不能为空",
+      );
+    }
+    if (action === "edit") {
+      if (requestedKind == null || !isProjectGuidanceKind(requestedKind)) {
+        throw new GoalBoardV1Error(
+          "project_guidance.kind_invalid",
+          `不支持的项目说明分类: ${requestedKind ?? ""}`,
+        );
+      }
+      if (!requestedContent) {
+        throw new GoalBoardV1Error("project_guidance.invalid", "修改后的项目说明内容不能为空");
+      }
+      if (requestedContent.length > PROJECT_GUIDANCE_ENTRY_MAX_CHARS) {
+        throw new GoalBoardV1Error(
+          "project_guidance.entry_too_large",
+          `单条项目说明不能超过 ${PROJECT_GUIDANCE_ENTRY_MAX_CHARS} 个字符`,
+        );
+      }
+    }
+    const request = {
+      board_id: input.board_id,
+      guidance_id: input.guidance_id.trim(),
+      action,
+      kind: requestedKind,
+      content: requestedContent,
+      source_refs: requestedSourceRefs,
+      reason,
+      confirmation_summary: confirmationSummary,
+      user_confirmed: true,
+    };
+    const hash = requestHash(request);
+    return this.store.immediate(() => {
+      const replay = this.replay<Omit<UpdateProjectGuidanceResult, "replayed">>(
+        input.board_id,
+        input.actor_id,
+        "update_project_guidance",
+        input.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      this.requireBoard(input.board_id);
+      const entries = this.store.listProjectGuidanceEntries(input.board_id, true);
+      const current = entries.find((entry) => entry.guidance_id === request.guidance_id);
+      if (!current) {
+        throw new GoalBoardV1Error(
+          "project_guidance.not_found",
+          `找不到项目说明: ${request.guidance_id}`,
+        );
+      }
+      if (action === "deactivate" && !current.active) {
+        throw new GoalBoardV1Error("project_guidance.already_inactive", "这条项目说明已经停用");
+      }
+      if (action === "restore" && current.active) {
+        throw new GoalBoardV1Error("project_guidance.already_active", "这条项目说明已经生效");
+      }
+      if (action === "edit" && !current.active) {
+        throw new GoalBoardV1Error("project_guidance.inactive", "请先恢复这条项目说明，再进行修改");
+      }
+
+      const kind = action === "edit" ? requestedKind! : current.kind;
+      const content = action === "edit" ? requestedContent! : current.content;
+      const sourceRefs = action === "edit" && requestedSourceRefs != null
+        ? requestedSourceRefs
+        : current.source_refs;
+      const active = action === "deactivate" ? false : true;
+      const contentHash = createHash("sha256").update(content).digest("hex");
+      if (
+        action === "edit"
+        && kind === current.kind
+        && content === current.content
+        && JSON.stringify(sourceRefs) === JSON.stringify(current.source_refs)
+      ) {
+        throw new GoalBoardV1Error("project_guidance.no_changes", "项目说明没有发生变化");
+      }
+      const duplicate = entries.find(
+        (entry) => entry.guidance_id !== current.guidance_id
+          && entry.kind === kind
+          && entry.content_hash === contentHash,
+      );
+      if (duplicate) {
+        throw new GoalBoardV1Error("project_guidance.duplicate", "相同分类和内容的项目说明已经存在");
+      }
+      const totalChars = entries
+        .filter((entry) => entry.guidance_id !== current.guidance_id && entry.active)
+        .reduce((sum, entry) => sum + entry.content.length, 0)
+        + (active ? content.length : 0);
+      if (totalChars > PROJECT_GUIDANCE_TOTAL_MAX_CHARS) {
+        throw new GoalBoardV1Error(
+          "project_guidance.total_too_large",
+          `项目说明总长度不能超过 ${PROJECT_GUIDANCE_TOTAL_MAX_CHARS} 个字符`,
+        );
+      }
+
+      const revision = current.revision + 1;
+      const now = this.clock().toISOString();
+      this.store.db
+        .prepare(`
+          UPDATE project_guidance_entries
+          SET revision = ?, active = ?, kind = ?, content = ?, content_hash = ?,
+              source_refs_json = ?, confirmation_summary = ?, reason = ?, updated_by = ?, updated_at = ?
+          WHERE guidance_id = ? AND board_id = ?
+        `)
+        .run(
+          revision,
+          active ? 1 : 0,
+          kind,
+          content,
+          contentHash,
+          sqliteJson(sourceRefs),
+          confirmationSummary,
+          reason,
+          input.actor_id,
+          now,
+          current.guidance_id,
+          input.board_id,
+        );
+      const revisionId = randomUUID();
+      this.store.db
+        .prepare(`
+          INSERT INTO project_guidance_revisions (
+            revision_id, guidance_id, board_id, revision, kind, content, content_hash,
+            source_refs_json, active, changed_by, change_kind, confirmation_summary, reason, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          revisionId,
+          current.guidance_id,
+          input.board_id,
+          revision,
+          kind,
+          content,
+          contentHash,
+          sqliteJson(sourceRefs),
+          active ? 1 : 0,
+          input.actor_id,
+          action === "edit" ? "edited" : action === "deactivate" ? "deactivated" : "restored",
+          confirmationSummary,
+          reason,
+          now,
+        );
+      this.store.db
+        .prepare("UPDATE boards SET updated_at = ? WHERE board_id = ?")
+        .run(now, input.board_id);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: `project.guidance_${action === "edit" ? "edited" : action === "deactivate" ? "deactivated" : "restored"}`,
+        objectType: "project_guidance",
+        objectId: current.guidance_id,
+        reason,
+        payload: { action, revision, kind, content_hash: contentHash, active, source_refs: sourceRefs },
+        at: now,
+      });
+      const entry = this.store
+        .listProjectGuidanceEntries(input.board_id, true)
+        .find((candidate) => candidate.guidance_id === current.guidance_id)!;
+      const revisionRecord = this.store
+        .listProjectGuidanceRevisions(input.board_id)
+        .find((candidate) => candidate.revision_id === revisionId)!;
+      const outcome = { entry, revision: revisionRecord, observed_event_cursor: cursor };
+      this.remember(
+        input.board_id,
+        input.actor_id,
+        "update_project_guidance",
+        input.idempotency_key,
+        hash,
+        outcome,
+        now,
       );
       return { ...outcome, replayed: false };
     });
@@ -1193,6 +1573,16 @@ export class GoalBoardCoordinator {
         throw new GoalBoardV1Error("relation.not_active", "只有正在生效的关系可以解除");
       }
       const at = this.clock().toISOString();
+      if (asText(row.type) === "part_of") {
+        this.reopenCompoundAncestorsForUntrustedChild(
+          boardId,
+          asText(row.from_goal_id),
+          write.actor_id,
+          at,
+          "子 Goal 与父 Goal 的 part_of 关系已解除",
+          asText(row.to_goal_id),
+        );
+      }
       this.store.db
         .prepare(`
           UPDATE goal_relations
@@ -1272,7 +1662,7 @@ export class GoalBoardCoordinator {
           at,
           at,
         );
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
         actorId: write.actor_id,
@@ -1716,7 +2106,7 @@ export class GoalBoardCoordinator {
         }
       }
 
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
         actorId: write.actor_id,
@@ -1733,6 +2123,17 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
+      if (wasInvalidating || isInvalidating) {
+        for (const goalId of unique([...previousGoalIds, ...facts.goal_ids])) {
+          cursor = this.reopenCompoundAncestorsForUntrustedChild(
+            boardId,
+            goalId,
+            write.actor_id,
+            now,
+            "子 Goal 关联的失效型 Risk 发生变化",
+          );
+        }
+      }
       const risk = this.readRisk(boardId, riskId);
       const outcome = { risk, observed_event_cursor: cursor };
       this.remember(boardId, write.actor_id, "update_risk", write.idempotency_key, hash, outcome, now);
@@ -1794,9 +2195,10 @@ export class GoalBoardCoordinator {
       const linkedGoals = this.store.db
         .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
         .all(input.risk_id) as Row[];
+      let validity: ValidityState | null = null;
       if (asText(row.blocking_mode) === "invalidate_on_trigger") {
         const previousState = asText(row.state) as RiskRecord["state"];
-        const validity = input.state === "triggered"
+        validity = input.state === "triggered"
           ? "invalidated"
           : previousState === "triggered"
             ? "needs_revalidation"
@@ -1809,7 +2211,7 @@ export class GoalBoardCoordinator {
           }
         }
       }
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
         actorId: write.actor_id,
@@ -1826,6 +2228,17 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
+      if (validity) {
+        for (const linked of linkedGoals) {
+          cursor = this.reopenCompoundAncestorsForUntrustedChild(
+            boardId,
+            asText(linked.goal_id),
+            write.actor_id,
+            now,
+            "子 Goal 关联的失效型 Risk 改变了可信状态",
+          );
+        }
+      }
       const risk = this.readRisk(boardId, input.risk_id);
       const outcome = { risk, observed_event_cursor: cursor };
       this.remember(boardId, write.actor_id, "set_risk_state", write.idempotency_key, hash, outcome, now);
@@ -1974,7 +2387,7 @@ export class GoalBoardCoordinator {
       const activeGoalCleared = input.archived
         ? this.clearActiveGoalIfMatches(boardId, input.goal_id, now)
         : false;
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
         actorId: write.actor_id,
@@ -1985,6 +2398,15 @@ export class GoalBoardCoordinator {
         payload: { active_goal_cleared: activeGoalCleared },
         at: now,
       });
+      cursor = input.archived
+        ? this.reopenCompoundAncestorsForUntrustedChild(
+            boardId,
+            input.goal_id,
+            write.actor_id,
+            now,
+            "子 Goal 已归档",
+          )
+        : this.reconcileCompoundAncestors(boardId, input.goal_id, write.actor_id, now);
       const updated = this.requireGoalOnBoard(boardId, input.goal_id);
       const outcome = {
         goal: updated,
@@ -2103,6 +2525,13 @@ export class GoalBoardCoordinator {
             WHERE board_id = ? AND goal_id = ?
           `)
           .run(now, write.actor_id, now, boardId, input.goal_id);
+        this.reopenCompoundAncestorsForUntrustedChild(
+          boardId,
+          input.goal_id,
+          write.actor_id,
+          now,
+          "子 Goal 已移入回收站",
+        );
 
         const deactivatedRelationIds: string[] = [];
         for (const relation of activeRelations) {
@@ -2615,6 +3044,7 @@ export class GoalBoardCoordinator {
         clarificationSessionIds.has(item.session_id),
       ),
       goal_tree_proposals: goalTreeProposals,
+      project_guidance: snapshot.project_guidance,
     };
   }
 
@@ -3097,7 +3527,11 @@ export class GoalBoardCoordinator {
       if (replay) return { ...replay, replayed: true };
 
       this.requireBoard(input.board_id);
-      this.requireActiveClarificationProposalRun(input.board_id, input.discovered_in_run_id, actorId);
+      const proposalRun = this.requireActiveGoalTreeProposalRun(
+        input.board_id,
+        input.discovered_in_run_id,
+        actorId,
+      );
       const decompositionIssue = goalTreeProposalDecompositionIssues(
         items,
         this.store.snapshot(input.board_id),
@@ -3135,8 +3569,35 @@ export class GoalBoardCoordinator {
           );
         }
       }
-      const effectiveRootGoalId = rootGoalId ?? previous?.root_goal_id ?? null;
-      if (effectiveRootGoalId) this.requireGoalOnBoard(input.board_id, effectiveRootGoalId);
+      const effectiveRootGoalId = rootGoalId ?? previous?.root_goal_id ?? proposalRun.goal_id;
+      if (
+        items.some((item) => this.isRiskLifecycleChange(input.board_id, item)) &&
+        effectiveRootGoalId !== proposalRun.goal_id
+      ) {
+        throw new GoalBoardV1Error(
+          "goal_tree_proposal.root_goal_mismatch",
+          "Risk 生命周期提案必须修改发起本轮澄清的同一条 Goal；不能用一条 Goal 的 clarifier Run 代替另一条 Goal 处理 Risk",
+        );
+      }
+      const rootGoal = this.requireGoalOnBoard(input.board_id, effectiveRootGoalId);
+      if (proposalRun.role === "executor") {
+        if (!items.every((item) => this.isRiskLifecycleChange(input.board_id, item))) {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.executor_scope_invalid",
+            "executor Run 只能为自己正在执行的 Goal 提交 Risk 生命周期条目；Goal、Contract、关系和普通 Risk 事实仍由 clarifier 规划",
+          );
+        }
+        if (
+          rootGoal.definition_state !== "accepted" ||
+          rootGoal.decomposition_state !== "closed_leaf"
+        ) {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.executor_goal_not_executable",
+            "executor 只能从已接受、可直接执行的同一条叶子 Goal 提交 Risk 生命周期结果",
+          );
+        }
+      }
+      this.requireDraftRiskLifecycleContract(input.board_id, rootGoal, items);
       if (!previous && items.some((item) => item.supersedes_item_id)) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.item_revision_without_proposal",
@@ -3528,10 +3989,41 @@ export class GoalBoardCoordinator {
         }
       }
 
+      const confirmedItems = decisions
+        .filter((decision) => decision.decision === "confirm")
+        .map((decision) => itemsById.get(decision.item_id)!);
+      if (proposal.root_goal_id) {
+        const rootGoal = this.requireGoalOnBoard(input.board_id, proposal.root_goal_id);
+        const companionContract = this.requireDraftRiskLifecycleContract(
+          input.board_id,
+          rootGoal,
+          confirmedItems,
+        );
+        if (companionContract) {
+          const dependentItems = [
+            companionContract,
+            ...confirmedItems.filter((item) => this.isRiskLifecycleChange(input.board_id, item)),
+          ];
+          for (const item of dependentItems) {
+            const baselineConflicts = this.goalTreeProposalItemConflicts(input.board_id, item);
+            const materializationConflict = this.goalTreeProposalMaterializationConflict(input.board_id, item);
+            if (baselineConflicts.length > 0 || materializationConflict) {
+              throw new GoalBoardV1Error(
+                "goal_tree_proposal.risk_goal_atomic_conflict",
+                "Risk 生命周期变更和承载它的 Goal Contract 必须一起成功；当前事实已经变化，请先刷新并修订整份提案",
+              );
+            }
+          }
+        }
+      } else if (confirmedItems.some((item) => this.isRiskLifecycleChange(input.board_id, item))) {
+        throw new GoalBoardV1Error(
+          "goal_tree_proposal.risk_goal_root_required",
+          "Risk 生命周期变更必须归属于一条明确的 Goal；请重新提交带 root_goal_id 的提案",
+        );
+      }
+
       const decompositionIssue = goalTreeProposalDecompositionIssues(
-        decisions
-          .filter((decision) => decision.decision === "confirm")
-          .map((decision) => itemsById.get(decision.item_id)!),
+        confirmedItems,
         this.store.snapshot(input.board_id),
         this.effectivePlanningMethods(input.board_id),
         this.projectPlanningComposition(input.board_id).method_pack_ids,
@@ -4626,7 +5118,7 @@ export class GoalBoardCoordinator {
       this.store.db
         .prepare("UPDATE goals SET validity_state = 'valid', updated_at = ? WHERE goal_id = ?")
         .run(now, input.goal_id);
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
         actorId: input.actor_id,
@@ -4641,6 +5133,9 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
+      if (goal.fulfillment_state === "satisfied") {
+        cursor = this.reconcileCompoundAncestors(input.board_id, input.goal_id, input.actor_id, now);
+      }
       const updatedGoal = this.requireGoalOnBoard(input.board_id, input.goal_id);
       const outcome: Omit<RevalidationDecision, "replayed"> = {
         revalidated: true,
@@ -5078,7 +5573,7 @@ export class GoalBoardCoordinator {
           now,
         );
       const eventType = input.action === "supersede" ? "evidence.superseded" : "evidence.retracted";
-      const cursor = this.store.appendEvent({
+      let cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
         actorId: input.actor_id,
@@ -5093,6 +5588,16 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
+      if (asText(target.result) === "passed") {
+        cursor = this.markSatisfiedGoalForEvidenceRevalidation(
+          input.board_id,
+          input.goal_id,
+          input.actor_id,
+          input.target_evidence_id,
+          correctionId,
+          now,
+        );
+      }
       const snapshot = this.store.snapshot(input.board_id);
       const correction = snapshot.evidence_corrections.find((item) => item.correction_id === correctionId);
       const targetEvidence = snapshot.evidence.find((item) => item.evidence_id === input.target_evidence_id);
@@ -6916,14 +7421,14 @@ export class GoalBoardCoordinator {
     return { claim_id: asText(row.claim_id) };
   }
 
-  private requireActiveClarificationProposalRun(
+  private requireActiveGoalTreeProposalRun(
     boardId: string,
     runId: string,
     actorId: string,
-  ): void {
+  ): { goal_id: string; role: "clarifier" | "executor" } {
     const row = this.store.db
       .prepare(`
-        SELECT r.actor_id AS run_actor_id, r.role AS run_role, r.state AS run_state,
+        SELECT r.goal_id, r.actor_id AS run_actor_id, r.role AS run_role, r.state AS run_state,
                c.actor_id AS claim_actor_id, c.state AS claim_state, c.expires_at AS claim_expires_at
         FROM runs r
         JOIN claims c ON c.claim_id = r.claim_id
@@ -6939,10 +7444,11 @@ export class GoalBoardCoordinator {
         "只有当前澄清 Runtime 可以提交这份 Goal Tree 提案",
       );
     }
-    if (asText(row.run_role) !== "clarifier" || asText(row.run_state) !== "started") {
+    const role = asText(row.run_role);
+    if ((role !== "clarifier" && role !== "executor") || asText(row.run_state) !== "started") {
       throw new GoalBoardV1Error(
-        "goal_tree_proposal.clarifier_run_required",
-        "统一 Goal Tree 提案必须来自正在进行中的 clarifier Run",
+        "goal_tree_proposal.active_run_required",
+        "Goal Tree 提案必须来自正在进行中的 clarifier Run，或来自同一 Goal 上只提交 Risk 生命周期结果的 executor Run",
       );
     }
     if (asText(row.claim_state) !== "active" || asText(row.claim_expires_at) <= this.clock().toISOString()) {
@@ -6951,6 +7457,7 @@ export class GoalBoardCoordinator {
         "澄清 Claim 已释放、撤销或过期，不能提交 Goal Tree 提案",
       );
     }
+    return { goal_id: asText(row.goal_id), role };
   }
 
   private readNativeGoalTreeProposal(boardId: string, proposalId: string): GoalTreeProposalRecord {
@@ -7367,7 +7874,9 @@ export class GoalBoardCoordinator {
       : [];
   }
 
-  private goalTreeGoalInput(item: GoalTreeProposalItemRecord): CreateGoalInput {
+  private goalTreeGoalInput(
+    item: Pick<GoalTreeProposalItemRecord, "kind" | "payload">,
+  ): CreateGoalInput {
     const payload = this.goalTreePayloadRecord(item.payload, "Goal Tree 条目 payload");
     const raw = this.goalTreePayloadRecord(payload.goal ?? payload.proposed_goal ?? payload, "Goal Contract");
     const definitionState = raw.definition_state == null ? undefined : String(raw.definition_state);
@@ -7422,7 +7931,10 @@ export class GoalBoardCoordinator {
     return goal;
   }
 
-  private goalTreeTargetGoalId(item: GoalTreeProposalItemRecord, goal: CreateGoalInput): string {
+  private goalTreeTargetGoalId(
+    item: Pick<GoalTreeProposalItemRecord, "payload">,
+    goal: CreateGoalInput,
+  ): string {
     const payload = this.goalTreePayloadRecord(item.payload, "Goal Tree 条目 payload");
     const target = String(payload.goal_id ?? goal.goal_id ?? "").trim();
     if (!target) {
@@ -7432,6 +7944,55 @@ export class GoalBoardCoordinator {
       );
     }
     return target;
+  }
+
+  private isRiskLifecycleChange(boardId: string, item: GoalTreeProposalItemShape): boolean {
+    if (item.kind !== "risk" || item.operation === "create") return false;
+    const payload = this.goalTreePayloadRecord(item.payload, "Risk 条目");
+    const riskId = String(payload.risk_id ?? "").trim();
+    const current = riskId
+      ? this.store.db
+          .prepare("SELECT state FROM risks WHERE board_id = ? AND risk_id = ?")
+          .get(boardId, riskId) as Row | undefined
+      : undefined;
+    const currentState = current ? asText(current.state) : null;
+    if (item.operation === "deactivate") return currentState !== "expired";
+    const requestedState = String(payload.state ?? "").trim();
+    return requestedState.length > 0 && requestedState !== currentState;
+  }
+
+  private requireDraftRiskLifecycleContract<T extends GoalTreeProposalItemShape>(
+    boardId: string,
+    rootGoal: GoalRecord,
+    items: T[],
+  ): T | null {
+    if (
+      rootGoal.definition_state !== "draft" ||
+      !items.some((item) => this.isRiskLifecycleChange(boardId, item))
+    ) {
+      return null;
+    }
+    const companion = items.find((item) => {
+      if (!(["goal", "contract"] as GoalTreeProposalItemRecord["kind"][]).includes(item.kind)) return false;
+      if (item.operation !== "update") return false;
+      const payload = this.goalTreePayloadRecord(item.payload, "Goal Tree 条目 payload");
+      const raw = this.goalTreePayloadRecord(payload.goal ?? payload.proposed_goal ?? payload, "Goal Contract");
+      const targetGoalId = String(payload.goal_id ?? raw.goal_id ?? "").trim();
+      if (targetGoalId !== rootGoal.goal_id) return false;
+      const goal = this.goalTreeGoalInput(item);
+      return (
+        goal.definition_state === "accepted" &&
+        goal.decomposition_state === "closed_leaf" &&
+        goal.acceptance_criteria.length > 0
+      );
+    });
+    if (!companion) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.risk_goal_contract_required",
+        "处理 Risk 本身就是一条正式 Goal。当前 root Goal 仍是 Draft，提案必须同时补全并接受这条 Goal 的 Contract，不能只改 Risk 后留下空 Draft",
+      );
+    }
+    return companion;
   }
 
   private goalTreeRelationEntries(item: GoalTreeProposalItemRecord): Record<string, unknown>[] {
@@ -7589,14 +8150,15 @@ export class GoalBoardCoordinator {
   private activePartOfChildren(boardId: string, parentGoalId: string): Row[] {
     return this.store.db
       .prepare(`
-        SELECT g.goal_id, g.fulfillment_state
+        SELECT g.goal_id, g.fulfillment_state, g.validity_state, g.trashed_at, g.archived_at
         FROM goal_relations r
         JOIN goals g ON g.goal_id = r.from_goal_id
         WHERE r.board_id = ? AND r.to_goal_id = ?
+          AND g.board_id = ?
           AND r.type = 'part_of' AND r.state = 'active'
         ORDER BY g.goal_id
       `)
-      .all(boardId, parentGoalId) as Row[];
+      .all(boardId, parentGoalId, boardId) as Row[];
   }
 
   private goalTreeCandidatePromotionRelations(
@@ -9360,6 +9922,14 @@ export class GoalBoardCoordinator {
     if (goal.archived_at) {
       return { ...base, work_state: "archived", next_action: null, reasons: [] };
     }
+    if (goal.validity_state === "invalidated") {
+      return {
+        ...base,
+        work_state: "invalidated",
+        next_action: null,
+        reasons: [reason("goal.invalidated", "goal", goal.goal_id, "Goal 已失效，需要重新澄清或替换")],
+      };
+    }
     if (
       goal.decomposition_state === "closed_compound" &&
       recordedContractCoverageBlocksClosure(goal, {
@@ -9383,7 +9953,11 @@ export class GoalBoardCoordinator {
         ],
       };
     }
-    if (goal.fulfillment_state === "satisfied") {
+    if (
+      goal.decomposition_state !== "closed_compound" &&
+      goal.validity_state === "valid" &&
+      goal.fulfillment_state === "satisfied"
+    ) {
       return { ...base, work_state: "satisfied", next_action: null, reasons: [] };
     }
     if (activeClaim && !activeRun) {
@@ -9402,9 +9976,56 @@ export class GoalBoardCoordinator {
       };
     }
 
+    if (goal.validity_state === "needs_revalidation") {
+      if (activeRun) return this.workStateFromRun(base, activeRun);
+      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "revalidator", now, snapshot);
+      return {
+        ...base,
+        work_state: reasons.length > 0 ? "revalidation_blocked" : "revalidation_pending",
+        next_action: "revalidate",
+        reasons: phaseReasons(reasons),
+      };
+    }
+
     if (goal.decomposition_state === "closed_compound") {
       if (childGoalIds.length > 0) {
-        return { ...base, work_state: "waiting_children", next_action: null, reasons: [] };
+        const childGoalById = new Map(snapshot.goals.map((child) => [child.goal_id, child]));
+        const untrustedChildren = childGoalIds
+          .map((childGoalId) => childGoalById.get(childGoalId)!)
+          .filter(
+            (child) =>
+              child.fulfillment_state !== "satisfied" ||
+              child.validity_state !== "valid" ||
+              child.trashed_at != null ||
+              child.archived_at != null,
+          );
+        if (
+          goal.fulfillment_state === "satisfied" &&
+          goal.validity_state === "valid" &&
+          untrustedChildren.length === 0
+        ) {
+          return { ...base, work_state: "satisfied", next_action: null, reasons: [] };
+        }
+        return {
+          ...base,
+          work_state: "waiting_children",
+          next_action: null,
+          reasons: untrustedChildren.map((child) =>
+            reason(
+              "goal.compound_child_not_trusted",
+              "goal",
+              child.goal_id,
+              `子 Goal「${child.title}」当前还不是可信完成`,
+              {
+                fulfillment_state: child.fulfillment_state,
+                validity_state: child.validity_state,
+                trashed: child.trashed_at != null,
+                archived: child.archived_at != null,
+              },
+              "先恢复该子 Goal 的可信完成状态",
+            ),
+          ),
+        };
       }
       return {
         ...base,
@@ -9423,25 +10044,10 @@ export class GoalBoardCoordinator {
       };
     }
 
-    if (goal.validity_state === "invalidated") {
-      return {
-        ...base,
-        work_state: "invalidated",
-        next_action: null,
-        reasons: [reason("goal.invalidated", "goal", goal.goal_id, "Goal 已失效，需要重新澄清或替换")],
-      };
-    }
-
     if (activeRun) return this.workStateFromRun(base, activeRun);
 
-    if (goal.validity_state === "needs_revalidation") {
-      const reasons = this.workStatePhaseReasons(boardId, goal.goal_id, "revalidator", now, snapshot);
-      return {
-        ...base,
-        work_state: reasons.length > 0 ? "revalidation_blocked" : "revalidation_pending",
-        next_action: "revalidate",
-        reasons: phaseReasons(reasons),
-      };
+    if (goal.fulfillment_state === "satisfied") {
+      return { ...base, work_state: "satisfied", next_action: null, reasons: [] };
     }
 
     const reworkRequested = this.hasPostExecutionNeedsChanges(boardId, goal.goal_id);
@@ -9943,7 +10549,16 @@ export class GoalBoardCoordinator {
       return false;
     }
     const children = this.activePartOfChildren(boardId, goalId);
-    if (children.length === 0 || children.some((child) => asText(child.fulfillment_state) !== "satisfied")) {
+    if (
+      children.length === 0 ||
+      children.some(
+        (child) =>
+          asText(child.fulfillment_state) !== "satisfied" ||
+          asText(child.validity_state) !== "valid" ||
+          child.trashed_at != null ||
+          child.archived_at != null,
+      )
+    ) {
       return false;
     }
     this.store.db
@@ -9965,6 +10580,109 @@ export class GoalBoardCoordinator {
       at,
     });
     return true;
+  }
+
+  /**
+   * Evidence history is immutable, but a passing fact that supported an
+   * already-completed Goal can stop being effective. Keep the completion
+   * history and require an explicit revalidation before presenting it as
+   * trustworthy again.
+   */
+  private markSatisfiedGoalForEvidenceRevalidation(
+    boardId: string,
+    goalId: string,
+    actorId: string,
+    evidenceId: string,
+    correctionId: string,
+    at: string,
+  ): number {
+    const goal = this.requireGoalOnBoard(boardId, goalId);
+    if (goal.fulfillment_state !== "satisfied") return this.store.eventCursor(boardId);
+    if (goal.validity_state === "valid") {
+      this.store.db
+        .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE board_id = ? AND goal_id = ?")
+        .run(at, boardId, goalId);
+      this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId,
+        actorId,
+        type: "goal.completion_revalidation_required",
+        objectType: "goal",
+        objectId: goalId,
+        reason: "支撑已完成结果的通过 Evidence 已被更正，需要重新验证",
+        payload: { evidence_id: evidenceId, correction_id: correctionId },
+        at,
+      });
+    }
+    return this.reopenCompoundAncestorsForUntrustedChild(
+      boardId,
+      goalId,
+      actorId,
+      at,
+      "子 Goal 的完成 Evidence 已被更正",
+    );
+  }
+
+  /**
+   * A compound completion consumes child results. If a consumed result later
+   * becomes untrusted, retain the old completion event but reopen every active
+   * compound ancestor so downstream Goals cannot consume a stale success.
+   */
+  private reopenCompoundAncestorsForUntrustedChild(
+    boardId: string,
+    childGoalId: string,
+    actorId: string,
+    at: string,
+    triggerReason: string,
+    directParentGoalId?: string,
+  ): number {
+    const pendingChildren = [childGoalId];
+    const visitedParents = new Set<string>();
+    while (pendingChildren.length > 0) {
+      const childId = pendingChildren.shift()!;
+      const parentRows = this.store.db
+        .prepare(`
+          SELECT to_goal_id FROM goal_relations
+          WHERE board_id = ? AND from_goal_id = ?
+            AND type = 'part_of' AND state = 'active'
+          ORDER BY to_goal_id
+        `)
+        .all(boardId, childId) as Row[];
+      const relevantParentRows = childId === childGoalId && directParentGoalId
+        ? parentRows.filter((row) => asText(row.to_goal_id) === directParentGoalId)
+        : parentRows;
+      for (const row of relevantParentRows) {
+        const parentGoalId = asText(row.to_goal_id);
+        if (visitedParents.has(parentGoalId)) continue;
+        visitedParents.add(parentGoalId);
+        pendingChildren.push(parentGoalId);
+        const parent = this.requireGoalOnBoard(boardId, parentGoalId);
+        if (
+          parent.trashed_at ||
+          parent.archived_at ||
+          parent.definition_state !== "accepted" ||
+          parent.decomposition_state !== "closed_compound" ||
+          parent.fulfillment_state !== "satisfied"
+        ) {
+          continue;
+        }
+        this.store.db
+          .prepare("UPDATE goals SET fulfillment_state = 'unmet', updated_at = ? WHERE board_id = ? AND goal_id = ?")
+          .run(at, boardId, parentGoalId);
+        this.store.appendEvent({
+          eventId: randomUUID(),
+          boardId,
+          actorId,
+          type: "goal.compound_completion_reopened",
+          objectType: "goal",
+          objectId: parentGoalId,
+          reason: "子 Goal 当前不再是可信完成，复合父 Goal 重新等待子结果",
+          payload: { child_goal_id: childId, trigger_goal_id: childGoalId, trigger_reason: triggerReason },
+          at,
+        });
+      }
+    }
+    return this.store.eventCursor(boardId);
   }
 
   private reconcileCompoundGoalAndAncestors(

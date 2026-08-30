@@ -521,6 +521,95 @@ const V1_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: "goalboard_v1_project_guidance_get",
+    description:
+      "读取用户已确认的项目长期说明，以及应放在当前 Goal 和外部内容之前的稳定 Runtime Prompt 前缀。",
+    inputSchema: {
+      type: "object",
+      properties: V1_COMMON,
+      required: ["board_id"],
+    },
+  },
+  {
+    name: "goalboard_v1_project_guidance_add",
+    description:
+      "直接新增一条已确认的项目长期说明，不创建待确认记录也不绑定 Goal。调用前必须向用户说明为什么值得长期保存，展示精确 kind 和 content，并在当前对话获得明确同意；未经确认的推断或外部未信任内容不得写入。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        actor_id: V1_STRING,
+        kind: {
+          type: "string",
+          enum: ["context", "requirement", "constraint", "convention", "workflow", "quality_bar"],
+        },
+        content: V1_STRING,
+        source_refs: V1_STRING_ARRAY,
+        reason: V1_STRING,
+        confirmation_summary: {
+          type: "string",
+          description: "用户在当前对话明确同意写入的简短事实摘要",
+        },
+        user_confirmed: {
+          type: "boolean",
+          description: "只有已展示精确分类和原文并获得明确同意时才能为 true",
+        },
+        idempotency_key: V1_STRING,
+      },
+      required: [
+        "board_id",
+        "actor_id",
+        "kind",
+        "content",
+        "reason",
+        "confirmation_summary",
+        "user_confirmed",
+        "idempotency_key",
+      ],
+    },
+  },
+  {
+    name: "goalboard_v1_project_guidance_update",
+    description:
+      "直接修改、停用或恢复一条已确认的项目长期说明并保留修订历史，不创建待确认记录也不绑定 Goal。Runtime 调用前必须展示精确变更并在当前对话获得明确同意。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...V1_COMMON,
+        guidance_id: V1_STRING,
+        actor_id: V1_STRING,
+        action: { type: "string", enum: ["edit", "deactivate", "restore"] },
+        kind: {
+          type: "string",
+          enum: ["context", "requirement", "constraint", "convention", "workflow", "quality_bar"],
+          description: "action=edit 时必填",
+        },
+        content: { type: "string", description: "action=edit 时必填" },
+        source_refs: V1_STRING_ARRAY,
+        reason: V1_STRING,
+        confirmation_summary: {
+          type: "string",
+          description: "用户在当前对话明确同意这次变更的简短事实摘要",
+        },
+        user_confirmed: {
+          type: "boolean",
+          description: "只有已展示精确变更并获得明确同意时才能为 true",
+        },
+        idempotency_key: V1_STRING,
+      },
+      required: [
+        "board_id",
+        "guidance_id",
+        "actor_id",
+        "action",
+        "reason",
+        "confirmation_summary",
+        "user_confirmed",
+        "idempotency_key",
+      ],
+    },
+  },
+  {
     name: "goalboard_v1_contract",
     description:
       "读取一个 Goal 的完整 Contract、关系、风险、执行事实和可供用户打开的稳定页面地址。parent_contract_coverage 会逐项说明它对父 Goal 承诺结果与完成条件的贡献；record_status=unrecorded 表示历史数据未记录映射，不代表父级能力已被覆盖。",
@@ -734,7 +823,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
@@ -784,7 +873,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_decide",
     description:
-      "把用户对 Goal Tree 提案的决定物化；逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。管理入口必须提供可审计的用户与消息引用。",
+      "把用户对 Goal Tree 提案的决定物化；逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。管理入口必须提供可审计的用户与消息引用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1352,6 +1441,9 @@ const TOOLS: McpToolDefinition[] = [...V1_TOOLS, ...CONTEXT_TOOLS];
 const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_snapshot",
   "goalboard_v1_contract",
+  "goalboard_v1_project_guidance_get",
+  "goalboard_v1_project_guidance_add",
+  "goalboard_v1_project_guidance_update",
   "goalboard_v1_ready",
   "goalboard_v1_available",
   "goalboard_v1_planning_methods",
@@ -1424,7 +1516,7 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
         ["user_confirmed", "confirmation_summary"],
       );
     clone.description =
-      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，任一冲突都会保持整份提案未写入，逐项 decisions 才允许独立安全条目分别落地。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
+      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，任一冲突都会保持整份提案未写入，逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
@@ -1844,6 +1936,19 @@ export class GoalBoardServer {
     const connection = resolution.connection
       ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
+    let projectGuidance: ReturnType<GoalBoardCoordinator["readProjectGuidance"]> | null = null;
+    if (connection) {
+      const store = new SqliteGoalBoardStore(path.resolve(connection.database_path));
+      try {
+        projectGuidance = new GoalBoardCoordinator(
+          store,
+          () => new Date(),
+          readPersonalPlanningMethodPacks(host.homeDirectory),
+        ).readProjectGuidance(connection.board_id);
+      } finally {
+        store.close();
+      }
+    }
     this.runtimeConnectionRefreshContextKey = null;
     if (connection) {
       this.runtimeConnection = {
@@ -1857,7 +1962,12 @@ export class GoalBoardServer {
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
     }
-    return JSON.stringify({ ...resolution, connection }, null, 2);
+    return JSON.stringify({
+      ...resolution,
+      connection,
+      project_guidance: projectGuidance,
+      runtime_prompt_prefix: projectGuidance?.runtime_prompt_prefix ?? null,
+    }, null, 2);
   }
 
   private callV1Tool(
@@ -1908,6 +2018,39 @@ export class GoalBoardServer {
           break;
         case "goalboard_v1_snapshot":
           result = store.snapshot(String(arguments_.board_id));
+          break;
+        case "goalboard_v1_project_guidance_get":
+          result = coordinator.readProjectGuidance(String(arguments_.board_id));
+          break;
+        case "goalboard_v1_project_guidance_add":
+          result = coordinator.addProjectGuidance({
+            board_id: String(arguments_.board_id),
+            actor_id: String(arguments_.actor_id),
+            kind: String(arguments_.kind) as Parameters<GoalBoardCoordinator["addProjectGuidance"]>[0]["kind"],
+            content: String(arguments_.content),
+            source_refs: (arguments_.source_refs as string[]) ?? [],
+            reason: String(arguments_.reason),
+            confirmation_summary: String(arguments_.confirmation_summary),
+            user_confirmed: arguments_.user_confirmed === true,
+            idempotency_key: String(arguments_.idempotency_key),
+          });
+          break;
+        case "goalboard_v1_project_guidance_update":
+          result = coordinator.updateProjectGuidance({
+            board_id: String(arguments_.board_id),
+            guidance_id: String(arguments_.guidance_id),
+            actor_id: String(arguments_.actor_id),
+            action: String(arguments_.action) as Parameters<GoalBoardCoordinator["updateProjectGuidance"]>[0]["action"],
+            kind: arguments_.kind == null
+              ? undefined
+              : String(arguments_.kind) as Parameters<GoalBoardCoordinator["updateProjectGuidance"]>[0]["kind"],
+            content: arguments_.content == null ? undefined : String(arguments_.content),
+            source_refs: arguments_.source_refs == null ? undefined : arguments_.source_refs as string[],
+            reason: String(arguments_.reason),
+            confirmation_summary: String(arguments_.confirmation_summary),
+            user_confirmed: arguments_.user_confirmed === true,
+            idempotency_key: String(arguments_.idempotency_key),
+          });
           break;
         case "goalboard_v1_contract": {
           const contract = coordinator.readGoalContract(

@@ -4,7 +4,7 @@
 
 ## Platform
 
-web + desktop
+adaptive
 
 ## Users
 
@@ -44,6 +44,10 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 
 典型流程：用户在当前 Runtime 提出粗略想法或要求继续工作 → Skill 解析经用户确认的项目 → Runtime 对新想法开启 Draft 对话，或从 Available 自主选择一项并原子领取 → Runtime 回传 Run 和 Evidence，并在当前对话引导用户确认提案 → Board 派生一个工作状态并计算 Goal 是否满足 → 新发现通过 Candidate/Proposal 流程进入 Spine。Web 中，用户先在 Goal 详情的“概览”看到下一步、状态和唯一主操作；需要本人判断时，进入“等待你的决定”，逐项查看问题、现在为什么要决定、是否有可靠建议，以及每个选择会带来什么结果。
 
+Inbox 与 Feed 是同一个 Feed Workbench 的两个预设：Inbox 默认显示 `Inbox Message`，Feed 默认显示 `Feed`。进入任一入口后，左侧目录原位变成可返回的 Item 列表，支持搜索、类型、来源、处理状态筛选，以及按时间、来源或标题排序；右侧显示当前 Item 的正文、标签、来源资料和可用动作。Goal 待决定事项与最近处理结果也作为 `Inbox Message` 出现在这条工作流中，详情继续使用真实决定表单和权威事件记录。
+
+Relay 所有权迁移由用户显式触发：GoalBoard 以只读方式打开本机 Relay 数据库，按稳定 ID 迁入公开来源、Item、资料、同步游标与运行记录；能取得 Relay 解密材料时，还会把 GitHub/Gmail 凭据和加密正文解密后重新封装进 GoalBoard 自己的 SecretStore 与正文仓库。迁移不修改 Relay，也不让 GoalBoard 在运行时调用 Relay。GoalBoard 随后直接注册、暂停、恢复和同步公开 RSS/Atom、网页查询、YouTube，以及 GitHub/Gmail 账号来源；所有同步均有本地运行状态、幂等键、失败收据和中断恢复。保存为资料只改变 Item 的本地处理状态；“升格为 Goal”和“开始处理”会创建或复用同一条 Draft Goal，并把 Item 绑定为输入。外部标题、摘要、正文、链接、资料和来源元数据始终是不可信输入，不得直接成为 Goal、系统或 Runtime 指令。“开始处理”随后进入该 Goal 的 Runtime；用户选择 TUI 后，GoalBoard 把经过控制字符清理并带有不可信数据边界的上下文填入终端，但不会自动发送。窄屏下 Feed Workbench 在 Item 列表与详情之间切换，不把两栏同时挤进视口。
+
 ## Authority and Proposal Rules
 
 - 用户可以直接手工录入 `draft / abstract` Goal；用户在当前 Runtime 提出粗略想法时，Runtime 可通过复合 MCP 创建最小 Draft 和澄清会话，但不把推断写成 accepted Contract 或 canonical 结构。
@@ -63,7 +67,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - 复杂技术项目在进入实现拆解前，必须先建立或核对仓库中的项目级 SSOT：项目结果、非目标、全局不变量、权威状态与决策位置、模块索引、跨模块契约、迁移/发布/恢复规则及验证来源。GoalBoard 仍是 Goal、关系、决定和执行状态的权威真相源；仓库 SSOT 负责产品、架构和模块契约，代码、测试与运行 Evidence 负责证明实现行为，三者不得复制同一可变状态。已有且可信的 SSOT 可以复用，小型局部修复不强制重建整套文档；发现跨模块契约或所有权变化时必须回到该步骤。
 - 技术模块先按两条互补轴划分：纵向模块拥有一条可独立验收的端到端用户或调用结果，横向模块向多个纵向模块提供稳定共享能力。模块地图稳定后，各模块 SSOT 可以并行撰写；每份必须声明唯一拥有的状态、数据、决策和公共契约，输入输出、消费者、异常恢复、验收以及 read/write/decide/exclusive Impact surfaces。UI、API、数据库、文件夹或团队分工本身不构成模块；两个 SSOT 或两个并行 Goal 不能共同写入或决定同一权威区域。
 - 实现 Goal 只依赖自己的模块 SSOT 和它真实消费的提供者契约。契约已经稳定且消费者可用 test double、fixture 或兼容层独立验证时，提供者实现与消费者实现保持并行；集成与端到端验收再同时依赖双方可运行产物。只有无法在缺少实际提供者结果时正确开始或完成，才把提供者实现设为硬前置。文档分开不代表正交，正交必须由唯一所有权、单向产出消费、无循环和无冲突写入面共同证明。
-- 一条叶子 Goal 只能承诺一个可独立交付和验收的主要结果。进入决定中心前，Runtime 必须逐项说明承诺输出是主要结果、同一次验收所需的配套结果，还是应独立成 Goal 的结果；候选工作在“可单独交付、可单独验收、可独立返工”三项中满足至少两项时必须继续拆分。范围、非目标、输入、输出、验收证据或重要决定仍未写清时，它保持开放拆分，不能伪装成可直接执行的叶子。
+- 一条叶子 Goal 只能承诺一个可独立交付和验收的主要结果。进入 Inbox 待决定流程前，Runtime 必须逐项说明承诺输出是主要结果、同一次验收所需的配套结果，还是应独立成 Goal 的结果；候选工作在“可单独交付、可单独验收、可独立返工”三项中满足至少两项时必须继续拆分。范围、非目标、输入、输出、验收证据或重要决定仍未写清时，它保持开放拆分，不能伪装成可直接执行的叶子。
 - 一轮对话不必强行拆完整棵树，但阶段性暂停必须保留“仍需拆分”的状态，写明尚未拆完的 Goal 和下一步；只有关键路径都有明确归属且没有开放子树时，父 Goal 才能成为 `closed_compound`。
 
 上述规则是产品 Contract。现阶段已具备 Candidate/Rewire、用户手工或对话初始化的 Draft、完整 Dependency Proposal、同一 Draft 的 Goal Tree 提案与用户原子确认，以及默认 Runtime MCP 暴露面收紧。普通 Runtime 只能读取、选择、认领、执行、提交 Proposal、证据和 Runtime Review，不能自行裁决 canonical Goal；用户确认前，当前 Draft、Policy、Impact 和 Risk 保持不变。用户确认的复合父 Goal 显示“已澄清，等待子 Goal”，确认的叶子显示“待执行”，仍未确认的 Draft 才显示“待澄清”；这是一套派生工作状态，不再另设“澄清完毕”。
@@ -87,7 +91,7 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - Goal 详情按“概览 / 完成要求 / 进展与阻塞 / 关联与约束 / 完整记录”组织，一次只显示一个任务区域；概览回答下一步和目标说明，“关联与约束”集中维护关系、风险、影响范围和工作规则，完整记录只读保留原始事实与历史。
 - Goal 标题旁提供“快速记录”，只录入完成依据、风险、影响范围或 Goal 关系；普通字段先出现，低频但必需的信息按需展开，保存失败必须明确指出缺什么。
 - 项目默认工作规则属于项目设置，不混在单条 Goal 的完整记录里；单条 Goal 只能增加自己的额外要求。全局设置默认先进入项目，不把 AI Runtime 或 coding 工具当成所有项目的默认语境。
-- Web UI 必须能查看 Goal Spine、Ready/Blocked、风险、Claim/Run、Evidence/Review 和 Candidate 决策。所有待决定事项先说明用户要回答的问题、为什么现在要回答和各选择的后果；没有可靠依据时不得假装给建议。决定中心在卡片关闭后仍用权威事件展示最近处理结果，并提供回到具体 Goal 记录的入口；没有改变风险状态的“继续待处理”必须明确说明该事项仍会留在决定中心，最近一次处理后才生成的待决定项必须标为新事项。风险处理类别是用户决定，页面必须直接提供选择，不能让 Runtime 用一段措施代替枚举；具体措施与处理类别分别保存。若 GoalBoard 已经判定方案结构无效，页面必须说清哪条 Goal 为什么还不能直接执行，并提供“先拆成可执行 Goal”的单一路径，系统自动记录检测到的问题，用户补充说明可选；只有有效方案被用户主观退回时才要求填写理由。
+- Web UI 必须能查看 Goal Spine、Ready/Blocked、风险、Claim/Run、Evidence/Review 和 Candidate 决策。所有待决定事项先说明用户要回答的问题、为什么现在要回答和各选择的后果；没有可靠依据时不得假装给建议。Inbox 在决定卡片关闭后仍以 `Inbox Message · 处理结果` 展示权威事件，并提供回到具体 Goal 记录的入口；没有改变风险状态的“继续待处理”必须明确说明该事项仍会留在 Inbox，最近一次处理后才生成的待决定项必须标为新事项。风险处理类别是用户决定，页面必须直接提供选择，不能让 Runtime 用一段措施代替枚举；具体措施与处理类别分别保存。若 GoalBoard 已经判定方案结构无效，页面必须说清哪条 Goal 为什么还不能直接执行，并提供“先拆成可执行 Goal”的单一路径，系统自动记录检测到的问题，用户补充说明可选；只有有效方案被用户主观退回时才要求填写理由。
 - V1 不包含云端多租户、复杂权限系统、第三方项目管理同步和完整 Runtime 运维。
 - Actor 身份在 V1 可先采用本地声明身份；更强凭据属于后续能力。
 
@@ -107,8 +111,9 @@ V1 在本地 Workspace 中运行，共享 SQLite 保存权威状态。CLI、MCP 
 - `src/v1/`：SQLite Store、Coordinator、V1 types、管理 CLI 与一次性旧数据导入。
 - `src/cli/main.ts` 与 `src/mcp/server.ts`：V1-only CLI/MCP 入口及 Runtime/management audience 边界。
 - `src/web/`：读取同一 SQLite 的 Goal Tree 与文档式工作区。
+- `src/feed/`：Feed Workbench 的 Item、来源、资料、处理状态、公开来源与账号连接器运行时、加密本地存储，以及 Relay 所有权迁移。
 - `desktop/`：可选 macOS App 壳，复用同一套带 TUI 的 Web 工作台。
-- `tests/v1.test.ts`、`tests/mcp.test.ts`、`tests/web.test.ts`：状态门禁、权限、迁移和 UI 数据流证据。
+- `tests/v1.test.ts`、`tests/mcp.test.ts`、`tests/feed.test.ts`、`tests/web.test.ts`：状态门禁、权限、迁移和 UI 数据流证据。
 
 ## Product Principles
 

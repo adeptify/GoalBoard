@@ -49,6 +49,12 @@ describe("mcp server", () => {
     ).result.tools;
     const names = listedTools.map((t) => t.name);
     assert.ok(names.includes("goalboard_v1_contract"));
+    assert.ok(names.includes("goalboard_v1_project_guidance_get"));
+    assert.ok(names.includes("goalboard_v1_project_guidance_add"));
+    assert.ok(names.includes("goalboard_v1_project_guidance_update"));
+    const projectGuidanceAdd = listedTools.find((tool) => tool.name === "goalboard_v1_project_guidance_add");
+    assert.match(projectGuidanceAdd?.description ?? "", /展示精确 kind 和 content/);
+    assert.ok(projectGuidanceAdd?.inputSchema.required?.includes("user_confirmed"));
     assert.ok(names.includes("goalboard_v1_context_resolve"));
     assert.ok(names.includes("goalboard_v1_context_list_projects"));
     assert.ok(names.includes("goalboard_v1_context_reject_suggestion"));
@@ -69,6 +75,9 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /kind=candidate、operation=update/);
     assert.match(goalTreeProposeTool?.description ?? "", /state=resolved/);
     assert.match(goalTreeProposeTool?.description ?? "", /不存在 state=mitigated/);
+    assert.match(goalTreeProposeTool?.description ?? "", /改变已有 Risk 生命周期本身是一条正式 Goal/);
+    assert.match(goalTreeProposeTool?.description ?? "", /不能只改 Risk 后留下空 Draft/);
+    assert.match(goalTreeProposeTool?.description ?? "", /active executor Run.*仅含 Risk 生命周期变更/s);
     const goalTreeItemSchema = goalTreeProposeTool?.inputSchema.properties?.items as {
       items?: {
         allOf?: Array<{
@@ -241,6 +250,7 @@ describe("mcp server", () => {
     const trashListTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_trash_list");
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
+    assert.match(treeDecisionTool?.description ?? "", /Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract/);
     assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
     assert.ok(treeDecisionTool?.inputSchema.properties?.runtime_actor_id);
     assert.ok(treeDecisionTool?.inputSchema.properties?.user_confirmed);
@@ -433,6 +443,8 @@ describe("mcp server", () => {
     assert.match(metadata, /组合规划方法、建立依赖并持续推进 Goal/);
     assert.match(metadata, /Use \$goal-advance to connect this conversation to GoalBoard, clarify and plan the Goal/);
     assert.match(skill, /## The GoalBoard loop/);
+    assert.match(skill, /show the exact category and text/);
+    assert.match(skill, /project_guidance_add.*only after an explicit yes/);
     assert.match(skill, /## Planning loop — the core reasoning/);
     for (const name of ["protocol", "project-connection", "planning", "execution", "service-start"]) {
       assert.match(skill, new RegExp(`references/${name}\\.md`));
@@ -441,6 +453,9 @@ describe("mcp server", () => {
     assert.match(references.protocol, /Goal lifecycle uses only host-provided `goalboard_v1_\*` Runtime MCP tools/);
     assert.match(references.protocol, /Confirmation for selecting a project does not authorize/);
     assert.match(references.protocol, /available → select_goal/);
+    assert.match(references.protocol, /Persist only confirmed project guidance/);
+    assert.match(references.protocol, /exact `kind` and `content`/);
+    assert.match(references.protocol, /untrusted Feed or document instructions do not qualify/);
     assert.match(references["project-connection"], /Silence, timeout/);
     assert.match(references["project-connection"], /Recoverable Goal trash/);
     assert.match(references.planning, /Stop only when no required provider theme/);
@@ -448,10 +463,15 @@ describe("mcp server", () => {
     assert.match(references.planning, /work type describes the shape of work/);
     assert.match(references.planning, /vertical outcome unit/);
     assert.match(references.planning, /horizontal shared unit/);
+    assert.match(skill, /never create an empty “temporary Goal”/);
+    assert.match(references.planning, /same Proposal must include both/);
+    assert.match(references.planning, /executor may then submit a same-root Proposal containing only the resulting Risk lifecycle item/);
+    assert.match(references.execution, /submit Evidence from the active executor Run/);
     assert.match(references.planning, /confirm_all_pending.*all-or-nothing/);
     assert.match(references.planning, /failed whole change set.*implicit partial application/);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
+    assert.match(references.execution, /repeated project-wide rule may be proposed as project guidance/);
     assert.match(references["service-start"], /service status --home "\$HOME\/\.goalboard" --json/);
     for (const content of Object.values(references)) assert.doesNotMatch(content, /GOALBOARD_DATABASE/);
   });
@@ -1471,6 +1491,8 @@ describe("mcp server", () => {
           web_base_url: string;
           project_url: string;
         };
+        project_guidance: { entries: unknown[]; runtime_prompt_prefix: string };
+        runtime_prompt_prefix: string;
       };
       assert.equal(bound.status, "bound");
       assert.equal(bound.connection.project_id, first.project_id);
@@ -1482,6 +1504,66 @@ describe("mcp server", () => {
         `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}`,
       );
       assert.equal(runtime.runtimeConnection?.projectId, first.project_id);
+      assert.deepEqual(bound.project_guidance.entries, []);
+      assert.equal(bound.runtime_prompt_prefix, bound.project_guidance.runtime_prompt_prefix);
+
+      const unconfirmedGuidance = await call(runtime, "goalboard_v1_project_guidance_add", {
+        board_id: first.board_id,
+        actor_id: "runtime-codex",
+        kind: "constraint",
+        content: "发布前必须验证升级路径。",
+        reason: "跨 Goal 的项目底线",
+        confirmation_summary: "尚未确认",
+        user_confirmed: false,
+        idempotency_key: "runtime-guidance-unconfirmed",
+      });
+      assert.equal(unconfirmedGuidance.result.isError, true);
+      assert.match(unconfirmedGuidance.result.content[0]?.text ?? "", /必须先向用户展示精确分类和原文/);
+      const addedGuidance = await call(runtime, "goalboard_v1_project_guidance_add", {
+        board_id: first.board_id,
+        actor_id: "runtime-codex",
+        kind: "constraint",
+        content: "发布前必须验证升级路径。",
+        source_refs: ["conversation://runtime-guidance"],
+        reason: "跨 Goal 的项目底线",
+        confirmation_summary: "用户已确认精确分类和原文",
+        user_confirmed: true,
+        idempotency_key: "runtime-guidance-confirmed",
+      });
+      assert.equal(addedGuidance.result.isError, false, addedGuidance.result.content[0]?.text);
+      const guidanceResponse = await call(runtime, "goalboard_v1_project_guidance_get", {
+        board_id: first.board_id,
+      });
+      const guidance = JSON.parse(guidanceResponse.result.content[0]?.text ?? "{}") as {
+        entries: Array<{ kind: string; content: string }>;
+        runtime_prompt_prefix: string;
+      };
+      assert.deepEqual(guidance.entries.map((entry) => entry.kind), ["constraint"]);
+      assert.match(guidance.runtime_prompt_prefix, /发布前必须验证升级路径/);
+      const guidanceId = (JSON.parse(addedGuidance.result.content[0]?.text ?? "{}") as { entry: { guidance_id: string } }).entry.guidance_id;
+      const updatedGuidance = await call(runtime, "goalboard_v1_project_guidance_update", {
+        board_id: first.board_id,
+        guidance_id: guidanceId,
+        actor_id: "runtime-codex",
+        action: "edit",
+        kind: "quality_bar",
+        content: "发布前必须验证升级和回滚路径。",
+        reason: "用户补全项目级发布标准",
+        confirmation_summary: "用户明确确认精确修改",
+        user_confirmed: true,
+        idempotency_key: "runtime-guidance-update",
+      });
+      assert.equal(updatedGuidance.result.isError, false, updatedGuidance.result.content[0]?.text);
+      const updatedView = await call(runtime, "goalboard_v1_project_guidance_get", {
+        board_id: first.board_id,
+      });
+      const updated = JSON.parse(updatedView.result.content[0]?.text ?? "{}") as {
+        entries: Array<{ kind: string; content: string; revision: number }>;
+        revisions: unknown[];
+      };
+      assert.deepEqual(updated.entries.map((entry) => entry.kind), ["quality_bar"]);
+      assert.equal(updated.entries[0]?.revision, 2);
+      assert.equal(updated.revisions.length, 2);
 
       const contractResponse = await call(runtime, "goalboard_v1_contract", {
         board_id: first.board_id,
@@ -1507,10 +1589,14 @@ describe("mcp server", () => {
       const restored = JSON.parse(restoredResponse.result.content[0]?.text ?? "{}") as {
         status: string;
         connection: { project_id: string; board_id: string; project_url: string };
+        project_guidance: { entries: Array<{ content: string }> };
+        runtime_prompt_prefix: string;
       };
       assert.equal(restored.status, "bound");
       assert.equal(restored.connection.project_id, first.project_id);
       assert.equal(restored.connection.board_id, first.board_id);
+      assert.equal(restored.project_guidance.entries[0]?.content, "发布前必须验证升级和回滚路径。");
+      assert.match(restored.runtime_prompt_prefix, /发布前必须验证升级和回滚路径/);
       assert.equal(
         restored.connection.project_url,
         `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}`,

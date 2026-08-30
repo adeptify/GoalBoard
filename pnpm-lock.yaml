@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@adeptify/intelligence-client':
+        specifier: file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz
+        version: file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz(@adeptify/search-evidence-layer@file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz)
+      '@adeptify/search-evidence-layer':
+        specifier: file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz
+        version: file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz
       better-sqlite3:
         specifier: 12.8.0
         version: 12.8.0
@@ -50,6 +56,21 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@adeptify/intelligence-client@file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz':
+    resolution: {integrity: sha512-b/Gxc1QYw+F/KCPMTZ6WsXU+tQxBul5H7Neb2nh+caSHxAER3T6evPqFf+4A57A/BMqWGez7vZz4Y0GRUXClLg==, tarball: file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz}
+    version: 0.2.2
+    engines: {node: '>=24'}
+    peerDependencies:
+      '@adeptify/search-evidence-layer': 0.4.1
+    peerDependenciesMeta:
+      '@adeptify/search-evidence-layer':
+        optional: true
+
+  '@adeptify/search-evidence-layer@file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz':
+    resolution: {integrity: sha512-Ift5hvW+T4O6n1n3akUmyNeqg0V+BgI34Hjnly8ldYS77OJHlDtlBxS/QI8ozGaE/8aGk0cV0lR8ppVobpwgfw==, tarball: file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz}
+    version: 0.4.1
+    engines: {node: '>=24'}
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -473,6 +494,12 @@ packages:
         optional: true
 
 snapshots:
+
+  '@adeptify/intelligence-client@file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz(@adeptify/search-evidence-layer@file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz)':
+    optionalDependencies:
+      '@adeptify/search-evidence-layer': file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz
+
+  '@adeptify/search-evidence-layer@file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz': {}
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true

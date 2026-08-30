@@ -41,3 +41,29 @@ Implementation inventory:
 | Candidate switch | human decision queue with explicit approve/reject actions |
 | Mobile route | CSS vertical reflow; no raster crop |
 | Generated comp | north-star reference only; not shipped as UI asset |
+
+## Information Stream Workbench direction — approved 2026-08-30
+
+Approved structural comp: `.impeccable/mocks/decision/feed-dispatch-ledger.png`.
+
+The selected direction is the Dispatch Ledger because its light stone directory,
+compact repeated rows, continuous work surface, horizontal item actions, and
+structured source/context rail fit GoalBoard Calm Desktop more closely than a
+full-height dark console. Goals, Inbox, Feed, and Sources share one directory
+shell: the same heading, search and on-demand tools, row rhythm, selected state,
+keyboard movement, and detail linkage. Their row slots remain semantic: Goal
+shows status/progress, Inbox sender/subject/reply pressure, Feed source/summary,
+and Source connector/sync health.
+
+The comp is structural rather than literal. Reduce its persistent grid lines and
+large outlined containers in favor of tonal separation, paper-toned selection,
+and low local shadows. Keep selected Item titles within the established desktop
+21–28px range. The primary action uses the existing near-black fill; cobalt stays
+reserved for focus, links, progress, and selected intent. The directory and work
+surface separate by quiet tone and the resize affordance, never a standing heavy
+border. Generated content, counts, dates, and provider state are not product facts.
+
+Information ownership remains: Connector is the provider capability, Source is
+the concrete configured origin, and `inbox_message` / `feed` are the two Item
+responsibility modes. The user-facing management surface is named “来源与连接”.
+Relay is migration-only and never a runtime dependency.

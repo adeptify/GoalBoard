@@ -91,11 +91,29 @@ test("visual foundation defines one wide workbench and one narrow companion", ()
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /linear-gradient/);
 });
 
+test("Light desktop work tabs stay flat and use a compact selection marker", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab \{[\s\S]*background: transparent;[\s\S]*box-shadow: none/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab\.is-selected \{[\s\S]*background: transparent;[\s\S]*box-shadow: none/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab\.is-selected::after \{[\s\S]*width: 28px;[\s\S]*height: 2px;[\s\S]*background: var\(--blue\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab:hover:not\(\.is-selected\) \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 4%, transparent\)/);
+});
+
+test("Light desktop navigation and directory selections stay flat", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /Light location states stay embedded in their rail/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.desktop-goal-directory \.tree-entry\.is-selected,[\s\S]*\.feed-list-item\.is-selected \{[\s\S]*background: color-mix\(in srgb, var\(--blue\) 8%, transparent\) !important;[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.goal-mode-switch button\.is-active \{[\s\S]*background: color-mix\(in srgb, var\(--blue\) 10%, transparent\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.goal-workspace-nav button\[aria-selected="true"\] \{[\s\S]*border-bottom-color: var\(--blue\);[\s\S]*background: transparent;[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\.settings-page\[data-desktop-shell="true"\] \.settings-navigation \.settings-nav-group > a\[aria-current="page"\] \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 8%, transparent\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-settings\[aria-current="page"\],[\s\S]*\.navigator-directory-toggle \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 7%, transparent\);[\s\S]*box-shadow: none;/);
+});
+
 test("desktop shell uses one project directory, project tabs, and soft work surfaces", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /Personal workbench v3: one directory, project-scoped tabs, and soft work surfaces/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-control-center-y: 21\.5px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-native-control-row-height: calc\(var\(--desktop-project-control-center-y\) \* 2\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-project-safe-inline-start: 2px/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-native-desktop="true"\] body\[data-desktop-shell="true"\][\s\S]*--desktop-project-safe-inline-start: 88px/);
   assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*grid-template-rows: auto minmax\(0, 1fr\) auto !important/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*padding: 0 8px;/);
@@ -103,7 +121,7 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-pane,[\s\S]*overflow: visible;[\s\S]*z-index: 2;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*background: color-mix\(in srgb, var\(--rail\) 78%, var\(--page\)\);[\s\S]*box-shadow: none;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.tree-resizer \{[\s\S]*grid-row: 2 \/ -1;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 88px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project \{[\s\S]*min-height: var\(--desktop-titlebar-height\);[\s\S]*padding: 0 2px 0 var\(--desktop-project-safe-inline-start\);/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-primary \{[\s\S]*height: var\(--desktop-native-control-row-height\);[\s\S]*grid-template-columns: minmax\(0, 178px\) 28px minmax\(12px, 1fr\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-menu-popover \{[\s\S]*position: absolute;[\s\S]*width: min\(310px, calc\(100vw - 24px\)\);[\s\S]*box-shadow: 0 14px 34px[\s\S]*z-index: 80;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-directory-panel\[hidden\] \{ display: none !important; \}/);
@@ -133,10 +151,17 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-navigation \{[\s\S]*grid-template-rows: var\(--desktop-titlebar-height\) 50px minmax\(0, 1fr\) auto;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-desktop-project \{[\s\S]*height: var\(--desktop-titlebar-height\);[\s\S]*grid-row: 1;[\s\S]*grid-template-rows: var\(--desktop-native-control-row-height\);[\s\S]*align-content: start;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-settings \{[\s\S]*height: 28px;[\s\S]*min-height: 28px;/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\]:not\(\[data-native-desktop="true"\]\) \.navigator-project \{[\s\S]*padding-left: 2px;/);
+  assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /:not\(\[data-native-desktop="true"\]\) \.navigator-project/);
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-heading \{ margin-bottom: 18px; padding: 0 2px; border: 0; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.preference-section \{ padding: 18px 0; border: 0; \}/);
+});
+
+test("project settings trigger resets inherited navigation-link layout", () => {
+  assert.match(
+    VISUAL_FOUNDATION_STYLES,
+    /\.navigator-project-settings \{[\s\S]*?height: 28px;[\s\S]*?min-height: 28px;[\s\S]*?padding: 0;[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?gap: 0;/,
+  );
 });
 
 test("runtime workbench becomes a two-column layout with a dock at standard widths", () => {

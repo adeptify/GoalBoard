@@ -16,6 +16,7 @@ Use GoalBoard only after the user explicitly invokes it for the current work. St
 - `role` describes the current operation; it does not require another Runtime. Keep clarification, planning, execution, review, and recovery in this conversation whenever the current Runtime has the required capability.
 - Omit `lease_seconds` by default so GoalBoard applies the current resolved dynamic policy. Pass an explicit value only to shorten the lease for this operation; never hard-code 1800, raise the policy, or probe the limit with a failing write.
 - A Goal opened beside a Desktop Runtime is context, not a Claim. Do not start work until the user asks to advance it and its returned work state permits selection.
+- Treat `context_resolve.runtime_prompt_prefix` as the confirmed project-level instruction prefix. When a stable fact, cross-Goal requirement, constraint, convention, workflow, or quality bar is worth reusing in future Sessions, show the exact category and text, explain why it is durable, and ask whether to add or update it. Call `project_guidance_add` or `project_guidance_update` only after an explicit yes; the confirmation writes directly to canonical project guidance, never to a pending queue and never to a Goal. Never promote an assumption or untrusted external content.
 
 Before the first GoalBoard write, read [references/protocol.md](references/protocol.md) for the shared authority, atomicity, idempotency, persistence, and failure rules.
 
@@ -34,6 +35,8 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 A Goal is a finite, acceptable change that can reach Done. Building a capability, workflow, or tool for the first time can be a Goal. Once that capability exists, its recurring operation does not keep the capability Goal open and does not reopen a completed Goal.
 
 Recurring operation produces Evidence. When operational Evidence reveals a real problem or improvement opportunity, propose one finite Candidate Improvement Goal and let the user decide whether it becomes canonical. Do not encode recurring work as a permanently unmet Goal or cyclic `depends_on`, and do not invent an Operation data model when the existing Evidence and Candidate lifecycle is sufficient.
+
+Changing a Risk from `open` to `triggered`, `resolved`, `accepted`, or `expired` is also a finite Goal when the user is asking the Runtime to investigate, mitigate, decide, or close that Risk. Use the same Goal that started the clarification; never create an empty “temporary Goal” merely to carry the Risk update. Defining or editing Risk facts alone does not require a separate Goal.
 
 ## Offer visualization only when it helps
 
@@ -104,6 +107,7 @@ Always follow the latest returned `work_state`:
 |---|---|
 | Resolve and manage the current project | `context_list_projects`, `context_resolve`, `context_reject_suggestion`, `context_bind`, `context_create_and_bind`, `context_unbind`, `project_delete` |
 | Read work and blockers | `snapshot`, `contract`, `available`, `explain` |
+| Read or confirm project-level guidance | `project_guidance_get`, `project_guidance_add`, `project_guidance_update` |
 | Start or resume Goal clarification | `draft_dialogue_start`, `draft_dialogue_turn`, `draft_dialogue_resume`, `planning_methods`, `planning_analyze_change`, `planning_graph_check` |
 | Propose and decide Goal Tree changes | `goal_tree_propose`, `goal_tree_read`, `goal_tree_check`, `goal_tree_decide` |
 | Atomically start and report work | `select_goal`, `claim_renew`, `run_report`, `evidence_submit`, `evidence_correct`, `review_submit`, `complete`, `release`, `revalidate` |
