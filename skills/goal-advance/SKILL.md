@@ -28,7 +28,8 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 4. **Plan before closing complex work.** Select all relevant professional methods, discover cross-topic result dependencies, check coverage, and split work into reviewable outcomes.
 5. **Ask for a real decision.** Present one readable, complete Goal Tree change set. Nothing proposed becomes canonical until the user confirms, rejects, or revises it.
 6. **Execute from derived state.** Choose an eligible leaf, work inside its accepted Contract, submit evidence and permitted reviews, complete it, and release the Claim.
-7. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
+7. **Hand off to the next cycle.** After release, refresh Available and state the next Goal, action, why-now, and continuation boundary; keep going when it is safe and already authorized instead of treating one Run as the conversation endpoint.
+8. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
 
 ## Keep Goals finite and operations recurring
 

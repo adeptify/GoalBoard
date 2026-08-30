@@ -68,6 +68,19 @@ run_report(state=completed | blocked | failed)
   → release
 ```
 
+## Close every Run with a cycle handoff
+
+A successful `goalboard_v1_release` closes ownership of one Run; it is not the endpoint of an ongoing “继续推进” request. Unless the user explicitly asked to stop or limited the request to this one Run, immediately follow the returned `handoff` and call `goalboard_v1_available` with `detail_level=summary` and the current Runtime's real capabilities. This read needs no repeated user confirmation, but it does not authorize unrelated work.
+
+Every cycle checkpoint has this shape:
+
+- **This cycle**: the business result and its evidence/acceptance boundary;
+- **Next**: the chosen Goal's complete title and returned `next_action`;
+- **Why now**: the returned planning rationale, dependency or blocker reason that makes this the right next move;
+- **Continuation**: either “continuing now” because the action is safe and inside the current user authority, or the exact human decision, permission or input that is missing; when another authorized Available item can proceed safely, name it and switch to it instead of waiting.
+
+When the chosen next action is safe and already authorized, read that Goal's Contract and continue through the normal Available path. Do not end the turn merely because a Claim was released or because a checkpoint was reported. Stop only for an explicit user stop, exhausted current authority, a required human decision/input, or no authorized Available work. GoalBoard still does not dispatch a mandatory next task: the Runtime remains responsible for choosing among the returned items and explaining the choice.
+
 For review, test the Contract and evidence rather than repeating the executor report. For revalidation, supply non-empty evidence from the active revalidator Run. Neither role may edit an accepted Contract or complete unrelated work.
 
 ## Put unexpected results back into the lifecycle

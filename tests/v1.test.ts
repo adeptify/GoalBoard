@@ -2122,6 +2122,44 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   store.close();
 });
 
+test("releasing a Claim hands the Runtime back to Available without authorizing unrelated work", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "release-handoff");
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "release-handoff",
+    actor_id: "runtime-release-handoff",
+    role: "executor",
+    idempotency_key: "release-handoff-select",
+  });
+
+  const released = coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-release-handoff",
+    reason: "本轮已经形成可汇报的检查点",
+    idempotency_key: "release-handoff-release",
+  });
+
+  assert.deepEqual(released.handoff, {
+    action: "read_available",
+    tool: "goalboard_v1_available",
+    read_requires_user_confirmation: false,
+    continuation_scope: "current_user_authority",
+  });
+
+  const replayed = coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-release-handoff",
+    reason: "本轮已经形成可汇报的检查点",
+    idempotency_key: "release-handoff-release",
+  });
+  assert.equal(replayed.replayed, true);
+  assert.deepEqual(replayed.handoff, released.handoff);
+  store.close();
+});
+
 test("Contract presents an expired Claim and its Run as one recoverable lifecycle", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-contract");

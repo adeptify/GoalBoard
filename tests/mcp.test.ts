@@ -67,6 +67,9 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_available"));
     assert.ok(names.includes("goalboard_v1_select_goal"));
     assert.ok(names.includes("goalboard_v1_claim_renew"));
+    const releaseTool = listedTools.find((tool) => tool.name === "goalboard_v1_release");
+    assert.match(releaseTool?.description ?? "", /成功响应.*handoff.*goalboard_v1_available/s);
+    assert.match(releaseTool?.description ?? "", /不授权无关工作/);
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
@@ -1365,6 +1368,20 @@ describe("mcp server", () => {
         },
       });
       assert.equal(releasedResponse.result.isError, false, releasedResponse.result.content[0]?.text);
+      const released = JSON.parse(releasedResponse.result.content[0]?.text ?? "{}") as {
+        handoff: {
+          action: string;
+          tool: string;
+          read_requires_user_confirmation: boolean;
+          continuation_scope: string;
+        };
+      };
+      assert.deepEqual(released.handoff, {
+        action: "read_available",
+        tool: "goalboard_v1_available",
+        read_requires_user_confirmation: false,
+        continuation_scope: "current_user_authority",
+      });
       const resumedResponse = await call(runtime, "goalboard_v1_draft_dialogue_resume", {
         board_id: "draft-dialogue-board",
         goal_id: started.goal.goal_id,

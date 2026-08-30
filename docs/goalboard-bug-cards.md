@@ -67,6 +67,7 @@
 | GB-20260830-30 | Contract Proposal 缺字段时抛出 undefined.trim 裸异常 | GoalBoard Contract schema 与运行时输入校验缺陷 | 已确认 | 已修复 | 完整 schema、字段路径、失败零写入与 Arena 成功恢复证据通过；0.1.7 已安装 | P0（解除 Arena 阻塞） |
 | GB-20260830-31 | replacement Goal 已生效，旧 Goal 仍进入 Ready | Goal replacement 生命周期与 Ready 过滤缺陷 | 已确认 | 已修复 | 真实 CGS 副本证明旧 Goal 不可领取；最终 App 保留历史并显示“已被替代” | P0 |
 | GB-20260830-32 | leaf_readiness 非法枚举被误报为“没写判断”，无 clarification Run 也缺恢复动作 | Goal Tree 输入校验与恢复提示缺陷 | 已确认 | 已修复 | 最终安装 MCP schema 显示 `keep | split`，精确错误与 resume hint 回归通过 | P1 |
+| GB-20260830-33 | 单轮 Run 收口后只汇报过去，不交代或继续下一轮 | GoalBoard Skill + MCP handoff 可发现性设计债，消费者遗漏为直接触发 | 已确认（修正归因） | 已修复（本地待发布） | Release handoff、Skill 连续推进协议与 MCP 实操通过；最终安装和新 Session 消费行为待发布后验收 | P1 |
 
 ---
 
@@ -1868,6 +1869,61 @@ GoalBoard 将 Relation 与 Goal 生命周期分离，初衷是保留历史、避
 
 ---
 
+## GB-20260830-33：单轮 Run 收口后只汇报过去，不交代或继续下一轮
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
+**Bug 确认**：已确认，但修正为 GoalBoard Skill + MCP handoff 可发现性设计债；消费者遗漏是直接触发，不是 Runtime 状态机错误
+**修复决定**：已按 Owner 当前授权批准自主修复，P1
+**修复状态**：本地实现、工程验证与 Owner 协议验收通过，待发布；尚未打包、安装或推送，新 Session 消费行为仍待发布后实操
+
+### 1. 真实场景
+
+CGS Runtime 完成一轮 executor Run，登记 Evidence、提交 `needs_changes` Review 并释放 Claim。随后只向用户汇报“本轮做了什么、为何 Goal 仍未完成”，没有在同一汇报中说明最新 Available 的下一项工作，也没有在授权范围内继续。用户必须追问“然后呢，下一步做什么”。
+
+### 2. 事实与归因
+
+消费者提供了完整生命周期顺序和用户追问，足以确认存在真实体验摩擦。源码核对发现：`execution.md` 只要求进度报告包含业务结果、当前阶段、下一动作/owner 和 blocker，却没有把“成功 release 后立即重读 Available”写入正常收口顺序；`goalboard_v1_release` 的 tool description 只有“由领取者释放 Claim”，成功响应也只含 Claim、cursor 和 replayed。与此同时，Available 已提供完整标题、`next_action`、`why_now`、阻塞摘要与并行建议，Web Capsule 也已有“短暂显示刚完成，再切到权威下一项”的回归测试。故主要归因是 Skill + MCP handoff 可发现性设计债，消费者没有报告下一动作是直接触发；不是 CGS 接入、Web 或 Goal 生命周期派生错误。
+
+### 3. 现有流程的问题
+
+单轮状态收口被误当成会话终点。汇报只解释过去，没有固定回答下一目标、下一动作、为何现在做、能否自主继续和无法继续时的替代路径，用户需要额外唤醒一次本可连续推进的工作。
+
+### 4. 设计根因与初衷
+
+GoalBoard 将 Claim/Run 做成有限租约并要求显式 release，初衷是及时释放写入所有权；Available 刻意不“派发唯一下一任务”，是为了保留 Runtime 基于能力、优先级、风险与用户授权做选择的责任。这两个边界合理。设计缺口是正常完成顺序停在 release，且 release 返回没有要求回到 Available，导致“GoalBoard 不自动派发”被消费者误解成“本轮之后不需要给出去向”。
+
+### 5. 当前影响
+
+影响使用 GoalBoard 连续推进长期 Goal 的用户和 Runtime。每个局部 Run 都可能多产生一次“然后呢”的追问；不直接破坏 canonical 数据，但会切断自主推进感，并让用户误以为 GoalBoard 机制只负责记账、不负责给出去向。
+
+### 6. 复杂度审查
+
+- **当前必须**：成功 release 后返回只读 Available handoff；Skill 固定 cycle checkpoint 字段，并规定在现有授权内继续、需要新授权或人类决定才停。
+- **可以延后**：把完整下一项直接嵌入 release 响应；这需要携带 Runtime capabilities 并耦合选择逻辑，当前无必要。
+- **应当删除**：不新增“自动派发下一任务”的后台调度器，不把 checkpoint 变成无限执行授权，也不为一次汇报遗漏改造 Core 生命周期状态机。
+
+### 7. 修复必要性与优先级
+
+需要修，P1。它不破坏 canonical 数据，但每一轮 Run 都可能重复发生，直接损害 GoalBoard“持续推进”的产品承诺。最小修复是增强现有协议与成功响应的可发现性，不改变 Goal/Claim/Run 状态机。
+
+### 8. 修复前后体验差异
+
+- **修复前**：用户收到本轮静态报告，再追问“下一步是什么、还会不会继续”。
+- **目标体验**：同一 checkpoint 先说明本轮业务结果与边界，再明确下一 Goal 的完整标题、具体动作、现在做的原因和是否会自主继续；只有真实的人类决策、权限或不可替代输入才停下。
+
+### 9. 最小修复范围
+
+修改 `goal-advance` 的执行参考：release 后立即用 summary Available 刷新；cycle checkpoint 固定说明本轮结果与边界、下一 Goal 完整标题、具体动作、why-now、能否自主继续、缺少的人类决定/权限/输入和安全替代项；授权范围内继续，不因 Run 结束停下。给 `goalboard_v1_release` 增加向后兼容的结构化 handoff，明确下一步是只读 `goalboard_v1_available`，读取本身无需确认，真正选择仍受当前用户授权约束；同步 tool description。Web 已有正确切换行为，不改；不让 release 自行查询或选择下一 Goal。
+
+### 10. 验收边界
+
+- **工程验证**：TDD RED 先以真实 Coordinator 调用确认旧 `releaseClaim` 的 `handoff=undefined`；实现后新增 Coordinator 回归覆盖首次释放与幂等重放，MCP 回归覆盖 `tools/list` 可发现说明和真实 JSON-RPC release 响应。最新完整 `pnpm test` 为 327/327、0 fail，`pnpm typecheck` 与 `git diff --check` 通过。验证过程没有隐藏失败：第一次全量运行受沙箱 SQLite 临时目录权限影响出现 `SQLITE_CANTOPEN`；切到正常本机权限后通过。清理 RED 阶段类型强转时曾漏一个右括号，下一轮完整测试在解析阶段发现，修正后重新从头运行并得到上述 327/327。
+- **产品实操**：MCP 协议实操通过：成功 release 与同幂等键 replay 都返回 `action=read_available`、`tool=goalboard_v1_available`、`read_requires_user_confirmation=false`、`continuation_scope=current_user_authority`；Tool 目录同步明确“只读刷新、不授权无关工作”。打包安装后的新 Codex Session 是否稳定按 Skill 输出完整标题、动作、why-now 并在授权内继续，当前仍为 `UNVERIFIED`，不能由测试冒充真人会话表现。
+- **Owner 最终验收**：通过。修复只补“释放后回到权威 Available”的交接，不自动选择、领取或执行，不放宽项目绑定、用户决策、Claim ownership 与 blocker；Web 和 Core Goal 状态机不改。当前已达到本地 Owner 验收边界，但尚未进入已安装版本。
+- **用户验收**：待新版本发布并由用户在真实连续推进会话中确认，不以 Owner 验收代替。
+
+---
+
 ## 2026-08-30 第三方视角全量复审
 
 本节在全部实现、统一安装和代表性实操完成后重新审查“这张卡是否真的成立”，不以已经写了代码反推其合理性。判断标准只有四项：是否有可复现事实；是否增加了无必要操作、歧义或错误状态；是否影响正确性、闭环或审计；最小修复是否保留了原设计要保护的边界。它覆盖并更新上方按时间记录的阶段性判断。
@@ -1906,10 +1962,11 @@ GoalBoard 将 Relation 与 Goal 生命周期分离，初衷是保留历史、避
 | GB30 | 成立，schema 与运行时 shape guard 缺失 | `undefined.trim` 无法定位字段并阻断 Arena 正式 Goal | 修完整 schema、精确 path 与零写入；不替 Agent 自动补业务合同 |
 | GB31 | 成立，Ready 没有消费 canonical `replaces` | 官方队列会引导执行过期、与现行授权相反的 Contract | 修统一派生 replaced 并禁止领取；保留旧 Goal 历史与可逆关系 |
 | GB32 | 成立；schema 部分与 GB14 去重，错误归因和恢复提示独立成立 | 合法文案因非法 enum 被误报“没写清”，消费者只能查源码 | 修精确枚举错误与 resume hint；不新增未经需要的 `defer` 状态 |
+| GB33 | 成立为 Skill + MCP handoff 可发现性设计债，消费者遗漏是直接触发 | 单轮 Run 收口被误当成对话终点，用户必须追问“然后呢”才能知道下一步 | 修 release 的只读 Available handoff 与固定 cycle checkpoint；不自动派发、不越授权 |
 
 ### 复审结论
 
-- 32 张卡中，29 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15 和 GB26 是部分重叠、部分跨系统，已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
+- 33 张卡中，30 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15 和 GB26 是部分重叠、部分跨系统，已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
 - GB13 的体验问题真实成立，但唯一主要归因在 CGS 领域模型与编辑台；GoalBoard 的正确决定是明确不修并保留路由状态，而不是为了“全部修完”制造跨仓耦合。
 - GB27 是本轮最重要的客观纠偏：原始 claim-gate 解释不符合真实 canonical 历史，最终只修可复现的 rework 恢复缺口，证明台账不是把每条消费者抱怨自动认定为原始描述中的 Bug。
 - 当前最小方案没有删除用户确认、项目绑定、租约 ownership、completion Risk、accepted Contract 不变量或历史审计；修复集中在消除重复操作、错误派生、不可发现协议、非原子写入和双真相。

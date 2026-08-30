@@ -116,6 +116,27 @@ type NormalizedProposedRelation = Record<string, unknown> & {
   reason: string;
 };
 
+export interface ClaimReleaseHandoff {
+  action: "read_available";
+  tool: "goalboard_v1_available";
+  read_requires_user_confirmation: false;
+  continuation_scope: "current_user_authority";
+}
+
+export interface ClaimReleaseResult {
+  claim: ClaimRecord;
+  replayed: boolean;
+  observed_event_cursor: number;
+  handoff: ClaimReleaseHandoff;
+}
+
+const CLAIM_RELEASE_HANDOFF: ClaimReleaseHandoff = Object.freeze({
+  action: "read_available",
+  tool: "goalboard_v1_available",
+  read_requires_user_confirmation: false,
+  continuation_scope: "current_user_authority",
+});
+
 export class GoalBoardV1Error extends Error {
   constructor(
     readonly code: string,
@@ -5299,21 +5320,25 @@ export class GoalBoardCoordinator {
     actor_id: string;
     reason: string;
     idempotency_key: string;
-  }): { claim: ClaimRecord; replayed: boolean; observed_event_cursor: number } {
+  }): ClaimReleaseResult {
     const hash = requestHash({
       board_id: input.board_id,
       claim_id: input.claim_id,
       actor_id: input.actor_id,
       reason: input.reason,
     });
-    const replay = this.replay<{ claim: ClaimRecord; observed_event_cursor: number }>(
+    const replay = this.replay<{
+      claim: ClaimRecord;
+      observed_event_cursor: number;
+      handoff?: ClaimReleaseHandoff;
+    }>(
       input.board_id,
       input.actor_id,
       "release_claim",
       input.idempotency_key,
       hash,
     );
-    if (replay) return { ...replay, replayed: true };
+    if (replay) return { ...replay, handoff: CLAIM_RELEASE_HANDOFF, replayed: true };
     const leaseRecovery = this.store.immediate(() => {
       this.requireBoard(input.board_id);
       const row = this.store.db
@@ -5352,14 +5377,18 @@ export class GoalBoardCoordinator {
       );
     }
     return this.store.immediate(() => {
-      const replay = this.replay<{ claim: ClaimRecord; observed_event_cursor: number }>(
+      const replay = this.replay<{
+        claim: ClaimRecord;
+        observed_event_cursor: number;
+        handoff?: ClaimReleaseHandoff;
+      }>(
         input.board_id,
         input.actor_id,
         "release_claim",
         input.idempotency_key,
         hash,
       );
-      if (replay) return { ...replay, replayed: true };
+      if (replay) return { ...replay, handoff: CLAIM_RELEASE_HANDOFF, replayed: true };
       this.requireBoard(input.board_id);
       const row = this.store.db
         .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
@@ -5394,7 +5423,11 @@ export class GoalBoardCoordinator {
         at,
       });
       const updated = this.store.db.prepare("SELECT * FROM claims WHERE claim_id = ?").get(input.claim_id) as Row;
-      const outcome = { claim: mapSqliteClaim(updated), observed_event_cursor: cursor };
+      const outcome = {
+        claim: mapSqliteClaim(updated),
+        observed_event_cursor: cursor,
+        handoff: CLAIM_RELEASE_HANDOFF,
+      };
       this.remember(
         input.board_id,
         input.actor_id,

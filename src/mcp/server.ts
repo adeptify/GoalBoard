@@ -1276,7 +1276,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_release",
-    "由领取者释放 Claim。",
+    "由领取者释放 Claim。成功响应会返回 handoff：先只读调用 goalboard_v1_available 刷新权威下一项，再在当前用户授权范围内继续，或明确报告需要的人类决定、权限或输入；读取 Available 本身不需要再次确认，handoff 不授权无关工作。",
     { claim_id: V1_STRING, actor_id: V1_STRING, reason: V1_STRING, idempotency_key: V1_STRING },
     ["claim_id", "actor_id", "reason", "idempotency_key"],
   ),
