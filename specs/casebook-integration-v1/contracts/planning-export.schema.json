@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goalboard.dev/contracts/casebook/planning-export/1.0.0",
+  "title": "GoalBoard Casebook Planning Export Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_id",
+    "schema_version",
+    "project_ref",
+    "authorization_epoch",
+    "exported_at",
+    "cursor",
+    "events"
+  ],
+  "properties": {
+    "contract_id": {
+      "const": "goalboard.casebook.planning-export"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "project_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authorization_epoch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Changes whenever project authorization is newly granted; prevents replay across removal/re-enrollment."
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cursor": {
+      "$ref": "#/$defs/cursor"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    }
+  },
+  "$defs": {
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["after_exclusive", "to_inclusive", "has_more"],
+      "properties": {
+        "after_exclusive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to_inclusive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "seq",
+        "occurred_at",
+        "kind",
+        "object_type",
+        "object_id",
+        "action",
+        "facts",
+        "source_digest"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "kind": {
+          "enum": [
+            "goal.created_from_tree_proposal",
+            "goal.updated_from_tree_proposal",
+            "goal.accepted_compound_closed_from_tree_proposal",
+            "relation.added_from_tree_proposal",
+            "relation.deactivated_from_tree_proposal",
+            "risk.created",
+            "risk.updated",
+            "goal_tree_proposal.decided",
+            "planning.method_saved"
+          ]
+        },
+        "object_type": {
+          "enum": ["goal", "relation", "risk", "goal_tree_proposal", "planning_method"]
+        },
+        "object_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "enum": ["create", "update", "deactivate", "decide"]
+        },
+        "facts": {
+          "oneOf": [
+            { "$ref": "#/$defs/goal_fact" },
+            { "$ref": "#/$defs/relation_fact" },
+            { "$ref": "#/$defs/risk_fact" },
+            { "$ref": "#/$defs/proposal_fact" },
+            { "$ref": "#/$defs/planning_method_fact" }
+          ]
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "acceptance_criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion_id", "statement", "decision_method", "pass_condition", "required_evidence"],
+      "properties": {
+        "criterion_id": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string" },
+        "decision_method": {
+          "enum": ["automated_check", "inspection", "measurement", "human_decision"]
+        },
+        "pass_condition": { "type": "string" },
+        "required_evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "coverage_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["area", "disposition", "goal_ids", "reason"],
+      "properties": {
+        "area": { "type": "string" },
+        "disposition": { "enum": ["goal", "owned", "not_applicable"] },
+        "goal_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": { "type": "string" }
+      }
+    },
+    "decomposition_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "task_context", "method_pack_ids", "coverage", "open_goal_ids", "next_step"],
+      "properties": {
+        "status": { "enum": ["complete", "paused"] },
+        "task_context": { "enum": ["game", "app", "ai_data", "content_research", "operations", "other"] },
+        "method_pack_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "coverage": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/coverage_entry" }
+        },
+        "open_goal_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "next_step": { "type": "string" },
+        "contract_coverage_refs": {
+          "type": "array",
+          "description": "Lossless child references and reasons without copying private Evidence content.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["parent_field", "parent_value", "child_goal_ids", "reason"],
+            "properties": {
+              "parent_field": { "enum": ["promised_output", "acceptance_criterion"] },
+              "parent_value": { "type": "string" },
+              "child_goal_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string" }
+              },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "goal_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fact_type",
+        "goal_id",
+        "title",
+        "outcome",
+        "why",
+        "business_logic",
+        "in_scope",
+        "out_of_scope",
+        "constraints",
+        "required_inputs",
+        "promised_outputs",
+        "definition_state",
+        "decomposition_state",
+        "acceptance_criteria"
+      ],
+      "properties": {
+        "fact_type": { "const": "goal" },
+        "goal_id": { "type": "string" },
+        "title": { "type": "string" },
+        "outcome": { "type": "string" },
+        "why": { "type": "string" },
+        "business_logic": { "type": "string" },
+        "in_scope": { "type": "array", "items": { "type": "string" } },
+        "out_of_scope": { "type": "array", "items": { "type": "string" } },
+        "constraints": { "type": "array", "items": { "type": "string" } },
+        "required_inputs": { "type": "array", "items": { "type": "string" } },
+        "promised_outputs": { "type": "array", "items": { "type": "string" } },
+        "definition_state": { "enum": ["accepted"] },
+        "decomposition_state": { "enum": ["abstract", "frontier_open", "closed_leaf", "closed_compound"] },
+        "decomposition_review": { "$ref": "#/$defs/decomposition_review" },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/acceptance_criterion" }
+        }
+      }
+    },
+    "relation_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_type", "relation_id", "from_goal_id", "to_goal_id", "relation_type", "reason", "active"],
+      "properties": {
+        "fact_type": { "const": "relation" },
+        "relation_id": { "type": "string" },
+        "from_goal_id": { "type": "string" },
+        "to_goal_id": { "type": "string" },
+        "relation_type": {
+          "enum": ["part_of", "depends_on", "conflicts_with", "mitigates", "extends", "replaces", "corrects", "invalidates", "migrates_from"]
+        },
+        "reason": { "type": "string" },
+        "active": { "type": "boolean" }
+      }
+    },
+    "risk_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_type", "risk_id", "goal_ids", "description", "probability", "impact", "trigger", "treatment", "blocking_mode", "owner", "state"],
+      "properties": {
+        "fact_type": { "const": "risk" },
+        "risk_id": { "type": "string" },
+        "goal_ids": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "probability": { "type": "string" },
+        "impact": { "type": "string" },
+        "trigger": { "type": "string" },
+        "treatment": { "enum": ["accept", "mitigate", "avoid", "defer"] },
+        "treatment_plan": { "type": "string" },
+        "blocking_mode": { "enum": ["none", "claim", "completion", "invalidate_on_trigger"] },
+        "revisit_condition": { "type": "string" },
+        "owner": { "type": "string" },
+        "state": { "enum": ["open", "triggered", "resolved", "accepted", "expired"] }
+      }
+    },
+    "proposal_item_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_id", "kind", "operation", "reason", "problem", "expected_effect", "non_goals", "decision"],
+      "properties": {
+        "item_id": { "type": "string" },
+        "kind": { "enum": ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"] },
+        "operation": { "enum": ["create", "update", "deactivate"] },
+        "reason": { "type": "string" },
+        "problem": { "type": "string" },
+        "expected_effect": { "type": "string" },
+        "non_goals": { "type": "array", "items": { "type": "string" } },
+        "decision": { "enum": ["confirmed", "rejected", "revised", "conflict"] }
+      }
+    },
+    "proposal_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_type", "proposal_id", "root_goal_id", "summary", "narrative", "items", "state"],
+      "properties": {
+        "fact_type": { "const": "goal_tree_proposal" },
+        "proposal_id": { "type": "string" },
+        "root_goal_id": { "type": ["string", "null"] },
+        "summary": { "type": "string" },
+        "narrative": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["why_now", "problem", "main_path", "expected_effect", "non_goals"],
+          "properties": {
+            "why_now": { "type": "string" },
+            "problem": { "type": "string" },
+            "main_path": { "type": "array", "items": { "type": "string" } },
+            "expected_effect": { "type": "string" },
+            "non_goals": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/proposal_item_summary" } },
+        "state": { "enum": ["approved", "partially_applied", "rejected", "closed"] }
+      }
+    },
+    "planning_method_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_type", "method_id", "name", "kind", "summary", "source_refs", "content_digest"],
+      "properties": {
+        "fact_type": { "const": "planning_method" },
+        "method_id": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "enum": ["meta", "work_type", "domain", "industry", "overlay", "custom"] },
+        "summary": { "type": "string" },
+        "source_refs": { "type": "array", "items": { "type": "string" } },
+        "content_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

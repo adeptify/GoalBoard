@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goalboard.dev/contracts/casebook/showcase-artifact/1.0.0",
+  "title": "GoalBoard Public Showcase Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_id",
+    "schema_version",
+    "showcase_id",
+    "artifact_version",
+    "slug",
+    "title",
+    "dek",
+    "audience",
+    "story",
+    "proof_cards",
+    "sanitized",
+    "rights_cleared",
+    "approval",
+    "share",
+    "delivery"
+  ],
+  "properties": {
+    "contract_id": { "const": "goalboard.casebook.showcase-artifact" },
+    "schema_version": { "const": "1.0.0" },
+    "showcase_id": { "type": "string", "minLength": 1 },
+    "artifact_version": { "type": "integer", "minimum": 1 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "title": { "type": "string", "minLength": 1 },
+    "dek": { "type": "string", "minLength": 1 },
+    "audience": { "type": "string", "minLength": 1 },
+    "hero_asset": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["public_path", "alt"],
+      "properties": {
+        "public_path": { "type": "string", "pattern": "^/" },
+        "alt": { "type": "string" }
+      }
+    },
+    "story": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["problem", "planning_method", "turning_points", "result", "evidence_boundaries"],
+      "properties": {
+        "problem": { "type": "string" },
+        "planning_method": { "type": "string" },
+        "turning_points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "before", "decision", "after"],
+            "properties": {
+              "title": { "type": "string" },
+              "before": { "type": "string" },
+              "decision": { "type": "string" },
+              "after": { "type": "string" }
+            }
+          }
+        },
+        "result": { "type": "string" },
+        "evidence_boundaries": { "type": "string" }
+      }
+    },
+    "proof_cards": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "evidence_summary", "evidence_level", "verification_status"],
+        "properties": {
+          "claim": { "type": "string" },
+          "evidence_summary": { "type": "string" },
+          "evidence_level": { "enum": ["engineering", "product_operation", "user_acceptance", "market_outcome"] },
+          "verification_status": { "enum": ["verified", "unverified"] }
+        }
+      }
+    },
+    "sanitized": { "const": true },
+    "rights_cleared": { "const": true },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["author_public_name", "approver_public_name", "approved_at", "approval_version"],
+      "properties": {
+        "author_public_name": { "type": "string", "minLength": 1 },
+        "approver_public_name": { "type": "string", "minLength": 1 },
+        "approved_at": { "type": "string", "format": "date-time" },
+        "approval_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "description", "image_public_path"],
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "image_public_path": { "type": "string", "pattern": "^/" }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "const": "approved_for_publication" }
+      }
+    }
+  }
+}

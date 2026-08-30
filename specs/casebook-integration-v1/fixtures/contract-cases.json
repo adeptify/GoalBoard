@@ -1,0 +1,232 @@
+{
+  "contract_version": "1.0.0",
+  "base_export": {
+    "contract_id": "goalboard.casebook.planning-export",
+    "schema_version": "1.0.0",
+    "project_ref": "project-fixture",
+    "authorization_epoch": "epoch-fixture-1",
+    "exported_at": "2026-08-30T00:00:00.000Z",
+    "cursor": {
+      "after_exclusive": 10,
+      "to_inclusive": 12,
+      "has_more": false
+    },
+    "events": [
+      {
+        "event_id": "event-11",
+        "seq": 11,
+        "occurred_at": "2026-08-30T00:00:01.000Z",
+        "kind": "goal.created_from_tree_proposal",
+        "object_type": "goal",
+        "object_id": "goal-fixture",
+        "action": "create",
+        "facts": {
+          "fact_type": "goal",
+          "goal_id": "goal-fixture",
+          "title": "交付 fixture 结果",
+          "outcome": "fixture 结果可检查",
+          "why": "验证最小规划导出契约",
+          "business_logic": "经用户确认后导出 accepted Goal Contract。",
+          "in_scope": ["正式 Goal Contract"],
+          "out_of_scope": ["原始对话"],
+          "constraints": ["只导出 allowlist"],
+          "required_inputs": ["用户确认"],
+          "promised_outputs": ["fixture 结果可检查"],
+          "definition_state": "accepted",
+          "decomposition_state": "closed_leaf",
+          "acceptance_criteria": [
+            {
+              "criterion_id": "fixture-result",
+              "statement": "fixture 结果存在",
+              "decision_method": "inspection",
+              "pass_condition": "结果可以读取",
+              "required_evidence": ["fixture"]
+            }
+          ]
+        },
+        "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "event_id": "event-12",
+        "seq": 12,
+        "occurred_at": "2026-08-30T00:00:02.000Z",
+        "kind": "relation.added_from_tree_proposal",
+        "object_type": "relation",
+        "object_id": "relation-fixture",
+        "action": "create",
+        "facts": {
+          "fact_type": "relation",
+          "relation_id": "relation-fixture",
+          "from_goal_id": "goal-fixture",
+          "to_goal_id": "root-fixture",
+          "relation_type": "part_of",
+          "reason": "fixture Goal 是根结果的一部分。",
+          "active": true
+        },
+        "source_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "base_showcase": {
+    "contract_id": "goalboard.casebook.showcase-artifact",
+    "schema_version": "1.0.0",
+    "showcase_id": "showcase-fixture",
+    "artifact_version": 1,
+    "slug": "fixture-planning-case",
+    "title": "一个规划案例如何变得可执行",
+    "dek": "从模糊目标到有证据边界的可执行 Goal Tree。",
+    "audience": "了解 AI Agent 与 GoalBoard 的产品和开发者",
+    "hero_asset": null,
+    "story": {
+      "problem": "原始目标缺少明确边界。",
+      "planning_method": "结果链、运营责任、安全隐私与人工复核组合。",
+      "turning_points": [
+        {
+          "title": "从模块清单转为结果链",
+          "before": "按技术层罗列任务。",
+          "decision": "只保留可独立交付的结果。",
+          "after": "形成有真实消费依赖的 Goal Tree。"
+        }
+      ],
+      "result": "契约与依赖可以被检查。",
+      "evidence_boundaries": "这里只验证契约 fixture，不代表产品实操或用户验收。"
+    },
+    "proof_cards": [
+      {
+        "claim": "契约 fixture 通过自动检查。",
+        "evidence_summary": "本地 contract test 通过。",
+        "evidence_level": "engineering",
+        "verification_status": "verified"
+      },
+      {
+        "claim": "公开页面具有传播效果。",
+        "evidence_summary": "尚未进行真人传播验证。",
+        "evidence_level": "market_outcome",
+        "verification_status": "unverified"
+      }
+    ],
+    "sanitized": true,
+    "rights_cleared": true,
+    "approval": {
+      "author_public_name": "Fixture Author",
+      "approver_public_name": "Fixture Approver",
+      "approved_at": "2026-08-30T00:00:03.000Z",
+      "approval_version": 1
+    },
+    "share": {
+      "title": "一个规划案例如何变得可执行",
+      "description": "GoalBoard Casebook Showcase fixture",
+      "image_public_path": "/showcase/fixture-card.png"
+    },
+    "delivery": {
+      "state": "approved_for_publication"
+    }
+  },
+  "cases": [
+    {
+      "name": "valid_v1_export",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {},
+      "mutations": [],
+      "expected": { "status": "accepted", "ack_cursor": 12, "duplicates": 0 }
+    },
+    {
+      "name": "old_version_rejected",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {},
+      "mutations": [
+        { "op": "set", "path": ["schema_version"], "value": "0.9.0" }
+      ],
+      "expected": { "status": "rejected", "code": "unsupported_schema_version", "ack_cursor": 10 }
+    },
+    {
+      "name": "unknown_top_level_field_rejected",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {},
+      "mutations": [
+        { "op": "set", "path": ["raw_dialogue"], "value": "must not cross the boundary" }
+      ],
+      "expected": { "status": "rejected", "code": "unknown_field", "ack_cursor": 10 }
+    },
+    {
+      "name": "unknown_nested_fact_field_rejected",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {},
+      "mutations": [
+        { "op": "set", "path": ["events", 0, "facts", "raw_prompt"], "value": "must not cross the boundary" }
+      ],
+      "expected": { "status": "rejected", "code": "unknown_field", "ack_cursor": 10 }
+    },
+    {
+      "name": "same_digest_duplicate_is_idempotent",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {
+        "event-11": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "mutations": [],
+      "expected": { "status": "accepted", "ack_cursor": 12, "duplicates": 1 }
+    },
+    {
+      "name": "different_digest_duplicate_is_conflict",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {
+        "event-11": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "mutations": [],
+      "expected": { "status": "rejected", "code": "idempotency_conflict", "ack_cursor": 10 }
+    },
+    {
+      "name": "resume_from_acknowledged_cursor",
+      "subject": "export",
+      "consumer_cursor": 11,
+      "seen_events": {
+        "event-11": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "mutations": [
+        { "op": "set", "path": ["cursor", "after_exclusive"], "value": 11 },
+        { "op": "delete", "path": ["events", 0] }
+      ],
+      "expected": { "status": "accepted", "ack_cursor": 12, "duplicates": 0 }
+    },
+    {
+      "name": "cursor_gap_rejects_whole_batch",
+      "subject": "export",
+      "consumer_cursor": 10,
+      "seen_events": {},
+      "mutations": [
+        { "op": "set", "path": ["events", 0, "seq"], "value": 12 },
+        { "op": "set", "path": ["events", 1, "seq"], "value": 13 },
+        { "op": "set", "path": ["cursor", "to_inclusive"], "value": 13 }
+      ],
+      "expected": { "status": "rejected", "code": "cursor_gap", "ack_cursor": 10 }
+    },
+    {
+      "name": "valid_public_showcase",
+      "subject": "showcase",
+      "mutations": [],
+      "expected": { "status": "accepted" }
+    },
+    {
+      "name": "private_case_reference_rejected_from_public_artifact",
+      "subject": "showcase",
+      "mutations": [
+        { "op": "set", "path": ["case_id"], "value": "private-case-must-not-publish" }
+      ],
+      "expected": { "status": "rejected", "code": "unknown_field" }
+    },
+    {
+      "name": "self_approval_rejected",
+      "subject": "showcase",
+      "mutations": [
+        { "op": "set", "path": ["approval", "approver_public_name"], "value": "Fixture Author" }
+      ],
+      "expected": { "status": "rejected", "code": "independent_approval_required" }
+    }
+  ]
+}
