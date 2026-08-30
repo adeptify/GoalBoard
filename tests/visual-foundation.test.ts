@@ -91,6 +91,22 @@ test("visual foundation defines one wide workbench and one narrow companion", ()
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /linear-gradient/);
 });
 
+test("Light desktop work tabs stay flat and use a compact selection marker", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab \{[\s\S]*background: transparent;[\s\S]*box-shadow: none/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab\.is-selected \{[\s\S]*background: transparent;[\s\S]*box-shadow: none/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab\.is-selected::after \{[\s\S]*width: 28px;[\s\S]*height: 2px;[\s\S]*background: var\(--blue\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\][\s\S]*\.desktop-work-tab:hover:not\(\.is-selected\) \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 4%, transparent\)/);
+});
+
+test("Light desktop navigation and directory selections stay flat", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /Light location states stay embedded in their rail/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.desktop-goal-directory \.tree-entry\.is-selected,[\s\S]*\.feed-list-item\.is-selected \{[\s\S]*background: color-mix\(in srgb, var\(--blue\) 8%, transparent\) !important;[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.goal-mode-switch button\.is-active \{[\s\S]*background: color-mix\(in srgb, var\(--blue\) 10%, transparent\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\[data-desktop-shell="true"\] \.goal-workspace-nav button\[aria-selected="true"\] \{[\s\S]*border-bottom-color: var\(--blue\);[\s\S]*background: transparent;[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /html\[data-resolved-theme="light"\] body\.settings-page\[data-desktop-shell="true"\] \.settings-navigation \.settings-nav-group > a\[aria-current="page"\] \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 8%, transparent\);[\s\S]*box-shadow: none;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.navigator-project-settings\[aria-current="page"\],[\s\S]*\.navigator-directory-toggle \{[\s\S]*background: color-mix\(in srgb, var\(--ink\) 7%, transparent\);[\s\S]*box-shadow: none;/);
+});
+
 test("desktop shell uses one project directory, project tabs, and soft work surfaces", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /Personal workbench v3: one directory, project-scoped tabs, and soft work surfaces/);
   assert.match(VISUAL_FOUNDATION_STYLES, /--desktop-titlebar-height: 48px/);
@@ -139,6 +155,13 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.doesNotMatch(VISUAL_FOUNDATION_STYLES, /\.settings-navigation > \.desktop-titlebar-safe/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.settings-heading \{ margin-bottom: 18px; padding: 0 2px; border: 0; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.preference-section \{ padding: 18px 0; border: 0; \}/);
+});
+
+test("project settings trigger resets inherited navigation-link layout", () => {
+  assert.match(
+    VISUAL_FOUNDATION_STYLES,
+    /\.navigator-project-settings \{[\s\S]*?height: 28px;[\s\S]*?min-height: 28px;[\s\S]*?padding: 0;[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?gap: 0;/,
+  );
 });
 
 test("runtime workbench becomes a two-column layout with a dock at standard widths", () => {

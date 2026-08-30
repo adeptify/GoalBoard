@@ -13,7 +13,7 @@
     "url": "https://github.com/adeptify/goalboard/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "bin": {
     "goalboard": "./dist/cli/main.js",
@@ -28,6 +28,7 @@
   },
   "files": [
     "dist",
+    "vendor",
     "skills",
     "examples",
     "README.md",
@@ -41,7 +42,7 @@
     "build": "pnpm clean && tsc -p tsconfig.json && pnpm build:pty-client && node dist/install/fingerprint.js .",
     "build:pty-client": "esbuild src/web/pty-client.ts --bundle --format=iife --platform=browser --outfile=dist/web/pty-client.js --loader:.css=text",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/service.test.ts tests/uninstall.test.ts tests/project-catalog.test.ts tests/runtime-integration.test.ts tests/mcp.test.ts tests/planning-engine.test.ts tests/v1.test.ts tests/i18n.test.ts tests/web.test.ts tests/desktop-tui.test.ts tests/e2e.test.ts",
+    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/service.test.ts tests/uninstall.test.ts tests/project-catalog.test.ts tests/runtime-integration.test.ts tests/mcp.test.ts tests/planning-engine.test.ts tests/v1.test.ts tests/feed.test.ts tests/feed-sources.test.ts tests/feed-connectors.test.ts tests/feed-security.test.ts tests/i18n.test.ts tests/web.test.ts tests/desktop-tui.test.ts tests/e2e.test.ts",
     "prepack": "pnpm build",
     "install:local": "pnpm build && node dist/cli/main.js install --source .",
     "cli": "tsx src/cli/main.ts",
@@ -54,6 +55,8 @@
     "goalboard": "tsx src/cli/main.ts"
   },
   "dependencies": {
+    "@adeptify/intelligence-client": "file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz",
+    "@adeptify/search-evidence-layer": "file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz",
     "better-sqlite3": "12.8.0",
     "lucide": "^1.31.0",
     "node-pty": "^1.1.0",

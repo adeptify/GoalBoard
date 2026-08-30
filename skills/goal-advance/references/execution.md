@@ -18,6 +18,8 @@ When Available returns a non-null `parallel_suggestion`, proactively explain the
 
 `available` and `explain(role=executor)` answer whether the current action can proceed; they do not certify that `complete` will pass before finished work reaches the completion phase. A Risk with `blocking_mode=completion` deliberately allows initial execution. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
 
+If the selected Goal's promised result is a Risk lifecycle change, treat the confirmed Risk state as one required output, not as completion of the Goal by itself. When the Risk was not already resolved during clarification, complete the mitigation and submit Evidence from the active executor Run, then use that same Run to propose only the same-root Risk lifecycle result for user confirmation. After canonical Risk verification, continue the same Goal through `run_report`, Evidence, required Review, `complete`, and `release`. Never complete or release a clarifier Run merely because a Risk item materialized while its Goal is still Draft.
+
 For a named Goal absent from `available`, first inspect the same response's `blocked` list. A `completion_blocked` item has already finished execution and reviews: report its Risk or decision reason and remediation without starting executor work. For other absent Goals, call `goalboard_v1_explain` and report the actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass a blocker with legacy `ready → claim → run_start`; the normal claiming path is `available → select_goal`.
 
 If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推进.” Opening the panel itself is not permission to select it.
@@ -47,6 +49,7 @@ A parent whose current children are complete is not silently done. If they cover
 - Evidence is immutable. If a submitted record is wrong, submit the corrected Evidence first and then use `goalboard_v1_evidence_correct` to supersede it, or retract it when there is no replacement. Never hide the old locator in free text or treat a corrected historical record as current proof.
 - A Runtime may correct only Evidence produced by the same actor. If another producer's Evidence is wrong, report the problem and let that producer or a trusted user-facing workflow resolve it.
 - A required human approval cannot be replaced by a Runtime review.
+- During execution, a repeated project-wide rule may be proposed as project guidance, but it is not part of Goal completion and must follow the protocol's exact-text user confirmation flow. Do not interrupt work for one-off implementation detail or save it automatically.
 
 Normal completion order:
 

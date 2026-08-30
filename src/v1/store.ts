@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { migrateFeedTables } from "../feed/store.js";
 import { randomUUID } from "node:crypto";
 import type { PlanningMethodPack } from "../planning/method-packs.js";
 import type {
@@ -18,6 +19,8 @@ import type {
   GoalRecord,
   GoalRelationRecord,
   ImpactBindingRecord,
+  ProjectGuidanceEntryRecord,
+  ProjectGuidanceRevisionRecord,
   ReviewObligationRecord,
   ReviewRecord,
   RewireRecord,
@@ -528,6 +531,48 @@ export class SqliteGoalBoardStore {
         CREATE INDEX goal_tree_proposal_decisions_item_idx
           ON goal_tree_proposal_decisions(proposal_id, item_id, created_at, decision_id);
 
+        CREATE TABLE project_guidance_entries (
+          guidance_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          position INTEGER NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+          kind TEXT NOT NULL CHECK (kind IN ('context', 'requirement', 'constraint', 'convention', 'workflow', 'quality_bar')),
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          created_by TEXT NOT NULL,
+          confirmation_summary TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(board_id, position),
+          UNIQUE(board_id, kind, content_hash)
+        );
+        CREATE INDEX project_guidance_board_idx
+          ON project_guidance_entries(board_id, position, guidance_id);
+
+        CREATE TABLE project_guidance_revisions (
+          revision_id TEXT PRIMARY KEY,
+          guidance_id TEXT NOT NULL REFERENCES project_guidance_entries(guidance_id) ON DELETE CASCADE,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          revision INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('context', 'requirement', 'constraint', 'convention', 'workflow', 'quality_bar')),
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          active INTEGER NOT NULL CHECK (active IN (0, 1)),
+          changed_by TEXT NOT NULL,
+          change_kind TEXT NOT NULL CHECK (change_kind IN ('created', 'edited', 'deactivated', 'restored')),
+          confirmation_summary TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(guidance_id, revision)
+        );
+        CREATE INDEX project_guidance_revisions_board_idx
+          ON project_guidance_revisions(board_id, guidance_id, revision DESC);
+
         CREATE TABLE idempotency_records (
           board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
           actor_id TEXT NOT NULL,
@@ -624,6 +669,22 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (20, ?)")
         .run(new Date().toISOString());
+      migrateFeedTables(this.db);
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (22, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (23, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (24, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (25, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -707,6 +768,55 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 20")
       .get();
     if (!evidenceLocatorSourceApplied) this.migrateEvidenceLocatorSource();
+    const feedWorkbenchApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 21")
+      .get();
+    if (!feedWorkbenchApplied) {
+      this.immediate(() => {
+        migrateFeedTables(this.db);
+        this.db
+          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
+          .run(new Date().toISOString());
+      });
+    }
+    const feedSourcesApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 22")
+      .get();
+    if (!feedSourcesApplied) {
+      this.immediate(() => {
+        migrateFeedTables(this.db);
+        this.db
+          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (22, ?)")
+          .run(new Date().toISOString());
+      });
+    }
+    const feedReadStateApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 23")
+      .get();
+    if (!feedReadStateApplied) {
+      this.immediate(() => {
+        migrateFeedTables(this.db);
+        this.db
+          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (23, ?)")
+          .run(new Date().toISOString());
+      });
+    }
+    const projectGuidanceApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 24")
+      .get();
+    const projectGuidanceTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_entries'")
+      .get();
+    if (!projectGuidanceApplied || !projectGuidanceTable) this.migrateProjectGuidance();
+    const projectGuidanceRevisionsApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 25")
+      .get();
+    const projectGuidanceRevisionsTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_revisions'")
+      .get();
+    if (!projectGuidanceRevisionsApplied || !projectGuidanceRevisionsTable) {
+      this.migrateProjectGuidanceRevisions();
+    }
   }
 
   private migrateClarifierRoles(): void {
@@ -1443,6 +1553,92 @@ export class SqliteGoalBoardStore {
     });
   }
 
+  private migrateProjectGuidance(): void {
+    this.immediate(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS project_guidance_entries (
+          guidance_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          position INTEGER NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+          kind TEXT NOT NULL CHECK (kind IN ('context', 'requirement', 'constraint', 'convention', 'workflow', 'quality_bar')),
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          created_by TEXT NOT NULL,
+          confirmation_summary TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(board_id, position),
+          UNIQUE(board_id, kind, content_hash)
+        );
+        CREATE INDEX IF NOT EXISTS project_guidance_board_idx
+          ON project_guidance_entries(board_id, position, guidance_id);
+      `);
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (24, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateProjectGuidanceRevisions(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(project_guidance_entries)") as Array<{ name: string }>;
+      const names = new Set(columns.map((column) => column.name));
+      if (!names.has("revision")) {
+        this.db.exec("ALTER TABLE project_guidance_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+      }
+      if (!names.has("active")) {
+        this.db.exec("ALTER TABLE project_guidance_entries ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))");
+      }
+      if (!names.has("updated_by")) {
+        this.db.exec("ALTER TABLE project_guidance_entries ADD COLUMN updated_by TEXT");
+      }
+      if (!names.has("updated_at")) {
+        this.db.exec("ALTER TABLE project_guidance_entries ADD COLUMN updated_at TEXT");
+      }
+      this.db.exec(`
+        UPDATE project_guidance_entries
+        SET updated_by = COALESCE(updated_by, created_by),
+            updated_at = COALESCE(updated_at, created_at);
+
+        CREATE TABLE IF NOT EXISTS project_guidance_revisions (
+          revision_id TEXT PRIMARY KEY,
+          guidance_id TEXT NOT NULL REFERENCES project_guidance_entries(guidance_id) ON DELETE CASCADE,
+          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+          revision INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('context', 'requirement', 'constraint', 'convention', 'workflow', 'quality_bar')),
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          active INTEGER NOT NULL CHECK (active IN (0, 1)),
+          changed_by TEXT NOT NULL,
+          change_kind TEXT NOT NULL CHECK (change_kind IN ('created', 'edited', 'deactivated', 'restored')),
+          confirmation_summary TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(guidance_id, revision)
+        );
+        CREATE INDEX IF NOT EXISTS project_guidance_revisions_board_idx
+          ON project_guidance_revisions(board_id, guidance_id, revision DESC);
+
+        INSERT OR IGNORE INTO project_guidance_revisions (
+          revision_id, guidance_id, board_id, revision, kind, content, content_hash,
+          source_refs_json, active, changed_by, change_kind, confirmation_summary, reason, created_at
+        )
+        SELECT 'migration:' || guidance_id || ':1', guidance_id, board_id, 1, kind, content,
+          content_hash, source_refs_json, 1, created_by, 'created', confirmation_summary, reason, created_at
+        FROM project_guidance_entries;
+      `);
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (25, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
   eventCursor(boardId: string): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS cursor FROM events WHERE board_id = ?")
@@ -1568,6 +1764,18 @@ export class SqliteGoalBoardStore {
       .filter((pack): pack is PlanningMethodPack => pack != null);
   }
 
+  listProjectGuidanceEntries(boardId: string, includeInactive = false): ProjectGuidanceEntryRecord[] {
+    return (this.db
+      .prepare(`SELECT * FROM project_guidance_entries WHERE board_id = ?${includeInactive ? "" : " AND active = 1"} ORDER BY position, guidance_id`)
+      .all(boardId) as Row[]).map(mapProjectGuidanceEntry);
+  }
+
+  listProjectGuidanceRevisions(boardId: string): ProjectGuidanceRevisionRecord[] {
+    return (this.db
+      .prepare("SELECT * FROM project_guidance_revisions WHERE board_id = ? ORDER BY created_at DESC, guidance_id, revision DESC")
+      .all(boardId) as Row[]).map(mapProjectGuidanceRevision);
+  }
+
   putPlanningMethodPack(boardId: string, pack: PlanningMethodPack): void {
     this.db
       .prepare(`
@@ -1654,6 +1862,7 @@ export class SqliteGoalBoardStore {
         .all(boardId) as Row[]).map(mapClarificationTurn),
       goal_tree_proposals: this.readGoalTreeProposals(boardId),
       planning_method_packs: this.listPlanningMethodPacks(boardId),
+      project_guidance: this.listProjectGuidanceEntries(boardId),
     };
   }
 
@@ -1804,6 +2013,45 @@ function mapRisk(row: Row): RiskRecord {
     state: text(row.state) as RiskRecord["state"],
     created_at: text(row.created_at),
     updated_at: text(row.updated_at),
+  };
+}
+
+function mapProjectGuidanceEntry(row: Row): ProjectGuidanceEntryRecord {
+  return {
+    guidance_id: text(row.guidance_id),
+    board_id: text(row.board_id),
+    position: number(row.position),
+    revision: row.revision == null ? 1 : number(row.revision),
+    active: row.active == null ? true : bool(row.active),
+    kind: text(row.kind) as ProjectGuidanceEntryRecord["kind"],
+    content: text(row.content),
+    content_hash: text(row.content_hash),
+    source_refs: parseJson<string[]>(row.source_refs_json, []),
+    created_by: text(row.created_by),
+    confirmation_summary: text(row.confirmation_summary),
+    reason: text(row.reason),
+    created_at: text(row.created_at),
+    updated_by: text(row.updated_by) || text(row.created_by),
+    updated_at: text(row.updated_at) || text(row.created_at),
+  };
+}
+
+function mapProjectGuidanceRevision(row: Row): ProjectGuidanceRevisionRecord {
+  return {
+    revision_id: text(row.revision_id),
+    guidance_id: text(row.guidance_id),
+    board_id: text(row.board_id),
+    revision: number(row.revision),
+    kind: text(row.kind) as ProjectGuidanceRevisionRecord["kind"],
+    content: text(row.content),
+    content_hash: text(row.content_hash),
+    source_refs: parseJson<string[]>(row.source_refs_json, []),
+    active: bool(row.active),
+    changed_by: text(row.changed_by),
+    change_kind: text(row.change_kind) as ProjectGuidanceRevisionRecord["change_kind"],
+    confirmation_summary: text(row.confirmation_summary),
+    reason: text(row.reason),
+    created_at: text(row.created_at),
   };
 }
 

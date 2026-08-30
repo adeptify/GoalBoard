@@ -238,6 +238,15 @@ Use one `goalboard_v1_goal_tree_propose` for the complete change set, then `goal
 
 For a Risk item, keep treatment strategy and lifecycle state separate. `treatment` is one of `accept | mitigate | avoid | defer`; optional `state` is one of `open | triggered | resolved | accepted | expired`. There is no `state=mitigated`: after mitigation work is actually complete, propose `state=resolved`. New Risks start `open`. After a confirmed Risk update, re-read the canonical Contract and verify its state before claiming that a completion blocker is cleared.
 
+When the user's requested result is to investigate, mitigate, accept, resolve, or expire an existing Risk, that result is the outcome of the current formal Goal—not a side effect and not a temporary context Goal. Keep the Goal Tree Proposal rooted at the Goal owned by the active clarifier Run. If that Goal is still Draft and the Risk result is already supported by completed work and evidence, the same Proposal must include both:
+
+- one complete `kind=contract`, `operation=update` item that accepts this same Goal as `closed_leaf`, with an observable Risk-handling outcome, boundaries, promised output, and acceptance evidence; and
+- the `kind=risk` lifecycle item that records the confirmed canonical Risk state.
+
+Ask the user to decide these dependent items together. Do not confirm the Risk item alone, substitute an unrelated Goal as the Proposal root, or finish the clarifier Run while its Goal remains an empty Draft. Creating a new open Risk or correcting its descriptive facts is not a lifecycle transition and does not mechanically require a new Goal.
+
+If mitigation or investigation still has to be executed, the clarifier Proposal accepts only the Goal Contract and leaves the Risk state unchanged. During the active executor Run for that same accepted leaf, complete the work and submit its Evidence first; the executor may then submit a same-root Proposal containing only the resulting Risk lifecycle item. It may not use executor authority to change Contracts, relations, other Goals, or ordinary Risk facts.
+
 To promote an existing pending Candidate, do not create a second Candidate or call a separate decision path. Add one `kind=candidate`, `operation=update` item to the unified Proposal:
 
 - `payload.candidate_id` names the existing Candidate;

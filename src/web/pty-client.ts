@@ -150,6 +150,7 @@ if (pane) {
   let reconnectStopped = false;
   let panelLoadSequence = 0;
   let parentReadOnly = pane.dataset.tuiParentReadOnly === "true";
+  let feedAutofillInFlight = false;
 
   const headers = () => ({
     "content-type": "application/json",
@@ -686,6 +687,7 @@ if (pane) {
       }
     }
     showTerminal(activeId);
+    await fillPendingFeedContext();
   };
 
   const openPanel = async (body: Record<string, unknown>) => {
@@ -717,6 +719,7 @@ if (pane) {
     try {
       await spawnPanel(record);
       showTerminal(activeId);
+      await fillPendingFeedContext();
     } catch (error) {
       setStatus(errorText(error), "error");
       showTerminal(activeId);
@@ -738,21 +741,84 @@ if (pane) {
     showTerminal(activeId);
   };
 
-  const writePrompt = async (send: boolean) => {
+  const writePrompt = async (send: boolean, feedItemId?: string) => {
     const panel = current();
     if (!canControlPanel(panel)) return;
-    const text = await loadAdvancePrompt(panel.goal_id);
-    await sendPty({ type: "write", panelId: panel.panel_id, data: send ? `${text}\r` : text });
+    const text = await loadAdvancePrompt(panel.goal_id, feedItemId);
+    const fillText = text
+      .replace(/[\r\n]+/g, " ⏎ ")
+      .replace(/[\u0000-\u001f\u007f]/g, " ");
+    await sendPty({ type: "write", panelId: panel.panel_id, data: send ? `${fillText}\r` : fillText });
   };
 
-  const loadAdvancePrompt = async (requestedGoalId?: string) => {
+  const feedAutofillKey = () => `goalboard-feed-runtime-autofill:${goalId()}`;
+
+  const pendingFeedAutofill = () => {
+    const key = feedAutofillKey();
+    if (!goalId()) return false;
+    try {
+      const pending = JSON.parse(sessionStorage.getItem(key) || "null") as { itemId?: string; at?: number } | null;
+      if (!pending) return false;
+      if (pending.at && Date.now() - pending.at > 30 * 60 * 1000) {
+        sessionStorage.removeItem(key);
+        return false;
+      }
+      if (typeof pending.itemId !== "string" || !pending.itemId.trim()) {
+        sessionStorage.removeItem(key);
+        return false;
+      }
+      return { itemId: pending.itemId.trim() };
+    } catch {
+      sessionStorage.removeItem(key);
+      return false;
+    }
+  };
+
+  const waitForTerminalOutput = async (panelId: string, timeoutMs = 2_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (
+      sessions.has(panelId) &&
+      alive.has(panelId) &&
+      !sessions.get(panelId)?.hasOutput &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  };
+
+  const fillPendingFeedContext = async () => {
+    const pending = pendingFeedAutofill();
+    if (feedAutofillInFlight || !pending) return;
+    const panel = current();
+    if (!panel || !alive.has(panel.panel_id)) {
+      setMenuOpen(true);
+      setStatus(L("选择一个 Runtime；打开后会自动填入这条 Item 的上下文。"), "busy");
+      return;
+    }
+    feedAutofillInFlight = true;
+    setStatus(L("正在填入 Item 上下文…"), "busy");
+    try {
+      await waitForTerminalOutput(panel.panel_id);
+      await writePrompt(false, pending.itemId);
+      sessionStorage.removeItem(feedAutofillKey());
+      setStatus(L("Item 上下文已填入，检查后再发送。"), "live");
+      showPageToast(L("Item 上下文已填入 Terminal"));
+    } catch (error) {
+      setStatus(errorText(error), "error");
+    } finally {
+      feedAutofillInFlight = false;
+    }
+  };
+
+  const loadAdvancePrompt = async (requestedGoalId?: string, feedItemId?: string) => {
     const id = requestedGoalId || goalId();
     if (!id) throw new Error(L("打开失败"));
     if (parentReadOnly) throw new Error(parentReadOnlyMessage());
     if (requestedGoalId && requestedGoalId !== goalId()) {
       throw new Error(L("当前页面已经切到另一条 Goal，请回到终端所属的 Goal 再操作。"));
     }
-    const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt`), {
+    const itemQuery = feedItemId ? `?feed_item_id=${encodeURIComponent(feedItemId)}` : "";
+    const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt${itemQuery}`), {
       cache: "no-store",
       headers: desktopHeaders(),
     });
@@ -869,8 +935,16 @@ if (pane) {
     }
     promptCache = "";
     setParentGuard(Boolean(detail?.parentReadOnly), detail?.children ?? []);
+    panelLoadSequence += 1;
+    panels = [];
+    activeId = null;
     renderTabs();
-    showTerminal(activeId);
+    showTerminal(null);
+  });
+
+  document.addEventListener("goalboard:goal-document-loaded", (event) => {
+    const detail = (event as CustomEvent<{ goalId?: string }>).detail;
+    if (!detail?.goalId || detail.goalId !== goalId()) return;
     void loadPanels();
   });
 

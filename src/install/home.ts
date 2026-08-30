@@ -458,6 +458,13 @@ async function resolveDependencyPackageJson(name: string, fromPackageJson: strin
   try {
     return resolver.resolve(`${name}/package.json`);
   } catch (packageJsonError) {
+    // A package may deliberately omit `./package.json` and a CommonJS
+    // condition from `exports` while still being a valid ESM runtime
+    // dependency. Walk the same ancestor node_modules locations Node uses so
+    // installation can inspect identity without requiring a public metadata
+    // subpath from the dependency.
+    const discoveredPackageJson = await findDependencyPackageJson(name, fromPackageJson);
+    if (discoveredPackageJson) return discoveredPackageJson;
     let resolvedEntry: string;
     try {
       resolvedEntry = resolver.resolve(name);
@@ -478,6 +485,23 @@ async function resolveDependencyPackageJson(name: string, fromPackageJson: strin
       directory = parent;
     }
     throw packageJsonError;
+  }
+}
+
+async function findDependencyPackageJson(name: string, fromPackageJson: string): Promise<string | null> {
+  const packageSegments = name.split("/");
+  let directory = path.dirname(fromPackageJson);
+  while (true) {
+    const candidate = path.join(directory, "node_modules", ...packageSegments, "package.json");
+    try {
+      const metadata = JSON.parse(await fs.readFile(candidate, "utf8")) as { name?: unknown };
+      if (metadata.name === name) return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
   }
 }
 

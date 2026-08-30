@@ -15,6 +15,7 @@ import type {
   GoalTreeProposalRecord,
   GoalWorkState,
   ImpactBindingRecord,
+  ProjectGuidanceView,
   ReviewObligationRecord,
   ReviewRecord,
   RewireRecord,
@@ -68,6 +69,14 @@ import {
   type GoalDecompositionValidationIssue,
   type ProductPathArea,
 } from "../v1/goal-decomposition-validation.js";
+import type {
+  FeedItemRecord,
+  FeedItemType,
+  FeedSnapshot,
+  RelayImportAvailability,
+} from "../feed/types.js";
+import type { FeedSourceCatalogView } from "../feed/sources/service.js";
+import type { ConnectorAuthStatus } from "../feed/connectors/service.js";
 
 const THEME_BOOTSTRAP_SCRIPT = `${BASE_THEME_BOOTSTRAP_SCRIPT}${NATIVE_DESKTOP_BOOTSTRAP_SCRIPT}`;
 
@@ -252,6 +261,10 @@ export interface GoalBoardWebView {
   input_bindings: WebInputBinding[];
   policy_bindings: WebPolicyBinding[];
   events: WebEventRecord[];
+  feed: FeedSnapshot;
+  relay_import: RelayImportAvailability;
+  feed_source_catalog?: FeedSourceCatalogView[];
+  feed_connector_auth?: ConnectorAuthStatus;
 }
 
 const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
@@ -321,6 +334,16 @@ function escapeHtml(value: unknown): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function safeExternalHref(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function controlTokenMeta(controlToken: string): string {
@@ -629,6 +652,7 @@ function renderGoalTree(
     const nodeChildren = sortGoals(children.get(item.goal.goal_id) ?? []);
     const hasChildren = nodeChildren.length > 0;
     const searchValue = `${item.goal.goal_id} ${item.goal.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
+    const selected = item.goal.goal_id === selectedGoalId;
     return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
       <div class="tree-row">
         ${
@@ -636,12 +660,14 @@ function renderGoalTree(
             ? `<button class="tree-toggle" type="button" data-tree-toggle aria-expanded="true" aria-label="${L("折叠")} ${escapeHtml(item.goal.title)}">${icon("chevron-down")}</button>`
             : `<span class="tree-guide" aria-hidden="true"></span>`
         }
-        <button class="tree-node${item.goal.goal_id === selectedGoalId ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${item.goal.goal_id === selectedGoalId}">
-          <span class="tree-copy"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong><small title="Goal ID: ${escapeHtml(item.goal.goal_id)}">${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}</span>
-          ${renderStatus(item.status)}
-        </button>
+        <div class="tree-entry directory-list-row${selected ? " is-selected" : ""}">
+          <button class="tree-node${selected ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${selected}">
+            <span class="tree-copy"><span class="tree-title-line"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong></span></span>
+          </button>
+          <span class="directory-row-state">${renderStatus(item.status)}</span>
+          <span class="tree-meta-line"><small title="Goal ID: ${escapeHtml(item.goal.goal_id)}">${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}${renderTreeDependencies(item, view)}</span>
+        </div>
       </div>
-      ${renderTreeDependencies(item, view)}
       ${hasChildren ? `<ul class="tree-children">${nodeChildren.map((child) => renderNode(child, depth + 1)).join("")}</ul>` : ""}
     </li>`;
   };
@@ -766,6 +792,20 @@ function renderGoalGraph(
     </div>
     <footer class="graph-legend"><span><i class="graph-key graph-key--parent"></i>${L("属于")}</span><span><i class="graph-key graph-key--dependency"></i>${L("依赖于")}</span><span class="graph-direction-key"><i></i>${L("起点")}<b>→</b>${L("终点")}</span><small>${L("选择节点，在右侧继续查看和推进")}</small></footer>
   </section>`;
+}
+
+export function renderGoalBoardGraphFragment(
+  view: GoalBoardWebView,
+  selectedGoalId: string,
+  collection: GoalDocumentCollection = "current",
+): string | null {
+  const items = collection === "trash"
+    ? view.trashed_goals
+    : collection === "archive"
+      ? view.archived_goals
+      : view.goals;
+  if (collection === "trash") return null;
+  return prefixLocalLinks(renderGoalGraph(view, selectedGoalId, items), view.route_prefix);
 }
 
 function relationRow(
@@ -2046,6 +2086,7 @@ function renderContractProposal(
 }
 
 interface DecisionGoalGroup {
+  ownerGoalId: string | null;
   item: WebGoalView | null;
   goalTreeProposals: GoalTreeProposalRecord[];
   contractProposals: ContractProposalRecord[];
@@ -2122,6 +2163,7 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
     const existing = groups.get(key);
     if (existing) return existing;
     const created: DecisionGoalGroup = {
+      ownerGoalId: goalId,
       item: findGoalView(view, goalId),
       goalTreeProposals: [],
       contractProposals: [],
@@ -3163,7 +3205,7 @@ function renderRecentDecisionResults(view: GoalBoardWebView): string {
   </section>`;
 }
 
-function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): string {
+export function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): string {
   const groups = buildDecisionGroups(view);
   const count = pendingDecisionCount(view);
   const nativeGoalTreeProposals = view.snapshot.goal_tree_proposals.filter(
@@ -3188,7 +3230,7 @@ function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): str
       <header class="decision-center-header"><div><h1>${L("等待你的决定")}</h1><p>${L("每一项都会说明你在决定什么、为什么现在要决定、有没有可靠建议，以及选择后会发生什么。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
       <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>${L("目标说明")} <strong>${typeCounts.proposals}</strong></span><span>${L("新发现的工作")} <strong>${typeCounts.candidates}</strong></span><span>${L("Goal 关系")} <strong>${typeCounts.rewires}</strong></span><span>${L("结果确认")} <strong>${typeCounts.reviews}</strong></span><span>${L("风险处理")} <strong>${typeCounts.risks}</strong></span></div>
       ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
-        const goalId = group.item?.goal.goal_id ?? "board";
+        const goalId = group.item?.goal.goal_id ?? group.ownerGoalId ?? "board";
         return `<section class="decision-goal-group" id="decision-goal-${escapeHtml(goalId)}">
           <header class="decision-owner"><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0)} ${L("项")}</small></header>
           <div class="decision-stack">
@@ -3208,7 +3250,7 @@ function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): str
     <header class="decision-center-header inbox-header"><div><h1>Inbox</h1><p>${L("需要你判断后才能继续的事项，都集中在这里。")}</p></div><strong>${count}<small>${L("项待处理")}</small></strong></header>
     <div class="decision-summary" aria-label="${L("待决定事项统计")}"><span>${L("目标说明")} <strong>${typeCounts.proposals}</strong></span><span>${L("新发现的工作")} <strong>${typeCounts.candidates}</strong></span><span>${L("Goal 关系")} <strong>${typeCounts.rewires}</strong></span><span>${L("结果确认")} <strong>${typeCounts.reviews}</strong></span><span>${L("风险处理")} <strong>${typeCounts.risks}</strong></span></div>
     ${groups.length ? `<div class="decision-groups">${groups.map((group) => {
-      const goalId = group.item?.goal.goal_id ?? "board";
+      const goalId = group.item?.goal.goal_id ?? group.ownerGoalId ?? "board";
       const kinds = groupKinds(group);
       const itemCount = kinds.reduce((total, kind) => total + kind.count, 0);
       const primaryKind = kinds[0] ?? { count: itemCount, label: L("待决定"), icon: "input" as GoalBoardIcon };
@@ -3228,6 +3270,305 @@ function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = false): str
     }).join("")}</div>` : `<div class="decision-empty">${icon("check")}<h2>${L("当前没有等待你的决定")}</h2><p>${L("需要你确认目标、工作关系、结果或风险时，会自动出现在这里。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`}
     ${renderRecentDecisionResults(view)}
   </article>`;
+}
+
+interface FeedDirectoryEntry {
+  id: string;
+  itemType: FeedItemType;
+  kindLabel: string;
+  sourceLabel: string;
+  disposition: string;
+  title: string;
+  summary: string;
+  updatedAt: string;
+  icon: GoalBoardIcon;
+  item: FeedItemRecord | null;
+  decisionGroup: DecisionGoalGroup | null;
+  recentResult: RecentDecisionResult | null;
+}
+
+function decisionGroupCount(group: DecisionGoalGroup): number {
+  return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length +
+    group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
+}
+
+function decisionGroupKinds(group: DecisionGoalGroup): string[] {
+  return [
+    group.goalTreeProposals.length + group.contractProposals.length ? L("目标说明") : "",
+    group.candidates.length ? L("新发现的工作") : "",
+    group.rewires.length ? L("Goal 关系") : "",
+    group.humanReview ? L("结果确认") : "",
+    group.risks.length ? L("风险处理") : "",
+  ].filter(Boolean);
+}
+
+function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
+  const persisted = view.feed.items.map((item): FeedDirectoryEntry => ({
+    id: item.item_id,
+    itemType: item.item_type,
+    kindLabel: item.item_type === "feed" ? "Feed" : "Inbox Message",
+    sourceLabel: item.source_label || item.source_kind,
+    disposition: item.disposition,
+    title: item.title,
+    summary: item.summary || item.body || L("没有附加摘要"),
+    updatedAt: item.source_updated_at || item.updated_at,
+    icon: item.item_type === "feed" ? "activity" : "input",
+    item,
+    decisionGroup: null,
+    recentResult: null,
+  }));
+  const decisions = buildDecisionGroups(view).map((group): FeedDirectoryEntry => {
+    const count = decisionGroupCount(group);
+    const title = group.item?.goal.title ?? L("整个项目的事项");
+    return {
+      id: `decision:${group.item?.goal.goal_id ?? group.ownerGoalId ?? "board"}`,
+      itemType: "inbox_message",
+      kindLabel: L("Inbox Message · Goal 决定"),
+      sourceLabel: "GoalBoard",
+      disposition: "inbox",
+      title,
+      summary: L("{kinds}，共 {count} 项等待判断。", {
+        kinds: decisionGroupKinds(group).join(currentLocale() === "en" ? ", " : " · "),
+        count,
+      }),
+      updatedAt: group.item?.goal.updated_at ?? view.events[0]?.at ?? "",
+      icon: group.risks.length ? "risk" : group.rewires.length ? "link" : "clipboard",
+      item: null,
+      decisionGroup: group,
+      recentResult: null,
+    };
+  });
+  const results = recentDecisionResults(view).map((result): FeedDirectoryEntry => ({
+    id: `result:${result.event.event_id}`,
+    itemType: "inbox_message",
+    kindLabel: L("Inbox Message · 处理结果"),
+    sourceLabel: "GoalBoard",
+    disposition: "saved",
+    title: result.title,
+    summary: result.effects.join(currentLocale() === "en" ? " " : "；"),
+    updatedAt: result.event.at,
+    icon: result.kind === "risk" ? "risk" : result.kind === "rewire" ? "link" : result.kind === "review" ? "user" : result.kind === "candidate" ? "plus" : result.kind === "goalTree" ? "tree" : "clipboard",
+    item: null,
+    decisionGroup: null,
+    recentResult: result,
+  }));
+  return [...persisted, ...decisions, ...results].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function feedDispositionLabel(value: string, itemType?: FeedItemType): string {
+  return ({
+    inbox: L("待处理"),
+    saved: L("已保存为资料"),
+    promoted: L("已升格为 Goal"),
+    processing: L("处理中"),
+    archived: itemType === "inbox_message" ? L("已归档") : L("已忽略"),
+  } as Record<string, string>)[value] ?? value;
+}
+
+function renderFeedDirectory(view: GoalBoardWebView, defaultPreset: FeedItemType): string {
+  const entries = feedDirectoryEntries(view);
+  const sourceLabels = [...new Set(entries.map((entry) => entry.sourceLabel).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, currentLocale() === "en" ? "en" : "zh-CN"));
+  const initiallyVisible = entries.filter((entry) => entry.itemType === defaultPreset);
+  const initial = initiallyVisible[0] ?? null;
+  const relay = view.relay_import;
+  return `<section class="desktop-directory-panel feed-directory" data-directory-panel="feed" data-feed-directory data-feed-preset="${defaultPreset}" hidden>
+    <header class="desktop-directory-heading feed-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong data-feed-directory-title>${defaultPreset === "feed" ? "Feed" : "Inbox"}</strong><small>${L("来源、消息与待判断事项")}</small></span><button class="feed-import-trigger" type="button" data-feed-sources-open aria-label="${L("管理来源")}" title="${L("管理来源")}">${icon("settings")}</button></header>
+    <div class="feed-directory-tools">
+      <label class="feed-directory-search">${icon("search")}<input type="search" data-feed-search aria-label="${L("搜索 Item")}" placeholder="${L("搜索标题、摘要或来源")}" autocomplete="off"></label>
+      <div class="feed-filter-grid">
+        <label><span>${L("来源")}</span><select data-feed-source-filter><option value="all">${L("全部来源")}</option>${sourceLabels.map((label) => `<option value="${escapeHtml(label)}">${escapeHtml(label)}</option>`).join("")}</select></label>
+        <label><span>${L("状态")}</span><select data-feed-status-filter><option value="active" data-feed-status-active>${defaultPreset === "inbox_message" ? L("未归档") : L("未忽略")}</option><option value="all">${L("全部状态")}</option><option value="inbox">${L("待处理")}</option><option value="saved">${L("已保存")}</option><option value="promoted">${L("已升格")}</option><option value="processing">${L("处理中")}</option><option value="archived" data-feed-status-archived>${defaultPreset === "inbox_message" ? L("已归档") : L("已忽略")}</option></select></label>
+        <label class="feed-sort-filter"><span>${L("排序")}</span><select data-feed-sort><option value="newest">${L("最新在前")}</option><option value="oldest">${L("最早在前")}</option><option value="source">${L("按来源")}</option><option value="title">${L("按标题")}</option></select></label>
+      </div>
+    </div>
+    <div class="feed-item-scroll" data-feed-list role="listbox" aria-label="${L("Item 列表")}">
+      ${entries.map((entry) => {
+        const selected = entry.id === initial?.id;
+        const visible = entry.itemType === defaultPreset;
+        return `<button class="feed-list-item directory-list-row${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" data-feed-entry-id="${escapeHtml(entry.id)}" data-feed-entry-type="${entry.itemType}" data-feed-entry-persisted="${entry.item ? "true" : "false"}" data-feed-entry-read="${entry.item?.read_at ? "read" : "unread"}" data-feed-entry-source="${escapeHtml(entry.sourceLabel)}" data-feed-entry-status="${escapeHtml(entry.disposition)}" data-feed-entry-time="${escapeHtml(entry.updatedAt)}" data-feed-entry-title="${escapeHtml(entry.title)}" data-feed-entry-search="${escapeHtml(`${entry.title} ${entry.summary} ${entry.sourceLabel}`.toLocaleLowerCase())}"${visible ? "" : " hidden"}><span class="feed-list-icon">${icon(entry.icon)}</span><span class="feed-list-copy"><span class="feed-list-meta"><em>${escapeHtml(entry.kindLabel)}</em><small>${escapeHtml(entry.sourceLabel)}</small>${entry.itemType === "feed" && entry.item ? `<small class="feed-list-read" data-feed-read-state>${entry.item.read_at ? L("已读") : L("未读")}</small>` : ""}</span><strong title="${escapeHtml(entry.title)}">${escapeHtml(entry.title)}</strong><p>${escapeHtml(entry.summary)}</p><time datetime="${escapeHtml(entry.updatedAt)}">${formatDate(entry.updatedAt)}</time></span><span class="feed-list-state directory-row-state" data-feed-disposition="${escapeHtml(entry.disposition)}">${escapeHtml(feedDispositionLabel(entry.disposition, entry.itemType))}</span></button>`;
+      }).join("")}
+      <div class="feed-list-empty" data-feed-empty${entries.length ? " hidden" : ""}>${icon("input")}<strong data-feed-empty-title>${L("这里还没有 Item")}</strong><p data-feed-empty-copy>${relay.available ? L("可以接入来源，或把 Relay 数据完整迁入。") : L("接入来源后，消息和 Feed 会出现在这里。")}</p><button type="button" data-feed-clear-filters hidden>${L("清除筛选")}</button><button type="button" data-feed-empty-sources data-feed-sources-open>${L("管理来源")}</button></div>
+    </div>
+    <footer class="feed-directory-footer"><span data-feed-result-count>${L("{count} 个 Item", { count: initiallyVisible.length })}</span><small>${L("选择一项查看详情")}</small></footer>
+  </section>`;
+}
+
+function feedSourceStatusLabel(status: string): string {
+  return ({
+    active: L("已连接"),
+    paused: L("已暂停"),
+    error: L("需处理"),
+    disconnected: L("未连接"),
+    imported: L("仅历史数据"),
+  } as Record<string, string>)[status] ?? status;
+}
+
+function feedSourceErrorLabel(errorCode: string | null): string | null {
+  if (!errorCode) return null;
+  if (errorCode === "reconciliation_required") {
+    return L("上次结果需要重新核对，请再次同步");
+  }
+  if (["process_interrupted", "provider_interrupted", "feed_source_sync_interrupted"].includes(errorCode)) {
+    return L("上次同步中断，请再次同步");
+  }
+  if (["connector_needs_auth", "auth_required", "unauthorized"].includes(errorCode)) {
+    return L("授权已失效，请重新连接账号");
+  }
+  if (["credential_unreadable", "credential_store_unavailable"].includes(errorCode)) {
+    return L("本机凭据暂时不可读取，请恢复 SecretStore 后重试");
+  }
+  if (errorCode === "connector_stale_history") {
+    return L("Gmail 同步记录已过期，请重新连接后同步");
+  }
+  if (errorCode === "fixture_not_live") {
+    return L("当前不是实时连接，请完成账号授权");
+  }
+  return L("上次同步失败，可再次同步");
+}
+
+function renderFeedSourceManager(view: GoalBoardWebView): string {
+  const catalog = view.feed_source_catalog ?? [];
+  const auth = view.feed_connector_auth;
+  const relay = view.relay_import;
+  const sources = view.feed.sources;
+  const connectorStatus = (kind: "github" | "gmail") => {
+    const status = auth?.[kind];
+    if (status?.bound) return `${L("已连接")} ${escapeHtml(status.hint ?? "")}`;
+    if (status?.problem) return L("凭据不可读取");
+    return L("未连接");
+  };
+  const sourceRows = sources.length
+    ? sources.map((source) => {
+        const canSync = source.sync_kind !== "manual" && source.enabled && source.status !== "disconnected";
+        const lastFact = source.last_sync_at
+          ? `${L("上次同步")} ${formatDate(source.last_sync_at)}`
+          : L("尚未同步");
+        return `<article class="feed-source-row directory-list-row" data-feed-source-row="${escapeHtml(source.source_id)}"><span class="feed-source-mark">${icon(source.sync_kind === "public_source" ? "link" : source.sync_kind === "github" ? "tree" : source.sync_kind === "gmail" ? "input" : "archive")}</span><div class="feed-source-copy"><strong>${escapeHtml(source.name)}</strong><p>${escapeHtml(source.description)}</p><small>${escapeHtml([source.account_label, `${source.item_count} Item`, lastFact, feedSourceErrorLabel(source.last_error_code)].filter(Boolean).join(" · "))}</small></div><div class="feed-source-side"><em class="directory-row-state" data-source-status="${escapeHtml(source.status)}">${escapeHtml(feedSourceStatusLabel(source.status))}</em><div class="feed-source-actions">${source.sync_kind !== "manual" ? `<button type="button" data-feed-source-sync="${escapeHtml(source.source_id)}"${canSync ? "" : " disabled"}>${icon("refresh")}${L("同步")}</button>` : ""}<button type="button" data-feed-source-toggle="${escapeHtml(source.source_id)}" data-feed-source-enabled="${source.enabled ? "true" : "false"}">${source.enabled ? L("暂停") : L("恢复")}</button></div></div></article>`;
+      }).join("")
+    : `<p class="feed-source-empty">${L("还没有来源。先从下面添加公开 Feed，或连接账号。")}</p>`;
+  const catalogOptions = catalog.map((source) =>
+    `<option value="${escapeHtml(source.id)}">${escapeHtml(`${source.category_label} · ${source.name}`)}</option>`
+  ).join("");
+  return `<dialog class="feed-source-dialog" data-feed-sources-dialog aria-labelledby="feed-source-dialog-title"><div class="feed-source-dialog-shell"><header><span>${icon("settings")}</span><div><h2 id="feed-source-dialog-title">${L("来源与连接")}</h2><p>${L("GoalBoard 直接保存来源、凭据、同步游标和正文，不再依赖 Relay 运行。")}</p></div><button type="button" data-feed-sources-close aria-label="${L("关闭")}">${icon("x")}</button></header><div class="feed-source-dialog-scroll">
+    <section class="feed-source-section"><div class="feed-source-section-title"><h3>${L("来源与同步状态")}</h3><small>${sources.length} ${L("个来源")}</small></div><div class="feed-source-list">${sourceRows}</div></section>
+    <section class="feed-source-section"><div class="feed-source-section-title"><h3>${L("添加一个无需账号的来源")}</h3></div><div class="feed-source-form-grid">
+      <div class="feed-source-form"><label><span>${L("RSS 目录")}</span><select data-feed-rss-definition>${catalogOptions}</select></label><button type="button" data-feed-source-register="rss"${catalog.length ? "" : " disabled"}>${L("添加")}</button></div>
+      <div class="feed-source-form"><label><span>${L("网页查询")}</span><input data-feed-source-value="web_query" placeholder="AI agent product launch"></label><button type="button" data-feed-source-register="web_query">${L("添加")}</button></div>
+      <div class="feed-source-form"><label><span>${L("YouTube Channel ID")}</span><input data-feed-source-value="youtube_channel" placeholder="UC…"></label><button type="button" data-feed-source-register="youtube_channel">${L("添加")}</button></div>
+      <div class="feed-source-form"><label><span>${L("自定义 HTTPS RSS / Atom")}</span><input data-feed-source-value="custom_rss" placeholder="https://example.com/feed.xml"></label><button type="button" data-feed-source-register="custom_rss">${L("添加")}</button></div>
+    </div></section>
+    <section class="feed-source-section"><div class="feed-source-section-title"><h3>${L("连接 Inbox 消息来源")}</h3></div><div class="feed-connector-grid">
+      <article class="feed-connector-card"><div><strong>GitHub</strong><em>${connectorStatus("github")}</em></div><p>${L("读取分配给你的 Issue、PR 与 Review 请求；只在手动同步时访问 GitHub。")}</p><label><span>Personal access token</span><input type="password" autocomplete="off" data-feed-connector-token="github" placeholder="github_pat_…"></label><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="github">${L("保存 Token")}</button>${auth?.github.bound ? `<button type="button" data-feed-connector-unbind="github">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Device Flow")}</summary><label><span>OAuth App Client ID</span><input autocomplete="off" data-feed-github-client-id></label><div class="feed-connector-actions"><button type="button" data-feed-github-device-start>${L("开始授权")}</button><button type="button" data-feed-github-device-poll hidden>${L("我已授权，检查状态")}</button></div><p data-feed-github-device-status hidden></p></details></article>
+      <article class="feed-connector-card"><div><strong>Gmail</strong><em>${connectorStatus("gmail")}</em></div><p>${L("读取未读邮件；OAuth 会为每个 Gmail 账号建立独立来源和游标。")}</p><label><span>Access token</span><input type="password" autocomplete="off" data-feed-connector-token="gmail" placeholder="ya29.…"></label><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="gmail">${L("保存 Token")}</button>${auth?.gmail.bound ? `<button type="button" data-feed-connector-unbind="gmail">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Google OAuth")}</summary><label><span>OAuth Client ID</span><input autocomplete="off" data-feed-gmail-client-id></label><label><span>Client secret（可选）</span><input type="password" autocomplete="off" data-feed-gmail-client-secret></label><button type="button" data-feed-gmail-oauth-start>${L("打开授权页面")}</button></details></article>
+    </div></section>
+    <section class="feed-source-section feed-relay-migration"><div><h3>${L("把 Relay 的 Feed 所有权搬到 GoalBoard")}</h3><p>${relay.available ? L("会迁入来源、Item、正文、游标与可解密的 GitHub/Gmail 凭据；Relay 数据库保持只读。") : escapeHtml(relay.error ?? L("没有找到 Relay 数据库"))}</p></div><button type="button" data-relay-import-open${relay.available ? "" : " disabled"}>${icon("refresh")}${L("迁移 Relay")}</button></section>
+    <p class="form-error" data-feed-source-error role="alert" hidden></p><p class="feed-source-progress" data-feed-source-progress role="status" hidden></p>
+  </div></div></dialog>`;
+}
+
+function renderDecisionFeedDetail(entry: FeedDirectoryEntry, view: GoalBoardWebView, selected: boolean): string {
+  const group = entry.decisionGroup!;
+  const count = decisionGroupCount(group);
+  return `<article class="feed-detail feed-detail--decision" data-feed-detail="${escapeHtml(entry.id)}"${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>Inbox Message</span><span>${L("Goal 决定")}</span><span>${feedDispositionLabel("inbox")}</span></div><h1>${escapeHtml(entry.title)}</h1><p>${escapeHtml(entry.summary)}</p><div class="feed-detail-meta"><span>${icon("workflow")}GoalBoard</span><time datetime="${escapeHtml(entry.updatedAt)}">${formatDate(entry.updatedAt)}</time></div></header>
+    <section class="feed-decision-work"><header><div><span>${L("这些决定属于")}</span>${renderDecisionGoalLink(group.item)}</div><small>${count} ${L("项")}</small></header><div class="decision-stack">
+      ${group.goalTreeProposals.map((proposal) => renderGoalTreeProposalDecision(proposal, view)).join("")}
+      ${group.rewires.map((rewire) => renderRewireDecision(rewire, view)).join("")}
+      ${group.item ? group.contractProposals.map((proposal) => renderContractProposal(proposal, group.item!.goal, view)).join("") : ""}
+      ${group.candidates.map((candidate) => renderCandidateDecision(candidate, view)).join("")}
+      ${group.humanReview && group.item ? renderHumanReview(group.item, view) : ""}
+      ${group.risks.map((risk) => renderRiskDecision(risk, group.item, view)).join("")}
+    </div></section>
+  </article>`;
+}
+
+function renderPersistedFeedDetail(entry: FeedDirectoryEntry, selected: boolean, routePrefix: string): string {
+  const item = entry.item!;
+  const itemUrl = safeExternalHref(item.url);
+  const linkedGoal = item.linked_goal_id
+    ? `<a class="feed-linked-goal" href="${escapeHtml(`${routePrefix}/goals/${encodeURIComponent(item.linked_goal_id)}`)}">${icon("target")}${L("打开关联 Goal")}${icon("chevron-right")}</a>`
+    : "";
+  const materialRows = item.materials.length
+    ? item.materials.map((material) => {
+        const materialUrl = safeExternalHref(material.canonical_url);
+        return `<li><span>${icon("link")}</span><div><strong>${escapeHtml(material.title || material.source_name)}</strong><small>${escapeHtml([material.source_name, material.published_at ? formatDate(material.published_at) : ""].filter(Boolean).join(" · "))}</small>${material.preview ? `<p>${escapeHtml(material.preview)}</p>` : ""}${material.content ? `<details class="feed-material-content"><summary>${L("查看保存的正文")}</summary><div>${escapeHtml(material.content)}</div></details>` : material.content_ref && !material.content_available ? `<small class="feed-material-unavailable">${L("正文暂时不可读取")}</small>` : ""}</div>${materialUrl ? `<a href="${escapeHtml(materialUrl)}" target="_blank" rel="noreferrer" aria-label="${L("打开原资料")}">${icon("arrow")}</a>` : ""}</li>`;
+      }).join("")
+    : `<li class="feed-material-empty">${icon("archive")}<p>${L("这条 Item 没有附带资料；正文和来源信息仍会进入处理上下文。")}</p></li>`;
+  const isInboxMessage = item.item_type === "inbox_message";
+  const activeActions = item.disposition === "archived"
+    ? `<button type="button" data-feed-action="restore" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${isInboxMessage ? L("恢复到 Inbox") : L("恢复到 Feed")}</button>`
+    : `<button class="button-primary" type="button" data-feed-action="start" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("play")}${item.disposition === "processing" ? L("继续处理") : L("开始处理")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${isInboxMessage ? L("归档") : L("忽略")}</button>`;
+  return `<article class="feed-detail" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-feed-detail-read="${item.read_at ? "read" : "unread"}"${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span>${item.item_type === "feed" ? `<span data-feed-read-state>${item.read_at ? L("已读") : L("未读")}</span>` : ""}<span>${escapeHtml(feedDispositionLabel(item.disposition, item.item_type))}</span></div><h1>${escapeHtml(item.title)}</h1>${item.summary ? `<p>${escapeHtml(item.summary)}</p>` : ""}<div class="feed-detail-meta">${item.author ? `<span>${icon("user")}${escapeHtml(item.author)}</span>` : ""}<time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time>${itemUrl ? `<a href="${escapeHtml(itemUrl)}" target="_blank" rel="noreferrer">${L("打开原文")}${icon("arrow")}</a>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${activeActions}${linkedGoal}</div><p class="feed-action-status" data-feed-action-status role="status" hidden></p></header>
+    ${item.body ? `<section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body)}</div></section>` : ""}
+    ${item.tags.length ? `<section class="feed-detail-tags" aria-label="${L("标签")}">${item.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</section>` : ""}
+    <section class="feed-materials"><header><div><span>${L("资料")}</span><h2>${L("随 Item 一起保存的来源")}</h2></div><small>${L("{count} 项", { count: item.materials.length })}</small></header><ul>${materialRows}</ul></section>
+  </article>`;
+}
+
+export function renderPersistedFeedItemDetail(
+  item: FeedItemRecord,
+  routePrefix = "",
+): string {
+  return renderPersistedFeedDetail({
+    id: item.item_id,
+    itemType: item.item_type,
+    kindLabel: item.item_type === "feed" ? "Feed" : "Inbox Message",
+    sourceLabel: item.source_label || item.source_kind,
+    disposition: item.disposition,
+    title: item.title,
+    summary: item.summary || item.body || L("没有附加摘要"),
+    updatedAt: item.source_updated_at || item.updated_at,
+    icon: item.item_type === "feed" ? "activity" : "input",
+    item,
+    decisionGroup: null,
+    recentResult: null,
+  }, true, routePrefix);
+}
+
+function renderRecentResultFeedDetail(entry: FeedDirectoryEntry, selected: boolean): string {
+  const result = entry.recentResult!;
+  return `<article class="feed-detail feed-detail--result" data-feed-detail="${escapeHtml(entry.id)}"${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>Inbox Message</span><span>${escapeHtml(result.kindLabel)}</span><span>${escapeHtml(result.state)}</span></div><h1>${escapeHtml(result.title)}</h1><p>${escapeHtml(result.effects.join(currentLocale() === "en" ? " " : "；"))}</p><div class="feed-detail-meta"><span>${icon("workflow")}GoalBoard</span><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div></header>
+    <section class="decision-results feed-result-record" aria-label="${L("最近处理结果")}"><article class="decision-result decision-result--${result.kind}"><span class="decision-result-icon">${icon(entry.icon)}</span><div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>${result.links.length ? `<div class="decision-result-links">${result.links.map((link) => `<a href="${link.href}">${escapeHtml(link.label)}${icon("chevron-right")}</a>`).join("")}</div>` : ""}</article></section>
+  </article>`;
+}
+
+function renderFeedWorkbenchDetailFragments(
+  view: GoalBoardWebView,
+  defaultPreset: FeedItemType,
+): { html: string; initial: FeedDirectoryEntry | null; initialIsInline: boolean } {
+  const entries = feedDirectoryEntries(view).filter((entry) => entry.itemType === defaultPreset);
+  const initial = entries[0] ?? null;
+  const initialIsInline = Boolean(initial && !initial.item);
+  const html = entries.map((entry) => entry.decisionGroup
+      ? renderDecisionFeedDetail(entry, view, entry.id === initial?.id)
+      : entry.recentResult
+        ? renderRecentResultFeedDetail(entry, entry.id === initial?.id)
+        : "").join("");
+  return { html, initial, initialIsInline };
+}
+
+export function renderFeedWorkbenchFragment(
+  view: GoalBoardWebView,
+  defaultPreset: FeedItemType,
+): string {
+  return prefixLocalLinks(renderFeedWorkbenchDetailFragments(view, defaultPreset).html, view.route_prefix);
+}
+
+function renderFeedWorkbench(view: GoalBoardWebView, defaultPreset: FeedItemType, active = false): string {
+  const details = renderFeedWorkbenchDetailFragments(view, defaultPreset);
+  return `<section class="desktop-work-surface feed-workbench" data-work-surface="feed" data-work-surface-label="${defaultPreset === "feed" ? "Feed" : "Inbox"}" data-feed-workbench data-feed-preset="${defaultPreset}" data-loaded="${active}"${active ? ` data-loaded-preset="${defaultPreset}"` : ""}${active ? "" : " hidden"}>
+    ${active ? details.html : ""}
+    <div class="feed-detail-empty" data-feed-detail-empty${active && details.initialIsInline ? " hidden" : ""}>${icon("input")}<h1 data-feed-detail-empty-title>${details.initial ? L("正在载入 Item…") : L("选择一条 Item")}</h1><p data-feed-detail-empty-copy>${details.initial ? L("只读取当前选择的正文和资料。") : L("左侧目录会保留来源、状态与时间；这里用于阅读完整内容并决定下一步。")}</p><button type="button" data-retry-feed-detail hidden>${L("重试")}</button></div>
+  </section>`;
+}
+
+function renderFeedOverlays(view: GoalBoardWebView): string {
+  const relay = view.relay_import;
+  return `${renderFeedSourceManager(view)}
+    <dialog class="feed-import-dialog" data-relay-import-dialog><form method="dialog"><header><span>${icon("refresh")}</span><div><h2>${L("迁移 Relay Feed")}</h2><p>${L("把 Feed 的运行所有权完整迁入 GoalBoard，供后续删除 Relay。")}</p></div><button value="cancel" aria-label="${L("取消")}">${icon("x")}</button></header><dl><div><dt>${L("来源")}</dt><dd>${relay.source_count}</dd></div><div><dt>Item</dt><dd>${relay.item_count}</dd></div><div><dt>${L("资料")}</dt><dd>${relay.material_count}</dd></div></dl><p>${L("迁移会读取 Relay 本机加密存储，把公开来源、账号凭据、同步游标和正文重新加密写入 GoalBoard；不会改动 Relay。")}</p><p class="form-error" data-relay-import-error role="alert" hidden></p><footer><button value="cancel">${L("取消")}</button><button class="button-primary" type="button" data-relay-import-confirm${relay.available ? "" : " disabled"}>${L("确认迁移")}</button></footer></form></dialog>`;
 }
 
 export function countGoalDecisions(view: GoalBoardWebView, goalId: string): number {
@@ -3694,6 +4035,33 @@ function renderGoalTechnicalDetails(item: WebGoalView, view: GoalBoardWebView): 
   </section>`;
 }
 
+function renderGoalCompletionPanel(item: WebGoalView, view: GoalBoardWebView): string {
+  const goal = item.goal;
+  const goalId = escapeHtml(goal.goal_id);
+  const purposeBody = `${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
+    ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}`;
+  const completionBody = `<div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
+    ${renderChildProgress(item, view)}
+    <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
+    <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>`;
+  const contextDeck = renderFocusSectionDeck([
+    { key: "purpose", iconName: "book", title: L("目标说明"), description: L("结果、原因和实际运转方式"), body: purposeBody, active: true, cardId: `purpose-${goalId}`, cardAttributes: `data-goal-section="purpose"` },
+    { key: "completion", iconName: "clipboard", title: L("完成要求"), description: L("完成标准、工作边界、子 Goal 和前置事项"), body: completionBody, cardId: `completion-${goalId}`, cardAttributes: `data-goal-section="completion"` },
+  ], L("上下文"), "focus-section-deck--context");
+  return `<header class="focus-panel-heading">${icon("book")}<div><h2>${L("目标上下文")}</h2><p>${L("先扫一眼结构，再展开现在需要阅读或修改的部分。")}</p></div></header>${contextDeck}`;
+}
+
+function renderGoalProgressPanel(item: WebGoalView): string {
+  return `<section class="focus-panel" data-goal-section="progress" id="progress-${escapeHtml(item.goal.goal_id)}">
+    <header class="focus-panel-heading">${icon("workflow")}<div><h2>${L("进展与阻塞")}</h2><p>${L("执行情况、依据、检查、阻塞和风险。")}</p></div></header>
+    ${renderProgressOverview(item)}
+  </section>`;
+}
+
+function renderLazyGoalPanelStatus(label: string): string {
+  return `<p class="empty-row goal-panel-lazy-status" data-goal-panel-status role="status">${escapeHtml(label)}</p>`;
+}
+
 function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
   const goal = item.goal;
   const owner = workbenchActorLabel(item.active_claim_actor ?? goal.accepted_by);
@@ -3711,6 +4079,9 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
   const quickRecordAction = !goal.archived_at && !goal.trashed_at
     ? `<button class="document-action document-action--quick" type="button" data-open-quick-record>${icon("plus")}<span>${L("快速记录")}</span></button>`
     : "";
+  const goalModeSwitch = !goal.archived_at && !goal.trashed_at
+    ? `<nav class="goal-mode-switch" role="tablist" aria-label="${L("Goal 工作模式")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button><button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button></nav>`
+    : "";
   const goalId = escapeHtml(goal.goal_id);
   const tabs = [
     ["overview", "target", L("当前")],
@@ -3725,16 +4096,6 @@ function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected:
     <section class="goal-brief-item"><h2>${L("为什么现在做")}</h2><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section>
     <section class="goal-brief-item"><h2>${L("它会怎样运转")}</h2><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section>
   </div>`;
-  const purposeBody = `${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
-    ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}`;
-  const completionBody = `<div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
-    ${renderChildProgress(item, view)}
-    <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
-    <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>`;
-  const contextDeck = renderFocusSectionDeck([
-    { key: "purpose", iconName: "book", title: L("目标说明"), description: L("结果、原因和实际运转方式"), body: purposeBody, active: true, cardId: `purpose-${goalId}`, cardAttributes: `data-goal-section="purpose"` },
-    { key: "completion", iconName: "clipboard", title: L("完成要求"), description: L("完成标准、工作边界、子 Goal 和前置事项"), body: completionBody, cardId: `completion-${goalId}`, cardAttributes: `data-goal-section="completion"` },
-  ], L("上下文"), "focus-section-deck--context");
   return `<!--
 THESIS: Goal 正文首先回答“做什么、为什么、怎么运转、下一步”；拒绝让大标题和卡片边距吃掉第一屏。
 OWN-WORLD: 连续白色工作面使用紧凑排版、细分隔线、克制钴蓝焦点和结构化 Contract 摘要。
@@ -3746,7 +4107,7 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
     <section class="goal-hero" aria-labelledby="goal-title-${goalId}">
       <header class="goal-header">
         <div class="goal-title-kicker">${renderStatus(item.status)}<div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
-        <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${quickRecordAction}${moreActions}</div></div>
+        <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${goalModeSwitch}${quickRecordAction}${moreActions}</div></div>
       </header>
       ${goalBrief}
       ${tabNavigation}
@@ -3755,24 +4116,19 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
       <div id="goal-panel-overview-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-overview-${goalId}" data-goal-panel="overview">
         ${renderGoalFocusOverview(item, view)}
       </div>
-      <div id="goal-panel-completion-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-completion-${goalId}" data-goal-panel="completion" hidden>
-        <header class="focus-panel-heading">${icon("book")}<div><h2>${L("目标上下文")}</h2><p>${L("先扫一眼结构，再展开现在需要阅读或修改的部分。")}</p></div></header>
-        ${contextDeck}
+      <div id="goal-panel-completion-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-completion-${goalId}" data-goal-panel="completion" data-loaded="false" hidden>
+        ${renderLazyGoalPanelStatus(L("打开“上下文”时载入。"))}
       </div>
-      <div id="goal-panel-progress-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-progress-${goalId}" data-goal-panel="progress" hidden>
-        <section class="focus-panel" data-goal-section="progress" id="progress-${goalId}">
-          <header class="focus-panel-heading">${icon("workflow")}<div><h2>${L("进展与阻塞")}</h2><p>${L("执行情况、依据、检查、阻塞和风险。")}</p></div></header>
-          ${renderProgressOverview(item)}
-        </section>
+      <div id="goal-panel-progress-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-progress-${goalId}" data-goal-panel="progress" data-loaded="false" hidden>
+        ${renderLazyGoalPanelStatus(L("打开“进展”时载入。"))}
       </div>
-      <div id="goal-panel-factors-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-factors-${goalId}" data-goal-panel="factors" hidden>
-        ${renderGoalFactors(item, view)}
+      <div id="goal-panel-factors-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-factors-${goalId}" data-goal-panel="factors" data-loaded="false" hidden>
+        ${renderLazyGoalPanelStatus(L("打开“关系”时载入。"))}
       </div>
       <div id="goal-panel-records-${goalId}" class="goal-workspace-panel" role="tabpanel" aria-labelledby="goal-tab-records-${goalId}" data-goal-panel="records" hidden>
         <div data-goal-records-content data-loaded="false"><p class="empty-row" role="status">${L("正在载入完整记录…")}</p></div>
       </div>
     </div>
-    ${quickRecordAction ? renderQuickRecordDialog(item, view) : ""}
   </article>`;
 }
 
@@ -3823,6 +4179,40 @@ export function renderGoalDocumentFragment(
     ? renderTrashGoalDocument(item, true)
     : renderGoalDocument(item, view, true);
   return prefixLocalLinks(html, view.route_prefix);
+}
+
+export type LazyGoalPanel = "completion" | "progress" | "factors";
+
+export function renderGoalPanelFragment(
+  view: GoalBoardWebView,
+  goalId: string,
+  panel: LazyGoalPanel,
+  collection: GoalDocumentCollection = "current",
+): string | null {
+  const items = collection === "trash"
+    ? view.trashed_goals
+    : collection === "archive"
+      ? view.archived_goals
+      : view.goals;
+  const item = items.find((candidate) => candidate.goal.goal_id === goalId);
+  if (!item || collection === "trash") return null;
+  const html = panel === "completion"
+    ? renderGoalCompletionPanel(item, view)
+    : panel === "progress"
+      ? renderGoalProgressPanel(item)
+      : renderGoalFactors(item, view);
+  return prefixLocalLinks(html, view.route_prefix);
+}
+
+export function renderGoalQuickRecordFragment(
+  view: GoalBoardWebView,
+  goalId: string,
+  collection: GoalDocumentCollection = "current",
+): string | null {
+  if (collection !== "current") return null;
+  const item = view.goals.find((candidate) => candidate.goal.goal_id === goalId);
+  if (!item || item.goal.archived_at || item.goal.trashed_at) return null;
+  return prefixLocalLinks(renderQuickRecordDialog(item, view), view.route_prefix);
 }
 
 /** Render the heavy, read-only record ledger only after its Goal tab is opened. */
@@ -5814,6 +6204,120 @@ const SETTINGS_STYLES = `
   }
 `;
 
+const PROJECT_GUIDANCE_SETTINGS_STYLES = `
+  .project-guidance-page .settings-content { max-width: none; }
+  .guidance-document { width: min(100%, 1100px); margin: 0 auto; padding: 38px 42px 64px; }
+  .guidance-page-header { padding-bottom: 28px; border-bottom: 1px solid var(--line-strong); display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; }
+  .guidance-page-header h1 { margin: 0; color: var(--ink); font-size: 30px; letter-spacing: -.026em; }
+  .guidance-page-header p { max-width: 68ch; margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+  .guidance-primary-action, .guidance-secondary-action { min-height: 36px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ink-soft); background: var(--paper); font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+  .guidance-primary-action { border-color: var(--blue); color: #fff; background: var(--blue); }
+  .guidance-primary-action:hover { background: var(--blue-dark); }
+  .guidance-secondary-action:hover { border-color: var(--blue); color: var(--blue-dark); }
+  .guidance-primary-action:focus-visible, .guidance-secondary-action:focus-visible, .guidance-text-action:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+  .guidance-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 56px; align-items: start; }
+  .guidance-editor { margin: 28px 0 4px; padding: 22px 24px; border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--blue-soft) 24%, var(--paper)); box-shadow: 0 12px 32px rgba(38, 61, 87, .08); animation: guidance-editor-reveal .22s cubic-bezier(.16, 1, .3, 1); }
+  .guidance-editor[hidden] { display: none; }
+  .guidance-editor > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+  .guidance-editor h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
+  .guidance-editor header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .guidance-editor form { margin-top: 18px; display: grid; gap: 15px; }
+  .guidance-editor-fields { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; }
+  .guidance-editor-fields[hidden] { display: none; }
+  .guidance-editor label { min-width: 0; display: grid; gap: 6px; color: var(--ink-soft); font-size: 11px; font-weight: 680; }
+  .guidance-editor select, .guidance-editor textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--paper); font: inherit; }
+  .guidance-editor select { min-height: 39px; padding: 0 10px; }
+  .guidance-editor textarea { min-height: 86px; padding: 10px 11px; resize: vertical; line-height: 1.6; }
+  .guidance-editor textarea[name=reason] { min-height: 66px; }
+  .guidance-editor select:focus, .guidance-editor textarea:focus { border-color: var(--blue); outline: 2px solid color-mix(in srgb, var(--blue), transparent 80%); outline-offset: 1px; }
+  .guidance-editor-preview { margin: 0; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--ink-soft); font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+  .guidance-editor-preview[hidden] { display: none; }
+  .guidance-editor-error { margin: 0; padding: 10px 12px; border-radius: 8px; color: var(--red); background: var(--red-soft); font-size: 11px; }
+  .guidance-editor footer { display: flex; justify-content: flex-end; gap: 9px; }
+  .guidance-content { min-width: 0; }
+  .guidance-empty { padding: 72px 20px; border-bottom: 1px solid var(--line); text-align: center; }
+  .guidance-empty svg { width: 28px; height: 28px; color: var(--blue-dark); }
+  .guidance-empty h2 { margin: 15px 0 0; font-size: 18px; }
+  .guidance-empty p { max-width: 56ch; margin: 8px auto 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+  .guidance-section { padding: 31px 0 28px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 142px minmax(0, 1fr); gap: 28px; }
+  .guidance-section-heading { align-self: start; position: sticky; top: 18px; }
+  .guidance-section-heading h2 { margin: 0; color: var(--ink); font-size: 13px; }
+  .guidance-section-heading p { margin: 5px 0 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
+  .guidance-entry-list { min-width: 0; display: grid; }
+  .guidance-entry { min-width: 0; padding: 0 0 24px; }
+  .guidance-entry + .guidance-entry { padding-top: 24px; border-top: 1px solid var(--line); }
+  .guidance-entry:last-child { padding-bottom: 0; }
+  .guidance-entry p { max-width: 72ch; margin: 0; color: var(--ink-soft); font-size: 14px; line-height: 1.78; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .guidance-entry footer { margin-top: 11px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .guidance-entry-meta { color: var(--faint); font-size: 9px; font-variant-numeric: tabular-nums; }
+  .guidance-entry-actions { display: flex; gap: 12px; }
+  .guidance-text-action { padding: 2px 0; border: 0; color: var(--muted); background: transparent; font: inherit; font-size: 10px; font-weight: 680; text-underline-offset: 3px; cursor: pointer; }
+  .guidance-text-action:hover { color: var(--blue-dark); text-decoration: underline; }
+  .guidance-text-action--danger:hover { color: var(--red); }
+  .guidance-aside { padding-top: 31px; position: sticky; top: 0; }
+  .guidance-aside section { padding: 17px 0; border-top: 1px solid var(--line-strong); }
+  .guidance-aside h2 { margin: 0; font-size: 12px; }
+  .guidance-aside p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+  .guidance-aside dl { margin: 13px 0 0; display: grid; gap: 8px; }
+  .guidance-aside dl div { display: flex; justify-content: space-between; gap: 12px; }
+  .guidance-aside dt, .guidance-aside dd { margin: 0; font-size: 10px; }
+  .guidance-aside dt { color: var(--muted); }
+  .guidance-aside dd { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .guidance-inactive-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
+  .guidance-inactive-list li { padding-top: 11px; border-top: 1px solid var(--line); }
+  .guidance-inactive-list p { margin: 0; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+  .guidance-inactive-list button { margin-top: 7px; }
+  .guidance-history { margin-top: 40px; border-top: 1px solid var(--line-strong); }
+  .guidance-history > summary { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--ink); font-size: 13px; font-weight: 720; cursor: pointer; list-style: none; }
+  .guidance-history > summary::-webkit-details-marker { display: none; }
+  .guidance-history > summary span { color: var(--muted); font-size: 10px; font-weight: 500; }
+  .guidance-history-list { border-top: 1px solid var(--line); }
+  .guidance-history-row { padding: 15px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 16px; }
+  .guidance-history-row strong { font-size: 10px; }
+  .guidance-history-row p { margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+  .guidance-history-row time { color: var(--faint); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .guidance-history-state { margin-top: 3px; color: var(--blue-dark); font-size: 9px; font-weight: 750; }
+  .guidance-history-state--inactive { color: var(--muted); }
+  .guidance-history-entry { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line); }
+  .guidance-history-entry > summary { min-height: 30px; color: var(--blue-dark); display: inline-flex; align-items: center; font-size: 10px; font-weight: 700; text-underline-offset: 3px; cursor: pointer; }
+  .guidance-history-entry > summary:hover { text-decoration: underline; }
+  .guidance-history-entry[open] > summary { margin-bottom: 10px; }
+  .guidance-history-full { display: grid; gap: 11px; }
+  .guidance-history-full > div { display: grid; gap: 4px; }
+  .guidance-history-full dt { color: var(--faint); font-size: 9px; font-weight: 700; }
+  .guidance-history-full dd { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+  @keyframes guidance-editor-reveal {
+    from { opacity: .4; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (max-width: 1180px) {
+    .guidance-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .guidance-aside { position: static; padding-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  }
+  @media (max-width: 760px) {
+    .project-guidance-page .settings-desktop-project,
+    .project-guidance-page .settings-desktop-heading,
+    .project-guidance-page .settings-navigation > .personal-sidebar-footer { display: none !important; }
+    .project-guidance-page .settings-nav-body { display: contents; }
+    .guidance-document { padding: 25px 18px 48px; }
+    .guidance-page-header { align-items: stretch; flex-direction: column; gap: 18px; }
+    .guidance-page-header h1 { font-size: 26px; }
+    .guidance-primary-action { align-self: flex-start; }
+    .guidance-editor { margin-top: 20px; padding: 18px; }
+    .guidance-editor-fields { grid-template-columns: 1fr; }
+    .guidance-editor select, .guidance-editor textarea { font-size: 16px; }
+    .guidance-section { grid-template-columns: 1fr; gap: 15px; }
+    .guidance-section-heading { position: static; }
+    .guidance-aside { grid-template-columns: 1fr; gap: 0; }
+    .guidance-text-action { min-height: 44px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; }
+    .guidance-entry-actions { gap: 2px; }
+    .guidance-inactive-list button { margin-top: 2px; }
+    .guidance-history-entry > summary { min-height: 44px; }
+    .guidance-history-row { grid-template-columns: 76px minmax(0, 1fr); }
+    .guidance-history-row time { grid-column: 2; }
+  }
+`;
+
 const PROJECT_RULES_SETTINGS_STYLES = `
   .project-rules-page .settings-document { width: min(100%, 900px); }
   .project-rules-receipt { margin: 20px 0 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--green), var(--line) 65%); border-radius: 5px; background: var(--green-soft); display: grid; gap: 2px; }
@@ -6265,6 +6769,169 @@ const PROJECT_RULES_CLIENT_SCRIPT = `
   })();
 `;
 
+const PROJECT_GUIDANCE_CLIENT_SCRIPT = `
+  (() => {
+    const editor = document.querySelector("[data-guidance-editor]");
+    const form = document.querySelector("[data-guidance-form]");
+    const dataNode = document.querySelector("#project-guidance-data");
+    if (!editor || !form || !dataNode) return;
+    const routePrefix = document.body.dataset.routePrefix || "";
+    const state = JSON.parse(dataNode.textContent || "{}");
+    const entries = [...(state.entries || []), ...(state.inactive_entries || [])];
+    const fields = form.querySelector("[data-guidance-editor-fields]");
+    const preview = form.querySelector("[data-guidance-editor-preview]");
+    const title = editor.querySelector("[data-guidance-editor-title]");
+    const description = editor.querySelector("[data-guidance-editor-description]");
+    const errorBox = form.querySelector("[data-guidance-editor-error]");
+    const submit = form.querySelector('button[type="submit"]');
+    const modeInput = form.elements.action;
+    const idInput = form.elements.guidance_id;
+    const kindInput = form.elements.kind;
+    const contentInput = form.elements.content;
+    const reasonInput = form.elements.reason;
+    let returnFocus = null;
+    const labels = {
+      add: { title: L("新增项目说明"), description: L("保存后会立即成为所有 Goal 共享的长期上下文。"), submit: L("保存说明") },
+      edit: { title: L("修改项目说明"), description: L("原版本会保留在下方的版本记录中。"), submit: L("保存新版本") },
+      deactivate: { title: L("停用项目说明"), description: L("停用后 Runtime 不再收到这条说明，历史版本仍会保留。"), submit: L("确认停用") },
+      restore: { title: L("恢复项目说明"), description: L("恢复后这条说明会重新进入 Runtime Prompt。"), submit: L("确认恢复") },
+    };
+    const openEditor = (mode, guidanceId = "", trigger = null) => {
+      const entry = entries.find((item) => item.guidance_id === guidanceId);
+      const copy = labels[mode] || labels.add;
+      returnFocus = trigger instanceof HTMLElement
+        ? trigger
+        : document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      form.reset();
+      modeInput.value = mode;
+      idInput.value = guidanceId;
+      title.textContent = copy.title;
+      description.textContent = copy.description;
+      submit.textContent = copy.submit;
+      errorBox.hidden = true;
+      const editsContent = mode === "add" || mode === "edit";
+      fields.hidden = !editsContent;
+      kindInput.disabled = !editsContent;
+      contentInput.disabled = !editsContent;
+      preview.hidden = editsContent;
+      if (entry) {
+        kindInput.value = entry.kind;
+        contentInput.value = entry.content;
+        preview.textContent = entry.content;
+      } else {
+        kindInput.value = "context";
+        contentInput.value = "";
+        preview.textContent = "";
+      }
+      reasonInput.value = "";
+      editor.hidden = false;
+      const reduceMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+      editor.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      setTimeout(() => (editsContent ? contentInput : reasonInput).focus(), reduceMotion ? 0 : 220);
+    };
+    const closeEditor = () => {
+      const focusTarget = returnFocus;
+      editor.hidden = true;
+      form.reset();
+      errorBox.hidden = true;
+      returnFocus = null;
+      focusTarget?.focus();
+    };
+    const bindEditorTrigger = (button, mode, guidanceId = "") => {
+      const open = () => openEditor(mode, guidanceId, button);
+      button.addEventListener("click", open);
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        open();
+      });
+    };
+    document.querySelectorAll("[data-guidance-new]").forEach((button) => {
+      bindEditorTrigger(button, "add");
+    });
+    document.querySelectorAll("[data-guidance-edit]").forEach((button) => {
+      bindEditorTrigger(button, "edit", button.dataset.guidanceEdit);
+    });
+    document.querySelectorAll("[data-guidance-action]").forEach((button) => {
+      bindEditorTrigger(button, button.dataset.guidanceAction, button.dataset.guidanceId);
+    });
+    editor.querySelectorAll("[data-guidance-editor-close]").forEach((button) => {
+      button.addEventListener("click", closeEditor);
+    });
+    editor.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeEditor();
+    });
+    form.addEventListener("input", () => { errorBox.hidden = true; });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const mode = modeInput.value;
+      const guidanceId = idInput.value;
+      const content = String(contentInput.value || "").trim();
+      const reason = String(reasonInput.value || "").trim();
+      if ((mode === "add" || mode === "edit") && !content) {
+        errorBox.textContent = L("请填写项目说明原文。");
+        errorBox.hidden = false;
+        contentInput.focus();
+        return;
+      }
+      if (!reason) {
+        errorBox.textContent = L("请说明为什么要做这次变更。");
+        errorBox.hidden = false;
+        reasonInput.focus();
+        return;
+      }
+      const submitLabel = submit.textContent;
+      submit.disabled = true;
+      submit.textContent = L("正在保存…");
+      try {
+        const isAdd = mode === "add";
+        const response = await fetch(
+          isAdd ? routePrefix + "/api/project-guidance" : routePrefix + "/api/project-guidance/" + encodeURIComponent(guidanceId),
+          {
+            method: isAdd ? "POST" : "PATCH",
+            headers: goalboardControlHeaders(),
+            body: JSON.stringify({
+              action: isAdd ? undefined : mode,
+              kind: isAdd || mode === "edit" ? kindInput.value : undefined,
+              content: isAdd || mode === "edit" ? content : undefined,
+              reason,
+              user_confirmed: true,
+            }),
+          },
+        );
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || L("项目说明保存失败"));
+        sessionStorage.setItem("goalboard-guidance-receipt:" + routePrefix, copyReceipt(mode));
+        location.reload();
+      } catch (error) {
+        errorBox.textContent = error.message || L("项目说明保存失败，请检查输入后重试");
+        errorBox.hidden = false;
+        submit.disabled = false;
+        submit.textContent = submitLabel;
+      }
+    });
+    const receipt = document.querySelector("[data-guidance-receipt]");
+    try {
+      const saved = sessionStorage.getItem("goalboard-guidance-receipt:" + routePrefix);
+      sessionStorage.removeItem("goalboard-guidance-receipt:" + routePrefix);
+      if (receipt && saved) {
+        receipt.textContent = saved;
+        receipt.hidden = false;
+      }
+    } catch {}
+    function copyReceipt(mode) {
+      if (mode === "edit") return L("项目说明的新版本已生效。");
+      if (mode === "deactivate") return L("项目说明已停用，Runtime 将不再收到它。");
+      if (mode === "restore") return L("项目说明已恢复，并重新进入 Runtime Prompt。");
+      return L("项目说明已新增，并会用于后续 Goal。");
+    }
+  })();
+`;
+
 const CLIENT_SCRIPT = `
   (() => {
     let state = JSON.parse(document.querySelector("#goalboard-data").textContent);
@@ -6281,8 +6948,29 @@ const CLIENT_SCRIPT = `
     const treeFilterTrigger = document.querySelector("[data-tree-filter-trigger]");
     const desktopDirectoryPanels = [...document.querySelectorAll("[data-directory-panel]")];
     const desktopWorkSurfaces = [...document.querySelectorAll("[data-work-surface]")];
-    const desktopProjectMenu = document.querySelector("[data-project-menu]");
+    const projectMenus = [...document.querySelectorAll("[data-project-menu]")];
     const workTabs = document.querySelector("[data-work-tabs]");
+    const feedDirectory = document.querySelector("[data-feed-directory]");
+    const feedWorkbench = document.querySelector("[data-feed-workbench]");
+    const feedList = document.querySelector("[data-feed-list]");
+    const feedSearch = document.querySelector("[data-feed-search]");
+    const feedSourceFilter = document.querySelector("[data-feed-source-filter]");
+    const feedStatusFilter = document.querySelector("[data-feed-status-filter]");
+    const feedStatusActiveOption = feedStatusFilter?.querySelector("[data-feed-status-active]");
+    const feedStatusArchivedOption = feedStatusFilter?.querySelector("[data-feed-status-archived]");
+    const feedSort = document.querySelector("[data-feed-sort]");
+    const feedResultCount = document.querySelector("[data-feed-result-count]");
+    const feedEmpty = document.querySelector("[data-feed-empty]");
+    const feedDetailEmpty = document.querySelector("[data-feed-detail-empty]");
+    const feedSourcesDialog = document.querySelector("[data-feed-sources-dialog]");
+    const feedSourceError = feedSourcesDialog?.querySelector("[data-feed-source-error]");
+    const feedSourceProgress = feedSourcesDialog?.querySelector("[data-feed-source-progress]");
+    const relayImportDialog = document.querySelector("[data-relay-import-dialog]");
+    const mobileTreeTab = document.querySelector('[data-mobile-target="tree"]');
+    const mobileDocumentTab = document.querySelector('[data-mobile-target="document"]');
+    const mobileDirectoryTab = document.querySelector("[data-mobile-directory-root]");
+    const defaultMobileTreeLabel = mobileTreeTab?.textContent || L("目标");
+    const defaultMobileDocumentLabel = mobileDocumentTab?.textContent || L("聚焦");
     const dialog = document.querySelector("[data-create-dialog]");
     const form = document.querySelector("[data-create-form]");
     const formError = document.querySelector("[data-create-error]");
@@ -6298,6 +6986,58 @@ const CLIENT_SCRIPT = `
     const documentCollection = trashView ? "trash" : archiveView ? "archive" : "current";
     const routePrefix = document.body.dataset.routePrefix || "";
     const route = (pathname) => routePrefix + pathname;
+    const feedApi = async (pathname, method, body) => {
+      const response = await fetch(route(pathname), {
+        method,
+        headers: goalboardControlHeaders(),
+        body: body == null ? undefined : JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || L("来源操作失败"));
+      return result;
+    };
+    const markFeedItemRead = async (row, itemId) => {
+      if (
+        !row || row.dataset.feedEntryType !== "feed" ||
+        row.dataset.feedEntryPersisted !== "true" ||
+        row.dataset.feedEntryRead === "read" ||
+        row.dataset.feedReadPending === "true"
+      ) return;
+      row.dataset.feedReadPending = "true";
+      const detail = feedWorkbench?.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+      const status = detail?.querySelector("[data-feed-action-status]");
+      try {
+        await feedApi("/api/feed/items/" + encodeURIComponent(itemId) + "/read", "POST", {});
+        row.dataset.feedEntryRead = "read";
+        if (detail) detail.dataset.feedDetailRead = "read";
+        row.querySelectorAll("[data-feed-read-state]").forEach((label) => { label.textContent = L("已读"); });
+        detail?.querySelectorAll("[data-feed-read-state]").forEach((label) => { label.textContent = L("已读"); });
+        if (status?.dataset.feedReadError === "true") {
+          status.hidden = true;
+          delete status.dataset.feedReadError;
+        }
+      } catch {
+        if (status) {
+          status.textContent = L("已打开，但未能保存已读状态；重新选择该 Item 即可重试");
+          status.dataset.feedReadError = "true";
+          status.hidden = false;
+        }
+      } finally {
+        delete row.dataset.feedReadPending;
+      }
+    };
+    const setFeedSourceFeedback = (message, error = false) => {
+      if (feedSourceError) feedSourceError.hidden = !error;
+      if (feedSourceProgress) feedSourceProgress.hidden = error || !message;
+      if (error && feedSourceError) feedSourceError.textContent = message;
+      if (!error && feedSourceProgress) feedSourceProgress.textContent = message;
+    };
+    if (new URLSearchParams(location.search).get("feed-auth") === "gmail") {
+      queueMicrotask(() => {
+        feedSourcesDialog?.showModal();
+        setFeedSourceFeedback(L("Gmail 授权完成，账号已成为独立来源。"));
+      });
+    }
     const localPathname = () => routePrefix && location.pathname.startsWith(routePrefix)
       ? location.pathname.slice(routePrefix.length) || "/"
       : location.pathname;
@@ -6307,7 +7047,20 @@ const CLIENT_SCRIPT = `
     const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
     const desktopNavigationStateVersion = 2;
     let desktopDirectoryOrigin = null;
-    let activeDesktopSurface = decisionView ? "inbox" : "goal";
+    let activeDesktopSurface = decisionView ? "feed" : "goal";
+    let activeFeedPreset = feedDirectory?.dataset.feedPreset || "inbox_message";
+    let selectedFeedItem = feedList?.querySelector("[data-feed-entry-id].is-selected")?.dataset.feedEntryId || "";
+    const defaultFeedPresetState = () => ({
+      selected: "",
+      query: "",
+      source: "all",
+      status: "active",
+      sort: "newest",
+    });
+    let feedPresetState = {
+      inbox_message: defaultFeedPresetState(),
+      feed: defaultFeedPresetState(),
+    };
     let desktopSurfaceScroll = {};
     let goalWorkspaceMode = "focus";
     let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
@@ -6323,7 +7076,12 @@ const CLIENT_SCRIPT = `
     let resizeStartWidth = 0;
     let selectedStatuses = new Set();
     let goalDocumentRequest = null;
+    let goalPanelRequest = null;
     let goalRecordsRequest = null;
+    let quickRecordRequest = null;
+    let goalGraphRequest = null;
+    let feedWorkbenchRequest = null;
+    let feedDetailRequest = null;
     let searchBusyUntil = 0;
     let searchComposing = false;
     let deferredRefreshTimer;
@@ -6467,11 +7225,14 @@ const CLIENT_SCRIPT = `
       }
       activeDesktopSurface = surface;
       document.body.dataset.desktopSurface = surface;
+      if (mobileTreeTab) mobileTreeTab.textContent = surface === "feed" ? "Item" : defaultMobileTreeLabel;
+      if (mobileDocumentTab) mobileDocumentTab.textContent = surface === "feed" ? L("详情") : defaultMobileDocumentLabel;
       desktopWorkSurfaces.forEach((candidate) => {
         candidate.hidden = candidate !== nextSurface;
       });
       document.querySelectorAll("[data-work-surface-open], [data-work-surface-link]").forEach((item) => {
-        const active = (item.dataset.workSurfaceOpen || item.dataset.workSurfaceLink) === surface;
+        const active = (item.dataset.workSurfaceOpen || item.dataset.workSurfaceLink) === surface &&
+          (surface !== "feed" || !item.dataset.feedPreset || item.dataset.feedPreset === activeFeedPreset);
         item.classList.toggle("is-current", active);
         if (active) item.setAttribute("aria-current", "page");
         else item.removeAttribute("aria-current");
@@ -6483,6 +7244,7 @@ const CLIENT_SCRIPT = `
       requestAnimationFrame(() => {
         documentPane.scrollTop = restoreScroll ? Number(desktopSurfaceScroll[surface] || 0) : 0;
       });
+      if (surface === "feed") void ensureFeedWorkbenchLoaded();
       if (persist) queueSave();
       return true;
     };
@@ -6497,6 +7259,18 @@ const CLIENT_SCRIPT = `
       }
       treePane.dataset.desktopDirectory = next;
       desktopDirectoryPanels.forEach((panel) => { panel.hidden = panel.dataset.directoryPanel !== next; });
+      if (mobileDirectoryTab) {
+        const rootActive = next === "root";
+        mobileDirectoryTab.classList.toggle("is-active", rootActive);
+        mobileDirectoryTab.setAttribute("aria-selected", String(rootActive));
+        if (rootActive) {
+          mobileTreeTab?.classList.remove("is-active");
+          mobileTreeTab?.setAttribute("aria-selected", "false");
+        } else if (workspace?.dataset.mobileView === "tree") {
+          mobileTreeTab?.classList.add("is-active");
+          mobileTreeTab?.setAttribute("aria-selected", "true");
+        }
+      }
       if (focusTarget) {
         requestAnimationFrame(() => {
           const nextPanel = desktopDirectoryPanels.find((panel) => panel.dataset.directoryPanel === next);
@@ -6507,6 +7281,249 @@ const CLIENT_SCRIPT = `
         });
       }
       if (persist) queueSave();
+    };
+
+    const setFeedDetailPlaceholder = (title, copy, retry = false) => {
+      if (!feedDetailEmpty) return;
+      const titleNode = feedDetailEmpty.querySelector("[data-feed-detail-empty-title]");
+      const copyNode = feedDetailEmpty.querySelector("[data-feed-detail-empty-copy]");
+      const retryButton = feedDetailEmpty.querySelector("[data-retry-feed-detail]");
+      if (titleNode) titleNode.textContent = title;
+      if (copyNode) copyNode.textContent = copy;
+      if (retryButton) retryButton.hidden = !retry;
+      feedDetailEmpty.hidden = false;
+    };
+
+    const ensureFeedWorkbenchLoaded = async () => {
+      if (!feedWorkbench) return false;
+      if (feedWorkbench.dataset.loaded === "true" && feedWorkbench.dataset.loadedPreset === activeFeedPreset) return true;
+      if (feedWorkbenchRequest) {
+        const pending = feedWorkbenchRequest;
+        return pending.then(() => ensureFeedWorkbenchLoaded());
+      }
+      const requestedPreset = activeFeedPreset;
+      setFeedDetailPlaceholder(L("正在打开 Item 工作区…"), L("先载入待判断事项，再读取当前选择的正文和资料。"));
+      feedWorkbench.setAttribute("aria-busy", "true");
+      feedWorkbenchRequest = (async () => {
+        try {
+          const response = await fetch(
+            route("/api/feed/workbench?preset=" + encodeURIComponent(activeFeedPreset)),
+            { cache: "no-store" },
+          );
+          if (!response.ok) throw new Error(L("无法打开 Item 工作区"));
+          const template = document.createElement("template");
+          template.innerHTML = (await response.text()).trim();
+          if (requestedPreset !== activeFeedPreset) return false;
+          feedWorkbench.querySelectorAll(".feed-detail--decision, .feed-detail--result")
+            .forEach((detail) => detail.remove());
+          for (const detail of [...template.content.querySelectorAll("[data-feed-detail]")]) {
+            feedWorkbench.insertBefore(detail, feedDetailEmpty);
+          }
+          feedWorkbench.dataset.loaded = "true";
+          feedWorkbench.dataset.loadedPreset = requestedPreset;
+          filterFeedItems(true);
+          return true;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : L("无法打开 Item 工作区");
+          setFeedDetailPlaceholder(message, L("目录仍然可用，点击重试即可。"), true);
+          return false;
+        } finally {
+          feedWorkbench.removeAttribute("aria-busy");
+          feedWorkbenchRequest = null;
+        }
+      })();
+      return feedWorkbenchRequest;
+    };
+
+    const loadFeedItemDetail = async (row, itemId) => {
+      if (!feedWorkbench || !row || row.dataset.feedEntryPersisted !== "true") return;
+      const existing = feedWorkbench.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+      if (existing) {
+        existing.hidden = selectedFeedItem !== itemId;
+        if (selectedFeedItem === itemId && feedDetailEmpty) feedDetailEmpty.hidden = true;
+        return;
+      }
+      feedDetailRequest?.abort();
+      const controller = new AbortController();
+      feedDetailRequest = controller;
+      feedWorkbench.dataset.feedLoadingItem = itemId;
+      setFeedDetailPlaceholder(L("正在载入 Item…"), L("只读取当前选择的正文和资料。"));
+      try {
+        const response = await fetch(
+          route("/api/feed/items/" + encodeURIComponent(itemId) + "/detail"),
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) throw new Error(L("无法读取这条 Item"));
+        const template = document.createElement("template");
+        template.innerHTML = (await response.text()).trim();
+        const detail = template.content.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+        if (!detail) throw new Error(L("Item 详情响应不完整"));
+        if (feedDetailRequest !== controller || !feedWorkbench.isConnected) return;
+        feedWorkbench.insertBefore(detail, feedDetailEmpty);
+        if (row.dataset.feedEntryRead === "read") {
+          detail.dataset.feedDetailRead = "read";
+          detail.querySelectorAll("[data-feed-read-state]").forEach((label) => { label.textContent = L("已读"); });
+        }
+        feedWorkbench.querySelectorAll("[data-feed-detail]").forEach((candidate) => {
+          candidate.hidden = candidate.dataset.feedDetail !== selectedFeedItem;
+        });
+        if (selectedFeedItem === itemId && feedDetailEmpty) feedDetailEmpty.hidden = true;
+      } catch (error) {
+        if (isAbortError(error) || feedDetailRequest !== controller) return;
+        if (selectedFeedItem !== itemId) return;
+        const message = error instanceof Error ? error.message : L("无法读取这条 Item");
+        setFeedDetailPlaceholder(message, L("这条 Item 仍然保留，点击重试即可。"), true);
+      } finally {
+        if (feedDetailRequest === controller) {
+          feedDetailRequest = null;
+          delete feedWorkbench.dataset.feedLoadingItem;
+        }
+      }
+    };
+
+    const selectFeedItem = (itemId, moveToDetail = false, recordRead = false) => {
+      if (!feedList || !feedWorkbench) return false;
+      const selectedRow = [...feedList.querySelectorAll("[data-feed-entry-id]")]
+        .find((row) => row.dataset.feedEntryId === itemId && !row.hidden);
+      if (!selectedRow) return false;
+      selectedFeedItem = itemId;
+      feedList.querySelectorAll("[data-feed-entry-id]").forEach((row) => {
+        const active = row === selectedRow;
+        row.classList.toggle("is-selected", active);
+        row.setAttribute("aria-selected", String(active));
+        row.tabIndex = active ? 0 : -1;
+      });
+      if (feedWorkbench.dataset.loaded !== "true" || feedWorkbench.dataset.loadedPreset !== activeFeedPreset) {
+        if (recordRead) void markFeedItemRead(selectedRow, itemId);
+        setFeedDetailPlaceholder(L("正在打开 Item 工作区…"), L("只读取当前选择的正文和资料。"));
+        return true;
+      }
+      const existingDetail = feedWorkbench.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+      feedWorkbench.querySelectorAll("[data-feed-detail]").forEach((detail) => {
+        detail.hidden = detail.dataset.feedDetail !== itemId;
+      });
+      if (existingDetail) {
+        feedDetailRequest?.abort();
+        if (feedDetailEmpty) feedDetailEmpty.hidden = true;
+      } else if (selectedRow.dataset.feedEntryPersisted === "true") {
+        void loadFeedItemDetail(selectedRow, itemId);
+      } else {
+        setFeedDetailPlaceholder(L("无法读取这条 Item"), L("刷新页面后再试。"), true);
+      }
+      if (moveToDetail && matchMedia("(max-width: 760px)").matches) setMobileView("document");
+      if (recordRead) void markFeedItemRead(selectedRow, itemId);
+      queueSave();
+      return true;
+    };
+
+    const filterFeedItems = (preserveSelection = true) => {
+      if (!feedList) return;
+      const query = String(feedSearch?.value || "").trim().toLocaleLowerCase();
+      const type = activeFeedPreset;
+      const source = feedSourceFilter?.value || "all";
+      const status = feedStatusFilter?.value || "active";
+      const sort = feedSort?.value || "newest";
+      const rows = [...feedList.querySelectorAll("[data-feed-entry-id]")];
+      const presetRows = rows.filter((row) => row.dataset.feedEntryType === type);
+      const visible = rows.filter((row) => {
+        const matchesType = type === "all" || row.dataset.feedEntryType === type;
+        const matchesSource = source === "all" || row.dataset.feedEntrySource === source;
+        const matchesStatus = status === "all"
+          ? true
+          : status === "active"
+            ? row.dataset.feedEntryStatus !== "archived"
+            : row.dataset.feedEntryStatus === status;
+        const matchesQuery = !query || String(row.dataset.feedEntrySearch || "").includes(query);
+        row.hidden = !(matchesType && matchesSource && matchesStatus && matchesQuery);
+        return !row.hidden;
+      });
+      const compare = (left, right) => {
+        if (sort === "oldest") return String(left.dataset.feedEntryTime || "").localeCompare(String(right.dataset.feedEntryTime || ""));
+        if (sort === "source") return String(left.dataset.feedEntrySource || "").localeCompare(String(right.dataset.feedEntrySource || ""));
+        if (sort === "title") return String(left.dataset.feedEntryTitle || "").localeCompare(String(right.dataset.feedEntryTitle || ""));
+        return String(right.dataset.feedEntryTime || "").localeCompare(String(left.dataset.feedEntryTime || ""));
+      };
+      rows.sort(compare).forEach((row) => feedList.insertBefore(row, feedEmpty));
+      if (feedResultCount) feedResultCount.textContent = L("{count} 个 Item", { count: visible.length });
+      if (feedEmpty) {
+        const filteredEmpty = visible.length === 0 && presetRows.length > 0;
+        const emptyTitle = feedEmpty.querySelector("[data-feed-empty-title]");
+        const emptyCopy = feedEmpty.querySelector("[data-feed-empty-copy]");
+        const clearFilters = feedEmpty.querySelector("[data-feed-clear-filters]");
+        const manageSources = feedEmpty.querySelector("[data-feed-empty-sources]");
+        if (emptyTitle) emptyTitle.textContent = filteredEmpty ? L("没有符合当前条件的 Item") : L("这里还没有 Item");
+        if (emptyCopy) emptyCopy.textContent = filteredEmpty
+          ? L("换一个关键词或清除筛选，原来的 Item 仍然保留。")
+          : L("接入来源后，消息和 Feed 会出现在这里。");
+        if (clearFilters) clearFilters.hidden = !filteredEmpty;
+        if (manageSources) manageSources.hidden = filteredEmpty;
+        feedEmpty.hidden = visible.length > 0;
+      }
+      const selectionVisible = visible.some((row) => row.dataset.feedEntryId === selectedFeedItem);
+      if (visible.length) {
+        if (!preserveSelection || !selectionVisible) selectedFeedItem = visible[0]?.dataset.feedEntryId || "";
+        selectFeedItem(selectedFeedItem);
+      } else {
+        if (!preserveSelection) selectedFeedItem = "";
+        rows.forEach((row) => {
+          row.classList.remove("is-selected");
+          row.setAttribute("aria-selected", "false");
+          row.tabIndex = -1;
+        });
+        feedWorkbench?.querySelectorAll("[data-feed-detail]").forEach((detail) => { detail.hidden = true; });
+        if (feedDetailEmpty) feedDetailEmpty.hidden = false;
+      }
+      queueSave();
+    };
+
+    const rememberFeedPresetState = () => {
+      feedPresetState[activeFeedPreset] = {
+        selected: selectedFeedItem,
+        query: String(feedSearch?.value || ""),
+        source: feedSourceFilter?.value || "all",
+        status: feedStatusFilter?.value || "active",
+        sort: feedSort?.value || "newest",
+      };
+    };
+
+    const restoreFeedPresetState = (preset) => {
+      const saved = feedPresetState[preset] || defaultFeedPresetState();
+      selectedFeedItem = String(saved.selected || "");
+      if (feedSearch) feedSearch.value = String(saved.query || "");
+      if (feedSourceFilter) {
+        feedSourceFilter.value = saved.source || "all";
+        if (!feedSourceFilter.value) feedSourceFilter.value = "all";
+      }
+      if (feedStatusFilter) {
+        feedStatusFilter.value = saved.status || "active";
+        if (!feedStatusFilter.value) feedStatusFilter.value = "active";
+      }
+      if (feedSort) {
+        feedSort.value = saved.sort || "newest";
+        if (!feedSort.value) feedSort.value = "newest";
+      }
+    };
+
+    const setFeedPreset = (preset, restoreSavedState = true) => {
+      const nextPreset = preset === "feed" ? "feed" : "inbox_message";
+      if (nextPreset !== activeFeedPreset) rememberFeedPresetState();
+      activeFeedPreset = nextPreset;
+      if (restoreSavedState) restoreFeedPresetState(activeFeedPreset);
+      if (feedDirectory) feedDirectory.dataset.feedPreset = activeFeedPreset;
+      if (feedWorkbench) {
+        feedWorkbench.dataset.feedPreset = activeFeedPreset;
+        feedWorkbench.dataset.workSurfaceLabel = activeFeedPreset === "feed" ? "Feed" : "Inbox";
+      }
+      const heading = feedDirectory?.querySelector("[data-feed-directory-title]");
+      if (heading) heading.textContent = activeFeedPreset === "feed" ? "Feed" : "Inbox";
+      const semanticType = activeFeedPreset;
+      if (feedStatusActiveOption) feedStatusActiveOption.textContent = semanticType === "inbox_message" ? L("未归档") : semanticType === "feed" ? L("未忽略") : L("未处置");
+      if (feedStatusArchivedOption) feedStatusArchivedOption.textContent = semanticType === "inbox_message" ? L("已归档") : semanticType === "feed" ? L("已忽略") : L("已归档 / 忽略");
+      filterFeedItems(true);
+      if (activeDesktopSurface === "feed") {
+        setDesktopWorkSurface("feed", false, false);
+        renderWorkTabs();
+      }
     };
 
     const updateRelationPreviews = () => {
@@ -6817,8 +7834,13 @@ const CLIENT_SCRIPT = `
     const setMobileView = (view) => {
       workspace.dataset.mobileView = view;
       document.querySelector(".topbar")?.setAttribute("data-mobile-surface", view);
+      const directoryRootActive = view === "tree" && treePane?.dataset.desktopDirectory === "root";
+      if (mobileDirectoryTab) {
+        mobileDirectoryTab.classList.toggle("is-active", directoryRootActive);
+        mobileDirectoryTab.setAttribute("aria-selected", String(directoryRootActive));
+      }
       document.querySelectorAll("[data-mobile-target]").forEach((button) => {
-        const active = button.dataset.mobileTarget === view;
+        const active = button.dataset.mobileTarget === view && !(directoryRootActive && view === "tree");
         button.classList.toggle("is-active", active);
         button.setAttribute("aria-selected", String(active));
       });
@@ -7063,6 +8085,45 @@ const CLIENT_SCRIPT = `
       if (persist) queueSave();
     };
 
+    const loadGoalGraph = async (force = false) => {
+      const graph = graphElement();
+      if (!graph || (!force && graph.dataset.loaded === "true")) return true;
+      if (goalGraphRequest) return goalGraphRequest;
+      const status = graph.querySelector("[data-goal-graph-status]");
+      const retry = graph.querySelector("[data-retry-goal-graph]");
+      if (status) status.textContent = L("正在载入关系图…");
+      if (retry) retry.hidden = true;
+      graph.setAttribute("aria-busy", "true");
+      goalGraphRequest = (async () => {
+        try {
+          const response = await fetch(
+            route("/api/board/graph?view=" + documentCollection + "&goal_id=" + encodeURIComponent(selected || "")),
+            { cache: "no-store" },
+          );
+          if (!response.ok) throw new Error(L("无法载入关系图"));
+          const template = document.createElement("template");
+          template.innerHTML = (await response.text()).trim();
+          const nextGraph = template.content.querySelector("[data-goal-graph]");
+          if (!nextGraph) throw new Error(L("关系图响应不完整"));
+          nextGraph.dataset.loaded = "true";
+          graph.replaceWith(nextGraph);
+          setWorkspaceMode("graph", false);
+          setGraphZoom(graphZoom, false);
+          updateGraphVisibility();
+          return true;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : L("无法载入关系图");
+          if (status) status.textContent = message;
+          if (retry) retry.hidden = false;
+          return false;
+        } finally {
+          graph.removeAttribute("aria-busy");
+          goalGraphRequest = null;
+        }
+      })();
+      return goalGraphRequest;
+    };
+
     const setWorkspaceMode = (view, persist = true) => {
       const graph = graphElement();
       const nextMode = view === "graph" && graph
@@ -7089,7 +8150,10 @@ const CLIENT_SCRIPT = `
         button.setAttribute("tabindex", active ? "0" : "-1");
       });
       if (graph) graph.hidden = nextMode !== "graph";
-      if (nextMode === "graph") updateGraphVisibility();
+      if (nextMode === "graph") {
+        if (graph?.dataset.loaded === "true") updateGraphVisibility();
+        else void loadGoalGraph();
+      }
       if (matchMedia("(max-width: 760px)").matches) setMobileView(nextMode === "runtime" ? "tui" : "document");
       if (persist) queueSave();
     };
@@ -7158,6 +8222,62 @@ const CLIENT_SCRIPT = `
           goalRecordsRequest = null;
           container.dataset.loading = "false";
           container.removeAttribute("aria-busy");
+        }
+      }
+    };
+
+    const abortGoalPanelRequest = () => {
+      goalPanelRequest?.abort();
+    };
+
+    const loadGoalPanel = async (article, panelName) => {
+      const panel = article?.querySelector('[data-goal-panel="' + panelName + '"]');
+      if (!panel || panel.dataset.loaded === "true" || panel.dataset.loading === "true") return;
+      const goalId = article.dataset.goalView;
+      if (!goalId || !["completion", "progress", "factors"].includes(panelName)) return;
+      abortGoalPanelRequest();
+      const controller = new AbortController();
+      goalPanelRequest = controller;
+      panel.dataset.loading = "true";
+      panel.setAttribute("aria-busy", "true");
+      const status = panel.querySelector("[data-goal-panel-status]");
+      if (status) status.textContent = L("正在载入…");
+      try {
+        const response = await fetch(
+          route("/api/goals/" + encodeURIComponent(goalId) + "/panels/" + panelName + "?view=" + documentCollection),
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) throw new Error(L("无法读取这个 Goal 区域"));
+        const template = document.createElement("template");
+        template.innerHTML = (await response.text()).trim();
+        if (!template.content.childNodes.length) throw new Error(L("Goal 区域响应不完整"));
+        if (!article.isConnected || article.dataset.goalView !== goalId || goalPanelRequest !== controller) return;
+        panel.replaceChildren(...template.content.childNodes);
+        panel.dataset.loaded = "true";
+        updateAllRelationFormPreviews();
+        document.querySelectorAll("[data-risk-state-form]").forEach(updateRiskStatePreview);
+        document.querySelectorAll(".risk-goal-picker").forEach(updateRiskGoalCount);
+        if (panelName === "factors") {
+          setGoalFactor(goalFactorFromHash() || article.dataset.activeFactor || "relations", false);
+        }
+        const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+        if (hashTarget) revealFocusTarget(hashTarget);
+      } catch (error) {
+        if (isAbortError(error) || goalPanelRequest !== controller) return;
+        if (!article.isConnected || article.dataset.goalView !== goalId) return;
+        const message = error instanceof Error ? error.message : L("无法载入这个 Goal 区域");
+        const errorRow = document.createElement("button");
+        errorRow.type = "button";
+        errorRow.className = "empty-row goal-panel-lazy-retry";
+        errorRow.dataset.retryGoalPanel = panelName;
+        errorRow.textContent = L("{message}，点击重试", { message });
+        panel.replaceChildren(errorRow);
+        showToast(message, true);
+      } finally {
+        if (goalPanelRequest === controller) {
+          goalPanelRequest = null;
+          panel.dataset.loading = "false";
+          panel.removeAttribute("aria-busy");
         }
       }
     };
@@ -7263,7 +8383,10 @@ const CLIENT_SCRIPT = `
         candidate.hidden = candidate !== activePanel;
       });
       if (panel === "records") void loadGoalRecords(article);
-      else abortGoalRecordsRequest();
+      else {
+        abortGoalRecordsRequest();
+        if (panel !== "overview") void loadGoalPanel(article, panel);
+      }
       if (updateHash) history.replaceState(history.state, "", "#" + activePanel.id);
       if (resetScroll) documentPane.scrollTop = 0;
       if (persist) queueSave();
@@ -7275,7 +8398,10 @@ const CLIENT_SCRIPT = `
       if (!article) return false;
       const factor = goalFactorKeys.includes(factorName) ? factorName : "relations";
       const activePanel = article.querySelector('[data-goal-factor-panel="' + factor + '"]');
-      if (!activePanel) return false;
+      if (!activePanel) {
+        article.dataset.activeFactor = factor;
+        return false;
+      }
       const trigger = article.querySelector('[data-goal-factor-tab="' + factor + '"]');
       if (trigger) activateFocusSection(trigger);
       article.dataset.activeFactor = factor;
@@ -7298,6 +8424,56 @@ const CLIENT_SCRIPT = `
       if (title) title.textContent = L("快速记录");
     };
 
+    const loadAndOpenQuickRecord = async (opener) => {
+      const article = opener?.closest?.("[data-goal-view]");
+      const goalId = article?.dataset.goalView;
+      if (!article || !goalId) return;
+      let quickDialog = article.querySelector("[data-quick-record-dialog]");
+      if (!quickDialog) {
+        quickRecordRequest?.abort();
+        const controller = new AbortController();
+        quickRecordRequest = controller;
+        const original = opener.innerHTML;
+        opener.disabled = true;
+        opener.setAttribute("aria-busy", "true");
+        opener.textContent = L("正在载入…");
+        try {
+          const response = await fetch(
+            route("/api/goals/" + encodeURIComponent(goalId) + "/quick-record?view=" + documentCollection),
+            { cache: "no-store", signal: controller.signal },
+          );
+          if (!response.ok) throw new Error(L("无法打开快速记录"));
+          const template = document.createElement("template");
+          template.innerHTML = (await response.text()).trim();
+          const nextDialog = template.content.querySelector("[data-quick-record-dialog]");
+          if (!nextDialog) throw new Error(L("快速记录响应不完整"));
+          if (!article.isConnected || article.dataset.goalView !== goalId || quickRecordRequest !== controller) return;
+          article.append(nextDialog);
+          quickDialog = nextDialog;
+          updateAllRelationFormPreviews();
+          document.querySelectorAll(".risk-goal-picker").forEach(updateRiskGoalCount);
+        } catch (error) {
+          if (isAbortError(error) || quickRecordRequest !== controller) return;
+          showToast(error instanceof Error ? error.message : L("无法打开快速记录"), true);
+          return;
+        } finally {
+          if (quickRecordRequest === controller) {
+            quickRecordRequest = null;
+            if (opener.isConnected) {
+              opener.disabled = false;
+              opener.removeAttribute("aria-busy");
+              opener.innerHTML = original;
+            }
+          }
+        }
+      }
+      if (!quickDialog) return;
+      quickDialog._opener = opener;
+      resetQuickRecordDialog(quickDialog);
+      quickDialog.showModal();
+      requestAnimationFrame(() => quickDialog.querySelector("[data-quick-record-type]")?.focus());
+    };
+
     const setTuiWidth = (value, persist = true) => {
       if (!tuiResizer || !workspace.classList.contains("is-desktop-tui")) return;
       const width = Math.round(Math.min(720, Math.max(280, Number(value) || 480)));
@@ -7316,7 +8492,25 @@ const CLIENT_SCRIPT = `
       if (persist) queueSave();
     };
 
-    const readUiState = () => ({
+    const setDirectoryCollapsed = (collapsed, persist = true) => {
+      const nextCollapsed = Boolean(collapsed);
+      if (nextCollapsed && !workspace.classList.contains("is-directory-collapsed")) {
+        const currentWidth = Math.round(treePane?.getBoundingClientRect().width || 0);
+        if (currentWidth > 44) workspace.style.setProperty("--tree-width", currentWidth + "px");
+      }
+      workspace.classList.toggle("is-directory-collapsed", nextCollapsed);
+      document.querySelectorAll("[data-directory-toggle]").forEach((button) => {
+        button.setAttribute("aria-expanded", String(!nextCollapsed));
+        button.setAttribute("aria-label", nextCollapsed ? L("展开目录") : L("收起目录"));
+        button.setAttribute("title", nextCollapsed ? L("展开目录") : L("收起目录"));
+      });
+      treeResizer?.setAttribute("aria-hidden", String(nextCollapsed));
+      if (persist) queueSave();
+    };
+
+    const readUiState = () => {
+      rememberFeedPresetState();
+      return ({
       selected,
       collapsed: [...document.querySelectorAll("[data-tree-item].is-collapsed")].map((item) => item.dataset.goalId),
       disclosures: [...document.querySelectorAll("[data-persist-open][open]")].map((item) => item.dataset.persistOpen),
@@ -7338,20 +8532,30 @@ const CLIENT_SCRIPT = `
       graphRelationTypes: [...graphRelationTypes],
       navigationVersion: desktopNavigationStateVersion,
       directory: treePane?.dataset.desktopDirectory || "root",
+      directoryCollapsed: workspace.classList.contains("is-directory-collapsed"),
+      feedPreset: activeFeedPreset,
+      feedSelected: selectedFeedItem,
+      feedQuery: feedSearch?.value || "",
+      feedSource: feedSourceFilter?.value || "all",
+      feedStatus: feedStatusFilter?.value || "active",
+      feedSort: feedSort?.value || "newest",
+      feedPresets: feedPresetState,
       goalPanel: documentPane.querySelector('[data-goal-tab][aria-selected="true"]')?.dataset.goalTab || "overview",
       goalFactor: documentPane.querySelector('[data-goal-factor-tab][aria-selected="true"]')?.dataset.goalFactorTab || "relations",
-    });
+      });
+    };
 
     const applyUiState = (ui) => {
       desktopSurfaceScroll = ui?.surfaceScroll && typeof ui.surfaceScroll === "object" ? { ...ui.surfaceScroll } : {};
       if (ui?.documentTop != null && desktopSurfaceScroll.goal == null) desktopSurfaceScroll.goal = Number(ui.documentTop || 0);
       goalWorkspaceMode = ui?.workspaceMode || "focus";
-      const nextDesktopSurface = decisionView ? ui?.workSurface || "inbox" : ui?.workSurface || "goal";
+      const nextDesktopSurface = decisionView ? "feed" : ui?.workSurface || "goal";
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
       if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
+      setDirectoryCollapsed(ui?.directoryCollapsed === true, false);
       if (desktopDirectoryPanels.length) {
         const restoredDirectory = decisionView
-          ? "root"
+          ? "feed"
           : ui?.navigationVersion === desktopNavigationStateVersion
             ? ui?.directory || "root"
             : "root";
@@ -7376,8 +8580,31 @@ const CLIENT_SCRIPT = `
         : ["part_of", "depends_on"];
       graphRelationTypes = new Set(savedGraphTypes.length ? savedGraphTypes : ["part_of", "depends_on"]);
       filterTree(ui?.query || "");
+      if (feedDirectory) {
+        activeFeedPreset = ui?.feedPreset === "feed" ? "feed" : "inbox_message";
+        const persistedPresets = ui?.feedPresets && typeof ui.feedPresets === "object"
+          ? ui.feedPresets
+          : {};
+        feedPresetState = {
+          inbox_message: { ...defaultFeedPresetState(), ...(persistedPresets.inbox_message || {}) },
+          feed: { ...defaultFeedPresetState(), ...(persistedPresets.feed || {}) },
+        };
+        if (!ui?.feedPresets) {
+          feedPresetState[activeFeedPreset] = {
+            selected: String(ui?.feedSelected || selectedFeedItem || ""),
+            query: String(ui?.feedQuery || ""),
+            source: ui?.feedSource || "all",
+            status: ui?.feedStatus || "active",
+            sort: ui?.feedSort || "newest",
+          };
+        }
+        setFeedPreset(activeFeedPreset, true);
+      }
       setWorkspaceMode(ui?.workspaceMode || (ui?.navigatorView === "graph" ? "graph" : "focus"), false);
       if (desktopWorkSurfaces.length) setDesktopWorkSurface(nextDesktopSurface, false, false);
+      if (nextDesktopSurface === "feed" && selectedFeedItem) {
+        selectFeedItem(selectedFeedItem, false, true);
+      }
       setGraphZoom(graphZoom, false);
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
@@ -7452,6 +8679,8 @@ const CLIENT_SCRIPT = `
     };
 
     const replaceGoalDocument = (html) => {
+      abortGoalPanelRequest();
+      quickRecordRequest?.abort();
       const template = document.createElement("template");
       template.innerHTML = String(html || "").trim();
       const nextView = template.content.querySelector("[data-goal-view]");
@@ -7530,6 +8759,7 @@ const CLIENT_SCRIPT = `
         return;
       }
       ensureWorkTab(goalId);
+      document.dispatchEvent(new CustomEvent("goalboard:goal-document-loaded", { detail: { goalId } }));
       if (updateHistory) {
         history.pushState({ goalId }, "", goalPageUrl(goalId));
       }
@@ -7639,7 +8869,12 @@ const CLIENT_SCRIPT = `
           : selected
             ? pageBase + encodeURIComponent(selected)
             : route(collectionPath);
-        let pageResponse = await fetch(pagePath, { cache: "no-store" });
+        const compactRefreshPath = route("/api/board/refresh?view=" + documentCollection +
+          (selected ? "&goal_id=" + encodeURIComponent(selected) : ""));
+        let pageResponse = await fetch(decisionView ? pagePath : compactRefreshPath, { cache: "no-store" });
+        if (!pageResponse.ok && !decisionView) {
+          pageResponse = await fetch(pagePath, { cache: "no-store" });
+        }
         if (!pageResponse.ok && !decisionView) {
           pageResponse = await fetch(route(collectionPath), { cache: "no-store" });
         }
@@ -7710,6 +8945,11 @@ const CLIENT_SCRIPT = `
         if (!decisionView && selected) applySelection(selected, false);
         applyUiState(ui);
         updateAllRelationFormPreviews();
+        const refreshedGraph = graphElement();
+        if (refreshedGraph?.dataset.loaded === "true") {
+          if (workspace.dataset.workspaceMode === "graph") void loadGoalGraph(true);
+          else refreshedGraph.dataset.loaded = "false";
+        }
         requestAnimationFrame(() => documentPane.classList.remove("is-syncing"));
       } catch {
       } finally {
@@ -7984,11 +9224,293 @@ const CLIENT_SCRIPT = `
       event.stopPropagation();
       setTreeFilterOpen(treeFilter?.hidden !== false, true);
     });
+    feedSearch?.addEventListener("input", () => filterFeedItems());
+    [feedSourceFilter, feedStatusFilter, feedSort].forEach((control) => {
+      control?.addEventListener("change", () => {
+        filterFeedItems();
+      });
+    });
+    feedList?.addEventListener("keydown", (event) => {
+      const current = event.target.closest?.("[data-feed-entry-id]");
+      if (!current || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const visible = [...feedList.querySelectorAll("[data-feed-entry-id]:not([hidden])")];
+      const currentIndex = visible.indexOf(current);
+      const next = event.key === "Home" ? visible[0]
+        : event.key === "End" ? visible.at(-1)
+        : visible[currentIndex + (event.key === "ArrowDown" ? 1 : -1)];
+      if (!next) return;
+      event.preventDefault();
+      selectFeedItem(next.dataset.feedEntryId, false, true);
+      next.focus();
+    });
 
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
-      if (desktopProjectMenu?.open && !target.closest("[data-project-menu]")) desktopProjectMenu.open = false;
+      const activeProjectMenu = target.closest("[data-project-menu]");
+      projectMenus.forEach((menu) => {
+        if (menu.open && menu !== activeProjectMenu) menu.open = false;
+      });
+      if (target.closest("[data-feed-sources-open]")) {
+        feedSourcesDialog?.showModal();
+        setFeedSourceFeedback("");
+        return;
+      }
+      if (target.closest("[data-feed-sources-close]")) {
+        feedSourcesDialog?.close();
+        return;
+      }
+      const sourceRegister = target.closest("[data-feed-source-register]");
+      if (sourceRegister) {
+        const kind = sourceRegister.dataset.feedSourceRegister;
+        const value = kind === "rss"
+          ? feedSourcesDialog?.querySelector("[data-feed-rss-definition]")?.value
+          : feedSourcesDialog?.querySelector('[data-feed-source-value="' + kind + '"]')?.value;
+        const body = kind === "rss" ? { kind, definition_id: value }
+          : kind === "web_query" ? { kind, query: value }
+          : kind === "youtube_channel" ? { kind, channel_id: value }
+          : { kind, feed_url: value };
+        sourceRegister.disabled = true;
+        setFeedSourceFeedback(L("正在添加来源…"));
+        try {
+          await feedApi("/api/feed/sources", "POST", body);
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("添加来源失败"), true);
+          sourceRegister.disabled = false;
+        }
+        return;
+      }
+      const sourceToggle = target.closest("[data-feed-source-toggle]");
+      if (sourceToggle) {
+        const sourceId = sourceToggle.dataset.feedSourceToggle;
+        const action = sourceToggle.dataset.feedSourceEnabled === "true" ? "pause" : "resume";
+        sourceToggle.disabled = true;
+        setFeedSourceFeedback(action === "pause" ? L("正在暂停来源…") : L("正在恢复来源…"));
+        try {
+          await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId) + "/" + action, "POST", {});
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("来源状态更新失败"), true);
+          sourceToggle.disabled = false;
+        }
+        return;
+      }
+      const sourceSync = target.closest("[data-feed-source-sync]");
+      if (sourceSync) {
+        const sourceId = sourceSync.dataset.feedSourceSync;
+        sourceSync.disabled = true;
+        setFeedSourceFeedback(L("正在同步来源；失败时不会写成成功…"));
+        try {
+          const operationKey = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-feed-sync");
+          const result = await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId) + "/sync", "POST", { idempotency_key: operationKey });
+          setFeedSourceFeedback(L("同步完成：新增 {created}，去重 {deduped}", { created: result.created || 0, deduped: result.deduped || 0 }));
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("来源同步失败"), true);
+          sourceSync.disabled = false;
+        }
+        return;
+      }
+      const connectorBind = target.closest("[data-feed-connector-bind]");
+      if (connectorBind) {
+        const kind = connectorBind.dataset.feedConnectorBind;
+        const input = feedSourcesDialog?.querySelector('[data-feed-connector-token="' + kind + '"]');
+        connectorBind.disabled = true;
+        try {
+          await feedApi("/api/feed/connectors/" + kind + "/token", "POST", { token: input?.value || "" });
+          if (input) input.value = "";
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("账号连接失败"), true);
+          connectorBind.disabled = false;
+        }
+        return;
+      }
+      const connectorUnbind = target.closest("[data-feed-connector-unbind]");
+      if (connectorUnbind) {
+        const kind = connectorUnbind.dataset.feedConnectorUnbind;
+        connectorUnbind.disabled = true;
+        try {
+          await feedApi("/api/feed/connectors/" + kind + "/token", "DELETE");
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("断开账号失败"), true);
+          connectorUnbind.disabled = false;
+        }
+        return;
+      }
+      if (target.closest("[data-feed-github-device-start]")) {
+        const button = target.closest("[data-feed-github-device-start]");
+        const clientId = feedSourcesDialog?.querySelector("[data-feed-github-client-id]")?.value || "";
+        const status = feedSourcesDialog?.querySelector("[data-feed-github-device-status]");
+        const poll = feedSourcesDialog?.querySelector("[data-feed-github-device-poll]");
+        button.disabled = true;
+        try {
+          const result = await feedApi("/api/feed/connectors/github/device/start", "POST", { client_id: clientId });
+          if (status) {
+            status.textContent = L("授权码：{code}。已打开 GitHub，完成后回来检查状态。", { code: result.user_code });
+            status.dataset.deviceCode = result.device_code;
+            status.hidden = false;
+          }
+          if (poll) poll.hidden = false;
+          globalThis.open(result.verification_uri, "_blank", "noopener,noreferrer");
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("GitHub 授权启动失败"), true);
+          button.disabled = false;
+        }
+        return;
+      }
+      if (target.closest("[data-feed-github-device-poll]")) {
+        const button = target.closest("[data-feed-github-device-poll]");
+        const status = feedSourcesDialog?.querySelector("[data-feed-github-device-status]");
+        const clientId = feedSourcesDialog?.querySelector("[data-feed-github-client-id]")?.value || "";
+        button.disabled = true;
+        try {
+          const result = await feedApi("/api/feed/connectors/github/device/poll", "POST", { device_code: status?.dataset.deviceCode || "", client_id: clientId });
+          if (result.status === "authorized") {
+            saveUiState();
+            location.reload();
+          } else {
+            if (status) status.textContent = result.message || L("GitHub 仍在等待授权。完成后再次检查。");
+            button.disabled = false;
+          }
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("GitHub 授权检查失败"), true);
+          button.disabled = false;
+        }
+        return;
+      }
+      if (target.closest("[data-feed-gmail-oauth-start]")) {
+        const button = target.closest("[data-feed-gmail-oauth-start]");
+        const clientId = feedSourcesDialog?.querySelector("[data-feed-gmail-client-id]")?.value || "";
+        const clientSecret = feedSourcesDialog?.querySelector("[data-feed-gmail-client-secret]")?.value || "";
+        button.disabled = true;
+        try {
+          const result = await feedApi("/api/feed/connectors/gmail/oauth/start", "POST", {
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: location.origin + route("/api/feed/connectors/gmail/oauth/callback"),
+          });
+          globalThis.open(result.authorizationUrl, "_blank", "noopener,noreferrer");
+          setFeedSourceFeedback(L("已打开 Google 授权页面；授权后会回到当前项目。"));
+        } catch (error) {
+          setFeedSourceFeedback(error.message || L("Gmail 授权启动失败"), true);
+          button.disabled = false;
+        }
+        return;
+      }
+      if (target.closest("[data-relay-import-open]")) {
+        feedSourcesDialog?.close();
+        relayImportDialog?.showModal();
+        return;
+      }
+      if (target.closest("[data-relay-import-confirm]")) {
+        const button = target.closest("[data-relay-import-confirm]");
+        const errorBox = relayImportDialog?.querySelector("[data-relay-import-error]");
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = L("正在迁移…");
+        if (errorBox) errorBox.hidden = true;
+        try {
+          const response = await fetch(route("/api/feed/import"), {
+            method: "POST",
+            headers: goalboardControlHeaders(),
+            body: JSON.stringify({ user_confirmed: true }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || L("Relay 迁移失败"));
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          if (errorBox) {
+            errorBox.textContent = error.message || L("Relay 迁移失败");
+            errorBox.hidden = false;
+          }
+          button.disabled = false;
+          button.textContent = original;
+        }
+        return;
+      }
+      if (target.closest("[data-feed-clear-filters]")) {
+        if (feedSearch) feedSearch.value = "";
+        if (feedSourceFilter) feedSourceFilter.value = "all";
+        if (feedStatusFilter) feedStatusFilter.value = "active";
+        if (feedSort) feedSort.value = "newest";
+        filterFeedItems(false);
+        return;
+      }
+      if (target.closest("[data-retry-feed-detail]")) {
+        if (feedWorkbench?.dataset.loaded !== "true") {
+          void ensureFeedWorkbenchLoaded();
+          return;
+        }
+        const selectedRow = [...(feedList?.querySelectorAll("[data-feed-entry-id]") || [])]
+          .find((row) => row.dataset.feedEntryId === selectedFeedItem);
+        if (selectedRow) void loadFeedItemDetail(selectedRow, selectedFeedItem);
+        return;
+      }
+      const feedEntry = target.closest("[data-feed-entry-id]");
+      if (feedEntry) {
+        selectFeedItem(feedEntry.dataset.feedEntryId, true, true);
+        return;
+      }
+      const feedAction = target.closest("[data-feed-action]");
+      if (feedAction) {
+        const action = feedAction.dataset.feedAction;
+        const itemId = feedAction.dataset.feedItemId;
+        if (!action || !itemId) return;
+        const status = feedAction.closest("[data-feed-detail]")?.querySelector("[data-feed-action-status]");
+        const original = feedAction.innerHTML;
+        feedAction.disabled = true;
+        feedAction.setAttribute("aria-busy", "true");
+        if (status) status.hidden = true;
+        try {
+          const expectedRevision = Number(feedAction.dataset.feedRevision || 0) || undefined;
+          const response = await fetch(route("/api/feed/items/" + encodeURIComponent(itemId) + "/" + action), {
+            method: "POST",
+            headers: goalboardControlHeaders(),
+            body: JSON.stringify(expectedRevision ? { expected_revision: expectedRevision } : {}),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || L("Item 操作失败"));
+          if (action === "promote" || action === "start") {
+            saveUiState();
+            let existing = {};
+            try { existing = JSON.parse(sessionStorage.getItem(goalUiStorageKey) || "null") || {}; } catch {}
+            if (action === "start" && result.runtime_autofill && result.goal_id) {
+              sessionStorage.setItem("goalboard-feed-runtime-autofill:" + result.goal_id, JSON.stringify({ itemId, at: Date.now() }));
+            }
+            sessionStorage.setItem(goalUiStorageKey, JSON.stringify({
+              ...existing,
+              selected: result.goal_id,
+              navigationVersion: desktopNavigationStateVersion,
+              directory: "goals",
+              workSurface: "goal",
+              workspaceMode: action === "start" ? "runtime" : "focus",
+              mobileView: action === "start" ? "tui" : "document",
+            }));
+            location.assign(globalThis.goalboardNavigationUrl(result.goal_path + (action === "start" ? "?feed-start=1" : "")));
+            return;
+          }
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          if (status) {
+            status.textContent = error.message || L("Item 操作失败");
+            status.hidden = false;
+          }
+          feedAction.disabled = false;
+          feedAction.removeAttribute("aria-busy");
+          feedAction.innerHTML = original;
+        }
+        return;
+      }
       const surfaceLink = target.closest("[data-work-surface-link]");
       if (surfaceLink) {
         saveUiState();
@@ -7997,24 +9519,29 @@ const CLIENT_SCRIPT = `
           event.preventDefault();
           setDesktopDirectory("root", true, false, surfaceLink);
           setDesktopWorkSurface(surface, true, true);
+          if (surface === "feed" && selectedFeedItem) selectFeedItem(selectedFeedItem, false, true);
         }
         return;
       }
       const surfaceOpen = target.closest("[data-work-surface-open]");
       if (surfaceOpen) {
         const surface = surfaceOpen.dataset.workSurfaceOpen || "goal";
+        if (surface === "feed") setFeedPreset(surfaceOpen.dataset.feedPreset || "inbox_message", true);
         const available = desktopWorkSurfaces.some((candidate) => candidate.dataset.workSurface === surface);
         if (!available && surface === "goal") {
           saveUiState();
           restoreLastGoal(true);
           return;
         }
-        setDesktopDirectory(surface === "goal" ? "goals" : "root", true, surface === "goal", surfaceOpen);
+        setDesktopDirectory(surface === "goal" ? "goals" : surface === "feed" ? "feed" : "root", true, true, surfaceOpen);
         setDesktopWorkSurface(surface, true, true);
+        if (surface === "feed" && selectedFeedItem) selectFeedItem(selectedFeedItem, false, true);
+        if (matchMedia("(max-width: 760px)").matches) setMobileView("tree");
         return;
       }
       const directoryOpen = target.closest("[data-directory-open]");
       if (directoryOpen && desktopDirectoryPanels.length) {
+        if (directoryOpen.matches("[data-mobile-directory-root]")) setMobileView("tree");
         setDesktopDirectory(directoryOpen.dataset.directoryOpen || "root", true, true, directoryOpen);
         return;
       }
@@ -8084,6 +9611,10 @@ const CLIENT_SCRIPT = `
         saveUiState();
         return;
       }
+      if (target.closest("[data-retry-goal-graph]")) {
+        void loadGoalGraph();
+        return;
+      }
       const navigatorViewButton = target.closest("button[data-navigator-view]");
       if (navigatorViewButton) {
         setNavigatorView(navigatorViewButton.dataset.navigatorView);
@@ -8092,6 +9623,14 @@ const CLIENT_SCRIPT = `
       const workbenchViewButton = target.closest("button[data-workbench-view]");
       if (workbenchViewButton) {
         setWorkspaceMode(workbenchViewButton.dataset.workbenchView);
+        return;
+      }
+      if (target.closest("[data-tui-focus-return]")) {
+        setWorkspaceMode("focus");
+        return;
+      }
+      if (target.closest("[data-directory-toggle]")) {
+        setDirectoryCollapsed(!workspace.classList.contains("is-directory-collapsed"));
         return;
       }
       const graphRelationButton = target.closest("[data-graph-relation]");
@@ -8110,8 +9649,7 @@ const CLIENT_SCRIPT = `
         return;
       }
       if (target.closest("[data-companion-runtime-open]")) {
-        setMobileView("tui");
-        queueSave();
+        setWorkspaceMode("runtime");
         return;
       }
       const graphZoomButton = target.closest("[data-graph-zoom]");
@@ -8182,6 +9720,12 @@ const CLIENT_SCRIPT = `
         setGoalPanel(goalTab.dataset.goalTab, true, true, true);
         return;
       }
+      const retryGoalPanel = target.closest("[data-retry-goal-panel]");
+      if (retryGoalPanel) {
+        const article = retryGoalPanel.closest("[data-goal-view]");
+        void loadGoalPanel(article, retryGoalPanel.dataset.retryGoalPanel);
+        return;
+      }
       const focusSectionTrigger = target.closest("[data-focus-section-trigger]");
       if (focusSectionTrigger) {
         const factor = focusSectionTrigger.dataset.goalFactorTab;
@@ -8196,13 +9740,7 @@ const CLIENT_SCRIPT = `
       }
       const openQuickRecord = target.closest("[data-open-quick-record]");
       if (openQuickRecord) {
-        const article = openQuickRecord.closest("[data-goal-view]");
-        const quickDialog = article?.querySelector("[data-quick-record-dialog]");
-        if (!quickDialog) return;
-        quickDialog._opener = openQuickRecord;
-        resetQuickRecordDialog(quickDialog);
-        quickDialog.showModal();
-        requestAnimationFrame(() => quickDialog.querySelector("[data-quick-record-type]")?.focus());
+        await loadAndOpenQuickRecord(openQuickRecord);
         return;
       }
       const closeQuickRecord = target.closest("[data-close-quick-record]");
@@ -8244,8 +9782,7 @@ const CLIENT_SCRIPT = `
         return;
       }
       if (target.closest("[data-open-goal-tui]")) {
-        setMobileView("tui");
-        saveUiState();
+        setWorkspaceMode("runtime");
         const addTerminal = document.querySelector("[data-tui-add]");
         if (addTerminal) addTerminal.click();
         return;
@@ -9249,7 +10786,26 @@ const CLIENT_SCRIPT = `
     if (!restoredUi) {
       setWorkspaceMode("focus", false);
       setGoalPanel(goalPanelFromHash() || "overview", false);
-      if (desktopWorkSurfaces.length) setDesktopWorkSurface(decisionView ? "inbox" : "goal", false, false);
+      if (feedDirectory) setFeedPreset("inbox_message", false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface(decisionView ? "feed" : "goal", false, false);
+    }
+    const directGoalRequested = /^\\/goals\\/[^\\/]+\\/?$/.test(localPathname());
+    if (directGoalRequested && selected) {
+      goalWorkspaceMode = "focus";
+      setDesktopDirectory("goals", false, false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface("goal", false, false);
+      setWorkspaceMode("focus", false);
+      if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
+      saveUiState();
+    }
+    const feedStartRequested = new URLSearchParams(location.search).get("feed-start") === "1";
+    if (feedStartRequested && selected && tuiPane) {
+      goalWorkspaceMode = "runtime";
+      setDesktopDirectory("goals", false, false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface("goal", false, false);
+      setWorkspaceMode("runtime", false);
+      setMobileView("tui");
+      saveUiState();
     }
     if (selected && tuiPane) {
       tuiPane.setAttribute("data-goal-id", selected);
@@ -9458,7 +11014,7 @@ function renderProjectSettings(view: GoalBoardSettingsView): string {
   const rows = view.projects.map((project) => `<article class="settings-record project-record" data-project-row="${escapeHtml(project.project_id)}">
     <header>
       <div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h2>${escapeHtml(project.display_name)}</h2><p>${project.data_class === "regenerable_demo" ? L("演示数据 · 可随时重建，不属于用户项目") : project.source === "migrated" ? L("用户数据 · 由已有 GoalBoard 数据迁入") : L("用户数据 · 在 GoalBoard 中创建")}</p></div></div>
-      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/rules">${L("工作规则")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/planning">${L("工作规划")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
+      <div class="settings-record-action">${project.data_class === "regenerable_demo" ? `<span class="settings-state settings-state--warning">${L("可重建 demo")}</span>` : `<span class="settings-state settings-state--success">${L("用户数据")}</span>`}<a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/guidance">${L("项目说明")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/rules">${L("工作规则")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/settings/planning">${L("工作规划")}</a><a class="settings-button" href="/projects/${encodeURIComponent(project.project_id)}/">${L("打开 Goal Tree")}</a></div>
     </header>
     <div class="project-record-tools">
       <details><summary>${icon("settings")}<span>${L("改名")}</span>${icon("chevron-down")}</summary><form data-project-rename="${escapeHtml(project.project_id)}"><label>${L("项目名称")}<input name="display_name" value="${escapeHtml(project.display_name)}" required maxlength="160"></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("保存名称")}</button></form></details>
@@ -9557,6 +11113,7 @@ function renderTuiPane(
           <strong data-tui-owner-title>${escapeHtml(selected?.goal.title ?? L("还没有选择 Goal"))}</strong>
           <small data-tui-owner-status title="${escapeHtml(explanation?.meaning ?? "")}">${escapeHtml(explanation?.label ?? "")}</small>
           <span><i aria-hidden="true"></i><b>${L("绑定到 Goal")}</b></span>
+          <button class="tui-focus-return" type="button" data-tui-focus-return>${icon("target")}<span>${L("返回聚焦")}</span></button>
         </div>
         <div class="tui-tabs">
           <span class="tui-mode-label">${L("终端")}</span>
@@ -9610,7 +11167,7 @@ function renderTuiPane(
 }
 
 type SettingsNavigationActive = WebSettingsSection | "planning";
-type ProjectSettingsNavigationActive = "rules" | "planning";
+type ProjectSettingsNavigationActive = "guidance" | "rules" | "planning";
 
 function settingsContextHref(
   path: string,
@@ -9644,15 +11201,17 @@ function renderSettingsNavigation(
   projects: readonly WebProjectNavigation[] = [],
 ): string {
   const globalHref = (path: string) => settingsContextHref(path, project, desktopShell);
+  const planningHref = settingsContextHref("/settings/planning", null, desktopShell);
   const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
   const projectHome = project ? `/projects/${encodeURIComponent(project.project_id)}/` : "/";
-  const projectSettings = project ? `/projects/${encodeURIComponent(project.project_id)}/settings/rules` : "/settings/projects";
-  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${desktopShell ? withDesktopQuery(projectSettings) : projectSettings}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("tune")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${desktopShell ? withDesktopQuery(projectHome) : projectHome}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>`;
+  const projectSettings = project ? `/projects/${encodeURIComponent(project.project_id)}/settings/guidance` : "/settings/projects";
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${desktopShell ? withDesktopQuery(projectSettings) : projectSettings}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("settings")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${desktopShell ? withDesktopQuery(projectHome) : projectHome}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>`;
   const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalHref("/settings/appearance")}" aria-current="page" aria-label="${L("全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation" aria-label="${L("系统设置")}">
     ${desktopProjectContext}<div class="settings-nav-body"><section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("只影响当前设备")}</small></div>
       <a href="${globalHref("/settings/appearance")}"${current("appearance")}>${icon("system")}<span><strong>${L("界面与语言")}</strong><small>${L("语言、主题、终端与界面密度")}</small></span></a>
       <a href="${globalHref("/settings/runtimes")}"${current("runtimes")}>${icon("workflow")}<span><strong>${L("AI 与执行工具")}</strong><small>${L("连接 Runtime 与会话")}</small></span></a>
+      <a href="${planningHref}"${current("planning")}>${icon("tree")}<span><strong>${L("规划方法")}</strong><small>${L("规划方法库")}</small></span></a>
       <a href="${globalHref("/settings/diagnostics")}"${current("diagnostics")}>${icon("activity")}<span><strong>${L("诊断")}</strong><small>${L("安装、服务与环境")}</small></span></a>
     </section></div>${desktopFooter}
   </nav>`;
@@ -9667,12 +11226,13 @@ function renderProjectSettingsNavigation(
   const routePrefix = `/projects/${encodeURIComponent(project.project_id)}`;
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
-  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${href(`${routePrefix}/settings/rules`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("tune")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>`;
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${href(`${routePrefix}/settings/guidance`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("settings")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>`;
   const globalSettingsHref = settingsContextHref("/settings/appearance", project, desktopShell);
   const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalSettingsHref}" aria-label="${L("打开全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
     ${desktopProjectContext}<div class="settings-nav-body">
     <section class="settings-nav-group" aria-labelledby="settings-project-group"><div class="settings-nav-label" id="settings-project-group"><span>${L("项目设置")}</span><small>${escapeHtml(project.display_name)}</small></div>
+      <a href="${href(`${routePrefix}/settings/guidance`)}"${current("guidance")}>${icon("book")}<span><strong>${L("项目说明")}</strong><small>${L("所有 Goal 共享的长期上下文")}</small></span></a>
       <a href="${href(`${routePrefix}/settings/rules`)}"${current("rules")}>${icon("shield")}<span><strong>${L("工作规则")}</strong><small>${L("执行和复核底线")}</small></span></a>
       <a href="${href(`${routePrefix}/settings/planning`)}"${current("planning")}>${icon("workflow")}<span><strong>${L("工作规划")}</strong><small>${L("选择和调整规划方法")}</small></span></a>
     </section></div>${desktopFooter}
@@ -9710,6 +11270,69 @@ export function renderGoalBoardProjectSettings(
   </main>
   <div class="toast" data-settings-toast role="status" aria-live="polite"></div>
   <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_RULES_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
+</body></html>`;
+}
+
+export function renderGoalBoardProjectGuidanceSettings(
+  view: GoalBoardWebView,
+  guidance: ProjectGuidanceView,
+  controlToken = "",
+  desktopShell = false,
+): string {
+  const project = view.project;
+  const projectName = project?.display_name ?? L("当前项目");
+  const routePrefix = view.route_prefix;
+  const projectReturnHref = desktopShell ? withDesktopQuery(routePrefix || "/") : routePrefix || "/";
+  const kindMeta: Record<string, { label: string; description: string }> = {
+    context: { label: L("项目背景"), description: L("项目是什么，以及长期成立的事实") },
+    requirement: { label: L("共同要求"), description: L("所有 Goal 都要满足的产品或业务要求") },
+    constraint: { label: L("硬约束"), description: L("任何推进都不能越过的边界") },
+    convention: { label: L("协作约定"), description: L("命名、表达和协作方式") },
+    workflow: { label: L("工作方式"), description: L("项目稳定采用的推进顺序") },
+    quality_bar: { label: L("质量标准"), description: L("共同认可的完成质量") },
+  };
+  const orderedKinds = ["context", "requirement", "constraint", "convention", "workflow", "quality_bar"];
+  const sections = orderedKinds.map((kind) => {
+    const entries = guidance.entries.filter((entry) => entry.kind === kind);
+    if (entries.length === 0) return "";
+    const meta = kindMeta[kind]!;
+    return `<section class="guidance-section" aria-labelledby="guidance-${kind}"><header class="guidance-section-heading"><h2 id="guidance-${kind}">${meta.label}</h2><p>${meta.description}</p></header><div class="guidance-entry-list">${entries.map((entry) => `<article class="guidance-entry" data-guidance-entry="${escapeHtml(entry.guidance_id)}"><p>${escapeHtml(entry.content)}</p><footer><span class="guidance-entry-meta">${L("第 {revision} 版 · 更新于 {time}", { revision: entry.revision, time: formatDate(entry.updated_at) })}</span><span class="guidance-entry-actions"><button class="guidance-text-action" type="button" data-guidance-edit="${escapeHtml(entry.guidance_id)}">${L("修改")}</button><button class="guidance-text-action guidance-text-action--danger" type="button" data-guidance-action="deactivate" data-guidance-id="${escapeHtml(entry.guidance_id)}">${L("停用")}</button></span></footer></article>`).join("")}</div></section>`;
+  }).join("");
+  const empty = guidance.entries.length === 0
+    ? `<section class="guidance-empty">${icon("book")}<h2>${L("先写下这个项目长期不变的部分")}</h2><p>${L("例如项目要解决什么、哪些边界不能突破、所有 Goal 共同遵守什么质量标准。保存后，后续 Runtime 会先读到这些内容。")}</p><button class="guidance-primary-action" type="button" data-guidance-new>${icon("plus")}${L("新增第一条说明")}</button></section>`
+    : "";
+  const inactiveItems = guidance.inactive_entries.length > 0
+    ? `<ul class="guidance-inactive-list">${guidance.inactive_entries.map((entry) => `<li><p>${escapeHtml(entry.content)}</p><button class="guidance-text-action" type="button" data-guidance-action="restore" data-guidance-id="${escapeHtml(entry.guidance_id)}">${L("恢复这条说明")}</button></li>`).join("")}</ul>`
+    : `<p>${L("当前没有停用的说明。")}</p>`;
+  const changeLabels: Record<string, string> = {
+    created: L("新增"),
+    edited: L("修改"),
+    deactivated: L("停用"),
+    restored: L("恢复"),
+  };
+  const historyRows = guidance.revisions.map((revision) => {
+    const content = revision.content.length > 220 ? `${revision.content.slice(0, 220)}…` : revision.content;
+    const stateLabel = revision.active ? L("生效版本") : L("停用版本");
+    return `<article class="guidance-history-row"><div><strong>${escapeHtml(changeLabels[revision.change_kind] ?? revision.change_kind)}</strong><div class="guidance-history-state${revision.active ? "" : " guidance-history-state--inactive"}">${L("第 {revision} 版", { revision: revision.revision })} · ${stateLabel}</div></div><div><strong>${escapeHtml(kindMeta[revision.kind]?.label ?? revision.kind)}</strong><p>${escapeHtml(content)}</p><details class="guidance-history-entry"><summary>${L("查看完整版本与变更原因")}</summary><dl class="guidance-history-full"><div><dt>${L("完整原文")}</dt><dd>${escapeHtml(revision.content)}</dd></div><div><dt>${L("变更原因")}</dt><dd>${escapeHtml(revision.reason)}</dd></div><div><dt>${L("操作者")}</dt><dd>${escapeHtml(revision.changed_by)}</dd></div><div><dt>${L("确认记录")}</dt><dd>${escapeHtml(revision.confirmation_summary)}</dd></div></dl></details></div><time datetime="${escapeHtml(revision.created_at)}">${formatDate(revision.created_at)}</time></article>`;
+  }).join("");
+  const guidanceData = JSON.stringify(guidance).replaceAll("<", "\\u003c");
+  return `<!doctype html>
+<html lang="${htmlLang()}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("项目说明")} · ${escapeHtml(projectName)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head>
+<body class="settings-page project-guidance-page" data-route-prefix="${escapeHtml(routePrefix)}" data-desktop-shell="true"${desktopShell ? ' data-native-desktop="true"' : ""}><!-- THESIS: The project reads as one maintained document, not a settings grid or suggestion inbox. OWN-WORLD: GoalBoard graphite paper, mineral-blue focus, hairline dividers, and the existing project-settings rail. STORY: read canonical guidance, edit it in place, then verify the immutable history. FIRST VIEWPORT: navigation rail, document title and add action, active guidance leading the page, with Runtime behavior in a right rail only when width preserves readable prose. FORM: established Read/Operate extension, code-led, project-guidance-document-v1. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance. -->
+  ${renderIconSprite()}
+  <header class="topbar"><a class="brand" href="${projectReturnHref}" aria-label="${L("返回 Goal Tree")}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${escapeHtml(projectName)}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目设置 · 项目说明")}</small></div><div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div><a class="top-action" href="${projectReturnHref}" aria-label="${L("关闭项目设置")}">${icon(desktopShell ? "x" : "tree")}<span>${L("Goal Tree")}</span></a></header>
+  <main class="settings-shell">
+    ${project ? renderProjectSettingsNavigation("guidance", project, desktopShell, view.projects) : renderSettingsNavigation("projects", null, desktopShell, view.projects)}
+    <div class="settings-content"><section class="guidance-document" aria-labelledby="guidance-title">
+      <header class="guidance-page-header"><div><h1 id="guidance-title">${L("项目说明")}</h1><p>${L("这是一份所有 Goal 和未来会话共享的长期说明。这里只显示已经生效的内容；你可以直接维护它，并随时查看每次改动。")}</p></div><button class="guidance-primary-action" type="button" data-guidance-new>${icon("plus")}${L("新增说明")}</button></header>
+      <p class="project-rules-receipt" data-guidance-receipt role="status" aria-live="polite" hidden></p>
+      <section class="guidance-editor" data-guidance-editor hidden aria-labelledby="guidance-editor-title"><header><div><h2 id="guidance-editor-title" data-guidance-editor-title></h2><p data-guidance-editor-description></p></div><button class="guidance-text-action" type="button" data-guidance-editor-close>${L("取消")}</button></header><form data-guidance-form><input type="hidden" name="action"><input type="hidden" name="guidance_id"><div class="guidance-editor-fields" data-guidance-editor-fields><label>${L("分类")}<select name="kind"><option value="context">${L("项目背景")}</option><option value="requirement">${L("共同要求")}</option><option value="constraint">${L("硬约束")}</option><option value="convention">${L("协作约定")}</option><option value="workflow">${L("工作方式")}</option><option value="quality_bar">${L("质量标准")}</option></select></label><label>${L("说明原文")}<textarea name="content" maxlength="4000" rows="5" placeholder="${L("写成未来 Runtime 可以直接理解和遵守的完整说明")}"></textarea></label></div><p class="guidance-editor-preview" data-guidance-editor-preview hidden></p><label>${L("为什么要做这次变更")}<textarea name="reason" rows="3" required placeholder="${L("这条原因会进入版本记录，方便以后理解当时为什么修改")}"></textarea></label><p class="guidance-editor-error" data-guidance-editor-error role="alert" hidden></p><footer><button class="guidance-secondary-action" type="button" data-guidance-editor-close>${L("取消")}</button><button class="guidance-primary-action" type="submit">${L("保存说明")}</button></footer></form></section>
+      <div class="guidance-layout"><div class="guidance-content">${empty}${sections}<details class="guidance-history"><summary>${L("版本记录")}<span>${L("共 {count} 次变更", { count: guidance.revisions.length })}</span></summary><div class="guidance-history-list">${historyRows || `<p class="guidance-empty">${L("还没有版本记录。")}</p>`}</div></details></div><aside class="guidance-aside" aria-label="${L("项目说明状态")}"><section><h2>${L("Runtime 如何使用")}</h2><p>${L("只发送当前生效版本，并放在当前 Goal 和外部内容之前。修改或停用会在下一次 Prompt 中生效。")}</p><dl><div><dt>${L("生效说明")}</dt><dd>${guidance.entries.length}</dd></div><div><dt>${L("已停用")}</dt><dd>${guidance.inactive_entries.length}</dd></div><div><dt>${L("历史版本")}</dt><dd>${guidance.revisions.length}</dd></div></dl></section><section><h2>${L("Runtime 发现新内容时")}</h2><p>${L("它会在当前对话展示精确原文并征求同意；你确认后直接写入这里，不会绑定 Goal，也不会占用 Goal 的决策队列。")}</p></section><section><h2>${L("已停用的说明")}</h2>${inactiveItems}</section></aside></div>
+    </section></div>
+  </main>
+  <script id="project-guidance-data" type="application/json">${guidanceData}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PROJECT_GUIDANCE_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script>
 </body></html>`;
 }
 
@@ -9776,7 +11399,7 @@ function renderPlanningCompositionRows(methods:readonly PlanningMethodPack[],bas
 }
 function renderPlanningAdoptionCards(methods:readonly PlanningMethodPack[],project:WebProjectNavigation,desktop:boolean):string{
   const endpoint=`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods/apply`;
-  return methods.map((method)=>{const detailHref=planningSettingsHref(`/settings/planning/${encodeURIComponent(method.method_id)}`,null,desktop);return `<article class="planning-adoption-card" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><header><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></header><div><h3><a href="${detailHref}">${escapeHtml(method.name)}</a></h3></div><p>${escapeHtml(method.summary)}</p><footer><span>${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span><button type="button" data-adopt-planning-method="${escapeHtml(method.method_id)}" data-adopt-endpoint="${endpoint}">${L("加入组合")}</button></footer></article>`}).join("")
+  return methods.map((method)=>{const detailHref=planningSettingsHref(`/settings/planning/${encodeURIComponent(method.method_id)}`,project,desktop);return `<article class="planning-adoption-card" data-planning-method data-kind="${escapeHtml(method.kind)}" data-scope="${escapeHtml(method.scope)}"><header><span class="planning-card-kind">${escapeHtml(planningMethodKindLabel(method.kind))}</span><span class="planning-card-scope planning-card-scope--${escapeHtml(method.scope)}">${escapeHtml(planningMethodScopeLabel(method.scope))}</span></header><div><h3><a href="${detailHref}">${escapeHtml(method.name)}</a></h3></div><p>${escapeHtml(method.summary)}</p><footer><span>${L("{steps} 个阶段 · {checks} 个问题",{steps:method.steps.length,checks:method.required_coverage.length})}</span><button type="button" data-adopt-planning-method="${escapeHtml(method.method_id)}" data-adopt-endpoint="${endpoint}">${L("加入组合")}</button></footer></article>`}).join("")
 }
 function planningTopbar(title:string,subtitle:string,returnHref:string,_pagePath:string,desktop:boolean):string{return `<header class="topbar"><a class="brand" href="${returnHref}">${icon("brand")}<strong>GoalBoard</strong></a><div class="project-context"${desktop?" data-tauri-drag-region":""}><strong${desktop?" data-tauri-drag-region":""}>${escapeHtml(title)}</strong><small${desktop?" data-tauri-drag-region":""}>${escapeHtml(subtitle)}</small></div><div class="top-spacer"${desktop?" data-tauri-drag-region":""}></div><a class="top-action" href="${returnHref}" aria-label="${L("关闭设置")}">${icon(desktop?"x":returnHref.includes("/projects/")?"tree":"folder")}<span>${returnHref.includes("/projects/")?L("Goal Tree"):L("项目列表")}</span></a></header>`}
 
@@ -9806,9 +11429,9 @@ const PLANNING_ADOPTION_CLIENT_SCRIPT = `
 })();
 `;
 
-export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPack[],contextProject:WebProjectNavigation|null=null,controlToken="",desktopShell=false):string{
-  const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);const navigation=contextProject?renderProjectSettingsNavigation("planning",contextProject,desktopShell):"";
-  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(contextProject?contextProject.display_name:L("规划方法"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell${contextProject?"":" settings-shell--standalone"}">${navigation}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+export function renderGoalBoardPlanningLibrary(methods:readonly PlanningMethodPack[],contextProject:WebProjectNavigation|null=null,controlToken="",desktopShell=false,projects:readonly WebProjectNavigation[]=[]):string{
+  const pagePath=planningSettingsHref("/settings/planning",contextProject,desktopShell);const returnHref=contextProject?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(contextProject.project_id)}`):`/projects/${encodeURIComponent(contextProject.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const cards=renderPlanningMethodCards(methods,"/settings/planning",contextProject,desktopShell);const newHref=planningSettingsHref("/settings/planning/new",contextProject,desktopShell);const navigation=contextProject?renderProjectSettingsNavigation("planning",contextProject,desktopShell,projects):renderSettingsNavigation("planning",null,desktopShell,projects);
+  return `<!doctype html><!-- THESIS: Planning methods are a browsable library, never a settings spreadsheet. OWN-WORLD: Quiet graphite surfaces, mineral-blue focus, information-rich method cards. STORY: scan the library, open one method, understand it, then decide whether to create a personal version. FIRST VIEWPORT: stable settings rail, concise library introduction, three-column method grid. FORM: established Operate settings extension. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md. --><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${L("规划方法")} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(contextProject?contextProject.display_name:L("规划方法"),L("规划方法库"),returnHref,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content"><section class="planning-catalog"><header class="planning-page-header"><div><h1>${L("规划方法")}</h1><p>${L("这里维护 Runtime 拆分 Goal、判断依赖和检查完成证据时使用的方法。方法本身不属于某个项目；项目如何使用它，请到项目的“工作规划”中设置。")}</p></div><a class="planning-primary-action" href="${newHref}">${icon("plus")}${L("新建我的方法")}</a></header><div class="planning-library-note">${icon("book")}<div><strong>${L("先选方法，再决定是否调整")}</strong><p>${L("点击卡片查看完整规划路径。系统模板不会被直接修改；需要调整时会创建你的个人版本。")}</p></div></div><div class="planning-library-tools"><nav class="planning-filters" aria-label="${L("筛选规划方法")}"><button type="button" data-planning-filter="all" aria-pressed="true">${L("全部")}</button><button type="button" data-planning-filter="work_type" aria-pressed="false">${L("工作类型")}</button><button type="button" data-planning-filter="domain" aria-pressed="false">${L("专业领域")}</button><button type="button" data-planning-filter="industry" aria-pressed="false">${L("行业方法")}</button><button type="button" data-planning-filter="overlay" aria-pressed="false">${L("场景叠加层")}</button><button type="button" data-planning-filter="mine" aria-pressed="false">${L("我的方法")}</button></nav></div><div class="planning-card-grid">${cards}<p class="planning-filter-empty" data-planning-filter-empty hidden>${L("这个分类里还没有方法。")}</p></div></section></div></main><script>${clientI18nScript()}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 function renderPlanningMethodDetailSections(method:PlanningMethodPack):string{return `<section class="planning-instructions"><header><h2>${L("Runtime 方法说明")}</h2><p>${L("这是 Runtime 在拆分或调整 Goal Tree 前完整阅读的方法正文。")}</p></header><pre>${escapeHtml(method.instructions)}</pre></section><details class="planning-structured-summary"><summary>${L("查看用于检索与检查的结构化摘要")}</summary><div class="planning-structured-summary-body"><section class="planning-detail-section"><header><h2>${L("规划路径")}</h2><p>${L("Runtime 会按这个思考顺序组织 Goal，但不会把它机械地当成串行任务清单。")}</p></header><ol class="planning-path">${method.steps.map((step,index)=>`<li><span>${index+1}</span><div>${escapeHtml(step)}</div></li>`).join("")}</ol></section><section class="planning-detail-section"><header><h2>${L("拆分时必须回答")}</h2><p>${L("这些问题必须在 Goal Tree 中得到明确答案、负责人或后续处理位置。")}</p></header><div class="planning-question-list">${method.required_coverage.map((rule)=>`<article class="planning-question"><strong>${escapeHtml(rule.label)}</strong><p>${escapeHtml(rule.question)}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("依赖判断")}</h2><p>${L("只有下游真的需要消费上游结果时才建立依赖；以下规则帮助 Runtime 判断先后顺序。")}</p></header><div class="planning-dependency-list">${method.dependency_rules.map((rule)=>`<article class="planning-dependency"><strong>${escapeHtml(friendlyPlanningDependencyStatement(rule.statement))}</strong><p>${escapeHtml(friendlyPlanningDependencyHint(rule.direction_hint))}</p></article>`).join("")}</div></section><section class="planning-detail-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("Runtime 会用证据收口工作，并避开这些常见误拆。")}</p></header><div class="planning-finish-grid"><section><h3>${L("完成前要看到")}</h3><ul>${method.evidence_requirements.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外证据要求")}</li>`}</ul></section><section><h3>${L("收口前检查")}</h3><ul>${method.completion_checks.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外检查项")}</li>`}</ul></section><section><h3>${L("避免这样拆")}</h3><ul>${method.failure_modes.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")||`<li>${L("没有额外提醒")}</li>`}</ul></section></div></section></div></details>`}
 function renderPlanningSimpleRows(name:string,values:readonly string[],placeholder:string):string{const rows=values.length?values:[""];return `<div class="planning-row-list" data-planning-row-list="${name}">${rows.map((value)=>`<div class="planning-edit-row" data-planning-row><input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}"><button class="planning-remove-row" type="button" data-remove-planning-row aria-label="${L("删除这一项")}">${icon("trash")}</button></div>`).join("")}</div><button class="planning-add-row" type="button" data-add-planning-row="${name}">${icon("plus")}${L("添加一项")}</button>`}
@@ -9824,9 +11447,9 @@ function renderPlanningEditForm(method:PlanningMethodPack|null,saveScope:"person
   <section class="planning-edit-section"><header><h2>${L("完成与纠偏")}</h2><p>${L("分别写清完成证据、收口检查和 Runtime 应避免的误拆。")}</p></header><div class="planning-edit-grid"><div><label>${L("完成前要看到的证据")}</label>${renderPlanningSimpleRows("evidence_requirements",method?.evidence_requirements??[],L("例如：端到端主路径的验证记录"))}</div><div><label>${L("收口前检查")}</label>${renderPlanningSimpleRows("completion_checks",method?.completion_checks??[],L("例如：依赖方向可以由产出消费关系解释"))}</div></div><div><label>${L("提醒 Runtime 避免什么")}</label>${renderPlanningSimpleRows("failure_modes",method?.failure_modes??[],L("例如：按页面或文件夹机械拆 Goal"))}</div><label class="planning-enabled"><input name="enabled" type="checkbox"${method?.enabled===false?"":" checked"}><span>${L("保存后启用这套方法")}</span></label></section>
   <details class="planning-advanced"><summary><span>${L("高级设置")}</span>${icon("chevron-down")}</summary><div class="planning-advanced-body"><div class="planning-edit-grid"><label>${L("方法类型")}<select name="kind"><option value="custom"${method?.kind==="custom"||!method?" selected":""}>${L("自定义")}</option><option value="work_type"${method?.kind==="work_type"?" selected":""}>${L("工作类型")}</option><option value="domain"${method?.kind==="domain"?" selected":""}>${L("专业领域")}</option><option value="industry"${method?.kind==="industry"?" selected":""}>${L("行业方法")}</option><option value="overlay"${method?.kind==="overlay"?" selected":""}>${L("场景叠加层")}</option><option value="meta"${method?.kind==="meta"?" selected":""}>${L("元方法")}</option></select><small>${L("只用于方法库分类。")}</small></label><label>${L("参考成熟度")}<input name="confidence" type="number" min="0" max="1" step="0.05" value="${method?.confidence??0.8}" required><small>${L("0 到 1；不确定时保持 0.8。")}</small></label></div><label>${L("领域标签")}<input name="domain_tags" value="${escapeHtml(method?.domain_tags.join(", ")??"")}" placeholder="${L("用逗号分隔")}"></label><label>${L("可追溯来源")}<textarea name="source_refs" placeholder="${L("每行一个来源")}">${escapeHtml(method?.source_refs.join("\n")??"")}</textarea></label></div></details><p class="planning-form-error" data-planning-method-error role="alert" hidden></p><footer class="planning-edit-footer"><a class="planning-secondary-action" href="${returnHref}">${L("取消")}</a><button type="submit">${saveScope==="project"?L("保存项目方法"):L("保存到我的方法库")}</button></footer></form>`}
 
-export function renderGoalBoardPlanningMethodPage(method:PlanningMethodPack|null,mode:"detail"|"edit"|"new",saveScope:"personal"|"project",project:WebProjectNavigation|null,controlToken="",desktopShell=false):string{
-  const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell):"";
-  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(project?.display_name??L("规划方法"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell${project?"":" settings-shell--standalone"}">${navigation}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
+export function renderGoalBoardPlanningMethodPage(method:PlanningMethodPack|null,mode:"detail"|"edit"|"new",saveScope:"personal"|"project",project:WebProjectNavigation|null,controlToken="",desktopShell=false,projects:readonly WebProjectNavigation[]=[]):string{
+  const projectScope=saveScope==="project";const basePath=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/settings/planning`:"/settings/planning";const libraryHref=projectScope?(desktopShell?withDesktopQuery(basePath):basePath):planningSettingsHref(basePath,project,desktopShell);const detailPath=method?`${basePath}/${encodeURIComponent(method.method_id)}`:basePath;const detailHref=projectScope?(desktopShell?withDesktopQuery(detailPath):detailPath):planningSettingsHref(detailPath,project,desktopShell);const editPath=method?`${detailPath}/edit`:`${basePath}/new`;const editHref=projectScope?(desktopShell?withDesktopQuery(editPath):editPath):planningSettingsHref(editPath,project,desktopShell);const apiEndpoint=projectScope&&project?`/projects/${encodeURIComponent(project.project_id)}/api/settings/planning-methods`:"/api/settings/planning-methods";const returnHref=method?detailHref:libraryHref;const title=mode==="new"?(projectScope?L("新建项目方法"):L("新建我的方法")):mode==="edit"?(method?.scope==="built_in"?L("创建「{name}」的个人版本",{name:method.name}):L("编辑「{name}」",{name:method?.name??""})):method?.name??L("规划方法");const pagePath=mode==="detail"?detailHref:editHref;const shellReturn=project?(desktopShell?withDesktopQuery(`/projects/${encodeURIComponent(project.project_id)}`):`/projects/${encodeURIComponent(project.project_id)}`):(desktopShell?withDesktopQuery("/"):"/");const actionLabel=method?.scope==="built_in"?L("创建我的版本"):projectScope?L("编辑项目方法"):L("编辑方法");const navigation=project?renderProjectSettingsNavigation("planning",project,desktopShell,projects):renderSettingsNavigation("planning",null,desktopShell,projects);
+  return `<!doctype html><html lang="${htmlLang()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${controlTokenMeta(controlToken)}<title>${escapeHtml(title)} · GoalBoard</title><script>${THEME_BOOTSTRAP_SCRIPT}</script><link rel="stylesheet" href="/assets/goalboard-settings.css"></head><body class="settings-page planning-page" data-desktop-shell="true"${desktopShell?' data-native-desktop="true"':""}>${renderIconSprite()}${planningTopbar(project?.display_name??L("规划方法"),projectScope?L("工作规划"):L("规划方法库"),shellReturn,pagePath,desktopShell)}<main class="settings-shell">${navigation}<div class="settings-content">${mode==="detail"&&method?`<article class="planning-detail"><a class="planning-back" href="${libraryHref}">${icon("arrow")}${projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-detail-header"><div class="planning-detail-header-main"><div><div class="planning-detail-meta"><span>${escapeHtml(planningMethodKindLabel(method.kind))}</span><span>${escapeHtml(planningMethodScopeLabel(method.scope))}</span><span>${L("版本 {version}",{version:method.version})}</span></div><h1>${escapeHtml(method.name)}</h1><p>${escapeHtml(method.summary)}</p></div><a class="planning-primary-action" href="${editHref}">${icon(method.scope==="built_in"?"copy":"settings")}${actionLabel}</a></div>${method.applies_to.length?`<div class="planning-detail-tags">${method.applies_to.map((item)=>`<span>${escapeHtml(item)}</span>`).join("")}</div>`:""}</header>${renderPlanningMethodDetailSections(method)}</article>`:`<section class="planning-edit"><a class="planning-back" href="${returnHref}">${icon("arrow")}${method?L("返回方法详情"):projectScope?L("返回工作规划"):L("返回方法库")}</a><header class="planning-page-header"><div><h1>${escapeHtml(title)}</h1><p>${method?.scope==="built_in"?L("系统模板不会被修改；保存后会生成你自己的版本。"):L("按用户能理解的方式维护规划路径、必答问题和依赖判断。")}</p></div></header>${renderPlanningEditForm(method,saveScope,project,apiEndpoint,returnHref)}</section>`}</div></main><script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}${PLANNING_SETTINGS_CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}</script></body></html>`}
 
 export function renderGoalBoardPlanningSettings(view:GoalBoardWebView,methods:readonly PlanningMethodPack[],controlToken="",desktopShell=false):string{
   const project=view.project;
@@ -9900,7 +11523,7 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
   const resolved = prefixed
     .replaceAll('href="__PROJECT_INDEX__"', 'href="/"')
     .replaceAll('href="__WORKBENCH_CSS__"', 'href="/assets/goalboard-workbench.css"')
-    .replaceAll('href="__PROJECT_SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/rules` : "/settings/projects"}"`)
+    .replaceAll('href="__PROJECT_SETTINGS__"', `href="${routePrefix ? `${routePrefix}/settings/guidance` : "/settings/projects"}"`)
     .replaceAll('href="__SYSTEM_SETTINGS__"', `href="/settings/appearance${routePrefix ? `?project=${routePrefix.slice("/projects/".length)}` : ""}"`);
   return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
 }
@@ -9917,12 +11540,65 @@ export function renderGoalBoardProjectIndexStylesheet(): string {
 
 /** Shared settings presentation, reused across project and global settings routes. */
 export function renderGoalBoardSettingsStylesheet(): string {
-  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}`;
+  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${PROJECT_INDEX_STYLES}${SETTINGS_STYLES}${PROJECT_GUIDANCE_SETTINGS_STYLES}${PROJECT_RULES_SETTINGS_STYLES}${PLANNING_SETTINGS_STYLES}${VISUAL_FOUNDATION_STYLES}`;
 }
 
 /** Shared workbench behavior. Locale strings and project facts remain page-local. */
 export function renderGoalBoardWorkbenchClientScript(): string {
   return `${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}`;
+}
+
+export function renderGoalBoardRefreshFragment(
+  view: GoalBoardWebView,
+  requestedGoalId?: string,
+  archiveView = false,
+  trashView = false,
+): string {
+  const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
+  const collectionView = archiveView || trashView;
+  const selected = visibleGoals.find((item) => item.goal.goal_id === requestedGoalId) ??
+    (collectionView ? undefined : visibleGoals.find((item) => item.goal.goal_id === view.active_goal_id)) ??
+    visibleGoals[0];
+  const selectedId = selected?.goal.goal_id ?? "";
+  const collectionSuffix = trashView ? L("回收站") : archiveView ? L("归档") : "";
+  const searchPlaceholder = trashView
+    ? L("在回收站内搜索")
+    : archiveView
+      ? L("在已归档 Goal 中搜索")
+      : L("在当前 Goal Tree 内搜索");
+  const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
+  const phaseSummary = [
+    { label: L("澄清中"), count: view.counts.clarifying },
+    { label: L("执行中"), count: view.counts.executing },
+    { label: L("复核中"), count: view.counts.reviewing },
+    { label: L("重新验证中"), count: view.counts.revalidating },
+  ].filter((item) => item.count > 0).map((item) => `${item.label} ${item.count}`).join(" · ");
+  const blockedCount = view.counts.clarification_blocked + view.counts.execution_blocked +
+    view.counts.completion_blocked + view.counts.review_blocked + view.counts.revalidation_blocked +
+    view.counts.invalidated;
+  const footerStatus = [phaseSummary, blockedCount > 0 ? L("受阻 {count}", { count: blockedCount }) : ""]
+    .filter(Boolean).join(" · ") || L("当前没有进行中的 Goal");
+  const collectionNote = trashView
+    ? L("可恢复；历史与关联处理记录会保留")
+    : archiveView
+      ? L("可随时恢复")
+      : footerStatus;
+  const document = selected
+    ? trashView
+      ? renderTrashGoalDocument(selected, true)
+      : renderGoalDocument(selected, view, true)
+    : `<div class="archive-empty">${icon("archive")}<h1>${trashView ? L("回收站是空的") : L("还没有归档 Goal")}</h1></div>`;
+  const tree = `${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div>`;
+  const bodyView = trashView ? "trash" : archiveView ? "archive" : "current";
+  const html = `<!doctype html><html><body data-board-view="${bodyView}">
+    <div data-refresh-tree-chrome hidden>${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}</div>
+    <div data-tree-scroll>${tree}</div>
+    <footer data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
+    <section data-document-pane><section data-work-surface="goal">${document}</section></section>
+    ${renderCreateDialog(view)}
+    <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
+  </body></html>`;
+  return prefixLocalLinks(html, view.route_prefix);
 }
 
 export function renderGoalBoardWeb(
@@ -9985,7 +11661,10 @@ export function renderGoalBoardWeb(
       : L("在当前 Goal Tree 内搜索");
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
   const pendingCount = pendingDecisionCount(view);
-  const initialDesktopDirectory: string = "root";
+  const inboxFeedCount = view.feed.items.filter((item) => item.item_type === "inbox_message" && item.disposition !== "archived").length + pendingCount;
+  const feedCount = view.feed.items.filter((item) => item.item_type === "feed" && item.disposition !== "archived").length;
+  const initialFeedPreset: FeedItemType = "inbox_message";
+  const initialDesktopDirectory: string = decisionView ? "feed" : requestedGoalId ? "goals" : "root";
   const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
   const desktopAccountFooter = `<footer class="personal-sidebar-footer">
     <a class="personal-account" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开全局设置")}">
@@ -9996,9 +11675,10 @@ export function renderGoalBoardWeb(
   </footer>`;
   const desktopRootDirectory = `<section class="desktop-directory-panel desktop-directory-root" data-directory-panel="root"${initialDesktopDirectory === "root" ? "" : " hidden"}>
     <nav class="desktop-module-list" aria-label="${L("工作台目录")}">
-      <a class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" data-decisions-link href="/decisions" data-work-surface-link="inbox"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${pendingCount}</em></a>
+      <button class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${inboxFeedCount}</em></button>
       <button class="desktop-module-item${!decisionView ? " is-current" : ""}" type="button" data-directory-open="goals" data-work-surface-open="goal"${!decisionView ? ' aria-current="page"' : ""}>${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
-      <button class="desktop-module-item" type="button" data-work-surface-open="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("消息与来源 Session")}</small></span><em>${L("规划中")}</em></button>
+      <button class="desktop-module-item" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("来源更新与发现")}</small></span><em>${feedCount}</em></button>
+      <button class="desktop-module-item" type="button" data-feed-sources-open>${icon("settings")}<span><strong>${L("来源与连接")}</strong><small>${L("管理 Connector 与已配置来源")}</small></span><em>${view.feed.sources.length}</em></button>
       <button class="desktop-module-item" type="button" data-work-surface-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
       <button class="desktop-module-item" type="button" data-work-surface-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
     </nav>
@@ -10009,7 +11689,7 @@ export function renderGoalBoardWeb(
   </section>`;
   const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
     <div class="navigator-project-primary">
-      ${renderProjectSwitcher(view.project ?? null, projectOptions, desktopShell, "desktop-project-switcher", "__PROJECT_INDEX__")}${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}</a>` : ""}<div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
+      ${renderProjectSwitcher(view.project ?? null, projectOptions, desktopShell, "desktop-project-switcher", "__PROJECT_INDEX__")}${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("settings")}</a>` : ""}<button class="navigator-directory-toggle" type="button" data-directory-toggle aria-expanded="true" aria-label="${L("收起目录")}" title="${L("收起目录")}">${icon("panel")}</button><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
     </div>
   </section>`;
   const showTui = !decisionView && !archiveView && !trashView;
@@ -10025,31 +11705,28 @@ export function renderGoalBoardWeb(
       ${selected ? `<div class="desktop-work-tab is-selected" data-work-tab-shell="${escapeHtml(selected.goal.goal_id)}"><button type="button" role="tab" data-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-selected="true" aria-controls="goal-document-pane"><i aria-hidden="true"></i><span>${escapeHtml(selected.goal.title)}</span></button><button type="button" data-close-work-tab="${escapeHtml(selected.goal.goal_id)}" aria-label="${L("关闭 {title}", { title: selected.goal.title })}">${icon("x")}</button></div>` : `<div class="desktop-work-tab is-selected is-utility"><span role="tab" aria-selected="true">${escapeHtml(desktopUtilityTitle)}</span></div>`}
     </div>
     <div class="desktop-titlebar-drag"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
-    <div class="desktop-workbench-actions">
-      <button type="button" data-directory-open="root" aria-label="${L("打开工作台目录")}" title="${L("打开工作台目录")}">${icon("panel")}</button>
-      ${showTui ? `<nav class="workbench-switch" role="tablist" aria-label="${L("Goal 工作区视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-document-pane" data-workbench-view="focus">${icon("target")}<span>${L("聚焦")}</span></button><button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-workbench-view="runtime">${icon("terminal")}<span>Runtime</span></button></nav>` : ""}
-    </div>
   </div>`;
-  const renderedDocumentContent = decisionView
-    ? renderDecisionCenter(view, true)
-    : selected
+  const mobileWebProjectBar = !desktopShell
+    ? `<header class="mobile-project-bar" aria-label="${L("当前项目")}">${renderProjectSwitcher(view.project ?? null, projectOptions, false, "mobile-project-switcher", "__PROJECT_INDEX__")}${view.project ? `<a class="mobile-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("tune")}</a>` : ""}</header>`
+    : "";
+  const renderedDocumentContent = selected
       ? trashView
         ? renderTrashGoalDocument(selected, true)
         : renderGoalDocument(selected, view, true)
       : trashView
         ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`
         : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`;
-  const desktopDocumentContent = `<section class="desktop-work-surface" data-work-surface="${decisionView ? "inbox" : "goal"}" data-work-surface-label="${escapeHtml(desktopUtilityTitle)}">${renderedDocumentContent}</section>
-      ${desktopUtilitySurface("feed", "Feed", L("消息与来源 Session"), L("等消息来源、Session 和归档规则确认后，再在这里接入真实 Feed；现在不展示假消息。"), "activity")}
+  const desktopDocumentContent = `<section class="desktop-work-surface" data-work-surface="goal" data-work-surface-label="${escapeHtml(collectionTitle)}"${decisionView ? " hidden" : ""}>${renderedDocumentContent}</section>
+      ${renderFeedWorkbench(view, initialFeedPreset, decisionView)}
       ${desktopUtilitySurface("promotion", "Promotion", L("把内容升格为 Goal"), L("等候选内容、团队决策和 Goal 创建边界确认后，再在这里接入升格流程；现在不伪造待处理项。"), "arrow")}
       ${desktopUtilitySurface("visual", L("可视化工作区"), L("Goal 关系与规划画布"), L("等画布实体、关系编辑和保存契约确认后，再在这里接入真实可视化工作区。"), "workflow")}`;
   const html = `<!--
 THESIS: 只有一个目录入口，项目中的多条 Goal 在右侧复用；拒绝重复侧栏、轻首页大留白和后台管理式线框。
 OWN-WORLD: 石墨目录、深浅同源的柔和工作面、克制钴蓝焦点、系统字体、Lucide 图标、阴影与色面区分层级，尽量减少结构线。
-STORY: 先选择项目和工作类型，再在 Goals 中展开真实 Goal Tree；打开的 Goal 作为项目标签留在右侧，详情首屏直接回答结果、原因、运转和下一步。
-FIRST VIEWPORT: 约 310px 单目录与剩余标签工作面；项目切换位于 macOS 标题栏红黄绿按钮右侧，账户和全局设置贴左下，Inbox / Goal 标签在右上，Goal 详情以柔和分块连续展开。
+STORY: 先选择项目和工作类型；Goals 展开真实 Goal Tree，Inbox / Feed 展开同一套 Item 目录，右侧阅读详情、处理来源或升格为 Goal。
+FIRST VIEWPORT: 约 310px 单目录与剩余标签工作面；项目切换位于 macOS 标题栏红黄绿按钮右侧，账户和全局设置贴左下，Goal 详情连续展开，Feed 详情保留清晰阅读列和就近动作。
 FORM: Operate 模式的 single-directory project-tab workbench，方向由 2026-08-29 用户确认的交互原型锁定（seed=goalboard-desktop-single-directory-project-tabs-2026-08-29）。
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 -->
 <!doctype html>
 <html lang="${htmlLang()}">
@@ -10061,10 +11738,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
   <link rel="stylesheet" href="__WORKBENCH_CSS__">
 </head>
-<body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}" data-desktop-shell="true" data-desktop-surface="${decisionView ? "inbox" : "goal"}"${desktopShell ? ' data-native-desktop="true"' : ""}>
+  <body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}" data-desktop-shell="true" data-desktop-surface="${decisionView ? "feed" : "goal"}"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
   <div class="app">
-    <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
+    ${mobileWebProjectBar}
+    <nav class="mobile-switch" role="tablist" aria-label="${L("移动端视图")}"><button class="${initialDesktopDirectory === "root" ? "is-active" : ""}" type="button" role="tab" aria-selected="${initialDesktopDirectory === "root"}" aria-controls="goal-tree-pane" data-mobile-directory-root data-directory-open="root">${icon("panel")}<span>${L("目录")}</span></button><button class="${initialDesktopDirectory === "root" ? "" : "is-active"}" type="button" role="tab" aria-selected="${initialDesktopDirectory !== "root"}" aria-controls="goal-tree-pane" data-mobile-target="tree">${compactNavigation.tree}</button><button type="button" role="tab" aria-selected="false" aria-controls="goal-document-pane" data-mobile-target="document">${compactNavigation.focus}</button>${showTui ? `<button type="button" role="tab" aria-selected="false" aria-controls="goal-tui-pane" data-mobile-target="tui">${compactNavigation.runtime}</button>` : ""}</nav>
     <main class="workspace${showTui ? " is-desktop-tui" : ""}" data-workspace data-mobile-view="tree" data-workspace-mode="focus">
       <aside class="tree-pane" id="goal-tree-pane" data-desktop-directory="${initialDesktopDirectory}">
         ${projectNavigatorLayer}
@@ -10075,6 +11753,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
           <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
           <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
         </section>
+        ${renderFeedDirectory(view, initialFeedPreset)}
         ${desktopAccountFooter}
       </aside>
       <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
@@ -10084,7 +11763,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <section class="document-pane" id="goal-document-pane" data-document-pane role="tabpanel" tabindex="0"${selected ? "" : ` aria-label="${escapeHtml(desktopUtilityTitle)}"`}>
         ${desktopDocumentContent}
       </section>
-      ${!archiveView && !trashView ? renderGoalGraph(view, selectedId, visibleGoals) : ""}
+      ${renderFeedOverlays(view)}
+      ${!archiveView && !trashView ? `<section class="goal-graph" id="goal-graph-pane" data-goal-graph data-loaded="false" hidden aria-label="${L("Goal Graph 关系视图")}"><p class="empty-row goal-graph-lazy-status" data-goal-graph-status role="status">${L("打开关系图时载入")}</p><button type="button" data-retry-goal-graph hidden>${L("重试")}</button></section>` : ""}
       ${showTui ? renderTuiPane(selected, view, cliAvailability) : ""}
     </main>
   </div>

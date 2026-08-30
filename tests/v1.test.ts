@@ -72,6 +72,69 @@ function createLeaf(
   );
 }
 
+function completeLeafGoal(
+  store: SqliteGoalBoardStore,
+  coordinator: GoalBoardCoordinator,
+  goalId: string,
+  actorId = `runtime-${goalId}`,
+) {
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: goalId,
+    actor_id: actorId,
+    role: "executor",
+    idempotency_key: `${goalId}-execute`,
+  });
+  assert.equal(execution.allowed, true);
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: actorId,
+    state: "completed",
+    output_refs: [`test://${goalId}`],
+    idempotency_key: `${goalId}-run-complete`,
+  });
+  const evidence = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: goalId,
+    actor_id: actorId,
+    run_id: execution.run!.run_id,
+    criterion_ids: [`${goalId}-criterion`],
+    kind: "test",
+    locator: `test://${goalId}`,
+    result: "passed",
+    idempotency_key: `${goalId}-evidence`,
+  }).evidence;
+  const selfReview = store
+    .snapshot("board-1")
+    .review_obligations.find((item) => item.goal_id === goalId && item.role === "self_verifier");
+  assert.ok(selfReview);
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: goalId,
+    obligation_id: selfReview!.obligation_id,
+    actor_id: actorId,
+    verdict: "pass",
+    evidence_refs: [evidence.evidence_id],
+    reasoning: "完成结果与验收 Evidence 一致",
+    idempotency_key: `${goalId}-self-review`,
+  });
+  assert.equal(coordinator.evaluateLeafCompletion({
+    board_id: "board-1",
+    goal_id: goalId,
+    actor_id: actorId,
+    idempotency_key: `${goalId}-complete`,
+  }).satisfied, true);
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: execution.claim!.claim_id,
+    actor_id: actorId,
+    reason: "Goal 已完成",
+    idempotency_key: `${goalId}-release`,
+  });
+  return { evidence, execution };
+}
+
 function dependencyProposal(
   fromGoalId: string,
   toGoalId: string,
@@ -490,6 +553,10 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
     DELETE FROM schema_migrations WHERE migration_id = 15;
     DROP TABLE evidence_corrections;
     DELETE FROM schema_migrations WHERE migration_id = 17;
+    DROP TABLE project_guidance_revisions;
+    DELETE FROM schema_migrations WHERE migration_id = 25;
+    DROP TABLE project_guidance_entries;
+    DELETE FROM schema_migrations WHERE migration_id = 24;
   `);
   store.close();
 
@@ -592,6 +659,18 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_corrections'")
       .get(),
   );
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_entries'")
+      .get(),
+  );
+  assert.ok(reopened.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 24").get());
+  assert.ok(
+    reopened.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_revisions'")
+      .get(),
+  );
+  assert.ok(reopened.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 25").get());
   const riskColumns = reopened.db.pragma("table_info(risks)") as Array<{ name: string }>;
   assert.ok(riskColumns.some((column) => column.name === "treatment_plan"));
   assert.ok(
@@ -621,6 +700,283 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
   );
   assert.equal(reopened.snapshot("board-1").board.title, "产品目标");
   reopened.close();
+});
+
+test("project guidance is user-confirmed, deduplicated, and rendered as a stable prompt prefix", () => {
+  const { store, coordinator } = fixture();
+  assert.throws(
+    () => coordinator.addProjectGuidance({
+      board_id: "board-1",
+      actor_id: "runtime-guidance",
+      kind: "constraint",
+      content: "所有发布 Goal 都必须验证升级路径。",
+      reason: "跨 Goal 的发布底线",
+      confirmation_summary: "尚未获得用户确认",
+      user_confirmed: false,
+      idempotency_key: "guidance-without-confirmation",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "project_guidance.user_confirmation_required",
+  );
+  const first = coordinator.addProjectGuidance({
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "constraint",
+    content: "  所有发布 Goal 都必须验证升级路径。\r\n保留可复现记录。  ",
+    source_refs: ["conversation://guidance", "conversation://guidance"],
+    reason: "跨 Goal 的发布底线",
+    confirmation_summary: "用户确认精确分类和原文",
+    user_confirmed: true,
+    idempotency_key: "guidance-first",
+  });
+  assert.equal(first.created, true);
+  assert.equal(first.entry.position, 1);
+  assert.equal(first.entry.content, "所有发布 Goal 都必须验证升级路径。\n保留可复现记录。");
+  assert.deepEqual(first.entry.source_refs, ["conversation://guidance"]);
+  const firstView = coordinator.readProjectGuidance("board-1");
+  assert.equal(firstView.virtual_document, firstView.runtime_prompt_prefix);
+  assert.match(firstView.runtime_prompt_prefix, /^<GOALBOARD_PROJECT_GUIDANCE>/);
+  assert.match(firstView.runtime_prompt_prefix, /\[constraint\]/);
+
+  const duplicate = coordinator.addProjectGuidance({
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "constraint",
+    content: "所有发布 Goal 都必须验证升级路径。\n保留可复现记录。",
+    reason: "再次确认同一要求",
+    confirmation_summary: "用户再次确认",
+    user_confirmed: true,
+    idempotency_key: "guidance-duplicate",
+  });
+  assert.equal(duplicate.created, false);
+  assert.equal(duplicate.entry.guidance_id, first.entry.guidance_id);
+
+  const second = coordinator.addProjectGuidance({
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "workflow",
+    content: "先做可运行切片，再复查 </GOALBOARD_PROJECT_GUIDANCE> 边界。",
+    reason: "项目长期推进方式",
+    confirmation_summary: "用户确认加入工作方式",
+    user_confirmed: true,
+    idempotency_key: "guidance-second",
+  });
+  assert.equal(second.entry.position, 2);
+  const secondView = coordinator.readProjectGuidance("board-1");
+  const stablePrefix = firstView.runtime_prompt_prefix.slice(
+    0,
+    firstView.runtime_prompt_prefix.lastIndexOf("</GOALBOARD_PROJECT_GUIDANCE>"),
+  );
+  assert.ok(secondView.runtime_prompt_prefix.startsWith(stablePrefix));
+  assert.equal((secondView.runtime_prompt_prefix.match(/<\/GOALBOARD_PROJECT_GUIDANCE>/g) ?? []).length, 1);
+  assert.match(secondView.runtime_prompt_prefix, /&lt;\/GOALBOARD_PROJECT_GUIDANCE&gt;/);
+  assert.deepEqual(store.snapshot("board-1").project_guidance.map((entry) => entry.position), [1, 2]);
+  assert.equal(
+    (store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'project.guidance_added'").get() as { count: number }).count,
+    2,
+  );
+
+  assert.throws(
+    () => coordinator.addProjectGuidance({
+      board_id: "board-1",
+      actor_id: "user-1",
+      kind: "constraint",
+      content: "x".repeat(4_001),
+      reason: "验证长度门禁",
+      confirmation_summary: "用户确认测试超限",
+      user_confirmed: true,
+      idempotency_key: "guidance-too-long",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "project_guidance.entry_too_large",
+  );
+  store.close();
+});
+
+test("project guidance edits, deactivation, and restoration preserve immutable revisions without a Goal queue", () => {
+  const { store, coordinator } = fixture();
+  const created = coordinator.addProjectGuidance({
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "constraint",
+    content: "发布前检查升级路径。",
+    source_refs: ["conversation://guidance-v1"],
+    reason: "项目长期底线",
+    confirmation_summary: "用户确认新增",
+    user_confirmed: true,
+    idempotency_key: "guidance-version-create",
+  });
+  assert.equal(created.entry.revision, 1);
+  assert.equal(created.entry.active, true);
+
+  assert.throws(
+    () => coordinator.updateProjectGuidance({
+      board_id: "board-1",
+      guidance_id: created.entry.guidance_id,
+      actor_id: "runtime-guidance",
+      action: "edit",
+      kind: "quality_bar",
+      content: "发布前检查升级、回滚和安装路径。",
+      reason: "补全发布标准",
+      confirmation_summary: "尚未确认",
+      user_confirmed: false,
+      idempotency_key: "guidance-version-unconfirmed",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "project_guidance.user_confirmation_required",
+  );
+
+  const edited = coordinator.updateProjectGuidance({
+    board_id: "board-1",
+    guidance_id: created.entry.guidance_id,
+    actor_id: "user-1",
+    action: "edit",
+    kind: "quality_bar",
+    content: "发布前检查升级、回滚和安装路径。",
+    source_refs: ["conversation://guidance-v2"],
+    reason: "补全发布标准",
+    confirmation_summary: "用户确认精确修改",
+    user_confirmed: true,
+    idempotency_key: "guidance-version-edit",
+  });
+  assert.equal(edited.entry.revision, 2);
+  assert.equal(edited.revision.change_kind, "edited");
+  assert.equal(edited.entry.kind, "quality_bar");
+  const replay = coordinator.updateProjectGuidance({
+    board_id: "board-1",
+    guidance_id: created.entry.guidance_id,
+    actor_id: "user-1",
+    action: "edit",
+    kind: "quality_bar",
+    content: "发布前检查升级、回滚和安装路径。",
+    source_refs: ["conversation://guidance-v2"],
+    reason: "补全发布标准",
+    confirmation_summary: "用户确认精确修改",
+    user_confirmed: true,
+    idempotency_key: "guidance-version-edit",
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.entry.revision, 2);
+  assert.doesNotMatch(coordinator.readProjectGuidance("board-1").runtime_prompt_prefix, /发布前检查升级路径。/);
+
+  const deactivated = coordinator.updateProjectGuidance({
+    board_id: "board-1",
+    guidance_id: created.entry.guidance_id,
+    actor_id: "user-1",
+    action: "deactivate",
+    reason: "暂时不再作为项目底线",
+    confirmation_summary: "用户在项目说明页停用",
+    user_confirmed: true,
+    idempotency_key: "guidance-version-deactivate",
+  });
+  assert.equal(deactivated.entry.revision, 3);
+  assert.equal(deactivated.entry.active, false);
+  const inactiveView = coordinator.readProjectGuidance("board-1");
+  assert.deepEqual(inactiveView.entries, []);
+  assert.equal(inactiveView.inactive_entries.length, 1);
+  assert.doesNotMatch(inactiveView.runtime_prompt_prefix, /回滚和安装路径/);
+  assert.deepEqual(store.snapshot("board-1").project_guidance, []);
+
+  const restored = coordinator.updateProjectGuidance({
+    board_id: "board-1",
+    guidance_id: created.entry.guidance_id,
+    actor_id: "user-1",
+    action: "restore",
+    reason: "恢复发布底线",
+    confirmation_summary: "用户在项目说明页恢复",
+    user_confirmed: true,
+    idempotency_key: "guidance-version-restore",
+  });
+  assert.equal(restored.entry.revision, 4);
+  assert.equal(restored.entry.active, true);
+  const restoredView = coordinator.readProjectGuidance("board-1");
+  assert.equal(restoredView.entries.length, 1);
+  assert.equal(restoredView.revisions.filter((revision) => revision.guidance_id === created.entry.guidance_id).length, 4);
+  assert.match(restoredView.runtime_prompt_prefix, /回滚和安装路径/);
+  assert.equal(
+    (store.db.prepare("SELECT COUNT(*) AS count FROM goal_tree_proposal_decisions").get() as { count: number }).count,
+    0,
+  );
+  store.close();
+});
+
+test("migration 25 backfills revision history for existing project guidance", () => {
+  const { store, coordinator } = fixture();
+  const created = coordinator.addProjectGuidance({
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "context",
+    content: "这是迁移前已经存在的项目背景。",
+    reason: "迁移测试",
+    confirmation_summary: "用户确认",
+    user_confirmed: true,
+    idempotency_key: "guidance-migration-create",
+  });
+  const databasePath = store.path;
+  store.db.exec(`
+    DROP TABLE project_guidance_revisions;
+    DELETE FROM schema_migrations WHERE migration_id = 25;
+    ALTER TABLE project_guidance_entries DROP COLUMN updated_at;
+    ALTER TABLE project_guidance_entries DROP COLUMN updated_by;
+    ALTER TABLE project_guidance_entries DROP COLUMN active;
+    ALTER TABLE project_guidance_entries DROP COLUMN revision;
+  `);
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  const entry = migrated.listProjectGuidanceEntries("board-1", true)[0];
+  assert.equal(entry?.guidance_id, created.entry.guidance_id);
+  assert.equal(entry?.revision, 1);
+  assert.equal(entry?.active, true);
+  assert.equal(migrated.listProjectGuidanceRevisions("board-1")[0]?.change_kind, "created");
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 25").get());
+  migrated.close();
+});
+
+test("project guidance rejects invalid, empty, and project-total overflow content", () => {
+  const { store, coordinator } = fixture();
+  const base = {
+    board_id: "board-1",
+    actor_id: "user-1",
+    kind: "context" as const,
+    reason: "验证项目说明边界",
+    confirmation_summary: "用户确认边界测试",
+    user_confirmed: true,
+  };
+  assert.throws(
+    () => coordinator.addProjectGuidance({
+      ...base,
+      kind: "temporary" as never,
+      content: "不支持的分类",
+      idempotency_key: "guidance-invalid-kind",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "project_guidance.kind_invalid",
+  );
+  assert.throws(
+    () => coordinator.addProjectGuidance({
+      ...base,
+      content: "  \n  ",
+      idempotency_key: "guidance-empty",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "project_guidance.invalid",
+  );
+  for (let index = 0; index < 8; index += 1) {
+    coordinator.addProjectGuidance({
+      ...base,
+      content: `${index}${"x".repeat(3_999)}`,
+      idempotency_key: `guidance-fill-${index}`,
+    });
+  }
+  assert.throws(
+    () => coordinator.addProjectGuidance({
+      ...base,
+      content: "超过项目总长度",
+      idempotency_key: "guidance-total-overflow",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "project_guidance.total_too_large",
+  );
+  assert.equal(store.snapshot("board-1").project_guidance.length, 8);
+  store.close();
 });
 
 test("migration 17 repairs a missing evidence corrections table even when its ledger entry remains", () => {
@@ -2190,6 +2546,83 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
   store.close();
 });
 
+test("correcting passing Evidence reopens the current trust state without erasing completion history", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "completed-evidence-correction");
+  const { evidence } = completeLeafGoal(store, coordinator, "completed-evidence-correction");
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    "satisfied",
+  );
+
+  coordinator.correctEvidence({
+    board_id: "board-1",
+    goal_id: "completed-evidence-correction",
+    actor_id: "runtime-completed-evidence-correction",
+    target_evidence_id: evidence.evidence_id,
+    action: "retract",
+    reason: "完成后发现原检查读取了错误的输出文件",
+    idempotency_key: "completed-evidence-correction-retract",
+  });
+
+  const reopenedGoal = store.getGoal("completed-evidence-correction");
+  assert.equal(reopenedGoal?.fulfillment_state, "satisfied");
+  assert.equal(reopenedGoal?.validity_state, "needs_revalidation");
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    "revalidation_pending",
+  );
+  assert.deepEqual(
+    coordinator
+      .queryAvailable({ board_id: "board-1", actor_id: "runtime-revalidator" })
+      .available.filter((item) => item.goal.goal_id === "completed-evidence-correction")
+      .map((item) => [item.next_action, item.role]),
+    [["revalidate", "revalidator"]],
+  );
+  assert.equal(
+    (store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'goal.satisfied' AND object_id = ?")
+      .get("completed-evidence-correction") as { count: number }).count,
+    1,
+  );
+
+  const revalidation = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completed-evidence-correction",
+    actor_id: "runtime-revalidator",
+    role: "revalidator",
+    idempotency_key: "completed-evidence-correction-revalidate-select",
+  });
+  assert.equal(revalidation.allowed, true);
+  assert.equal(coordinator.revalidateGoal({
+    board_id: "board-1",
+    goal_id: "completed-evidence-correction",
+    run_id: revalidation.run!.run_id,
+    actor_id: "runtime-revalidator",
+    evidence_refs: ["inspection://correct-output-file"],
+    reason: "用正确输出重新核对，原完成结果仍然成立",
+    idempotency_key: "completed-evidence-correction-revalidated",
+  }).revalidated, true);
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: revalidation.run!.run_id,
+    actor_id: "runtime-revalidator",
+    state: "completed",
+    idempotency_key: "completed-evidence-correction-revalidate-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: revalidation.claim!.claim_id,
+    actor_id: "runtime-revalidator",
+    reason: "重新验证完成",
+    idempotency_key: "completed-evidence-correction-revalidate-release",
+  });
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    "satisfied",
+  );
+  store.close();
+});
+
 test("Review pass rejects superseded or retracted Evidence references", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "evidence-review-gate");
@@ -3535,6 +3968,249 @@ test("Goal Tree Risk updates reject unsupported lifecycle states before user dec
   store.close();
 });
 
+test("a Draft Risk lifecycle Goal cannot leave its Contract behind", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "risk-lifecycle-subject");
+  const riskFacts = {
+    risk_id: "risk-lifecycle-atomic",
+    goal_ids: ["risk-lifecycle-subject"],
+    description: "关键回归仍可能复现",
+    probability: "medium",
+    impact: "用户会再次遇到已缓解的问题",
+    affected_surfaces: ["shared-list"],
+    trigger: "回归用例再次失败",
+    treatment: "mitigate" as const,
+    treatment_plan: "修复并复测关键回归路径",
+    blocking_mode: "completion" as const,
+    revisit_condition: "回归测试通过后关闭",
+    owner: "runtime-risk-lifecycle",
+  };
+  coordinator.addRisk(
+    "board-1",
+    riskFacts,
+    { actor_id: "user-1", idempotency_key: "risk-lifecycle-atomic-add" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-risk-lifecycle",
+    rough_idea: "修复并关闭关键回归风险。",
+    goal_id: "risk-lifecycle-goal",
+    idempotency_key: "risk-lifecycle-atomic-dialogue",
+  });
+  const riskItem = goalTreeProposalItem({
+    item_id: "risk-lifecycle-resolve",
+    kind: "risk",
+    operation: "update",
+    payload: { ...riskFacts, state: "resolved" },
+    object_type: "risk",
+    object_id: "risk-lifecycle-atomic",
+  });
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-lifecycle",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "risk-lifecycle-subject",
+      summary: "尝试用另一条 Goal 的 clarifier Run 关闭这个 Risk。",
+      items: [riskItem],
+      idempotency_key: "risk-lifecycle-cross-root-submit",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.root_goal_mismatch",
+  );
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-lifecycle",
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: "risk-lifecycle-goal",
+      summary: "只关闭 Risk，不补全承载这项工作的 Goal。",
+      items: [riskItem],
+      idempotency_key: "risk-lifecycle-risk-only-submit",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.risk_goal_contract_required",
+  );
+  assert.equal(store.snapshot("board-1").goal_tree_proposals.length, 0);
+
+  const contractItem = goalTreeProposalItem({
+    item_id: "risk-lifecycle-contract",
+    kind: "contract",
+    operation: "update",
+    payload: treeGoalPayload({
+      goal_id: "risk-lifecycle-goal",
+      title: "修复并关闭关键回归风险",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+    }),
+    object_type: "goal",
+    object_id: "risk-lifecycle-goal",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-risk-lifecycle",
+    discovered_in_run_id: dialogue.run!.run_id,
+    summary: "把 Risk 处置定义为正式 Goal，并在同一提案中更新 Risk。",
+    items: [contractItem, riskItem],
+    idempotency_key: "risk-lifecycle-atomic-submit",
+  }).proposal;
+  assert.equal(proposal.root_goal_id, "risk-lifecycle-goal");
+
+  assert.throws(
+    () => coordinator.decideGoalTreeProposal({
+      board_id: "board-1",
+      proposal_id: proposal.proposal_id,
+      runtime_actor_id: "runtime-risk-lifecycle",
+      authority: {
+        actor_id: "user-1",
+        actor_kind: "user",
+        authority_source: "runtime_dialogue",
+        conversation_ref: "conversation://risk-lifecycle-atomic",
+        message_ref: "message://risk-only-confirm",
+      },
+      decisions: [{
+        item_id: "risk-lifecycle-resolve",
+        decision: "confirm",
+        reason: "只确认 Risk 变更。",
+      }],
+      idempotency_key: "risk-lifecycle-risk-only-decide",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.risk_goal_contract_required",
+  );
+  assert.equal(store.getGoal("risk-lifecycle-goal")?.definition_state, "draft");
+  assert.equal(coordinator.readGoalContract("board-1", "risk-lifecycle-subject").risks[0]?.state, "open");
+  assert.equal(coordinator.listGoalTreeProposals({ board_id: "board-1", proposal_id: proposal.proposal_id }).proposals[0]?.state, "pending");
+  store.close();
+});
+
+test("an executor can propose only the same Goal's evidenced Risk lifecycle result", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "executor-risk-goal");
+  createLeaf(coordinator, "executor-risk-subject");
+  const riskFacts = {
+    risk_id: "executor-risk-result",
+    goal_ids: ["executor-risk-subject"],
+    description: "执行结果仍需证明风险已消除",
+    probability: "medium",
+    impact: "完成门禁继续阻塞",
+    affected_surfaces: ["execution-flow"],
+    trigger: "缓解测试失败",
+    treatment: "mitigate" as const,
+    treatment_plan: "执行缓解并提交验收 Evidence",
+    blocking_mode: "completion" as const,
+    revisit_condition: "Evidence 通过后关闭",
+    owner: "runtime-risk-executor",
+  };
+  coordinator.addRisk(
+    "board-1",
+    riskFacts,
+    { actor_id: "user-1", idempotency_key: "executor-risk-result-add" },
+  );
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "executor-risk-goal",
+    actor_id: "runtime-risk-executor",
+    role: "executor",
+    idempotency_key: "executor-risk-goal-select",
+  });
+  assert.equal(execution.allowed, true);
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "executor-risk-goal",
+    actor_id: "runtime-risk-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["executor-risk-goal-criterion"],
+    kind: "test",
+    locator: "test://executor-risk-mitigation",
+    result: "passed",
+    idempotency_key: "executor-risk-result-evidence",
+  });
+
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-executor",
+      discovered_in_run_id: execution.run!.run_id,
+      root_goal_id: "executor-risk-goal",
+      summary: "executor 尝试越权创建另一条 Goal。",
+      items: [goalTreeProposalItem({
+        item_id: "executor-illegal-goal",
+        kind: "goal",
+        operation: "create",
+        payload: treeGoalPayload({
+          goal_id: "executor-illegal-goal",
+          title: "不应由 executor 创建的 Goal",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
+        object_type: "goal",
+        object_id: "executor-illegal-goal",
+      })],
+      idempotency_key: "executor-risk-illegal-goal-submit",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.executor_scope_invalid",
+  );
+
+  const riskItem = goalTreeProposalItem({
+    item_id: "executor-risk-resolve",
+    kind: "risk",
+    operation: "update",
+    payload: { ...riskFacts, state: "resolved" },
+    object_type: "risk",
+    object_id: "executor-risk-result",
+    source_refs: ["test://executor-risk-mitigation"],
+  });
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-risk-executor",
+      discovered_in_run_id: execution.run!.run_id,
+      root_goal_id: "executor-risk-subject",
+      summary: "executor 尝试从另一条 Goal 更新 Risk。",
+      items: [riskItem],
+      idempotency_key: "executor-risk-cross-root-submit",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.root_goal_mismatch",
+  );
+
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-risk-executor",
+    discovered_in_run_id: execution.run!.run_id,
+    summary: "缓解测试已通过，提交同一 Goal 的 Risk resolved 结果等待确认。",
+    items: [riskItem],
+    idempotency_key: "executor-risk-result-submit",
+  }).proposal;
+  assert.equal(proposal.root_goal_id, "executor-risk-goal");
+  const decided = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-risk-executor",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://executor-risk-result",
+      message_ref: "message://executor-risk-result-confirm",
+    },
+    decisions: [{
+      item_id: "executor-risk-resolve",
+      decision: "confirm",
+      reason: "确认缓解 Evidence 通过，Risk 可以标记为 resolved。",
+    }],
+    idempotency_key: "executor-risk-result-decide",
+  });
+  assert.deepEqual(decided.applied_item_ids, ["executor-risk-resolve"]);
+  assert.equal(coordinator.readGoalContract("board-1", "executor-risk-subject").risks[0]?.state, "resolved");
+  assert.equal(store.getGoal("executor-risk-goal")?.fulfillment_state, "unmet");
+  store.close();
+});
+
 test("a confirmed Risk update materializes a supported state and clears the completion blocker", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "risk-completion-target");
@@ -3578,14 +4254,29 @@ test("a confirmed Risk update materializes a supported state and clears the comp
     discovered_in_run_id: dialogue.run!.run_id,
     root_goal_id: "risk-completion-context",
     summary: "来源覆盖检查已经通过，建议把现有 completion Risk 标为 resolved。",
-    items: [goalTreeProposalItem({
-      item_id: "resolve-completion-risk",
-      kind: "risk",
-      operation: "update",
-      payload: { ...riskFacts, state: "resolved" },
-      object_type: "risk",
-      object_id: "risk-completion-state",
-    })],
+    items: [
+      goalTreeProposalItem({
+        item_id: "accept-risk-completion-goal",
+        kind: "contract",
+        operation: "update",
+        payload: treeGoalPayload({
+          goal_id: "risk-completion-context",
+          title: "确认来源覆盖风险已经按计划处置",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
+        object_type: "goal",
+        object_id: "risk-completion-context",
+      }),
+      goalTreeProposalItem({
+        item_id: "resolve-completion-risk",
+        kind: "risk",
+        operation: "update",
+        payload: { ...riskFacts, state: "resolved" },
+        object_type: "risk",
+        object_id: "risk-completion-state",
+      }),
+    ],
     idempotency_key: "risk-completion-state-proposal",
   }).proposal;
   const decided = coordinator.decideGoalTreeProposal({
@@ -3599,16 +4290,28 @@ test("a confirmed Risk update materializes a supported state and clears the comp
       conversation_ref: "conversation://risk-completion",
       message_ref: "message://risk-completion-confirm",
     },
-    decisions: [{
-      item_id: "resolve-completion-risk",
-      decision: "confirm",
-      reason: "确认覆盖检查通过，这条风险已经解决。",
-    }],
+    decisions: [
+      {
+        item_id: "accept-risk-completion-goal",
+        decision: "confirm",
+        reason: "确认这是一条正式、可验收的 Risk 处置 Goal。",
+      },
+      {
+        item_id: "resolve-completion-risk",
+        decision: "confirm",
+        reason: "确认覆盖检查通过，这条风险已经解决。",
+      },
+    ],
     idempotency_key: "risk-completion-state-decide",
   });
 
-  assert.deepEqual(decided.applied_item_ids, ["resolve-completion-risk"]);
-  assert.equal(decided.proposal.items[0]?.materialized_objects[0]?.object_id, "risk-completion-state");
+  assert.deepEqual(decided.applied_item_ids, ["accept-risk-completion-goal", "resolve-completion-risk"]);
+  assert.equal(
+    decided.proposal.items.find((item) => item.item_id === "resolve-completion-risk")
+      ?.materialized_objects[0]?.object_id,
+    "risk-completion-state",
+  );
+  assert.equal(store.getGoal("risk-completion-context")?.definition_state, "accepted");
   assert.equal(coordinator.readGoalContract("board-1", "risk-completion-target").risks[0]?.state, "resolved");
   const after = coordinator.evaluateLeafCompletion({
     board_id: "board-1",
@@ -3660,14 +4363,29 @@ test("checking a pending Risk proposal exposes an unsupported lifecycle state as
     discovered_in_run_id: dialogue.run!.run_id,
     root_goal_id: "risk-state-check-context",
     summary: "来源覆盖检查已经通过，建议把现有 Risk 标为 resolved。",
-    items: [goalTreeProposalItem({
-      item_id: "risk-state-check-item",
-      kind: "risk",
-      operation: "update",
-      payload: { ...riskFacts, state: "resolved" },
-      object_type: "risk",
-      object_id: "risk-state-check",
-    })],
+    items: [
+      goalTreeProposalItem({
+        item_id: "risk-state-check-contract",
+        kind: "contract",
+        operation: "update",
+        payload: treeGoalPayload({
+          goal_id: "risk-state-check-context",
+          title: "确认已有 Risk 的处置结果",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
+        object_type: "goal",
+        object_id: "risk-state-check-context",
+      }),
+      goalTreeProposalItem({
+        item_id: "risk-state-check-item",
+        kind: "risk",
+        operation: "update",
+        payload: { ...riskFacts, state: "resolved" },
+        object_type: "risk",
+        object_id: "risk-state-check",
+      }),
+    ],
     idempotency_key: "risk-state-check-submit",
   }).proposal;
 
@@ -3688,8 +4406,9 @@ test("checking a pending Risk proposal exposes an unsupported lifecycle state as
     idempotency_key: "risk-state-check-check",
   });
   assert.deepEqual(checked.conflict_item_ids, ["risk-state-check-item"]);
-  assert.equal(checked.proposal.items[0]?.state, "conflict");
-  assert.equal(checked.proposal.items[0]?.conflict?.code, "goal_tree_proposal.risk_state_invalid");
+  const checkedRiskItem = checked.proposal.items.find((item) => item.item_id === "risk-state-check-item");
+  assert.equal(checkedRiskItem?.state, "conflict");
+  assert.equal(checkedRiskItem?.conflict?.code, "goal_tree_proposal.risk_state_invalid");
   assert.equal(coordinator.readGoalContract("board-1", "risk-state-check-target").risks[0]?.state, "open");
   store.close();
 });
@@ -8134,6 +8853,153 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "clarification_pending",
   );
+  store.close();
+});
+
+test("compound parents consume only valid, active child completions and reopen when trust changes", () => {
+  const { store, coordinator } = fixture();
+  createAcceptedCompoundParent(coordinator, "trusted-parent", "closed_compound");
+  createLeaf(coordinator, "trusted-child");
+  const primaryRelation = coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "trusted-child",
+      to_goal_id: "trusted-parent",
+      type: "part_of",
+      reason: "父 Goal 消费这个子结果",
+    },
+    { actor_id: "user-1", idempotency_key: "trusted-parent-child" },
+  );
+  completeLeafGoal(store, coordinator, "trusted-child");
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
+
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "trusted-child-invalidating-risk",
+      goal_ids: ["trusted-child"],
+      description: "子结果依赖的外部规则发生变化",
+      probability: "high",
+      impact: "原完成结果可能不再正确",
+      affected_surfaces: ["trusted-child-output"],
+      trigger: "外部规则发布新版本",
+      treatment: "mitigate",
+      treatment_plan: "重新核对子结果",
+      blocking_mode: "invalidate_on_trigger",
+      revisit_condition: "新规则下重新验证通过",
+      owner: "runtime-trusted-child",
+    },
+    { actor_id: "user-1", idempotency_key: "trusted-child-risk-add" },
+  );
+  coordinator.setRiskState(
+    "board-1",
+    { risk_id: "trusted-child-invalidating-risk", state: "triggered", reason: "外部规则已更新" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-risk-trigger" },
+  );
+  assert.equal(store.getGoal("trusted-child")?.validity_state, "invalidated");
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "trusted-parent" }).work_state,
+    "waiting_children",
+  );
+
+  createAcceptedCompoundParent(coordinator, "late-parent", "closed_compound");
+  coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "trusted-child",
+      to_goal_id: "late-parent",
+      type: "part_of",
+      reason: "验证失效子结果不能让新父 Goal 自动完成",
+    },
+    { actor_id: "user-1", idempotency_key: "late-parent-invalid-child" },
+  );
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
+  assert.equal(
+    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "late-parent" }).work_state,
+    "waiting_children",
+  );
+
+  coordinator.setRiskState(
+    "board-1",
+    { risk_id: "trusted-child-invalidating-risk", state: "resolved", reason: "风险条件已经解除，等待重新验证" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-risk-resolve" },
+  );
+  const revalidation = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "trusted-child",
+    actor_id: "runtime-trusted-child-revalidator",
+    role: "revalidator",
+    idempotency_key: "trusted-child-revalidate-select",
+  });
+  assert.equal(revalidation.allowed, true);
+  assert.equal(coordinator.revalidateGoal({
+    board_id: "board-1",
+    goal_id: "trusted-child",
+    run_id: revalidation.run!.run_id,
+    actor_id: "runtime-trusted-child-revalidator",
+    evidence_refs: ["inspection://new-rule-output"],
+    reason: "按新规则重新核对子结果，结果仍然成立",
+    idempotency_key: "trusted-child-revalidated",
+  }).revalidated, true);
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: revalidation.run!.run_id,
+    actor_id: "runtime-trusted-child-revalidator",
+    state: "completed",
+    idempotency_key: "trusted-child-revalidation-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: revalidation.claim!.claim_id,
+    actor_id: "runtime-trusted-child-revalidator",
+    reason: "重新验证已经完成",
+    idempotency_key: "trusted-child-revalidation-release",
+  });
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
+  assert.equal(
+    (store.db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'goal.compound_completion_reopened' AND object_id = ?")
+      .get("trusted-parent") as { count: number }).count,
+    1,
+  );
+
+  coordinator.setGoalArchived(
+    "board-1",
+    { goal_id: "trusted-child", archived: true, reason: "验证归档结果不能继续支撑父 Goal" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-archive" },
+  );
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
+  coordinator.setGoalArchived(
+    "board-1",
+    { goal_id: "trusted-child", archived: false, reason: "恢复仍然有效的子结果" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-unarchive" },
+  );
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
+
+  coordinator.setGoalTrashed(
+    "board-1",
+    { goal_id: "trusted-child", trashed: true, reason: "验证回收结果不能继续支撑父 Goal" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-trash" },
+  );
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
+  coordinator.setGoalTrashed(
+    "board-1",
+    { goal_id: "trusted-child", trashed: false, reason: "恢复仍然有效的子结果与关系" },
+    { actor_id: "user-1", idempotency_key: "trusted-child-restore" },
+  );
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
+  coordinator.deactivateRelation(
+    "board-1",
+    { relation_id: primaryRelation.relation_id, reason: "验证非 active 子关系不能继续支撑父 Goal" },
+    { actor_id: "user-1", idempotency_key: "trusted-parent-child-deactivate" },
+  );
+  assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
+  assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
   store.close();
 });
 
