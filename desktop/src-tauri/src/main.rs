@@ -237,7 +237,14 @@ fn embedded_runtime_upgrade_available(resource_dir: &Path, home: &Path) -> bool 
 
 #[cfg(test)]
 mod embedded_runtime_version_tests {
-    use super::{embedded_version_is_upgrade, Version};
+    use super::{embedded_version_is_upgrade, sync_managed_web_service_after_upgrade, Version};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::PathBuf,
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn only_missing_or_newer_embedded_runtimes_install() {
@@ -249,6 +256,45 @@ mod embedded_runtime_version_tests {
         assert!(embedded_version_is_upgrade(&newer, Some(&current)));
         assert!(!embedded_version_is_upgrade(&current, Some(&current)));
         assert!(!embedded_version_is_upgrade(&old, Some(&current)));
+    }
+
+    #[test]
+    fn embedded_runtime_upgrade_repairs_the_owned_service_configuration() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "goalboard-desktop-service-refresh-{}-{nonce}",
+            process::id(),
+        ));
+        let bin = home.join("bin");
+        let cli = bin.join("goalboard");
+        let receipt = home.join("called.txt");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+                receipt.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&cli).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&cli, permissions).unwrap();
+
+        let refreshed = sync_managed_web_service_after_upgrade(&home);
+
+        assert!(refreshed);
+        assert_eq!(
+            fs::read_to_string(&receipt).unwrap().trim(),
+            format!(
+                "service install --home {} --confirm",
+                PathBuf::from(&home).display()
+            ),
+        );
+        fs::remove_dir_all(home).unwrap();
     }
 }
 
@@ -279,13 +325,13 @@ fn install_embedded_goalboard(resource_dir: &Path, home: &Path) -> Result<(), St
     })
 }
 
-fn restart_managed_web_service(home: &Path) -> bool {
+fn sync_managed_web_service_after_upgrade(home: &Path) -> bool {
     let cli = home.join("bin").join("goalboard");
     if !cli.is_file() {
         return false;
     }
     Command::new(cli)
-        .args(["service", "restart", "--home"])
+        .args(["service", "install", "--home"])
         .arg(home)
         .arg("--confirm")
         .stdin(Stdio::null())
@@ -372,7 +418,7 @@ fn ensure_goalboard_web(
         .transpose()?
         .is_some();
     if upgraded_runtime {
-        let _ = restart_managed_web_service(&home);
+        let _ = sync_managed_web_service_after_upgrade(&home);
     }
     if web_healthy() {
         if !web_desktop_ready() {

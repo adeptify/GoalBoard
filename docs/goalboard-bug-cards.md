@@ -2371,6 +2371,61 @@ completion Risk 的初衷是允许团队继续实现和补证据，同时阻止�
 
 ---
 
+## GB-20260830-42：Core/App 升级后受管 LaunchAgent 仍携旧 release PATH，健康服务被标记 needs_repair
+
+**来源**：GoalBoard Owner 在 GB35 安装态复验中发现；本机 `/Applications/GoalBoard.app`、home launcher 和实际 Web 进程均已指向 0.1.9
+**Bug 确认**：已确认，属于 Desktop 升级后的服务交接缺陷；`needs_repair` 本身不是误报
+**修复决定**：修。只把 App 完成 Core 升级后的受管服务动作从被协议拒绝的 `service restart` 改为能原子同步 owned plist 的 `service install`；不放宽配置一致性检查
+**修复状态**：本地源码已完成并通过工程验证；尚未进入新安装包，真实 LaunchAgent 保持原状，产品实操待下一次用户明确授权构建后验证
+
+### 1. 真实场景
+
+本机已安装 GoalBoard 0.1.9：App Info.plist 为 0.1.9，`~/.goalboard/bin/goalboard-web` 明确执行 `releases/goalboard-0.1.9` 的 bundled Node 与 Web server，HTTP `/health` 返回 `status=ok` 且 process/service PID 一致。与此同时 `goalboard service status --json` 返回 `state=needs_repair`、message“GoalBoard Web 常驻服务使用旧配置”；LaunchAgent plist 的 `EnvironmentVariables.PATH` 仍以 `releases/goalboard-0.1.8/runtime` 开头。
+
+### 2. 事实与归因
+
+可稳定复现，属于 GoalBoard 缺陷。Desktop 的 `ensure_goalboard_web` 在发现内嵌 Runtime 版本高于已安装版本后会先安装新 Core，随后调用 `restart_managed_web_service`；该函数固定执行 `goalboard service restart --confirm` 并吞掉失败。与此同时 service 状态机明确规定 `needs_repair` 时 restart 必须拒绝，唯一恢复动作是 `service install --confirm`。因此 status 正确识别了 release-specific bundled Node `PATH` 已过期，错误在 Desktop 选错恢复动作并静默忽略结果，不是状态比较过严。
+
+### 3. 现有流程的问题
+
+用户看到 App 与网页正常，但官方 status 仍要求 repair，无法判断当前 0.1.9 是否真正安装完成、是否必须再做一次服务变更，或这只是无害元数据。若每次 Core 升级都留下旧 PATH，发布验收会稳定多出 preview/confirm/restart；若忽略它，后续子进程可能从旧 release 解析命令。
+
+### 4. 设计根因与初衷
+
+稳定 `~/.goalboard/bin/goalboard-web` wrapper 的初衷是让 LaunchAgent ProgramArguments 不随版本变化；plist PATH 固定 bundled runtime 则用于在系统 PATH 缺 Node 时仍可运行并隔离宿主环境。service 将旧 plist 判为 `needs_repair`，并要求 `install` 而不是 `restart`，是为了只重写 GoalBoard 拥有的配置、验证端口与实例身份、失败时恢复旧文件和运行态。Desktop 原本也试图在 App 已获启动/升级授权后自动刷新受管服务，但沿用了旧的 restart 动作，没有接上这条新安全协议。
+
+### 5. 当前影响
+
+当前 App/Web 主路径未阻断，健康检查通过；直接影响是安装完成状态不可信、打开/诊断路径持续显示 repair，可能诱发重复修复。潜在运行影响取决于旧 PATH 是否进入 PTY/子进程，目前没有失败证据，不能扩大为“0.1.9 实际运行旧 Core”。
+
+### 6. 复杂度审查
+
+- **当前必须**：稳定复现 status；追踪 desired plist 与 actual plist 的逐字段比较；核对 upgrade/install/service 生命周期测试；验证进程实际 release 与 PATH 消费点。
+- **可以延后**：把所有服务配置改成完全版本无关；只有证明 release-specific PATH 不再提供安全价值时再评估。
+- **应当删除**：不直接忽略全部 plist 差异，不无条件自动 bootout/restart，不把健康 200 当作配置一致或把 needs_repair 当作服务不可用。
+
+### 7. 修复必要性与优先级
+
+修，P1。Desktop 当前已经在升级后主动尝试重载服务，所以这不是要不要新增自动变更权限的问题，而是现有获权动作选错命令且吞错。若不修，每次带新 bundled Runtime 的 App 升级都会稳定留下旧 plist；若直接把 status 改成 running，又会掩盖旧 Node PATH。最小修复是复用现有 `service install --confirm` 的 ownership、冲突与回滚语义。
+
+### 8. 修复前后体验差异
+
+- **当前**：安装/App/health 都显示 0.1.9 可用，但 status 仍报旧配置，用户需要猜是否重新 repair。
+- **修后**：App 完成新 Core 安装后，用 `service install --confirm` 同步 GoalBoard 自己拥有的 plist 并重载；成功后 status 为 running、PATH 指向新 release。未知或被改写的 LaunchAgent 仍拒绝接管，失败不伪报成功。
+
+### 9. 最小修复范围
+
+只修改 Desktop Core 升级后的服务同步 helper 与回归测试，把 `restart` 替换为 `install`。不修改 service desired-state、status 分类、稳定 wrapper、ownership/PID 校验、未知监听者拒绝、回滚、项目数据和安装包版本；真实服务仍不在本轮自动修复。
+
+### 10. 验收边界
+
+- **工程验证**：通过。TDD 红灯实际记录 Desktop helper 调用 `service restart --home … --confirm`，与期望的 `install` 不同；最小修改后定向用例转绿。Desktop Rust 单测 12/12、TypeScript typecheck、Web service 状态机回归 23/23、`cargo fmt --check` 与 `git diff --check` 均通过。`cargo clippy --all-targets -D warnings` 仍被本文件既有的两条无关 warning 阻断（`needless_borrows_for_generic_args`、`collapsible_if`），本卡未改这些位置，不能把 clippy 报成绿。
+- **产品实操**：修复前真实安装态已复现 App/Core/Web 为 0.1.9、服务健康而 plist PATH 为 0.1.8、status=`needs_repair`。修复后只在隔离 home 中执行 fake CLI，确认升级 helper 发出的真实 argv 为 `service install --home <home> --confirm`；最终 App 升级与 LaunchAgent 收敛仍为 `UNVERIFIED`，因为用户已明确暂停新包构建，本轮也没有修改真实服务。
+- **Owner 最终验收**：源码修复通过。diff 只改变 Desktop 升级后的动作选择和回归测试，保留 service 的 ownership、外部监听拒绝、原子写入与回滚；发布/安装验收未通过，不能声称已交付到当前 App。
+- **用户验收**：待下一份经用户明确要求构建的 App，从旧 release 实际升级后确认 status=`running`、plist PATH 指向新 release，且打开既有项目不丢数据。
+
+---
+
 ## 2026-08-30 第三方视角全量复审
 
 本节在全部实现、统一安装和代表性实操完成后重新审查“这张卡是否真的成立”，不以已经写了代码反推其合理性。判断标准只有四项：是否有可复现事实；是否增加了无必要操作、歧义或错误状态；是否影响正确性、闭环或审计；最小修复是否保留了原设计要保护的边界。它覆盖并更新上方按时间记录的阶段性判断。
@@ -2418,10 +2473,11 @@ completion Risk 的初衷是允许团队继续实现和补证据，同时阻止�
 | GB39 | 成立，Board 全局 pending 数被错误当成当前上一问的唯一性证明 | 无关 Proposal 会让精确点名的整份确认失败，消费者只能机械展开逐项决定 | 修 attestation 精确绑定 proposal_id；不解析自然语言、不扩大授权 |
 | GB40 | 部分新增成立；自动 release 不合理，Review 隐藏已由 GB37 覆盖，精确交接缺失独立成立 | 每轮执行完成后都可能停在“收尾后”，Runtime 必须盲搜 release，Skill 顺序还与状态机相反 | 保留显式 release；统一 Run/Contract/Available/Skill handoff，不允许 reviewer 与 executor 并发 |
 | GB41 | 当前阻塞现象存在，但“completion Risk 挡首次执行”的新 Bug 归因不成立 | 旧 Session 与真实 depends_on 门禁混在同一 Contract 中，消费者会把相关 Risk 误认成 blocker | 不新增代码；已安装 0.1.9 隔离实操证明 completion Risk 可执行，转入 GB16/GB27/GB31 的新 Session 验收 |
+| GB42 | 成立，status 正确识别旧 plist，但 Desktop 升级后错误调用被协议拒绝的 restart 并吞错 | App/Core/Web 已升级且健康，LaunchAgent 仍携旧 release PATH，官方状态持续要求 repair | 修 Desktop 升级交接为现有原子 `service install`；不放宽状态检查、不接管未知服务 |
 
 ### 复审结论
 
-- 41 张卡中，37 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15、GB26、GB38 和 GB40 是部分重叠或原始方案部分不成立，GB41 是旧 Session/真实依赖被误归因为新 Risk Bug，均已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
+- 42 张卡中，38 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15、GB26、GB38 和 GB40 是部分重叠或原始方案部分不成立，GB41 是旧 Session/真实依赖被误归因为新 Risk Bug，均已按最小独立缺口去重；GB07 与 GB42 是发布/升级工程缺陷而非业务功能 Bug。
 - GB13 的体验问题真实成立，但唯一主要归因在 CGS 领域模型与编辑台；GoalBoard 的正确决定是明确不修并保留路由状态，而不是为了“全部修完”制造跨仓耦合。
 - GB27 是本轮最重要的客观纠偏：原始 claim-gate 解释不符合真实 canonical 历史，最终只修可复现的 rework 恢复缺口，证明台账不是把每条消费者抱怨自动认定为原始描述中的 Bug。
 - GB38 与 GB40 延续同一判断纪律：前者拒绝为了省事放开 accepted Contract 原地覆盖，后者拒绝 completed 后自动释放 Claim；只修两条安全设计周围可复现的错误归类、隐藏动作和恢复信息。
