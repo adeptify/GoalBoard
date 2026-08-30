@@ -169,6 +169,9 @@ export interface GoalDecompositionValidationIssue {
   affected_work_items?: string[];
   affected_criterion_ids?: string[];
   open_goal_ids?: string[];
+  invalid_path?: string;
+  received_value?: unknown;
+  allowed_values?: string[];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -340,7 +343,13 @@ function leafIssue(
   recovery: string,
   details: Pick<
     GoalDecompositionValidationIssue,
-    "missing_fields" | "affected_outputs" | "affected_work_items" | "affected_criterion_ids"
+    | "missing_fields"
+    | "affected_outputs"
+    | "affected_work_items"
+    | "affected_criterion_ids"
+    | "invalid_path"
+    | "received_value"
+    | "allowed_values"
   > = {},
 ): GoalDecompositionValidationIssue {
   return {
@@ -362,6 +371,7 @@ function leafIssue(
 export function goalProposalLeafReadinessIssues(
   item: ProposalItem,
   goal: Record<string, unknown>,
+  payloadPath = "items[].payload",
 ): GoalDecompositionValidationIssue[] {
   const goalId = String(goal.goal_id ?? item.payload.goal_id ?? "").trim();
   const title = String(goal.title ?? (goalId || "未命名 Goal"));
@@ -378,11 +388,12 @@ export function goalProposalLeafReadinessIssues(
       "leaf_readiness",
       "goal_tree_proposal.leaf_readiness_required",
       `Goal「${title}」要直接开始执行，必须先说明它唯一要交付什么，以及哪些工作需要另拆。`,
-      "请让 Runtime 补充叶子粒度判断后重新提交。",
+      `请按工具 schema 补全 ${payloadPath}.leaf_readiness 后重新提交；不要放在 item 顶层。`,
     )];
   }
 
   const rawReadinessRecord = record(rawReadiness)!;
+  const readinessPath = `${payloadPath}.leaf_readiness`;
   const requiredArrayFields = [
     "output_coverage",
     "split_candidates",
@@ -391,15 +402,21 @@ export function goalProposalLeafReadinessIssues(
     "acceptance_criterion_ids",
   ];
   const missingArrays = requiredArrayFields.filter((field) => !Array.isArray(rawReadinessRecord[field]));
+  const missingScalarFields = ["verdict", "primary_deliverable", "rationale"].filter((field) =>
+    typeof rawReadinessRecord[field] !== "string" || !String(rawReadinessRecord[field]).trim()
+  );
   const invalidStringArrays = [
     "unresolved_decisions",
     "independent_deliverables",
     "acceptance_criterion_ids",
   ].filter((field) => Array.isArray(rawReadinessRecord[field]) &&
     (rawReadinessRecord[field] as unknown[]).some((value) => typeof value !== "string" || !value.trim()));
-  const rawCandidates = Array.isArray(rawReadinessRecord.split_candidates)
-    ? rawReadinessRecord.split_candidates.map(record).filter((value): value is Record<string, unknown> => value != null)
+  const rawCandidateEntries = Array.isArray(rawReadinessRecord.split_candidates)
+    ? rawReadinessRecord.split_candidates.map((value, index) => ({ index, value: record(value) }))
     : [];
+  const rawCandidates = rawCandidateEntries
+    .map((entry) => entry.value)
+    .filter((value): value is Record<string, unknown> => value != null);
   const hasInvalidCandidateSignals = (
     Array.isArray(rawReadinessRecord.split_candidates) &&
     rawCandidates.length !== rawReadinessRecord.split_candidates.length
@@ -410,18 +427,25 @@ export function goalProposalLeafReadinessIssues(
   );
   if (
     !["ready", "split_required"].includes(readiness.verdict) ||
-    !readiness.rationale ||
+    missingScalarFields.length > 0 ||
     missingArrays.length > 0 ||
     invalidStringArrays.length > 0 ||
     hasInvalidCandidateSignals
   ) {
+    const invalidPaths = [
+      ...missingScalarFields,
+      ...missingArrays,
+      ...invalidStringArrays,
+      ...(hasInvalidCandidateSignals ? ["split_candidates[] 的三个拆分信号"] : []),
+    ].map((field) => `${readinessPath}.${field}`);
     issues.push(leafIssue(
       item,
       goalId,
       "leaf_readiness",
       "goal_tree_proposal.leaf_readiness_invalid",
-      `Goal「${title}」没有说清它已经可以直接执行，还是仍需继续拆分。`,
-      "请让 Runtime 给出明确结论和判断理由。",
+      `Goal「${title}」的叶子粒度判断缺少或包含无效字段：${invalidPaths.join("、")}。`,
+      `请按工具 schema 补全 ${readinessPath} 后重新提交；不要把 leaf_readiness 放在 item 顶层。`,
+      { missing_fields: invalidPaths },
     ));
   }
 
@@ -510,8 +534,29 @@ export function goalProposalLeafReadinessIssues(
     ));
   }
 
+  const invalidCandidateDecisions = rawCandidateEntries.filter((entry) =>
+    entry.value != null && !["keep", "split"].includes(String(entry.value.decision ?? "")),
+  );
+  for (const invalid of invalidCandidateDecisions) {
+    const received = invalid.value!.decision;
+    const invalidPath = `${readinessPath}.split_candidates[${invalid.index}].decision`;
+    issues.push(leafIssue(
+      item,
+      goalId,
+      "split_candidates",
+      "goal_tree_proposal.leaf_split_candidate_decision_invalid",
+      `${invalidPath}=${String(received ?? "")}；allowed: keep, split。`,
+      "decision 只能是 keep 或 split。若该工作本轮明确不做，请把它移出 split_candidates，写入 Goal 的 out_of_scope 或提案叙事中的延后说明；若它应独立交付，请选择 split 并新建独立 Goal。",
+      {
+        invalid_path: invalidPath,
+        received_value: received,
+        allowed_values: ["keep", "split"],
+        affected_work_items: [String(invalid.value!.work_item ?? "未命名工作").trim() || "未命名工作"],
+      },
+    ));
+  }
   const invalidCandidates = readiness.split_candidates.filter((candidate) =>
-    !candidate.work_item || !candidate.reason || !["keep", "split"].includes(candidate.decision),
+    !candidate.work_item || !candidate.reason,
   );
   const shouldSplitButKept = readiness.split_candidates.filter((candidate) =>
     splitSignalCount(candidate) >= 2 && candidate.decision !== "split",
@@ -786,12 +831,12 @@ export function goalTreeProposalDecompositionIssues(
   const dependencyPairs = proposedDependencyPairs(items, context);
   const contracts = proposedGoalContracts(items, context);
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     const goal = goalPayload(item);
     if (!goal) continue;
     const goalId = String(goal.goal_id ?? item.payload.goal_id ?? "").trim();
     const state = String(goal.decomposition_state ?? states.get(goalId) ?? "");
-    issues.push(...goalProposalLeafReadinessIssues(item, goal));
+    issues.push(...goalProposalLeafReadinessIssues(item, goal, `items[${index}].payload`));
     const rawReview = goal.decomposition_review;
     if (state !== "closed_compound" && rawReview == null) continue;
     const review = readDecompositionReview(rawReview);

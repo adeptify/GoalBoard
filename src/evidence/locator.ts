@@ -20,6 +20,13 @@ export interface EvidenceLocatorValidation {
   normalized_locator: string;
 }
 
+interface ResolvedProjectReference {
+  fileName: string;
+  realFile: string;
+  anchor: string | null;
+  size: number;
+}
+
 function isWithinDirectory(candidate: string, directory: string): boolean {
   const relative = path.relative(directory, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -87,10 +94,10 @@ export function projectReferenceSegments(locator: string): string[] {
   return segments;
 }
 
-export function readProjectReference(
+function resolveProjectReference(
   projectRoot: string,
   locator: string,
-): { content: Buffer; fileName: string; realFile: string; anchor: string | null } {
+): ResolvedProjectReference {
   const root = path.resolve(projectRoot);
   let realRoot: string;
   try {
@@ -113,18 +120,34 @@ export function readProjectReference(
   }
   const stat = fs.statSync(realFile);
   if (!stat.isFile()) throw new ProjectReferenceError(400, "项目内引用必须指向普通文件");
-  if (stat.size > MAX_PROJECT_REFERENCE_BYTES) {
-    throw new ProjectReferenceError(413, "项目内引用文件过大，不能在 GoalBoard 中打开");
+  return {
+    fileName: (path.basename(realFile) || "evidence.txt").replace(/[\r\n"]/g, ""),
+    realFile,
+    anchor: splitProjectLocator(locator).anchor,
+    size: stat.size,
+  };
+}
+
+export function readProjectReference(
+  projectRoot: string,
+  locator: string,
+): { content: Buffer; fileName: string; realFile: string; anchor: string | null } {
+  const resolved = resolveProjectReference(projectRoot, locator);
+  if (resolved.size > MAX_PROJECT_REFERENCE_BYTES) {
+    throw new ProjectReferenceError(
+      413,
+      `项目内引用文件过大，不能在 GoalBoard 中打开（上限 512 KiB / ${MAX_PROJECT_REFERENCE_BYTES} 字节）`,
+    );
   }
-  const content = fs.readFileSync(realFile);
+  const content = fs.readFileSync(resolved.realFile);
   if (content.includes(0) || content.toString("utf8").includes("\uFFFD")) {
     throw new ProjectReferenceError(415, "GoalBoard 只能打开项目内的文本引用");
   }
   return {
     content,
-    fileName: (path.basename(realFile) || "evidence.txt").replace(/[\r\n"]/g, ""),
-    realFile,
-    anchor: splitProjectLocator(locator).anchor,
+    fileName: resolved.fileName,
+    realFile: resolved.realFile,
+    anchor: resolved.anchor,
   };
 }
 
@@ -215,6 +238,16 @@ export function validateEvidenceLocator(
     };
   }
 
+  const resolved = resolveProjectReference(options.projectRoot, normalizedLocator);
+  if (resolved.size > MAX_PROJECT_REFERENCE_BYTES) {
+    const anchorBoundary = resolved.anchor === null ? "" : "Markdown anchor 未校验；";
+    return {
+      status: "unverified",
+      reason: `项目内文件路径已确认，但文件大小 ${resolved.size} 字节超过可全文打开上限 512 KiB（${MAX_PROJECT_REFERENCE_BYTES} 字节）；内容未全文预检；${anchorBoundary}如有 digest，它只会按原样记录，GoalBoard 未核验。建议同时提交小型 sidecar summary。`,
+      checked_at: checkedAt,
+      normalized_locator: normalizedLocator,
+    };
+  }
   const reference = readProjectReference(options.projectRoot, normalizedLocator);
   if (reference.anchor !== null) {
     if (!/\.(?:md|markdown)$/i.test(reference.realFile)) {

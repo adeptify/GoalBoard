@@ -64,7 +64,7 @@ test("every work state explains what it means, what to do, and how to continue i
     "clarification_pending", "clarification_decision_pending", "compound_closure_pending", "handoff_pending", "clarifying", "clarification_blocked", "waiting_children",
     "execution_pending", "executing", "execution_blocked", "completion_pending", "completion_blocked", "review_pending", "reviewing",
     "review_blocked", "waiting_for_human", "revalidation_pending", "revalidating", "revalidation_blocked",
-    "invalidated", "satisfied", "trashed", "archived",
+    "replaced", "invalidated", "satisfied", "trashed", "archived",
   ];
   for (const state of states) {
     const zh = explainWorkState(state);

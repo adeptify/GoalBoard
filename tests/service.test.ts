@@ -444,6 +444,8 @@ test("needs_repair rejects restart and points to the configuration-writing insta
 
     const repair = await item.manager.prepare("install");
     assert.equal(repair.status, "ready");
+    assert.equal(repair.message, "准备修复旧配置并重新加载 GoalBoard Web 常驻服务");
+    assert.equal(repair.confirmation, "确认更新旧配置并重新加载 macOS 用户级常驻 Web 服务");
     assert.equal(repair.next_action, null);
     assert.equal((await item.manager.confirm({ plan_id: repair.plan_id, decision: "confirmed" })).detection.state, "running");
   } finally {

@@ -476,6 +476,7 @@ export class SqliteGoalBoardStore {
           supersedes_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
           base_event_cursor INTEGER NOT NULL,
           summary TEXT NOT NULL,
+          narrative_json TEXT,
           decision_json TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -496,6 +497,7 @@ export class SqliteGoalBoardStore {
           payload_json TEXT NOT NULL,
           source_refs_json TEXT NOT NULL,
           reason TEXT NOT NULL,
+          explanation_json TEXT,
           confidence REAL NOT NULL,
           affected_objects_json TEXT NOT NULL,
           baseline_versions_json TEXT NOT NULL,
@@ -690,6 +692,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (26, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -834,6 +839,16 @@ export class SqliteGoalBoardStore {
     if (!projectGuidanceRevisionsApplied || !projectGuidanceRevisionsTable) {
       this.migrateProjectGuidanceRevisions();
     }
+    const goalTreeProposalNarrativeApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 27")
+      .get();
+    const goalTreeProposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
+    const goalTreeProposalItemColumns = this.db.pragma("table_info(goal_tree_proposal_items)") as Array<{ name: string }>;
+    if (
+      !goalTreeProposalNarrativeApplied ||
+      !goalTreeProposalColumns.some((column) => column.name === "narrative_json") ||
+      !goalTreeProposalItemColumns.some((column) => column.name === "explanation_json")
+    ) this.migrateGoalTreeProposalNarrative();
   }
 
   private migrateClarifierRoles(): void {
@@ -1672,6 +1687,22 @@ export class SqliteGoalBoardStore {
     });
   }
 
+  private migrateGoalTreeProposalNarrative(): void {
+    this.immediate(() => {
+      const proposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
+      if (!proposalColumns.some((column) => column.name === "narrative_json")) {
+        this.db.exec("ALTER TABLE goal_tree_proposals ADD COLUMN narrative_json TEXT");
+      }
+      const itemColumns = this.db.pragma("table_info(goal_tree_proposal_items)") as Array<{ name: string }>;
+      if (!itemColumns.some((column) => column.name === "explanation_json")) {
+        this.db.exec("ALTER TABLE goal_tree_proposal_items ADD COLUMN explanation_json TEXT");
+      }
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
   eventCursor(boardId: string): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS cursor FROM events WHERE board_id = ?")
@@ -2309,6 +2340,7 @@ function mapGoalTreeProposalItem(
     payload: parseJson<Record<string, unknown>>(row.payload_json, {}),
     source_refs: parseJson<string[]>(row.source_refs_json, []),
     reason: text(row.reason),
+    explanation: parseJson<GoalTreeProposalItemRecord["explanation"]>(row.explanation_json, null),
     confidence: number(row.confidence),
     affected_objects: parseJson<GoalTreeProposalItemRecord["affected_objects"]>(
       row.affected_objects_json,
@@ -2350,6 +2382,7 @@ function mapGoalTreeProposal(
     supersedes_proposal_id: optionalText(row.supersedes_proposal_id),
     base_event_cursor: number(row.base_event_cursor),
     summary: text(row.summary),
+    narrative: parseJson<GoalTreeProposalRecord["narrative"]>(row.narrative_json, null),
     decision: parseJson<Record<string, unknown> | null>(row.decision_json, null),
     created_at: text(row.created_at),
     updated_at: text(row.updated_at),

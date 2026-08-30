@@ -13,12 +13,210 @@ import {
   type RuntimeWorkContext,
 } from "../projects/catalog.js";
 import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
-import { GoalBoardCoordinator, GoalBoardV1Error } from "../v1/coordinator.js";
+import {
+  GoalBoardCoordinator,
+  GoalBoardV1Error,
+  type AvailableQueryResult,
+} from "../v1/coordinator.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
-import type { ClaimRequest, CreateGoalInput, GoalTrashResult } from "../v1/types.js";
+import type {
+  ClaimRequest,
+  ClarificationTurnRecord,
+  CreateGoalInput,
+  DraftDialogueView,
+  GoalTrashResult,
+} from "../v1/types.js";
 import { importV3Board, type LegacyV3ImportInput } from "../v1/migration.js";
+import type { PlanningMethodComposition, PlanningMethodPack } from "../planning/method-packs.js";
 
 const SERVER_INFO = { name: "goalboard-mcp", version: "1.0.0" };
+
+function planningMethodCatalogId(methods: readonly PlanningMethodPack[]): string {
+  const canonical = [...methods]
+    .sort((left, right) => left.method_id.localeCompare(right.method_id))
+    .map((method) => ({
+      method_id: method.method_id,
+      version: method.version,
+      scope: method.scope,
+      updated_at: method.updated_at,
+      digest: createHash("sha256").update(JSON.stringify(method)).digest("hex"),
+    }));
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 24)}`;
+}
+
+function planningMethodSummary(method: PlanningMethodPack): Record<string, unknown> {
+  const summary: Record<string, unknown> = {
+    method_id: method.method_id,
+    version: method.version,
+    scope: method.scope,
+    kind: method.kind,
+    name: method.name,
+    summary: method.summary,
+    applies_to: method.applies_to,
+    domain_tags: method.domain_tags,
+    enabled: method.enabled,
+    created_at: method.created_at,
+    updated_at: method.updated_at,
+  };
+  if ("overridden_scopes" in method) {
+    summary.overridden_scopes = method.overridden_scopes;
+  }
+  return summary;
+}
+
+function planningMethodDetail(method: PlanningMethodPack): Record<string, unknown> {
+  return { ...planningMethodSummary(method), instructions: method.instructions };
+}
+
+function planningMethodResponse(
+  methods: readonly PlanningMethodPack[],
+  composition: PlanningMethodComposition,
+  arguments_: Record<string, unknown>,
+): Record<string, unknown> {
+  const modernRead = Object.hasOwn(arguments_, "method_ids") || Object.hasOwn(arguments_, "include_instructions");
+  const requestedIds = Array.isArray(arguments_.method_ids)
+    ? [...new Set(arguments_.method_ids.map((value) => String(value).trim()).filter(Boolean))]
+    : null;
+  const byId = new Map(methods.map((method) => [method.method_id, method]));
+  const missingIds = requestedIds?.filter((methodId) => !byId.has(methodId)) ?? [];
+  if (missingIds.length) {
+    throw new GoalBoardV1Error(
+      "planning_method.not_found",
+      `找不到规划方法：${missingIds.join("、")}`,
+      { missing_method_ids: missingIds, available_method_ids: methods.map((method) => method.method_id) },
+    );
+  }
+  const selected = requestedIds == null
+    ? [...methods]
+    : requestedIds.map((methodId) => byId.get(methodId)!).filter(Boolean);
+  const includeInstructions = arguments_.include_instructions !== false;
+  const result: Record<string, unknown> = {
+    catalog_id: planningMethodCatalogId(methods),
+    returned_method_ids: selected.map((method) => method.method_id),
+    include_instructions: includeInstructions,
+    methods: modernRead
+      ? selected.map((method) => includeInstructions ? planningMethodDetail(method) : planningMethodSummary(method))
+      : selected,
+    composition: modernRead
+      ? { method_pack_ids: composition.method_pack_ids, method_names: composition.method_names }
+      : composition,
+  };
+  return result;
+}
+
+function availableResponse(
+  result: AvailableQueryResult,
+  detailLevel: "summary" | "full",
+): Record<string, unknown> {
+  const metadata = {
+    detail_level: detailLevel,
+    available_count: result.available.length,
+    blocked_count: result.blocked.length,
+  };
+  if (detailLevel === "full") return { ...metadata, ...result };
+  return {
+    ...metadata,
+    observed_event_cursor: result.observed_event_cursor,
+    available: result.available.map((item) => ({
+      goal: { goal_id: item.goal.goal_id, title: item.goal.title },
+      role: item.role,
+      work_state: item.work_state,
+      next_action: item.next_action,
+      review_obligation_id: item.review_obligation_id,
+      requires_parent_confirmation: item.requires_parent_confirmation,
+      why_now: item.why_now,
+      priority_hint: item.priority_hint,
+      dependency_summary: item.dependency_summary,
+      risk_summary: item.risk_summary,
+      required_capabilities: item.resolved_policy.required_capabilities,
+      planning: item.planning,
+    })),
+    blocked: result.blocked.map((item) => ({
+      goal: { goal_id: item.goal.goal_id, title: item.goal.title },
+      work_state: item.work_state,
+      next_action: item.next_action,
+      reasons: item.reasons,
+      priority_hint: item.priority_hint,
+      risk_summary: item.risk_summary,
+    })),
+    parallel_suggestion: result.parallel_suggestion,
+  };
+}
+
+type DraftDialogueMcpResult = DraftDialogueView & { replayed: boolean };
+
+interface DraftDialogueHistoryOptions {
+  includeHistory: boolean;
+  historyLimit: number;
+  beforeTurnIndex: number | null;
+}
+
+function draftDialogueHistoryOptions(
+  arguments_: Record<string, unknown>,
+): DraftDialogueHistoryOptions {
+  const includeHistory = arguments_.include_history === true;
+  if (!includeHistory && (arguments_.history_limit != null || arguments_.history_before_turn_index != null)) {
+    throw new GoalBoardV1Error(
+      "draft_dialogue.history_not_requested",
+      "history_limit 和 history_before_turn_index 只在 include_history=true 时使用",
+      { next_action: "set_include_history_true" },
+    );
+  }
+  const historyLimit = arguments_.history_limit == null ? 20 : Number(arguments_.history_limit);
+  if (!Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 100) {
+    throw new GoalBoardV1Error(
+      "draft_dialogue.history_limit_invalid",
+      "history_limit 必须是 1 到 100 的整数",
+      { field_path: "history_limit", received_value: arguments_.history_limit, minimum: 1, maximum: 100 },
+    );
+  }
+  const beforeTurnIndex = arguments_.history_before_turn_index == null
+    ? null
+    : Number(arguments_.history_before_turn_index);
+  if (beforeTurnIndex != null && (!Number.isInteger(beforeTurnIndex) || beforeTurnIndex < 1)) {
+    throw new GoalBoardV1Error(
+      "draft_dialogue.history_cursor_invalid",
+      "history_before_turn_index 必须是正整数",
+      { field_path: "history_before_turn_index", received_value: arguments_.history_before_turn_index, minimum: 1 },
+    );
+  }
+  return { includeHistory, historyLimit, beforeTurnIndex };
+}
+
+function draftDialogueResponse(
+  result: DraftDialogueMcpResult,
+  options: DraftDialogueHistoryOptions,
+): Record<string, unknown> {
+  const { includeHistory, historyLimit, beforeTurnIndex } = options;
+  const allTurns = [...result.turns].sort((left, right) => left.turn_index - right.turn_index);
+  const latestTurn = allTurns.at(-1) ?? null;
+  const eligibleTurns = beforeTurnIndex == null
+    ? allTurns
+    : allTurns.filter((turn) => turn.turn_index < beforeTurnIndex);
+  const returnedTurns: ClarificationTurnRecord[] = includeHistory
+    ? eligibleTurns.slice(-historyLimit)
+    : [];
+  const hasMore = includeHistory
+    ? eligibleTurns.length > returnedTurns.length
+    : allTurns.length > 0;
+  const nextBeforeTurnIndex = includeHistory
+    ? hasMore ? returnedTurns[0]?.turn_index ?? null : null
+    : latestTurn ? latestTurn.turn_index + 1 : null;
+  const { turns: _turns, ...compact } = result;
+  return {
+    ...compact,
+    latest_turn: latestTurn,
+    turn_count: allTurns.length,
+    history: {
+      included: includeHistory,
+      returned_count: returnedTurns.length,
+      total_count: allTurns.length,
+      has_more: hasMore,
+      next_before_turn_index: nextBeforeTurnIndex,
+    },
+    ...(includeHistory ? { turns: returnedTurns } : {}),
+  };
+}
 
 const V1_COMMON = {
   database_path: { type: "string", description: "管理入口使用的共享 SQLite 文件路径" },
@@ -177,7 +375,68 @@ const GOAL_TREE_GOAL_PROPERTIES = {
     enum: ["abstract", "frontier_open", "closed_leaf", "closed_compound"],
   },
   decomposition_review: GOAL_TREE_DECOMPOSITION_REVIEW,
-  leaf_readiness: { type: "object" },
+  leaf_readiness: {
+    type: "object",
+    description:
+      "叶子粒度判断。规范路径是 items[].payload.leaf_readiness；不要放在 item 顶层。accepted + closed_leaf 必须完整提供全部字段。",
+    properties: {
+      verdict: { type: "string", enum: ["ready", "split_required"] },
+      primary_deliverable: V1_STRING,
+      output_coverage: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            promised_output: V1_STRING,
+            role: { type: "string", enum: ["primary", "supporting", "independent"] },
+            reason: V1_STRING,
+          },
+          required: ["promised_output", "role", "reason"],
+        },
+      },
+      split_candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            work_item: V1_STRING,
+            separately_deliverable: { type: "boolean" },
+            separately_acceptable: { type: "boolean" },
+            independently_reworkable: { type: "boolean" },
+            decision: {
+              type: "string",
+              enum: ["keep", "split"],
+              description:
+                "只允许 keep 或 split。明确延期且本轮不做的工作不要放进 split_candidates；写入 out_of_scope/提案 non_goals。可独立交付的工作选择 split 并新建 Goal。",
+            },
+            reason: V1_STRING,
+          },
+          required: [
+            "work_item",
+            "separately_deliverable",
+            "separately_acceptable",
+            "independently_reworkable",
+            "decision",
+            "reason",
+          ],
+        },
+      },
+      rationale: V1_STRING,
+      unresolved_decisions: V1_STRING_ARRAY,
+      independent_deliverables: V1_STRING_ARRAY,
+      acceptance_criterion_ids: V1_STRING_ARRAY,
+    },
+    required: [
+      "verdict",
+      "primary_deliverable",
+      "output_coverage",
+      "split_candidates",
+      "rationale",
+      "unresolved_decisions",
+      "independent_deliverables",
+      "acceptance_criterion_ids",
+    ],
+  },
   priority: { type: "number" },
   acceptance_criteria: { type: "array", items: GOAL_TREE_ACCEPTANCE_CRITERION },
 };
@@ -192,10 +451,41 @@ const GOAL_TREE_GOAL_PAYLOAD = {
 const GOAL_TREE_CONTRACT_PAYLOAD = {
   type: "object",
   description:
-    "kind=contract 的规范 payload。goal_id 指向现有 Goal，其余字段是待用户确认的 Contract 版本；accepted Contract 需要完整业务与验收字段。",
+    "kind=contract 的规范 payload。goal_id 指向现有 Goal，其余 Contract 字段直接放在 payload 内；不要再包一层 proposed_goal。accepted + closed_leaf 的叶子判断路径是 items[].payload.leaf_readiness。",
   properties: GOAL_TREE_GOAL_PROPERTIES,
   required: ["goal_id"],
   examples: [{ goal_id: "existing-goal", title: "更新后的目标标题", definition_state: "draft" }],
+};
+const CONTRACT_PROPOSAL_ACCEPTANCE_CRITERION = {
+  ...GOAL_TREE_ACCEPTANCE_CRITERION,
+  description:
+    "完整 Contract Proposal 的验收条件必须是对象，不能写成字符串。criterion_id 还必须与 leaf_readiness.acceptance_criterion_ids 一一对应。",
+  required: ["criterion_id", "statement", "decision_method", "pass_condition"],
+};
+const CONTRACT_PROPOSAL_GOAL_PAYLOAD = {
+  type: "object",
+  description:
+    "同一 Draft 的完整 accepted / closed_leaf Contract。goal_id 必须是原 Draft ID；acceptance_criteria 是对象数组；leaf_readiness 位于 proposed_goal.leaf_readiness。",
+  properties: {
+    ...GOAL_TREE_GOAL_PROPERTIES,
+    acceptance_criteria: { type: "array", minItems: 1, items: CONTRACT_PROPOSAL_ACCEPTANCE_CRITERION },
+  },
+  required: [
+    "goal_id",
+    "title",
+    "outcome",
+    "why",
+    "business_logic",
+    "in_scope",
+    "out_of_scope",
+    "required_inputs",
+    "promised_outputs",
+    "leaf_readiness",
+    "definition_state",
+    "decomposition_state",
+    "priority",
+    "acceptance_criteria",
+  ],
 };
 const GOAL_TREE_RELATION_PROPERTIES = {
   action: { type: "string", enum: ["add", "deactivate"] },
@@ -344,31 +634,51 @@ const GOAL_TREE_PAYLOAD_BY_KIND = [
   ["candidate", GOAL_TREE_CANDIDATE_PAYLOAD],
   ["rewire", GOAL_TREE_REWIRE_PAYLOAD],
 ] as const;
-const GOAL_TREE_ITEM = {
+const GOAL_TREE_ITEM_EXPLANATION = {
   type: "object",
+  description:
+    "面向审批人的逐项语义解释：problem 是主要解决的问题；expected_effect 是确认后会改变什么；non_goals 明确不改变什么；depends_on_item_ids 指向同一 Proposal 内先行或共同构成主链路的 item_id。包含 5 项及以上变化时每项必填。",
   properties: {
+    problem: V1_STRING,
+    expected_effect: V1_STRING,
+    non_goals: V1_STRING_ARRAY,
+    depends_on_item_ids: V1_STRING_ARRAY,
+  },
+  required: ["problem", "expected_effect", "non_goals", "depends_on_item_ids"],
+};
+const GOAL_TREE_PROPOSAL_NARRATIVE = {
+  type: "object",
+  description:
+    "整份变更的用户语义摘要。包含 5 项及以上变化时必填，用原问题 → 修改后的主链路 → 预期效果解释整份方案，而不是复述字段 diff。",
+  properties: {
+    why_now: V1_STRING,
+    problem: V1_STRING,
+    main_path: { type: "array", minItems: 1, items: V1_STRING },
+    expected_effect: V1_STRING,
+    non_goals: V1_STRING_ARRAY,
+  },
+  required: ["why_now", "problem", "main_path", "expected_effect", "non_goals"],
+};
+const GOAL_TREE_ITEM_PROPERTIES = {
     item_id: V1_STRING,
-    kind: {
-      type: "string",
-      enum: ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
-    },
     operation: { type: "string", enum: ["create", "update", "deactivate"] },
-    payload: {
-      type: "object",
-      description:
-        "条目正文。kind=risk 时，treatment 只能是 accept|mitigate|avoid|defer；可选 state 只能是 open|triggered|resolved|accepted|expired。mitigate 是处理策略，不是生命周期状态；措施完成后使用 state=resolved。",
-    },
     source_refs: V1_STRING_ARRAY,
     reason: V1_STRING,
+    explanation: GOAL_TREE_ITEM_EXPLANATION,
     confidence: { type: "number", minimum: 0, maximum: 1 },
     affected_objects: { type: "array", items: GOAL_TREE_AFFECTED_OBJECT },
     requires_user_confirmation: { type: "boolean" },
     supersedes_item_id: { type: ["string", "null"] },
-  },
-  required: ["kind", "operation", "payload", "source_refs", "reason", "confidence", "affected_objects"],
-  allOf: GOAL_TREE_PAYLOAD_BY_KIND.map(([kind, payload]) => ({
-    if: { properties: { kind: { const: kind } }, required: ["kind"] },
-    then: { properties: { payload } },
+};
+const GOAL_TREE_ITEM = {
+  oneOf: GOAL_TREE_PAYLOAD_BY_KIND.map(([kind, payload]) => ({
+    type: "object",
+    properties: {
+      ...GOAL_TREE_ITEM_PROPERTIES,
+      kind: { type: "string", const: kind },
+      payload,
+    },
+    required: ["kind", "operation", "payload", "source_refs", "reason", "confidence", "affected_objects"],
   })),
 };
 const GOAL_TREE_ITEM_DECISION = {
@@ -644,7 +954,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成；初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成。默认 detail_level=summary，只返回选择下一项所需的紧凑摘要；选中后用 goalboard_v1_contract 读取完整 Contract。只有确需一次展开所有候选详情时才传 detail_level=full。初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {
@@ -652,16 +962,34 @@ const V1_TOOLS: McpToolDefinition[] = [
         actor_id: { type: "string" },
         capabilities: { type: "array", items: { type: "string" } },
         goal_mode_attestation: { type: "boolean" },
+        detail_level: {
+          type: "string",
+          enum: ["summary", "full"],
+          description: "默认 summary；full 保留旧版完整 Goal、Policy、Impact 与 Contract 详情。",
+        },
       },
       required: ["board_id", "actor_id"],
     },
   },
   {
     name: "goalboard_v1_planning_methods",
-    description: "读取当前项目的完整方法库和多方法规划组合。Runtime 在创建、拆分或重连 Goal 前，必须从 methods[] 完整阅读每个已选方法的 instructions，并把多套方法作为互补的规划 Skill 一起使用；composition.method_paths 只重复项目必选组合。项目组合是必须使用的下限，不是方法选择的上限。Runtime 还要检查各主题的提供者产出与消费者用途，召回遗漏的相关方法，并在真实产出消费存在时建立硬依赖；不得按类型、列表顺序、固定数量或一般相关性预设选择和依赖。项目覆盖个人，个人覆盖内置冷启方法。",
+    description: "读取当前项目的方法目录、所选完整方法正文和项目必选组合。推荐先传 include_instructions=false 获取轻量目录与 composition.method_pack_ids，再传 method_ids 精确读取每个已选 methods[].instructions；catalog_id 与 returned_method_ids 用于核对两次读取属于同一目录且正文没有遗漏。不传可选参数时保留旧版完整响应。Runtime 在创建、拆分或重连 Goal 前，必须完整阅读每个已选方法的 instructions，并把多套方法作为互补的规划 Skill 一起使用。项目组合是必须使用的下限，不是方法选择的上限。Runtime 还要检查各主题的提供者产出与消费者用途，召回遗漏的相关方法，并在真实产出消费存在时建立硬依赖；不得按类型、列表顺序、固定数量或一般相关性预设选择和依赖。项目覆盖个人，个人覆盖内置冷启方法。",
     inputSchema: {
       type: "object",
-      properties: V1_COMMON,
+      properties: {
+        ...V1_COMMON,
+        method_ids: {
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1 },
+          description: "可选；只返回这些规划方法，并保持请求顺序。未知 ID 会明确报错。",
+        },
+        include_instructions: {
+          type: "boolean",
+          description: "默认 true；false 返回用于选择的轻量目录，不展开 instructions、steps 和规则正文。",
+        },
+      },
       required: ["board_id"],
     },
   },
@@ -775,7 +1103,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_draft_dialogue_turn",
     description:
-      "持久化用户本轮自然语言回答、当前理解、可追溯事实、明确假设及唯一下一步；没有关键未知项时写入待确认提案摘要。",
+      "持久化用户本轮自然语言回答、当前理解、可追溯事实、明确假设及唯一下一步；没有关键未知项时写入待确认提案摘要。默认只返回本轮最新 turn、dialogue checkpoint 和 lifecycle 状态；仅在明确读取历史时用 include_history 分页返回 turns。",
     inputSchema: {
       type: "object",
       properties: {
@@ -789,6 +1117,23 @@ const V1_TOOLS: McpToolDefinition[] = [
         assumptions: { type: "array", items: DRAFT_DIALOGUE_ASSUMPTION },
         next_question: { type: ["string", "null"] },
         proposal_summary: { type: ["string", "null"] },
+        include_history: {
+          type: "boolean",
+          default: false,
+          description: "默认 false；true 时按 history_limit / history_before_turn_index 返回一页历史 turns",
+        },
+        history_limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description: "仅 include_history=true 时使用；返回不超过该数量的最近历史 turn",
+        },
+        history_before_turn_index: {
+          type: "integer",
+          minimum: 1,
+          description: "仅 include_history=true 时使用；只返回 turn_index 小于该游标的更早记录",
+        },
         idempotency_key: V1_STRING,
       },
       required: [
@@ -805,7 +1150,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_draft_dialogue_resume",
     description:
-      "在新 Session 中读取已持久化的 Goal 澄清进度；若没有活跃 Run，当前 Runtime 原子恢复 clarifier Claim 和 Run。",
+      "在新 Session 中读取已持久化的 Goal 澄清 checkpoint；若没有活跃 Run，当前 Runtime 原子恢复 clarifier Claim 和 Run。默认不重复返回完整 turns；需要回看时用 include_history、history_limit 和 history_before_turn_index 分页读取。",
     inputSchema: {
       type: "object",
       properties: {
@@ -815,6 +1160,23 @@ const V1_TOOLS: McpToolDefinition[] = [
         capabilities: V1_STRING_ARRAY,
         goal_mode_attestation: { type: "boolean" },
         lease_seconds: V1_LEASE_SECONDS,
+        include_history: {
+          type: "boolean",
+          default: false,
+          description: "默认 false；true 时按 history_limit / history_before_turn_index 返回一页历史 turns",
+        },
+        history_limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description: "仅 include_history=true 时使用；返回不超过该数量的最近历史 turn",
+        },
+        history_before_turn_index: {
+          type: "integer",
+          minimum: 1,
+          description: "仅 include_history=true 时使用；只返回 turn_index 小于该游标的更早记录",
+        },
         idempotency_key: V1_STRING,
       },
       required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
@@ -823,7 +1185,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。包含 5 项及以上变化时，必须提供 narrative，并为每项提供 explanation，让审批人直接看到原问题、变更后主链路、逐项效果、非目标和 change 依赖。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
@@ -832,6 +1194,7 @@ const V1_TOOLS: McpToolDefinition[] = [
         discovered_in_run_id: V1_STRING,
         root_goal_id: { type: ["string", "null"] },
         summary: V1_STRING,
+        narrative: GOAL_TREE_PROPOSAL_NARRATIVE,
         items: { type: "array", items: GOAL_TREE_ITEM },
         base_event_cursor: { type: "integer", minimum: 0 },
         supersedes_proposal_id: { type: ["string", "null"] },
@@ -843,7 +1206,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_read",
     description:
-      "读取原生 Goal Tree 提案与无损映射的历史 Contract Proposal、Candidate、Rewire；可按 proposal_id 或 root Goal 恢复对话。",
+      "读取原生 Goal Tree 提案与无损映射的历史 Contract Proposal、Candidate、Rewire；可按 proposal_id 或 root Goal 恢复对话。历史记录的原始 raw ID 与 legacy-* 映射 synthetic ID 都能读取，响应统一返回可决定的映射 proposal_id 与 item_id，可原样交给 goal_tree_check 或 goal_tree_decide。",
     inputSchema: {
       type: "object",
       properties: {
@@ -858,7 +1221,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_check",
     description:
-      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。",
+      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；原生 Goal Tree Proposal 和 legacy Contract Proposal 均可使用，后者可传原始 raw ID 或读取结果中的映射 ID。某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。",
     inputSchema: {
       type: "object",
       properties: {
@@ -873,7 +1236,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_decide",
     description:
-      "把用户对 Goal Tree 提案的决定物化；逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。管理入口必须提供可审计的用户与消息引用。",
+      "把用户对 Goal Tree 提案的决定物化；goal_tree_read 返回的 native 或 legacy handle 都可直接使用，历史 Contract Proposal、Candidate、Rewire 的单项 confirm/reject 会分派到原有审计路径。逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。管理入口必须提供可审计的用户与消息引用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -902,7 +1265,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   },
   v1PayloadTool(
     "goalboard_v1_claim_renew",
-    "由当前领取者为仍未过期的 active Claim 续租；保持同一个 Claim 和 Run，不会复活过期工作。",
+    "由当前领取者为仍未过期的 active Claim 续租；actor_id 必须原样复用领取时的值。保持同一个 Claim 和 Run，不会复活过期工作。若 compaction 后误用其他 actor_id，claim.not_owner 会返回 owner_actor_id 和只限同一 Runtime 连续工作的安全重试动作。",
     {
       claim_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1096,6 +1459,19 @@ const V1_TOOLS: McpToolDefinition[] = [
     ["goal_id", "run_id", "actor_id", "reason", "evidence_refs", "idempotency_key"],
   ),
   v1PayloadTool(
+    "goalboard_v1_rework_request",
+    "当已完成的执行和复核在完成门禁前被新的可追溯反证推翻时，请求同一 unmet Goal 返回执行。它只让受影响验收条件要求 fresh Evidence 并重开 Review；不修改 Contract、不删除历史，也不解决 completion Risk。",
+    {
+      goal_id: V1_STRING,
+      actor_id: V1_STRING,
+      criterion_ids: { ...V1_STRING_ARRAY, minItems: 1 },
+      reason: V1_STRING,
+      evidence_refs: { ...V1_STRING_ARRAY, minItems: 1 },
+      idempotency_key: V1_STRING,
+    },
+    ["goal_id", "actor_id", "criterion_ids", "reason", "evidence_refs", "idempotency_key"],
+  ),
+  v1PayloadTool(
     "goalboard_v1_run_report",
     "报告 Run 阻塞或终态。",
     {
@@ -1111,7 +1487,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_evidence_submit",
-    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor，外部或不透明 locator 保留但明确标为 UNVERIFIED。",
+    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor。超过 512 KiB 的项目内普通文件会在确认路径安全后登记为 UNVERIFIED，不会全文读取或打开；调用方提供的 digest 只按原样记录，不代表 GoalBoard 已核验，建议同时提交小型 sidecar summary。外部或不透明 locator 也会保留但明确标为 UNVERIFIED。",
     {
       goal_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1122,7 +1498,7 @@ const V1_TOOLS: McpToolDefinition[] = [
       locator: {
         type: "string",
         description:
-          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；HTTP 与其他不透明协议保留为 UNVERIFIED。",
+          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；超过 512 KiB 的项目内文件只确认路径并以 UNVERIFIED 登记，不可在 Web 预览；HTTP 与其他不透明协议也保留为 UNVERIFIED。",
       },
       digest: { type: ["string", "null"] },
       result: { type: "string", enum: ["passed", "failed", "inconclusive"] },
@@ -1219,12 +1595,12 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_contract_propose",
-    "clarifier 为同一个 Draft 提交完整 Contract 补全提案；canonical Goal 在用户确认前保持不变。",
+    "clarifier 为同一个 Draft 提交完整 Contract 补全提案；canonical Goal 在用户确认前保持不变。proposed_goal.goal_id 必须是原 Draft ID；acceptance_criteria 必须是含 criterion_id、statement、decision_method、pass_condition、required_evidence 的对象数组；accepted / closed_leaf 还必须提供 proposed_goal.leaf_readiness，并让 acceptance_criterion_ids 一一对应。",
     {
       goal_id: V1_STRING,
       actor_id: V1_STRING,
       discovered_in_run_id: V1_STRING,
-      proposed_goal: { type: "object" },
+      proposed_goal: CONTRACT_PROPOSAL_GOAL_PAYLOAD,
       field_sources: {
         type: "array",
         minItems: 1,
@@ -1255,7 +1631,19 @@ const V1_TOOLS: McpToolDefinition[] = [
           ],
         },
       },
-      review_policy: { type: "object" },
+      review_policy: {
+        type: "object",
+        properties: GOAL_TREE_POLICY_FIELDS,
+        required: [
+          "goal_mode",
+          "required_capabilities",
+          "self_verification",
+          "cross_reviewers",
+          "adversarial_reviewers",
+          "human_approval",
+          "max_lease_seconds",
+        ],
+      },
       proposed_impacts: { type: "array", items: { type: "object" } },
       proposed_risks: { type: "array", items: { type: "object" } },
       dependency_rewire_ids: V1_STRING_ARRAY,
@@ -1464,6 +1852,7 @@ const RUNTIME_V1_TOOL_NAMES = new Set([
   "goalboard_v1_release",
   "goalboard_v1_run_start",
   "goalboard_v1_revalidate",
+  "goalboard_v1_rework_request",
   "goalboard_v1_run_report",
   "goalboard_v1_evidence_submit",
   "goalboard_v1_evidence_correct",
@@ -1516,7 +1905,7 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
         ["user_confirmed", "confirmation_summary"],
       );
     clone.description =
-      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，任一冲突都会保持整份提案未写入，逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
+      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，任一冲突都会保持整份提案未写入，逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
@@ -1996,6 +2385,7 @@ export class GoalBoardServer {
     );
     try {
       let result: unknown;
+      let prettyPrint = true;
       switch (name) {
         case "goalboard_v1_initialize":
           result = coordinator.initializeBoard({
@@ -2085,19 +2475,32 @@ export class GoalBoardServer {
             goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
           });
           break;
-        case "goalboard_v1_available":
-          result = coordinator.queryAvailable({
+        case "goalboard_v1_available": {
+          const detailLevel = arguments_.detail_level == null
+            ? "summary"
+            : String(arguments_.detail_level);
+          if (detailLevel !== "summary" && detailLevel !== "full") {
+            throw new GoalBoardV1Error(
+              "available.detail_level_invalid",
+              `detail_level=${detailLevel}；allowed: summary, full`,
+              { field: "detail_level", received_value: detailLevel, allowed_values: ["summary", "full"] },
+            );
+          }
+          result = availableResponse(coordinator.queryAvailable({
             board_id: String(arguments_.board_id),
             actor_id: String(arguments_.actor_id),
             capabilities: (arguments_.capabilities as string[]) ?? [],
             goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
-          });
+          }), detailLevel);
+          prettyPrint = detailLevel === "full";
           break;
+        }
         case "goalboard_v1_planning_methods":
-          result = {
-            methods: coordinator.effectivePlanningMethods(String(arguments_.board_id)),
-            composition: coordinator.projectPlanningComposition(String(arguments_.board_id)),
-          };
+          result = planningMethodResponse(
+            coordinator.effectivePlanningMethods(String(arguments_.board_id)),
+            coordinator.projectPlanningComposition(String(arguments_.board_id)),
+            arguments_,
+          );
           break;
         case "goalboard_v1_planning_method_save":
           result = coordinator.saveProjectPlanningMethod({
@@ -2137,16 +2540,26 @@ export class GoalBoardServer {
             arguments_ as unknown as Parameters<GoalBoardCoordinator["startDraftDialogue"]>[0],
           );
           break;
-        case "goalboard_v1_draft_dialogue_turn":
-          result = coordinator.recordDraftDialogueTurn(
-            arguments_ as unknown as Parameters<GoalBoardCoordinator["recordDraftDialogueTurn"]>[0],
+        case "goalboard_v1_draft_dialogue_turn": {
+          const historyOptions = draftDialogueHistoryOptions(arguments_);
+          result = draftDialogueResponse(
+            coordinator.recordDraftDialogueTurn(
+              arguments_ as unknown as Parameters<GoalBoardCoordinator["recordDraftDialogueTurn"]>[0],
+            ),
+            historyOptions,
           );
           break;
-        case "goalboard_v1_draft_dialogue_resume":
-          result = coordinator.resumeDraftDialogue(
-            arguments_ as unknown as Parameters<GoalBoardCoordinator["resumeDraftDialogue"]>[0],
+        }
+        case "goalboard_v1_draft_dialogue_resume": {
+          const historyOptions = draftDialogueHistoryOptions(arguments_);
+          result = draftDialogueResponse(
+            coordinator.resumeDraftDialogue(
+              arguments_ as unknown as Parameters<GoalBoardCoordinator["resumeDraftDialogue"]>[0],
+            ),
+            historyOptions,
           );
           break;
+        }
         case "goalboard_v1_goal_tree_propose":
           result = coordinator.submitGoalTreeProposal(
             arguments_ as unknown as Parameters<GoalBoardCoordinator["submitGoalTreeProposal"]>[0],
@@ -2360,6 +2773,9 @@ export class GoalBoardServer {
         case "goalboard_v1_revalidate":
           result = coordinator.revalidateGoal(this.v1Payload(arguments_));
           break;
+        case "goalboard_v1_rework_request":
+          result = coordinator.requestGoalRework(this.v1Payload(arguments_));
+          break;
         case "goalboard_v1_run_report":
           result = coordinator.reportRun(this.v1Payload(arguments_));
           break;
@@ -2420,7 +2836,7 @@ export class GoalBoardServer {
         default:
           throw new GoalBoardV1Error("mcp.tool_unknown", `未知 V1 tool: ${name}`);
       }
-      return JSON.stringify(result, null, 2);
+      return JSON.stringify(result, null, prettyPrint ? 2 : undefined);
     } finally {
       store.close();
     }

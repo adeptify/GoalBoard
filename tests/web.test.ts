@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { GoalBoardServer } from "../src/mcp/server.js";
 import {
   GOAL_TREE_STATUS_ORDER,
   activeOutgoingDependsOn,
+  countGoalDecisions,
   displayedPassedCriterionIds,
   firstBlockedDescendant,
   goalTreeReferenceLabel,
@@ -23,6 +25,7 @@ import {
   renderFeedWorkbenchFragment,
   renderGoalPanelFragment,
   renderGoalQuickRecordFragment,
+  goalTreeReferenceLabels,
   renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
   renderGoalBoardWorkbenchClientScript,
@@ -59,6 +62,215 @@ test("Goal Tree uses compact Runtime references instead of long internal ids", (
   assert.equal(goalTreeReferenceLabel("cgs-g12f-topic-analysis"), "G12F");
   assert.equal(goalTreeReferenceLabel("V1"), "V1");
   assert.equal(goalTreeReferenceLabel("draft-e5f42553-1111-2222-3333-444444444444"), null);
+});
+
+test("Goal Tree disambiguates Goals that share the same compact Runtime reference", () => {
+  const labels = goalTreeReferenceLabels([
+    "cgs-g2a-opportunity-intelligence",
+    "cgs-g2g-ai-kol-quality-roster",
+    "cgs-g2g-ai-kol-quality-roster-v2",
+    "cgs-g2g-roster-schema",
+    "cgs-g2g-roster-integration",
+    "cgs-g2g-douyin-roster",
+    "cgs-g2g-x-roster",
+    "cgs-g2g-xiaohongshu-roster",
+  ]);
+
+  assert.equal(labels.get("cgs-g2a-opportunity-intelligence"), "G2A");
+  assert.equal(labels.get("cgs-g2g-ai-kol-quality-roster"), "G2G");
+  assert.equal(labels.get("cgs-g2g-ai-kol-quality-roster-v2"), "G2G/V2");
+  assert.equal(labels.get("cgs-g2g-roster-schema"), "G2G/S");
+  assert.equal(labels.get("cgs-g2g-roster-integration"), "G2G/I");
+  assert.equal(labels.get("cgs-g2g-douyin-roster"), "G2G/D");
+  assert.equal(labels.get("cgs-g2g-x-roster"), "G2G/X");
+  assert.equal(labels.get("cgs-g2g-xiaohongshu-roster"), "G2G/XI");
+  assert.equal(new Set(labels.values()).size, labels.size, "rendered Goal references must be unique");
+});
+
+test("Web keeps a released Run blocker as history instead of a current blocker", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-historical-run-blocker-"));
+  const databasePath = join(directory, "board.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "historical-run-blocker-board",
+    title: "Historical Run blocker",
+    actor_id: "owner",
+    idempotency_key: "historical-run-blocker-board-create",
+  });
+  coordinator.createGoal(
+    "historical-run-blocker-board",
+    {
+      goal_id: "historical-run-blocker-goal",
+      title: "范围已经纠偏的目标",
+      outcome: "当前范围不再要求成本与返工证据",
+      why: "避免旧执行判断继续冒充当前待办",
+      business_logic: "历史报告保留原文，当前状态只由仍有效事实派生。",
+      promised_outputs: ["当前范围不再要求成本与返工证据"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "historical-run-blocker-current-result",
+        statement: "当前范围结果可检查",
+        decision_method: "inspection",
+        pass_condition: "当前状态不引用已释放 Run 的旧理由",
+      }],
+    },
+    { actor_id: "owner", idempotency_key: "historical-run-blocker-goal-create" },
+  );
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "historical-run-blocker-board",
+    goal_id: "historical-run-blocker-goal",
+    actor_id: "runtime-old-scope",
+    role: "executor",
+    idempotency_key: "historical-run-blocker-select",
+  });
+  coordinator.reportRun({
+    board_id: "historical-run-blocker-board",
+    run_id: selected.run!.run_id,
+    actor_id: "runtime-old-scope",
+    state: "failed",
+    block_reason: "旧范围要求补 Agent 成本、Token 和返工证据",
+    idempotency_key: "historical-run-blocker-report",
+  });
+  const view = buildGoalBoardWebView(store, coordinator, {
+    boardId: "historical-run-blocker-board",
+  });
+  const item = view.goals.find((candidate) => candidate.goal.goal_id === "historical-run-blocker-goal")!;
+  assert.equal(item.work_state, "execution_pending");
+  assert.deepEqual(item.reasons, []);
+  const page = renderGoalBoardWeb(view, "historical-run-blocker-goal");
+  const progress = renderGoalPanelFragment(view, "historical-run-blocker-goal", "progress") ?? "";
+  assert.match(progress, /当时记录：旧范围要求补 Agent 成本、Token 和返工证据/);
+  assert.match(progress, /这不是当前阻塞/);
+  assert.doesNotMatch(page, /<dt>当前阻塞<\/dt><dd>旧范围要求补 Agent 成本、Token 和返工证据/);
+  const records = renderGoalRecordsFragment(view, "historical-run-blocker-goal")!;
+  assert.match(records, /当时报告的阻塞/);
+  assert.match(records, /这条历史记录不会自动成为当前阻塞/);
+  store.close();
+});
+
+test("an open completion Risk stays visible without replacing an executable Goal's next action", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-completion-risk-action-"));
+  const databasePath = join(directory, "board.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "completion-risk-action-board",
+    title: "Completion Risk action",
+    actor_id: "owner",
+    idempotency_key: "completion-risk-action-board-create",
+  });
+  coordinator.createGoal(
+    "completion-risk-action-board",
+    {
+      goal_id: "completion-risk-action-goal",
+      title: "继续修正真实搜索能力",
+      outcome: "检索路由可以被真实复核",
+      why: "新反证证明旧实现不足",
+      business_logic: "先修正实现，再由 completion Risk 约束最终完成。",
+      promised_outputs: ["可复核的检索路由"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "completion-risk-action-criterion",
+        statement: "真实检索路由通过复核",
+        decision_method: "inspection",
+        pass_condition: "新的检查记录覆盖 Contract",
+        required_evidence: ["inspection"],
+      }],
+    },
+    { actor_id: "owner", idempotency_key: "completion-risk-action-goal-create" },
+  );
+  coordinator.addRisk(
+    "completion-risk-action-board",
+    {
+      risk_id: "completion-risk-action-risk",
+      goal_ids: ["completion-risk-action-goal"],
+      description: "来源覆盖还没有完成最终核对",
+      probability: "medium",
+      impact: "不能宣告完整覆盖",
+      affected_surfaces: ["真实来源覆盖"],
+      trigger: "覆盖核对尚未完成",
+      treatment: "mitigate",
+      treatment_plan: "完成覆盖核对",
+      blocking_mode: "completion",
+      revisit_condition: "覆盖核对通过",
+      owner: "research-owner",
+    },
+    { actor_id: "owner", idempotency_key: "completion-risk-action-risk-create" },
+  );
+
+  const view = buildGoalBoardWebView(store, coordinator, { boardId: "completion-risk-action-board" });
+  const item = view.goals.find((entry) => entry.goal.goal_id === "completion-risk-action-goal")!;
+  assert.equal(item.status, "execution_pending");
+  assert.equal(countGoalDecisions(view, item.goal.goal_id), 1, "the Risk remains visible in Inbox");
+  const html = renderGoalBoardWeb(view, item.goal.goal_id);
+  const factors = renderGoalPanelFragment(view, item.goal.goal_id, "factors") ?? "";
+  assert.match(html, /goal-now-body[\s\S]*?<strong>开始推进这条 Goal<\/strong>/);
+  assert.match(html, /goal-now-body[\s\S]*?<span>打开 Runtime<\/span>/);
+  assert.doesNotMatch(html, /goal-now-body[\s\S]{0,800}<strong>先完成等待你的决定<\/strong>/);
+  assert.match(factors, /来源覆盖还没有完成最终核对/);
+
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("Web keeps a replaced Goal as readable history while directing work to its replacement", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-replaced-goal-"));
+  const databasePath = join(directory, "board.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  const boardId = "replaced-goal-board";
+  coordinator.initializeBoard({
+    board_id: boardId,
+    title: "Replacement",
+    actor_id: "owner",
+    idempotency_key: "replaced-goal-board-create",
+  });
+  for (const [goalId, title] of [["roster-v1", "旧版 KOL 名单"], ["roster-v2", "新版七平台 KOL 名单"]]) {
+    coordinator.createGoal(
+      boardId,
+      {
+        goal_id: goalId,
+        title,
+        outcome: `${title}可检查`,
+        why: "让执行范围保持当前有效",
+        business_logic: "只推进用户当前确认的版本。",
+        promised_outputs: [`${title}结果`],
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [{
+          criterion_id: `${goalId}-criterion`,
+          statement: `${title}存在`,
+          decision_method: "inspection",
+          pass_condition: "结果可读",
+          required_evidence: ["artifact"],
+        }],
+      },
+      { actor_id: "owner", idempotency_key: `create-${goalId}` },
+    );
+  }
+  coordinator.addRelation(
+    boardId,
+    {
+      from_goal_id: "roster-v2",
+      to_goal_id: "roster-v1",
+      type: "replaces",
+      reason: "用户确认新版取代旧范围",
+    },
+    { actor_id: "owner", idempotency_key: "replace-roster-v1" },
+  );
+  const view = buildGoalBoardWebView(store, coordinator, { boardId });
+  assert.equal(view.goals.find((item) => item.goal.goal_id === "roster-v1")?.status, "replaced");
+  assert.equal(view.goals.find((item) => item.goal.goal_id === "roster-v2")?.status, "execution_pending");
+  const html = renderGoalBoardWeb(view, "roster-v1");
+  assert.match(html, /goal-status--replaced/);
+  assert.match(html, /已被替代/);
+  assert.match(html, /新版七平台 KOL 名单/);
+  assert.match(html, /被替代/);
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
 });
 
 test("completed Goal presentation closes criteria without inventing Evidence", () => {
@@ -190,6 +402,20 @@ test("Web distinguishes local Contract satisfaction from recorded parent Contrac
   const parentHtml = renderGoalPanelFragment(view, "coverage-parent", "completion") ?? "";
   assert.match(parentHtml, /父子 Contract 覆盖/);
   assert.match(parentHtml, /三类代表性样本/);
+
+  const partialReview = structuredClone(store.getGoal("coverage-parent")!.decomposition_review!);
+  partialReview.contract_coverage!.promised_outputs[0]!.status = "partial";
+  partialReview.contract_coverage!.promised_outputs[0]!.reason = "样本只覆盖演示链路，尚未覆盖完整父级能力。";
+  partialReview.contract_coverage!.acceptance_criteria[0]!.status = "integration_required";
+  partialReview.contract_coverage!.acceptance_criteria[0]!.reason = "仍需父级集成验收。";
+  store.db
+    .prepare("UPDATE goals SET decomposition_review_json = ?, fulfillment_state = 'unmet' WHERE goal_id = ?")
+    .run(JSON.stringify(partialReview), "coverage-parent");
+  const partialView = buildGoalBoardWebView(store, coordinator, { boardId: "coverage-board" });
+  const partialParentHtml = renderGoalPanelFragment(partialView, "coverage-parent", "completion") ?? "";
+  assert.match(partialParentHtml, /父级 Contract 仍有覆盖缺口/);
+  assert.match(partialParentHtml, /现有子 Goal 的完成数量不足以证明父级承诺已经实现/);
+  assert.doesNotMatch(partialParentHtml, /还剩 0 个子 Goal；全部完成后，这条父 Goal 会自动完成/);
 
   store.db
     .prepare("UPDATE goals SET decomposition_review_json = NULL, fulfillment_state = 'satisfied' WHERE goal_id = ?")
@@ -901,7 +1127,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, true\)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /const activateFocusSection = \(trigger\) =>/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealFocusTarget = \(target\) =>/);
-  assert.match(WORKBENCH_CLIENT_SCRIPT, /revealFocusTarget\(targetElement\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /revealDeepLinkTarget\(targetElement\)/);
   assert.match(html, /class="focus-section-deck focus-section-deck--context"/);
   assert.match(html, /class="focus-section-card-row" data-focus-section-card-row/);
   assert.match(html, /class="focus-section-stage" data-focus-section-stage/);
@@ -1272,6 +1498,66 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   store.close();
 });
 
+test("Web projects an expired Claim and started Run as one stopped lifecycle", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-expired-lifecycle-"));
+  const databasePath = join(directory, "goalboard.db");
+  const boardId = "web-expired-lifecycle";
+  const goalId = "web-expired-goal";
+  let now = new Date("2026-08-30T00:00:00.000Z");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store, () => now);
+  try {
+    coordinator.initializeBoard({
+      board_id: boardId,
+      title: "过期生命周期 Web 复验",
+      actor_id: "web-user",
+      idempotency_key: "web-expired-board",
+    });
+    coordinator.createGoal(boardId, {
+      goal_id: goalId,
+      title: "恢复过期执行",
+      outcome: "旧执行停止后可以重新领取",
+      why: "不让用户看到冲突状态",
+      business_logic: "租约过期后旧 Run 不再运行。",
+      promised_outputs: ["一致的过期状态"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "web-expired-criterion",
+        statement: "过期生命周期一致",
+        decision_method: "automated_check",
+        pass_condition: "Claim expired 且 Run abandoned",
+        required_evidence: ["test"],
+      }],
+    }, { actor_id: "web-user", idempotency_key: "web-expired-create" });
+    const selected = coordinator.selectGoalAndStart({
+      board_id: boardId,
+      goal_id: goalId,
+      actor_id: "runtime-expired",
+      role: "executor",
+      lease_seconds: 10,
+      idempotency_key: "web-expired-select",
+    });
+    now = new Date("2026-08-30T00:00:11.000Z");
+
+    const view = buildGoalBoardWebView(store, coordinator, { databasePath, boardId });
+    const item = view.goals.find((candidate) => candidate.goal.goal_id === goalId);
+    assert.ok(item);
+    assert.equal(item.active_claim, null);
+    assert.equal(item.claims.find((claim) => claim.claim_id === selected.claim?.claim_id)?.state, "expired");
+    assert.equal(item.runs.find((run) => run.run_id === selected.run?.run_id)?.state, "abandoned");
+
+    const html = renderGoalBoardWeb(view, goalId);
+    assert.match(html, /最近一次推进已经停止/);
+    assert.match(html, /<dd>abandoned<\/dd>/);
+    assert.doesNotMatch(html, /最近一次推进正在进行/);
+    assert.doesNotMatch(html, /<dd>started<\/dd>/);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Decision Center keeps canonical risk and rewire results visible after pending cards disappear", () => {
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
@@ -1481,6 +1767,90 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   assert.match(WORKBENCH_CLIENT_SCRIPT, /决定已记录，但这次没有新增或解除 Goal 关系，也没有新增风险。/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /风险已接受，不再阻止关联 Goal。/);
+  store.close();
+});
+
+test("Decision Center never presents a Runtime review as user approval", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-runtime-review-result-"));
+  const databasePath = join(directory, "goalboard.db");
+  const boardId = "runtime-review-result-board";
+  const goalId = "RUNTIME-REVIEW-RESULT";
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: boardId,
+    title: "Runtime 复核主体展示",
+    actor_id: "owner",
+    idempotency_key: "runtime-review-result-board",
+  });
+  coordinator.createGoal(boardId, {
+    goal_id: goalId,
+    title: "工程检查完成后等待用户验收",
+    outcome: "工程复核和用户验收不混淆",
+    why: "避免把 Runtime 判断写成用户确认",
+    business_logic: "Runtime 检查工程事实，用户保留体验决定。",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+    acceptance_criteria: [{
+      criterion_id: "runtime-review-result-check",
+      statement: "工程检查通过",
+      decision_method: "inspection",
+      pass_condition: "Runtime 提交独立检查",
+      required_evidence: ["inspection"],
+    }],
+  }, { actor_id: "owner", idempotency_key: "runtime-review-result-goal" });
+  const execution = coordinator.selectGoalAndStart({
+    board_id: boardId,
+    goal_id: goalId,
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "runtime-review-result-execute",
+  });
+  coordinator.reportRun({
+    board_id: boardId,
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    idempotency_key: "runtime-review-result-complete",
+  });
+  const evidence = coordinator.submitEvidence({
+    board_id: boardId,
+    goal_id: goalId,
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["runtime-review-result-check"],
+    kind: "inspection",
+    locator: "review://runtime-review-result",
+    result: "passed",
+    idempotency_key: "runtime-review-result-evidence",
+  }).evidence;
+  coordinator.releaseClaim({
+    board_id: boardId,
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "进入复核",
+    idempotency_key: "runtime-review-result-release",
+  });
+  const obligation = store.snapshot(boardId).review_obligations.find(
+    (item) => item.goal_id === goalId && item.role === "self_verifier",
+  )!;
+  coordinator.submitReview({
+    board_id: boardId,
+    goal_id: goalId,
+    obligation_id: obligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    actor_kind: "runtime",
+    verdict: "pass",
+    evidence_refs: [evidence.evidence_id],
+    reasoning: "工程检查已通过，用户验收尚未发生。",
+    idempotency_key: "runtime-review-result-submit",
+  });
+  const view = buildGoalBoardWebView(store, coordinator, { databasePath, boardId });
+  const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
+  assert.match(decisionHtml, /Runtime 复核/);
+  assert.match(decisionHtml, /本次 Runtime 复核已通过；它不能代替用户验收/);
+  assert.match(decisionHtml, /复核理由：工程检查已通过，用户验收尚未发生。/);
+  assert.doesNotMatch(decisionHtml, /本次用户确认已通过；Goal 是否完成仍由全部完成条件共同决定。/);
   store.close();
 });
 
@@ -2569,6 +2939,18 @@ test("Web diagnostics previews and confirms the same managed Web service lifecyc
     const status = (await (await webFetch(`${origin}/api/settings/web-service`)).json()) as { state: string };
     assert.equal(status.state, "running");
 
+    const outdatedPlist = `${readFileSync(service.plistPath, "utf8")}\n<!-- stale GoalBoard configuration -->\n`;
+    writeFileSync(service.plistPath, outdatedPlist);
+    const outdatedReceipt = JSON.parse(readFileSync(service.receiptPath, "utf8")) as Record<string, unknown>;
+    outdatedReceipt.plist_hash = createHash("sha256").update(outdatedPlist).digest("hex");
+    writeFileSync(service.receiptPath, `${JSON.stringify(outdatedReceipt, null, 2)}\n`);
+    const needsRepairPage = await (await webFetch(`${origin}/settings/diagnostics`)).text();
+    assert.match(needsRepairPage, /需要修复/);
+    assert.match(needsRepairPage, /data-web-service-action="install">修复常驻服务/);
+    assert.doesNotMatch(needsRepairPage, /data-web-service-action="restart"/);
+    const repair = await service.prepare("install");
+    await service.confirm({ plan_id: repair.plan_id, decision: "confirmed" });
+
     healthy = false;
     const unhealthyStatus = (await (await webFetch(`${origin}/api/settings/web-service`)).json()) as { state: string };
     assert.equal(unhealthyStatus.state, "unhealthy");
@@ -3285,6 +3667,13 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
     discovered_in_run_id: dialogue.run!.run_id,
     root_goal_id: "web-tree-root",
     summary: "新增一条仍需继续澄清的子 Goal。",
+    narrative: {
+      why_now: "用户已经确认要保留这条新分支，现在需要决定它在 Goal Tree 中的位置。",
+      problem: "当前父 Goal 没有表达这条仍需澄清的工作，后续对话会失去稳定归属。",
+      main_path: ["先创建待澄清子 Goal", "再把它归入当前父 Goal", "之后由 Runtime 继续澄清"],
+      expected_effect: "用户能在一个审批面理解新分支的来源、归属和下一步。",
+      non_goals: ["本次不自动接受子 Goal Contract", "本次不开始执行"],
+    },
     items: [
       {
         item_id: "web-tree-child",
@@ -3293,6 +3682,12 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
         payload: { goal_id: "web-tree-child", title: "Web 可选确认的 Draft 子 Goal" },
         source_refs: ["conversation://web-tree"],
         reason: "用户希望保留这个分支，之后继续在 Runtime 里澄清。",
+        explanation: {
+          problem: "新分支还没有稳定 Goal 可承接后续澄清",
+          expected_effect: "创建一条仍为 Draft 的子 Goal，后续对话不再丢失归属",
+          non_goals: ["不把 Draft 误写成已接受 Goal"],
+          depends_on_item_ids: [],
+        },
         confidence: 1,
         affected_objects: [{ object_type: "goal", object_id: "web-tree-child" }],
       },
@@ -3308,6 +3703,12 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
         },
         source_refs: ["conversation://web-tree"],
         reason: "把新工作放回当前 Goal 的范围中。",
+        explanation: {
+          problem: "只创建子 Goal 会留下没有父级归属的孤立节点",
+          expected_effect: "用户能看到这条工作属于当前父 Goal，后续进度按同一结果链解释",
+          non_goals: ["不建立额外执行依赖"],
+          depends_on_item_ids: ["web-tree-child"],
+        },
         confidence: 1,
         affected_objects: [
           { object_type: "relation", object_id: "web-tree-child-part-of-root" },
@@ -3356,6 +3757,14 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
     assert.match(decisionPage, /这份 Goal 方案要采用，还是退回修改/);
     assert.match(decisionPage, /data-goal-tree-proposal-id=/);
     assert.match(decisionPage, /采用整份方案/);
+    assert.match(decisionPage, /这次变更主要解决什么/);
+    assert.match(decisionPage, /当前父 Goal 没有表达这条仍需澄清的工作/);
+    assert.match(decisionPage, /先创建待澄清子 Goal/);
+    assert.match(decisionPage, /本次不自动接受子 Goal Contract/);
+    assert.match(decisionPage, /主要解决[\s\S]*新分支还没有稳定 Goal 可承接后续澄清/);
+    assert.match(decisionPage, /会改变什么[\s\S]*创建一条仍为 Draft 的子 Goal/);
+    assert.match(decisionPage, /明确不改变[\s\S]*不把 Draft 误写成已接受 Goal/);
+    assert.match(decisionPage, /关联变更[\s\S]*新增 Goal「Web 可选确认的 Draft 子 Goal」/);
     assert.match(decisionPage, /name="item_id" value="web-tree-child"/);
     assert.match(decisionPage, /放到当前方案里看/);
     assert.match(decisionPage, /goal-tree-proposal-decision[\s\S]*<section class="decision-scenario"[\s\S]*<details class="decision-details goal-tree-proposal-changes"/);
@@ -3769,6 +4178,13 @@ test("Web lets the user repair a historical Goal Tree Risk without rewriting the
     discovered_in_run_id: dialogue.run!.run_id,
     root_goal_id: "web-invalid-risk-root",
     summary: "补充发布后的性能风险。",
+    narrative: {
+      why_now: "发布方案已进入用户确认前，需要先决定四类风险如何处理。",
+      problem: "当前方案只列目标，没有把风险选择与完整产品目标放在同一个审批上下文中。",
+      main_path: ["确认完整产品目标", "逐条决定性能、生成、兼容和同步风险", "再决定是否采用整份方案"],
+      expected_effect: "用户能看清每条风险解决的问题与处理边界，不会把风险字段误当成已完成措施。",
+      non_goals: ["不在本次确认中执行风险措施"],
+    },
     items: [
       {
         item_id: "web-invalid-risk-child",
@@ -3777,6 +4193,12 @@ test("Web lets the user repair a historical Goal Tree Risk without rewriting the
         payload: { goal: { goal_id: "web-invalid-risk-child", title: "第一个子 Goal", outcome: "这是子目标，不是整份方案的标题" } },
         source_refs: ["conversation://web-invalid-risk"],
         reason: "验证页面不会把第一个子 Goal 当成整份方案。",
+        explanation: {
+          problem: "首个子 Goal 容易被误当作整份方案标题",
+          expected_effect: "页面仍以根 Goal 表达整份审批对象",
+          non_goals: ["不改变子 Goal Contract"],
+          depends_on_item_ids: [],
+        },
         confidence: 0.9,
         affected_objects: [{ object_type: "goal", object_id: "web-invalid-risk-child" }],
       },
@@ -3787,6 +4209,12 @@ test("Web lets the user repair a historical Goal Tree Risk without rewriting the
         payload: { goal: { goal_id: "web-invalid-risk-root", title: "完整产品目标", outcome: "这是整份方案真正要确认的目标" } },
         source_refs: ["conversation://web-invalid-risk"],
         reason: "补全根 Goal 的目标说明。",
+        explanation: {
+          problem: "根 Goal 缺少整份方案的可读结果说明",
+          expected_effect: "用户先理解完整产品目标，再处理风险",
+          non_goals: ["不自动接受风险处理"],
+          depends_on_item_ids: [],
+        },
         confidence: 0.9,
         affected_objects: [{ object_type: "goal", object_id: "web-invalid-risk-root" }],
       },
@@ -3808,6 +4236,12 @@ test("Web lets the user repair a historical Goal Tree Risk without rewriting the
         },
         source_refs: ["conversation://web-invalid-risk"],
         reason: "需要在采用方案前明确如何处理这条风险。",
+        explanation: {
+          problem: description,
+          expected_effect: "用户在采用前明确这条风险的处理选择与触发边界",
+          non_goals: ["不把处理计划当成已经执行"],
+          depends_on_item_ids: ["web-invalid-risk-root-contract"],
+        },
         confidence: 0.9,
         affected_objects: [{ object_type: "risk" as const, object_id: `web-invalid-risk-${index + 1}` }],
       })),
@@ -4316,6 +4750,13 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
     discovered_in_run_id: dialogue.run!.run_id,
     root_goal_id: "web-ai-parent",
     summary: "把 AI 最终结果、核心能力、支撑基础、质量交付和专属检查交代完整。",
+    narrative: {
+      why_now: "AI 目标已经拆分到可以确认的结果链，需要用户在执行前理解核心工作与基础能力的消费方向。",
+      problem: "原父 Goal 没有说明最终结果、AI 专属检查和基础能力分别由谁负责。",
+      main_path: ["准备 AI 数据与运行基础", "核心 Goal 消费基础结果并交付 AI 能力", "父 Goal 汇总完整结果链与验收"],
+      expected_effect: "用户能按业务结果而非技术层次理解两条子 Goal 及其先后依赖。",
+      non_goals: ["不按每个检查项额外创建 Goal", "不在确认时自动开始执行"],
+    },
     items: [
       {
         item_id: "web-ai-parent-contract",
@@ -4365,6 +4806,12 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
         },
         source_refs: ["conversation://web-task-chain"],
         reason: "把通用结果链和 AI 专属检查放回同一方案。",
+        explanation: {
+          problem: "父 Goal 没有覆盖通用结果链和 AI 专属验收",
+          expected_effect: "父 Contract 明确哪些子结果共同证明完整 AI 能力",
+          non_goals: ["不把每项检查拆成独立 Goal"],
+          depends_on_item_ids: [],
+        },
         confidence: 0.95,
         affected_objects: [{ object_type: "goal", object_id: "web-ai-parent" }],
       },
@@ -4379,6 +4826,12 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
           payload: leafPayload(goalId, title, output),
           source_refs: ["conversation://web-task-chain"],
           reason: "形成一个边界清楚的执行结果。",
+          explanation: {
+            problem: `${title}还没有独立、可验收的执行归属`,
+            expected_effect: `${title}成为边界清楚的可执行结果`,
+            non_goals: ["不承担另一条可独立交付的结果"],
+            depends_on_item_ids: ["web-ai-parent-contract"],
+          },
           confidence: 0.9,
           affected_objects: [{ object_type: "goal" as const, object_id: goalId }],
         },
@@ -4389,6 +4842,12 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
           payload: { from_goal_id: goalId, to_goal_id: "web-ai-parent", type: "part_of" },
           source_refs: ["conversation://web-task-chain"],
           reason: "这条结果属于完整 AI 目标。",
+          explanation: {
+            problem: `${title}若无父子关系会成为孤立 Goal`,
+            expected_effect: `${title}在完整 AI 结果链中有明确归属`,
+            non_goals: ["不改变该 Goal 的执行先后"],
+            depends_on_item_ids: [`${goalId}-goal`],
+          },
           confidence: 0.95,
           affected_objects: [{ object_type: "relation" as const, object_id: `relation:${goalId}:web-ai-parent` }],
         },
@@ -4405,6 +4864,12 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
         },
         source_refs: ["conversation://web-task-chain"],
         reason: "说明核心工作消费哪项基础结果。",
+        explanation: {
+          problem: "核心工作与基础能力虽已拆开，但没有表达消费者到提供者的方向",
+          expected_effect: "核心 Goal 会等待并消费基础 Goal 的数据与运行环境",
+          non_goals: ["不把基础 Goal 变成用户最终结果"],
+          depends_on_item_ids: [`${coreGoalId}-goal`, `${foundationGoalId}-goal`],
+        },
         confidence: 0.98,
         affected_objects: [{ object_type: "relation", object_id: "relation:web-ai-core:web-ai-foundation" }],
       },
@@ -5813,6 +6278,17 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
         (item) => item.goal_id === "POLICY-WEB" && item.role === "human_approver",
       );
     assert.ok(obligation);
+    const conversationVerdict = runtimeCoordinator.submitEvidence({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+      actor_id: "runtime-policy-web",
+      criterion_ids: obligation.criterion_scope,
+      kind: "human_verdict",
+      locator: "conversation://policy-web/current-user-message",
+      digest: "用户在当前对话明确回复：这版没问题，可以继续。",
+      result: "passed",
+      idempotency_key: "evidence-policy-web-human-verdict",
+    }).evidence;
     runtimeStore.close();
 
     const page = await goalPageWithLazyContent(origin, "POLICY-WEB", ["factors"]);
@@ -5881,8 +6357,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(reviewDecisionPage, /维护 Runtime 与 Review Policy/);
     assert.match(reviewDecisionPage, /确认工作结果/);
     assert.match(reviewDecisionPage, /<form class="human-review-form"/);
-    assert.match(reviewDecisionPage, /<option value="" selected disabled>请选择结论<\/option>/);
-    assert.match(reviewDecisionPage, /<option value="pass">通过<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="" disabled>请选择结论<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="pass" selected>通过<\/option>/);
     assert.match(reviewDecisionPage, /<option value="needs_changes">需要修改<\/option>/);
     assert.match(reviewDecisionPage, /<option value="fail">不通过<\/option>/);
     assert.match(reviewDecisionPage, /<option value="inconclusive">证据不足<\/option>/);
@@ -5894,6 +6370,43 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(reviewDecisionPage, /如果选择通过[\s\S]*Goal「维护 Runtime 与 Review Policy」还会等待/);
     assert.match(reviewDecisionPage, /如果需要修改或依据不足[\s\S]*两种情况都不会完成这条 Goal/);
     assert.match(reviewDecisionPage, /human-review-list[\s\S]*<section class="decision-scenario"[\s\S]*<details class="decision-details"/);
+    assert.match(reviewDecisionPage, /已找到当前对话中的明确验收/);
+    assert.match(reviewDecisionPage, /尚未记录为用户验收；请核对后只提交一次/);
+    assert.match(reviewDecisionPage, /用户在当前对话明确回复：这版没问题，可以继续。/);
+    assert.match(reviewDecisionPage, /conversation:\/\/policy-web\/current-user-message/);
+    assert.match(reviewDecisionPage, /<option value="pass" selected>通过<\/option>/);
+    assert.match(
+      reviewDecisionPage,
+      new RegExp(`name="evidence_refs" value="${conversationVerdict.evidence_id}" checked`),
+    );
+    assert.doesNotMatch(
+      reviewDecisionPage,
+      new RegExp(`name="evidence_refs" value="${evidence.evidence_id}" checked`),
+    );
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealDeepLinkTarget = \(target\) =>/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /disclosure\.open = true/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const initialHashTarget = document\.getElementById/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /revealDeepLinkTarget\(initialHashTarget\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.setItem\("goalboard-decision-receipt"/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /location\.reload\(\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.getItem\("goalboard-decision-receipt"\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /showDecisionReceipt\(storedDecisionReceipt\.message/);
+
+    const correctionStore = new SqliteGoalBoardStore(databasePath);
+    const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
+    correctionCoordinator.correctEvidence({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+      actor_id: "runtime-policy-web",
+      target_evidence_id: conversationVerdict.evidence_id,
+      action: "retract",
+      reason: "用户后续说明这句话不是最终验收。",
+      idempotency_key: "evidence-policy-web-human-verdict-retract",
+    });
+    correctionStore.close();
+    const retractedDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
+    assert.doesNotMatch(retractedDecisionPage, /已找到当前对话中的明确验收/);
+    assert.match(retractedDecisionPage, /<option value="" selected disabled>请选择结论<\/option>/);
 
     const missingReason = await webFetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
@@ -6167,6 +6680,31 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(externalEvidence.status, 201, await externalEvidence.clone().text());
     const externalResult = (await externalEvidence.json()) as { evidence: { evidence_id: string } };
 
+    const largeEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["EVIDENCE-WEB-C1"],
+        kind: "artifact",
+        result: "inconclusive",
+        locator: "project://notes/large.txt",
+        digest: "sha256:consumer-supplied-large-file-digest",
+      }),
+    });
+    assert.equal(largeEvidence.status, 201, await largeEvidence.clone().text());
+    const largeResult = (await largeEvidence.json()) as {
+      evidence: {
+        evidence_id: string;
+        locator_status: string;
+        locator_validation_reason: string;
+        digest: string | null;
+      };
+    };
+    assert.equal(largeResult.evidence.locator_status, "unverified");
+    assert.equal(largeResult.evidence.digest, "sha256:consumer-supplied-large-file-digest");
+    assert.match(largeResult.evidence.locator_validation_reason, /512 KiB/);
+    assert.match(largeResult.evidence.locator_validation_reason, /内容未全文预检/);
+
     const correctionStore = new SqliteGoalBoardStore(databasePath);
     const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
     correctionCoordinator.correctEvidence({
@@ -6226,6 +6764,13 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.match(goalRecords, /已验证/);
     assert.match(goalRecords, /UNVERIFIED/);
     assert.match(goalRecords, /不会发起网络请求/);
+    assert.match(goalRecords, new RegExp(largeResult.evidence.evidence_id));
+    assert.match(goalRecords, /文件路径已确认/);
+    assert.match(goalRecords, /内容未全文预检/);
+    assert.ok(
+      !goalRecords.includes(`/api/project-references/${encodeURIComponent("project://notes/large.txt")}?evidence_id=${largeResult.evidence.evidence_id}`),
+      "a large unverified artifact must not render as an openable project reference",
+    );
     assert.match(
       goalRecords,
       new RegExp(`href="/api/project-references/notes%2Fevidence\\.txt\\?evidence_id=${submittedResult.evidence.evidence_id}"`),
@@ -6243,6 +6788,12 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(opened.status, 200, await opened.clone().text());
     assert.match(opened.headers.get("content-type") ?? "", /text\/plain/);
     assert.match(await opened.text(), /用户手工检查/);
+
+    const largeEvidenceOpen = await webFetch(
+      `${origin}/api/project-references/${encodeURIComponent("project://notes/large.txt")}?evidence_id=${largeResult.evidence.evidence_id}`,
+    );
+    assert.equal(largeEvidenceOpen.status, 409);
+    assert.match(await largeEvidenceOpen.text(), /只有已验证的项目内 Evidence 引用可以直接打开/);
 
     const escaped = await webFetch(`${origin}/api/project-references/${encodeURIComponent("project://../outside.txt")}`);
     assert.equal(escaped.status, 400);

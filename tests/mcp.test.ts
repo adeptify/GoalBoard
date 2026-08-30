@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
+import { GoalBoardCoordinator, SqliteGoalBoardStore } from "../src/index.js";
 import { GoalBoardServer, runtimeContextHostFromEnvironment } from "../src/mcp/server.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 
@@ -78,33 +79,73 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /改变已有 Risk 生命周期本身是一条正式 Goal/);
     assert.match(goalTreeProposeTool?.description ?? "", /不能只改 Risk 后留下空 Draft/);
     assert.match(goalTreeProposeTool?.description ?? "", /active executor Run.*仅含 Risk 生命周期变更/s);
+    assert.match(goalTreeProposeTool?.description ?? "", /包含 5 项及以上变化时/);
+    const proposalNarrativeSchema = goalTreeProposeTool?.inputSchema.properties?.narrative as {
+      required?: string[];
+      properties?: { main_path?: { minItems?: number } };
+    } | undefined;
+    assert.deepEqual(proposalNarrativeSchema?.required, [
+      "why_now",
+      "problem",
+      "main_path",
+      "expected_effect",
+      "non_goals",
+    ]);
+    assert.equal(proposalNarrativeSchema?.properties?.main_path?.minItems, 1);
     const goalTreeItemSchema = goalTreeProposeTool?.inputSchema.properties?.items as {
       items?: {
-        allOf?: Array<{
-          if?: { properties?: { kind?: { const?: string } } };
-          then?: {
-            properties?: {
-              payload?: {
-                description?: string;
-                properties?: Record<string, { enum?: string[] }>;
+        oneOf?: Array<{
+          properties?: {
+            kind?: { const?: string };
+            explanation?: { required?: string[]; description?: string };
+            payload?: {
+              description?: string;
+              properties?: Record<string, {
+                enum?: string[];
                 required?: string[];
-                examples?: Array<Record<string, unknown>>;
-              };
+                properties?: Record<string, unknown>;
+              }>;
+              required?: string[];
+              examples?: Array<Record<string, unknown>>;
             };
           };
         }>;
       };
     } | undefined;
-    const payloadBranches = goalTreeItemSchema?.items?.allOf ?? [];
+    const itemBranches = goalTreeItemSchema?.items?.oneOf ?? [];
+    assert.deepEqual(itemBranches[0]?.properties?.explanation?.required, [
+      "problem",
+      "expected_effect",
+      "non_goals",
+      "depends_on_item_ids",
+    ]);
+    assert.match(itemBranches[0]?.properties?.explanation?.description ?? "", /面向审批人/);
     assert.deepEqual(
-      payloadBranches.map((branch) => branch.if?.properties?.kind?.const),
+      itemBranches.map((branch) => branch.properties?.kind?.const),
       ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
     );
-    const payloadFor = (kind: string) => payloadBranches.find(
-      (branch) => branch.if?.properties?.kind?.const === kind,
-    )?.then?.properties?.payload;
+    const payloadFor = (kind: string) => itemBranches.find(
+      (branch) => branch.properties?.kind?.const === kind,
+    )?.properties?.payload;
     assert.deepEqual(payloadFor("goal")?.required, ["goal_id", "title"]);
     assert.ok(payloadFor("goal")?.properties?.acceptance_criteria);
+    const contractLeafReadiness = payloadFor("contract")?.properties?.leaf_readiness;
+    assert.deepEqual(contractLeafReadiness?.required, [
+      "verdict",
+      "primary_deliverable",
+      "output_coverage",
+      "split_candidates",
+      "rationale",
+      "unresolved_decisions",
+      "independent_deliverables",
+      "acceptance_criterion_ids",
+    ]);
+    assert.ok(contractLeafReadiness?.properties?.rationale);
+    const splitCandidates = contractLeafReadiness?.properties?.split_candidates as {
+      items?: { properties?: { decision?: { enum?: string[]; description?: string } } };
+    } | undefined;
+    assert.deepEqual(splitCandidates?.items?.properties?.decision?.enum, ["keep", "split"]);
+    assert.match(splitCandidates?.items?.properties?.decision?.description ?? "", /out_of_scope/);
     const decompositionReview = payloadFor("goal")?.properties?.decomposition_review as {
       properties?: {
         contract_coverage?: {
@@ -149,16 +190,30 @@ describe("mcp server", () => {
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
     assert.match(availableTool?.description ?? "", /next_action=complete/);
     assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
+    assert.match(availableTool?.description ?? "", /默认.*紧凑摘要/);
+    assert.deepEqual(
+      (availableTool?.inputSchema.properties?.detail_level as { enum?: string[] } | undefined)?.enum,
+      ["summary", "full"],
+    );
     const explainTool = listedTools.find((tool) => tool.name === "goalboard_v1_explain");
     assert.match(explainTool?.description ?? "", /ready 只表示执行 Claim 就绪/);
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
+    const goalTreeReadTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_read");
+    assert.match(goalTreeReadTool?.description ?? "", /raw.*synthetic|原始.*映射/);
     const goalTreeCheckTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_check");
     assert.match(goalTreeCheckTool?.description ?? "", /物化不变量/);
+    assert.match(goalTreeCheckTool?.description ?? "", /legacy Contract Proposal/);
     assert.ok(names.includes("goalboard_v1_planning_methods"));
     const planningMethodsTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_methods");
     assert.match(planningMethodsTool?.description ?? "", /methods\[\].*instructions/);
     assert.match(planningMethodsTool?.description ?? "", /提供者产出与消费者用途/);
+    const planningMethodProperties = planningMethodsTool?.inputSchema.properties ?? {};
+    assert.equal(
+      ((planningMethodProperties.method_ids as { items?: { type?: string } } | undefined)?.items)?.type,
+      "string",
+    );
+    assert.equal((planningMethodProperties.include_instructions as { type?: string } | undefined)?.type, "boolean");
     assert.ok(names.includes("goalboard_v1_planning_method_save"));
     const planningMethodSaveTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_method_save");
     const planningMethodKind = planningMethodSaveTool?.inputSchema.properties?.method.properties?.kind as { enum?: string[] } | undefined;
@@ -173,6 +228,7 @@ describe("mcp server", () => {
     assert.ok(names.includes("goalboard_v1_evidence_correct"));
     assert.ok(names.includes("goalboard_v1_review_submit"));
     assert.ok(names.includes("goalboard_v1_revalidate"));
+    assert.ok(names.includes("goalboard_v1_rework_request"));
     assert.ok(names.includes("goalboard_v1_goal_trash"));
     assert.ok(names.includes("goalboard_v1_goal_trash_list"));
     assert.ok(names.includes("goalboard_v1_goal_restore"));
@@ -203,6 +259,23 @@ describe("mcp server", () => {
       (tool) => tool.name === "goalboard_v1_contract_propose",
     );
     assert.ok(proposalTool?.inputSchema.properties?.payload.properties?.field_sources);
+    const contractProposalGoal = proposalTool?.inputSchema.properties?.payload.properties?.proposed_goal as {
+      required?: string[];
+      properties?: {
+        acceptance_criteria?: { items?: { required?: string[] } };
+        leaf_readiness?: { required?: string[] };
+      };
+    } | undefined;
+    assert.ok(contractProposalGoal?.required?.includes("goal_id"));
+    assert.ok(contractProposalGoal?.required?.includes("leaf_readiness"));
+    assert.ok(!contractProposalGoal?.required?.includes("constraints"));
+    assert.deepEqual(contractProposalGoal?.properties?.acceptance_criteria?.items?.required, [
+      "criterion_id",
+      "statement",
+      "decision_method",
+      "pass_condition",
+    ]);
+    assert.ok(contractProposalGoal?.properties?.leaf_readiness?.required?.includes("rationale"));
     assert.ok(
       proposalTool?.inputSchema.properties?.payload.required?.includes("review_policy"),
     );
@@ -231,6 +304,7 @@ describe("mcp server", () => {
       ["runtime"],
     );
     const revalidateTool = listedTools.find((tool) => tool.name === "goalboard_v1_revalidate");
+    const reworkTool = listedTools.find((tool) => tool.name === "goalboard_v1_rework_request");
     const evidenceCorrectionTool = listedTools.find((tool) => tool.name === "goalboard_v1_evidence_correct");
     assert.deepEqual(
       (evidenceCorrectionTool?.inputSchema.properties?.payload.properties?.action as { enum: string[] }).enum,
@@ -243,6 +317,9 @@ describe("mcp server", () => {
     assert.ok(revalidateTool?.inputSchema.properties?.payload.properties?.evidence_refs);
     assert.ok(revalidateTool?.inputSchema.properties?.payload.required?.includes("reason"));
     assert.ok(revalidateTool?.inputSchema.properties?.payload.required?.includes("evidence_refs"));
+    assert.match(reworkTool?.description ?? "", /不解决 completion Risk/);
+    assert.ok(reworkTool?.inputSchema.properties?.payload.required?.includes("criterion_ids"));
+    assert.ok(reworkTool?.inputSchema.properties?.payload.required?.includes("evidence_refs"));
     const trashTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_trash");
     assert.ok(trashTool?.inputSchema.properties?.payload.properties?.user_confirmed);
     assert.ok(trashTool?.inputSchema.properties?.payload.required?.includes("user_confirmed"));
@@ -252,6 +329,7 @@ describe("mcp server", () => {
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
     assert.match(treeDecisionTool?.description ?? "", /Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract/);
     assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
+    assert.match(treeDecisionTool?.description ?? "", /native 或 legacy handle 都可直接使用/);
     assert.ok(treeDecisionTool?.inputSchema.properties?.runtime_actor_id);
     assert.ok(treeDecisionTool?.inputSchema.properties?.user_confirmed);
     assert.ok(treeDecisionTool?.inputSchema.properties?.confirmation_summary);
@@ -379,6 +457,7 @@ describe("mcp server", () => {
       result: {
         tools: Array<{
           name: string;
+          description: string;
           inputSchema: { properties?: Record<string, unknown>; required?: string[] };
         }>;
       };
@@ -409,6 +488,8 @@ describe("mcp server", () => {
 
     const renew = tools.find((item) => item.name === "goalboard_v1_claim_renew");
     assert.ok(renew);
+    assert.match(renew.description, /claim\.not_owner/);
+    assert.match(renew.description, /owner_actor_id/);
     const renewPayload = renew.inputSchema.properties?.payload as {
       properties?: Record<string, unknown>;
       required?: string[];
@@ -417,12 +498,43 @@ describe("mcp server", () => {
     assert.match(renewalLease.description ?? "", /领取时确认的策略/);
     assert.equal(renewPayload.required?.includes("lease_seconds"), false);
 
+    for (const name of ["goalboard_v1_draft_dialogue_turn", "goalboard_v1_draft_dialogue_resume"]) {
+      const tool = tools.find((item) => item.name === name);
+      assert.ok(tool, name);
+      assert.match(tool.description, /默认.*(最新 turn|不重复返回完整 turns)/s);
+      const includeHistory = tool.inputSchema.properties?.include_history as {
+        type?: string;
+        default?: boolean;
+        description?: string;
+      };
+      const historyLimit = tool.inputSchema.properties?.history_limit as {
+        type?: string;
+        minimum?: number;
+        maximum?: number;
+      };
+      const historyCursor = tool.inputSchema.properties?.history_before_turn_index as {
+        type?: string;
+        minimum?: number;
+      };
+      assert.deepEqual(includeHistory, {
+        type: "boolean",
+        default: false,
+        description: includeHistory.description,
+      });
+      assert.equal(historyLimit.type, "integer");
+      assert.equal(historyLimit.minimum, 1);
+      assert.equal(historyLimit.maximum, 100);
+      assert.equal(historyCursor.type, "integer");
+      assert.equal(historyCursor.minimum, 1);
+    }
+
     const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
     assert.match(skill, /Omit `lease_seconds` by default/);
     assert.match(skill, /resolved dynamic policy/);
     assert.match(skill, /explicit value only to shorten/);
     assert.match(skill, /active_claim_lease/);
     assert.match(skill, /goalboard_v1_claim_renew/);
+    assert.match(skill, /structured owner\/retry hint/);
     assert.match(skill, /waiting_for_human/);
     assert.match(skill, /do not select another Runtime Review/i);
   });
@@ -726,6 +838,101 @@ describe("mcp server", () => {
     }
   });
 
+  it("lists planning methods compactly and reads only requested instruction bodies", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-planning-catalog-"));
+    const databasePath = path.join(directory, "goalboard.db");
+    const management = new GoalBoardServer("management");
+    const runtime = new GoalBoardServer("runtime", {
+      databasePath,
+      boardId: "planning-catalog-board",
+      webBaseUrl: "https://goalboard.example/app/",
+    });
+    const call = async (server: GoalBoardServer, name: string, args: Record<string, unknown>) =>
+      server.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+
+    try {
+      const initialized = await call(management, "goalboard_v1_initialize", {
+        database_path: databasePath,
+        board_id: "planning-catalog-board",
+        title: "Planning Catalog",
+        actor_id: "user-1",
+        idempotency_key: "planning-catalog-init",
+      });
+      assert.equal(initialized.result.isError, false, initialized.result.content[0]?.text);
+
+      const compactResponse = await call(runtime, "goalboard_v1_planning_methods", {
+        board_id: "planning-catalog-board",
+        include_instructions: false,
+      });
+      assert.equal(compactResponse.result.isError, false, compactResponse.result.content[0]?.text);
+      const compactText = compactResponse.result.content[0]?.text ?? "{}";
+      const compact = JSON.parse(compactText) as {
+        catalog_id: string;
+        returned_method_ids: string[];
+        include_instructions: boolean;
+        methods: Array<Record<string, unknown>>;
+        composition: { method_pack_ids: string[]; method_names: string[] };
+      };
+      assert.match(compact.catalog_id, /^sha256:[0-9a-f]{24}$/);
+      assert.equal(compact.include_instructions, false);
+      assert.equal(compact.returned_method_ids.length, compact.methods.length);
+      assert.ok(compact.returned_method_ids.includes("domain-data-analysis"));
+      assert.ok(compact.methods.every((method) => !("instructions" in method) && !("steps" in method)));
+      assert.deepEqual(Object.keys(compact.composition).sort(), ["method_names", "method_pack_ids"]);
+      assert.ok(compactText.length < 30_000, `compact catalog should stay small, received ${compactText.length} chars`);
+
+      const selectedResponse = await call(runtime, "goalboard_v1_planning_methods", {
+        board_id: "planning-catalog-board",
+        method_ids: ["work-analyze-decide", "domain-data-analysis"],
+      });
+      assert.equal(selectedResponse.result.isError, false, selectedResponse.result.content[0]?.text);
+      const selected = JSON.parse(selectedResponse.result.content[0]?.text ?? "{}") as {
+        catalog_id: string;
+        returned_method_ids: string[];
+        include_instructions: boolean;
+        methods: Array<{ method_id: string; instructions: string }>;
+        composition: { method_pack_ids: string[]; method_names: string[] };
+      };
+      assert.equal(selected.catalog_id, compact.catalog_id);
+      assert.equal(selected.include_instructions, true);
+      assert.deepEqual(selected.returned_method_ids, ["work-analyze-decide", "domain-data-analysis"]);
+      assert.deepEqual(selected.methods.map((method) => method.method_id), selected.returned_method_ids);
+      assert.ok(selected.methods.every((method) => method.instructions.length > 100));
+      assert.ok(selected.methods.every((method) => !("steps" in method)));
+      assert.deepEqual(Object.keys(selected.composition).sort(), ["method_names", "method_pack_ids"]);
+      assert.ok(
+        (selectedResponse.result.content[0]?.text.length ?? Number.POSITIVE_INFINITY) < 20_000,
+        "selected instructions should not repeat the structured method body",
+      );
+
+      const legacyResponse = await call(runtime, "goalboard_v1_planning_methods", {
+        board_id: "planning-catalog-board",
+      });
+      assert.equal(legacyResponse.result.isError, false, legacyResponse.result.content[0]?.text);
+      const legacy = JSON.parse(legacyResponse.result.content[0]?.text ?? "{}") as {
+        methods: Array<{ instructions?: string }>;
+        composition: { method_paths: Array<{ instructions?: string }> };
+      };
+      assert.ok(legacy.methods.every((method) => typeof method.instructions === "string"));
+      assert.ok(Array.isArray(legacy.composition.method_paths));
+
+      const unknownResponse = await call(runtime, "goalboard_v1_planning_methods", {
+        board_id: "planning-catalog-board",
+        method_ids: ["not-a-planning-method"],
+      });
+      assert.equal(unknownResponse.result.isError, true);
+      assert.match(unknownResponse.result.content[0]?.text ?? "", /"code":"planning_method\.not_found"/);
+      assert.match(unknownResponse.result.content[0]?.text ?? "", /not-a-planning-method/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("serves a stable Goal Contract and the Available safe-parallel suggestion", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-v1-"));
     const databasePath = path.join(directory, "goalboard.db");
@@ -850,13 +1057,30 @@ describe("mcp server", () => {
       });
       assert.equal(availableResponse.result.isError, false, availableResponse.result.content[0]?.text);
       const available = JSON.parse(availableResponse.result.content[0].text) as {
-        available: Array<{ goal: { goal_id: string }; next_action: string; role: string }>;
+        detail_level: string;
+        available_count: number;
+        blocked_count: number;
+        available: Array<{
+          goal: Record<string, unknown> & { goal_id: string; title: string };
+          next_action: string;
+          role: string;
+          priority_hint: number;
+          dependency_summary: string[];
+          risk_summary: string[];
+        }>;
         parallel_suggestion: {
           kind: string;
           advisory_only: boolean;
           assignments: Array<{ runtime_slot: string; goal_id: string; role: string }>;
         } | null;
       };
+      assert.equal(available.detail_level, "summary");
+      assert.equal(available.available_count, 2);
+      assert.equal(available.blocked_count, 0);
+      assert.deepEqual(Object.keys(available.available[0]!.goal).sort(), ["goal_id", "title"]);
+      assert.equal("resolved_policy" in available.available[0]!, false);
+      assert.equal("relevant_surfaces" in available.available[0]!, false);
+      assert.equal("acceptance_criteria" in available.available[0]!.goal, false);
       assert.deepEqual(available.available.map((item) => [item.goal.goal_id, item.next_action, item.role]), [
         ["goal/with space", "execute", "executor"],
         ["parallel-guide", "execute", "executor"],
@@ -882,6 +1106,99 @@ describe("mcp server", () => {
         ],
       });
 
+      const fullResponse = await call(runtime, "goalboard_v1_available", {
+        board_id: "mcp-board",
+        actor_id: "runtime-a",
+        detail_level: "full",
+      });
+      assert.equal(fullResponse.result.isError, false, fullResponse.result.content[0]?.text);
+      const full = JSON.parse(fullResponse.result.content[0]!.text) as {
+        detail_level: string;
+        available: Array<{
+          goal: { goal_id: string; acceptance_criteria: unknown[] };
+          resolved_policy: Record<string, unknown>;
+          relevant_surfaces: unknown[];
+        }>;
+      };
+      assert.equal(full.detail_level, "full");
+      assert.ok(full.available[0]!.goal.acceptance_criteria.length > 0);
+      assert.ok(Object.keys(full.available[0]!.resolved_policy).length > 0);
+      assert.ok(full.available[0]!.relevant_surfaces.length > 0);
+      assert.ok(fullResponse.result.content[0]!.text.length > availableResponse.result.content[0]!.text.length);
+
+      for (const [goalId, title] of [
+        ["replaced-old", "旧版候选范围"],
+        ["replaced-new", "新版候选范围"],
+      ]) {
+        const goal = await call(management, "goalboard_v1_create_goal", {
+          database_path: databasePath,
+          board_id: "mcp-board",
+          actor_id: "user-1",
+          idempotency_key: `create-${goalId}`,
+          goal: {
+            goal_id: goalId,
+            title,
+            outcome: `${title}有可检查结果`,
+            why: "验证 Available 的 replacement 摘要",
+            business_logic: "新版生效后旧版保留历史但不能领取。",
+            definition_state: "accepted",
+            decomposition_state: "closed_leaf",
+            priority: 5,
+            acceptance_criteria: [{
+              criterion_id: `${goalId}-criterion`,
+              statement: "结果可检查",
+              decision_method: "inspection",
+              pass_condition: "结果存在",
+            }],
+          },
+        });
+        assert.equal(goal.result.isError, false, goal.result.content[0]?.text);
+      }
+      const replacement = await call(management, "goalboard_v1_relation_add", {
+        database_path: databasePath,
+        board_id: "mcp-board",
+        payload: {
+          relation: {
+            from_goal_id: "replaced-new",
+            to_goal_id: "replaced-old",
+            type: "replaces",
+            reason: "用户已确认新版范围替代旧版",
+          },
+          actor_id: "user-1",
+          idempotency_key: "mcp-available-replacement",
+        },
+      });
+      assert.equal(replacement.result.isError, false, replacement.result.content[0]?.text);
+      const blockedResponse = await call(runtime, "goalboard_v1_available", {
+        board_id: "mcp-board",
+        actor_id: "runtime-a",
+      });
+      assert.equal(blockedResponse.result.isError, false, blockedResponse.result.content[0]?.text);
+      const withBlocked = JSON.parse(blockedResponse.result.content[0]!.text) as {
+        available_count: number;
+        blocked_count: number;
+        blocked: Array<{
+          goal: Record<string, unknown> & { goal_id: string; title: string };
+          work_state: string;
+          reasons: Array<{ code: string; facts?: Record<string, unknown> }>;
+        }>;
+      };
+      assert.equal(withBlocked.available_count, 3);
+      assert.equal(withBlocked.blocked_count, 1);
+      assert.deepEqual(Object.keys(withBlocked.blocked[0]!.goal).sort(), ["goal_id", "title"]);
+      assert.equal(withBlocked.blocked[0]!.work_state, "replaced");
+      assert.equal(withBlocked.blocked[0]!.reasons[0]!.code, "goal.replaced");
+      assert.equal(withBlocked.blocked[0]!.reasons[0]!.facts?.replacement_goal_id, "replaced-new");
+
+      const invalidDetail = await call(runtime, "goalboard_v1_available", {
+        board_id: "mcp-board",
+        actor_id: "runtime-a",
+        detail_level: "everything",
+      });
+      assert.equal(invalidDetail.result.isError, true);
+      assert.match(invalidDetail.result.content[0]?.text ?? "", /"code":"available\.detail_level_invalid"/);
+      assert.match(invalidDetail.result.content[0]?.text ?? "", /"allowed_values":\["summary","full"\]/);
+
       const selectedResponse = await call(runtime, "goalboard_v1_select_goal", {
         board_id: "mcp-board",
         goal_id: "goal/with space",
@@ -899,6 +1216,22 @@ describe("mcp server", () => {
       assert.ok(selected.claim);
       assert.ok(selected.run);
       assert.equal(selected.work_state?.work_state, "executing");
+
+      const wrongActorRenewal = await call(runtime, "goalboard_v1_claim_renew", {
+        board_id: "mcp-board",
+        payload: {
+          claim_id: selected.claim!.claim_id,
+          actor_id: "runtime-after-compaction",
+          idempotency_key: "mcp-renew-wrong-actor",
+        },
+      });
+      assert.equal(wrongActorRenewal.result.isError, true);
+      const wrongActorText = wrongActorRenewal.result.content[0]?.text ?? "";
+      assert.match(wrongActorText, /"code":"claim\.not_owner"/);
+      assert.match(wrongActorText, /"owner_actor_id":"runtime-a"/);
+      assert.match(wrongActorText, /"request_actor_id":"runtime-after-compaction"/);
+      assert.match(wrongActorText, /"next_action":"retry_claim_renew_as_owner"/);
+      assert.match(wrongActorText, /"same_runtime_continuation_only":true/);
 
       const renewedResponse = await call(runtime, "goalboard_v1_claim_renew", {
         board_id: "mcp-board",
@@ -1005,11 +1338,22 @@ describe("mcp server", () => {
       assert.equal(answeredResponse.result.isError, false, answeredResponse.result.content[0]?.text);
       const answered = JSON.parse(answeredResponse.result.content[0]?.text ?? "{}") as {
         dialogue: { next_question: string | null };
-        turns: Array<{ user_message: string; known_facts: Array<{ source_kind: string }> }>;
+        latest_turn: { user_message: string; known_facts: Array<{ source_kind: string }> };
+        turn_count: number;
+        turns?: unknown;
+        history: { included: boolean; returned_count: number; total_count: number; has_more: boolean };
       };
       assert.equal(answered.dialogue.next_question, "首次完成后，用户最想看到哪一项推进记录？");
-      assert.equal(answered.turns.length, 2);
-      assert.equal(answered.turns[1]?.known_facts[0]?.source_kind, "user_answer");
+      assert.equal(answered.turn_count, 2);
+      assert.equal(answered.turns, undefined);
+      assert.equal(answered.latest_turn.known_facts[0]?.source_kind, "user_answer");
+      assert.deepEqual(answered.history, {
+        included: false,
+        returned_count: 0,
+        total_count: 2,
+        has_more: true,
+        next_before_turn_index: 3,
+      });
 
       const releasedResponse = await call(runtime, "goalboard_v1_release", {
         board_id: "draft-dialogue-board",
@@ -1031,10 +1375,61 @@ describe("mcp server", () => {
       const resumed = JSON.parse(resumedResponse.result.content[0]?.text ?? "{}") as {
         dialogue: { session_id: string; next_question: string | null };
         run: { run_id: string } | null;
+        turn_count: number;
+        turns?: unknown;
       };
       assert.equal(resumed.dialogue.session_id, started.dialogue.session_id);
       assert.equal(resumed.dialogue.next_question, "首次完成后，用户最想看到哪一项推进记录？");
       assert.notEqual(resumed.run?.run_id, started.run?.run_id);
+      assert.equal(resumed.turn_count, 2);
+      assert.equal(resumed.turns, undefined);
+
+      const invalidHistoryWrite = await call(runtime, "goalboard_v1_draft_dialogue_turn", {
+        board_id: "draft-dialogue-board",
+        goal_id: started.goal.goal_id,
+        run_id: resumed.run?.run_id,
+        actor_id: "runtime-current-session",
+        user_message: "这条不能因为展示参数错误而写入。",
+        current_understanding: "展示校验必须先于持久化。",
+        next_question: "仍然只有原来的问题吗？",
+        include_history: true,
+        history_limit: 101,
+        idempotency_key: "mcp-draft-dialogue-invalid-history",
+      });
+      assert.equal(invalidHistoryWrite.result.isError, true);
+      assert.match(invalidHistoryWrite.result.content[0]?.text ?? "", /draft_dialogue\.history_limit_invalid/);
+      assert.match(invalidHistoryWrite.result.content[0]?.text ?? "", /"maximum":100/);
+
+      const historyResponse = await call(runtime, "goalboard_v1_draft_dialogue_resume", {
+        board_id: "draft-dialogue-board",
+        goal_id: started.goal.goal_id,
+        actor_id: "runtime-current-session",
+        include_history: true,
+        history_limit: 1,
+        idempotency_key: "mcp-draft-dialogue-history-page",
+      });
+      assert.equal(historyResponse.result.isError, false, historyResponse.result.content[0]?.text);
+      const history = JSON.parse(historyResponse.result.content[0]?.text ?? "{}") as {
+        turns: Array<{ turn_index: number; known_facts: Array<{ source_kind: string }> }>;
+        history: {
+          included: boolean;
+          returned_count: number;
+          total_count: number;
+          has_more: boolean;
+          next_before_turn_index: number | null;
+        };
+      };
+      assert.equal(history.turns.length, 1);
+      assert.equal(history.turns[0]?.turn_index, 2);
+      assert.equal(history.turns[0]?.known_facts[0]?.source_kind, "user_answer");
+      assert.equal(history.history.total_count, 2, "invalid history presentation must not persist a turn");
+      assert.deepEqual(history.history, {
+        included: true,
+        returned_count: 1,
+        total_count: 2,
+        has_more: true,
+        next_before_turn_index: 2,
+      });
 
       const proposalResponse = await call(runtime, "goalboard_v1_goal_tree_propose", {
         board_id: "draft-dialogue-board",
@@ -1093,6 +1488,304 @@ describe("mcp server", () => {
       };
       assert.deepEqual(check.conflict_item_ids, []);
       assert.equal(check.proposal.state, "pending");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("returns actionable Goal Tree enum, uniqueness, and clarification-Run errors through MCP", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-tree-errors-"));
+    const databasePath = path.join(directory, "goalboard.db");
+    const homeDirectory = path.join(directory, "home", ".goalboard");
+    const store = new SqliteGoalBoardStore(databasePath);
+    const coordinator = new GoalBoardCoordinator(store);
+    coordinator.initializeBoard({
+      board_id: "tree-error-board",
+      title: "Goal Tree Error Contract",
+      actor_id: "user-1",
+      idempotency_key: "tree-error-board-init",
+    });
+    coordinator.createGoal(
+      "tree-error-board",
+      {
+        goal_id: "tree-error-criterion-owner",
+        title: "持有稳定验收条件 ID",
+        outcome: "已有 Goal 保留自己的验收条件引用",
+        why: "验证跨 Goal 复用 criterion_id 时返回领域错误",
+        business_logic: "验收条件 ID 是稳定审计引用，不能被另一个 Goal 复用。",
+        promised_outputs: ["已有 Goal 保留自己的验收条件引用"],
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [{
+          criterion_id: "tree-error-shared-criterion",
+          statement: "已有结果可检查",
+          decision_method: "inspection",
+          pass_condition: "结果存在",
+          required_evidence: ["inspection"],
+        }],
+      },
+      { actor_id: "user-1", idempotency_key: "tree-error-owner-goal" },
+    );
+    store.close();
+    const runtime = new GoalBoardServer(
+      "runtime",
+      {
+        databasePath,
+        boardId: "tree-error-board",
+        webBaseUrl: "https://goalboard.example/app/",
+      },
+      {
+        homeDirectory,
+        runtimeContext: {
+          runtime_id: "codex",
+          stable_work_context_id: "tree-error-session",
+          host_declares_stable: true,
+          workspace: { canonical_path: directory, realpath_verified: true },
+        },
+        webBaseUrl: "https://goalboard.example/app/",
+        panelId: null,
+        projectSuggestionClues: [],
+      },
+    );
+    const call = async (name: string, args: Record<string, unknown>) =>
+      runtime.handleMessage({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }) as Promise<{ result: { isError: boolean; content: Array<{ text: string }> } }>;
+
+    try {
+      const missingRun = await call("goalboard_v1_goal_tree_propose", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        discovered_in_run_id: "missing-run",
+        root_goal_id: "tree-error-root",
+        summary: "验证缺少澄清 Run 的恢复说明。",
+        items: [{
+          item_id: "tree-error-draft-child",
+          kind: "goal",
+          operation: "create",
+          payload: { goal_id: "tree-error-child", title: "待澄清子目标" },
+          source_refs: ["conversation://tree-error"],
+          reason: "验证错误契约",
+          explanation: {
+            problem: "缺少澄清 Run",
+            expected_effect: "返回可执行恢复动作",
+            non_goals: [],
+            depends_on_item_ids: [],
+          },
+          confidence: 0.9,
+          affected_objects: [{ object_type: "goal", object_id: "tree-error-child" }],
+        }],
+        idempotency_key: "tree-error-missing-run",
+      });
+      assert.equal(missingRun.result.isError, true);
+      assert.match(missingRun.result.content[0]?.text ?? "", /goalboard_v1_draft_dialogue_resume/);
+      assert.match(missingRun.result.content[0]?.text ?? "", /"next_action":"draft_dialogue_resume"/);
+
+      const started = await call("goalboard_v1_draft_dialogue_start", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        rough_idea: "把主目标澄清成可执行的叶子。",
+        goal_id: "tree-error-root",
+        idempotency_key: "tree-error-dialogue-start",
+      });
+      assert.equal(started.result.isError, false, started.result.content[0]?.text);
+      const runId = (JSON.parse(started.result.content[0]!.text) as { run: { run_id: string } }).run.run_id;
+      const invalidDecision = await call("goalboard_v1_goal_tree_propose", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        discovered_in_run_id: runId,
+        root_goal_id: "tree-error-root",
+        summary: "验证非法 leaf decision 的精确错误。",
+        items: [{
+          item_id: "tree-error-leaf-child",
+          kind: "goal",
+          operation: "create",
+          payload: {
+            goal_id: "tree-error-leaf",
+            title: "交付一个可验收结果",
+            outcome: "用户得到一个可验收结果",
+            why: "验证 Goal Tree 错误契约",
+            business_logic: "一个主要结果一次验收。",
+            in_scope: ["本轮结果"],
+            out_of_scope: ["未来批量导出"],
+            constraints: [],
+            required_inputs: ["已确认需求"],
+            promised_outputs: ["可验收结果"],
+            definition_state: "accepted",
+            decomposition_state: "closed_leaf",
+            priority: 50,
+            acceptance_criteria: [{
+              criterion_id: "tree-error-leaf-criterion",
+              statement: "结果可检查",
+              decision_method: "inspection",
+              pass_condition: "结果存在",
+              required_evidence: ["inspection"],
+            }],
+            leaf_readiness: {
+              verdict: "ready",
+              primary_deliverable: "可验收结果",
+              output_coverage: [{
+                promised_output: "可验收结果",
+                role: "primary",
+                reason: "唯一主要结果",
+              }],
+              split_candidates: [{
+                work_item: "未来批量导出",
+                separately_deliverable: true,
+                separately_acceptable: true,
+                independently_reworkable: true,
+                decision: "defer",
+                reason: "本轮明确不做",
+              }],
+              rationale: "本轮只交付一个主要结果。",
+              unresolved_decisions: [],
+              independent_deliverables: [],
+              acceptance_criterion_ids: ["tree-error-leaf-criterion"],
+            },
+          },
+          source_refs: ["conversation://tree-error"],
+          reason: "验证错误契约",
+          explanation: {
+            problem: "非法枚举不应被误报成文案缺失",
+            expected_effect: "返回精确字段路径与允许值",
+            non_goals: [],
+            depends_on_item_ids: [],
+          },
+          confidence: 0.9,
+          affected_objects: [{ object_type: "goal", object_id: "tree-error-leaf" }],
+        }],
+        idempotency_key: "tree-error-invalid-decision",
+      });
+      assert.equal(invalidDecision.result.isError, true);
+      const errorText = invalidDecision.result.content[0]?.text ?? "";
+      assert.match(errorText, /items\[0\]\.payload\.leaf_readiness\.split_candidates\[0\]\.decision=defer/);
+      assert.match(errorText, /allowed: keep, split/);
+      assert.match(errorText, /"received_value":"defer"/);
+      assert.match(errorText, /"allowed_values":\["keep","split"\]/);
+
+      const readStore = new SqliteGoalBoardStore(databasePath);
+      assert.equal(readStore.snapshot("tree-error-board").goal_tree_proposals.length, 0);
+      readStore.close();
+
+      const criterionConflictProposal = await call("goalboard_v1_goal_tree_propose", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        discovered_in_run_id: runId,
+        root_goal_id: "tree-error-root",
+        summary: "验证 criterion_id 冲突会在确认前返回字段和恢复动作。",
+        items: [{
+          item_id: "tree-error-criterion-conflict-item",
+          kind: "goal",
+          operation: "create",
+          payload: {
+            goal_id: "tree-error-criterion-conflict-goal",
+            title: "错误复用验收条件 ID",
+            outcome: "冲突在确认前可见",
+            why: "避免暴露 SQLite 主键错误",
+            business_logic: "每个验收条件使用全局稳定且唯一的引用。",
+            in_scope: ["预检唯一性"],
+            out_of_scope: ["不改已有 Goal"],
+            constraints: [],
+            required_inputs: ["已有验收条件"],
+            promised_outputs: ["冲突在确认前可见"],
+            definition_state: "accepted",
+            decomposition_state: "closed_leaf",
+            acceptance_criteria: [{
+              criterion_id: "tree-error-shared-criterion",
+              statement: "冲突可检查",
+              decision_method: "inspection",
+              pass_condition: "预检返回领域错误",
+              required_evidence: ["inspection"],
+            }],
+            leaf_readiness: {
+              verdict: "ready",
+              primary_deliverable: "冲突在确认前可见",
+              output_coverage: [{
+                promised_output: "冲突在确认前可见",
+                role: "primary",
+                reason: "唯一主要结果",
+              }],
+              split_candidates: [],
+              rationale: "只有一个主要结果。",
+              unresolved_decisions: [],
+              independent_deliverables: [],
+              acceptance_criterion_ids: ["tree-error-shared-criterion"],
+            },
+          },
+          source_refs: ["conversation://tree-error"],
+          reason: "验证唯一约束错误契约",
+          explanation: {
+            problem: "数据库错误会泄漏给消费者",
+            expected_effect: "确认前返回字段、冲突对象和恢复动作",
+            non_goals: [],
+            depends_on_item_ids: [],
+          },
+          confidence: 0.9,
+          affected_objects: [{ object_type: "goal", object_id: "tree-error-criterion-conflict-goal" }],
+        }],
+        idempotency_key: "tree-error-criterion-conflict-proposal",
+      });
+      assert.equal(criterionConflictProposal.result.isError, false, criterionConflictProposal.result.content[0]?.text);
+      const criterionProposalId = (JSON.parse(criterionConflictProposal.result.content[0]!.text) as {
+        proposal: { proposal_id: string };
+      }).proposal.proposal_id;
+      const criterionCheck = await call("goalboard_v1_goal_tree_check", {
+        board_id: "tree-error-board",
+        proposal_id: criterionProposalId,
+        actor_id: "runtime-tree-errors",
+        idempotency_key: "tree-error-criterion-conflict-check",
+      });
+      assert.equal(criterionCheck.result.isError, false, criterionCheck.result.content[0]?.text);
+      const criterionCheckText = criterionCheck.result.content[0]?.text ?? "";
+      assert.match(criterionCheckText, /goal_tree_proposal\.acceptance_criterion_id_conflict/);
+      assert.match(criterionCheckText, /payload\.acceptance_criteria\[0\]\.criterion_id/);
+      assert.match(criterionCheckText, /tree-error-criterion-owner/);
+      assert.match(criterionCheckText, /use_unique_criterion_id/);
+
+      const reusableItem = (goalId: string) => ({
+        item_id: "tree-error-reused-item-id",
+        kind: "goal",
+        operation: "create",
+        payload: { goal_id: goalId, title: `创建 ${goalId}` },
+        source_refs: ["conversation://tree-error"],
+        reason: "验证跨提案 item_id 唯一性",
+        explanation: {
+          problem: "跨提案复用 item_id 会暴露数据库错误",
+          expected_effect: "提交前返回结构化恢复动作",
+          non_goals: [],
+          depends_on_item_ids: [],
+        },
+        confidence: 0.9,
+        affected_objects: [{ object_type: "goal", object_id: goalId }],
+      });
+      const firstItemProposal = await call("goalboard_v1_goal_tree_propose", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        discovered_in_run_id: runId,
+        root_goal_id: "tree-error-root",
+        summary: "第一份提案使用稳定 item ID。",
+        items: [reusableItem("tree-error-first-item-goal")],
+        idempotency_key: "tree-error-first-item-proposal",
+      });
+      assert.equal(firstItemProposal.result.isError, false, firstItemProposal.result.content[0]?.text);
+      const reusedItemProposal = await call("goalboard_v1_goal_tree_propose", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        discovered_in_run_id: runId,
+        root_goal_id: "tree-error-root",
+        summary: "第二份提案错误复用稳定 item ID。",
+        items: [reusableItem("tree-error-second-item-goal")],
+        idempotency_key: "tree-error-second-item-proposal",
+      });
+      assert.equal(reusedItemProposal.result.isError, true);
+      const reusedItemText = reusedItemProposal.result.content[0]?.text ?? "";
+      assert.match(reusedItemText, /goal_tree_proposal\.item_id_conflict/);
+      assert.match(reusedItemText, /"path":"items\[0\]\.item_id"/);
+      assert.match(reusedItemText, /"next_action":"use_unique_item_id"/);
+      assert.doesNotMatch(reusedItemText, /UNIQUE constraint failed/);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

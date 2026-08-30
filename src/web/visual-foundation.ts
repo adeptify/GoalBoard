@@ -621,9 +621,10 @@ export const VISUAL_FOUNDATION_STYLES = `
   .tree-copy strong { font-size: 12.5px; font-weight: 610; }
   .tree-copy > small {
     display: block;
-    max-width: min(38%, 220px);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-width: max-content;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
     white-space: nowrap;
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

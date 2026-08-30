@@ -6,15 +6,17 @@ Read this reference when the user asks to continue available work, advance an ac
 
 For an ordinary “继续推进” or “领一件能做的” request:
 
-1. call `goalboard_v1_available` with the current Runtime's real capabilities;
+1. call `goalboard_v1_available` with the current Runtime's real capabilities; its default `detail_level=summary` returns the whole comparable menu without expanding every Contract;
 2. if the user named a Goal, use it only if it is returned there;
 3. otherwise prioritize an item with `requires_parent_confirmation=true`, then choose according to the user's request, Contract, blockers, priority, dependencies, and planning rationale;
 4. when `next_action=complete`, call `goalboard_v1_complete` directly; it intentionally has `role=null` and must not create another Claim or Run;
 5. for every other action, call `goalboard_v1_select_goal` with the item's returned `role` so Claim and Run start atomically.
 
+After choosing a Goal, call `goalboard_v1_contract` for that one Goal before acting. Do not request `detail_level=full` merely to choose the next item: full exists only for a deliberate one-call diagnostic or a compatibility consumer that truly needs every candidate Contract, Policy, and Impact at once. The summary still preserves every candidate, blocked reason, priority, dependency/Risk summary, planning rationale, required capabilities, and `parallel_suggestion`.
+
 GoalBoard does not dispatch one mandatory next task. The Runtime chooses among eligible work and explains which Goal it chose, why it fits now, and what state changed. Do not make the user choose unless there is a genuine intent or product tradeoff.
 
-At meaningful implementation and review checkpoints, read Contract's `active_claim_lease`. If `renew_recommended=true` and the same Runtime is still actively working, call `goalboard_v1_claim_renew` before continuing. This extends the current Claim without creating a second Run. An expired Claim is never renewable: follow the returned recovery action and select again. Do not poll or create a background heartbeat.
+At meaningful implementation and review checkpoints, read Contract's `active_claim_lease`. If `renew_recommended=true` and the same Runtime is still actively working, call `goalboard_v1_claim_renew` before continuing. This extends the current Claim without creating a second Run. Reuse the exact `actor_id` that created the Claim. If compaction preserved `claim_id` but lost that actor string, a `claim.not_owner` response returns `owner_actor_id` and `retry_claim_renew_as_owner`; use it only when this is the same Runtime continuing the same work, never as authority to take over another Runtime's Claim. An expired Claim is never renewable: follow the returned recovery action and select again. Do not poll or create a background heartbeat.
 
 When Available returns a non-null `parallel_suggestion`, proactively explain the concrete value of splitting those assignments across the returned abstract Runtime slots and ask whether the user wants that split. The suggestion is advisory only: do not start another Runtime, select or Claim any assignment, or imply that GoalBoard has dispatched work. After the user agrees, every participating Runtime must re-read Available with its real capabilities and individually call `goalboard_v1_select_goal` for its assigned Goal. If the suggestion is null, an Impact is unconfirmed, or the fresh read shows a conflict, do not claim that parallel execution is safe.
 
@@ -22,7 +24,7 @@ When Available returns a non-null `parallel_suggestion`, proactively explain the
 
 If the selected Goal's promised result is a Risk lifecycle change, treat the confirmed Risk state as one required output, not as completion of the Goal by itself. When the Risk was not already resolved during clarification, complete the mitigation and submit Evidence from the active executor Run, then use that same Run to propose only the same-root Risk lifecycle result for user confirmation. After canonical Risk verification, continue the same Goal through `run_report`, Evidence, required Review, `complete`, and `release`. Never complete or release a clarifier Run merely because a Risk item materialized while its Goal is still Draft.
 
-For a named Goal absent from `available`, first inspect the same response's `blocked` list. A `completion_blocked` item has already finished execution and reviews: report its Risk or decision reason and remediation without starting executor work. For other absent Goals, call `goalboard_v1_explain` and report the actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass a blocker with legacy `ready → claim → run_start`; the normal claiming path is `available → select_goal`.
+For a named Goal absent from `available`, first inspect the same response's `blocked` list. A `completion_blocked` item has already finished execution and reviews: report its Risk or decision reason and remediation without starting duplicate executor work. If new traceable counter-evidence proves that one or more previously covered acceptance criteria are no longer met, use `goalboard_v1_rework_request` with those criterion IDs, the counter-evidence references, and a concrete reason. This preserves the old Run/Evidence/Review, makes only those criteria require fresh Evidence, reopens Review, and returns the same unmet Goal to executor work; it does not resolve a completion Risk. For other absent Goals, call `goalboard_v1_explain` and report the actual dependency, Risk, capability, review, validity, or active-Claim blocker. Never bypass a blocker with legacy `ready → claim → run_start`; the normal claiming path is `available → select_goal`.
 
 If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推进.” Opening the panel itself is not permission to select it.
 
@@ -34,7 +36,7 @@ If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推�
 | `waiting_children` | Do not execute the parent. Choose an eligible child from Available. |
 | `executing` / `execution_pending` | Work only inside the selected accepted leaf Contract. |
 | `completion_pending` | Execution, Evidence, and required Reviews are already done. Call `goalboard_v1_complete` directly; do not select, Claim, or rerun the Goal. |
-| `completion_blocked` | Do not select executor work. Report the returned completion-gate reason and remediation; after that canonical gate is resolved, re-read Available and call `complete`. |
+| `completion_blocked` | Do not select duplicate executor work. Resolve the returned canonical gate and then call `complete`; if fresh counter-evidence instead disproves an earlier completion premise, call `goalboard_v1_rework_request`, re-read Available, and continue the same Goal with fresh Evidence and Review. |
 | `reviewing` / `review_pending` | Inspect the Contract and submitted evidence; perform only the Review this Runtime may provide. |
 | `waiting_for_human` | Runtime-checkable Review is finished. Report the returned human criteria and user action; do not select another Runtime Review or impersonate the user's decision. |
 | `revalidating` / `revalidation_pending` | Recheck the Contract, active dependencies, Risks, and cited evidence; use `goalboard_v1_revalidate` only from the active revalidator Run. |
@@ -48,7 +50,7 @@ A parent whose current children are complete is not silently done. If they cover
 - Treat the accepted Contract as the boundary. Do not silently add scope, alter acceptance, or rewire dependencies.
 - Lead progress reports with the business result, current stage, next action/owner, and blocker. Engineering facts support the explanation; they do not replace it.
 - Map every claimed completion result to its acceptance criterion and traceable evidence.
-- Read the returned `locator_status` for every submitted Evidence. `verified` means GoalBoard completed a bounded, read-only project-file preflight. A project file may be submitted as a relative path, a `repo:` relative input such as `repo:docs/review.md#checks`, a `project://` reference, or an absolute path inside the current canonical workspace. GoalBoard normalizes safe `repo:` and absolute inputs to `project://`, realpath-checks containment, and rejects project-external paths and symlink escapes. `file:` is not a supported local-file shortcut. `unverified` is an explicit boundary, not a failure and not proof that the external or opaque locator exists; reviewers must judge it accordingly. A known-missing project file or Markdown anchor is rejected before it can become Evidence.
+- Read the returned `locator_status` for every submitted Evidence. `verified` means GoalBoard completed a bounded, read-only project-file preflight. A project file may be submitted as a relative path, a `repo:` relative input such as `repo:docs/review.md#checks`, a `project://` reference, or an absolute path inside the current canonical workspace. GoalBoard normalizes safe `repo:` and absolute inputs to `project://`, realpath-checks containment, and rejects project-external paths and symlink escapes. A project file over 512 KiB may still be registered after its path and ordinary-file boundary are confirmed, but it remains `unverified`, cannot be previewed in Web, and any caller-supplied digest is recorded rather than independently checked; submit a small sidecar summary when reviewers need readable context. `file:` is not a supported local-file shortcut. Other `unverified` locators are explicit boundaries, not failures and not proof that an external or opaque locator exists; reviewers must judge them accordingly. A known-missing project file or a missing Markdown anchor in a file small enough to inspect is rejected before it can become Evidence.
 - Evidence is immutable. If a submitted record is wrong, submit the corrected Evidence first and then use `goalboard_v1_evidence_correct` to supersede it, or retract it when there is no replacement. Never hide the old locator in free text or treat a corrected historical record as current proof.
 - A Runtime may correct only Evidence produced by the same actor. If another producer's Evidence is wrong, report the problem and let that producer or a trusted user-facing workflow resolve it.
 - A required human approval cannot be replaced by a Runtime review.
@@ -60,6 +62,7 @@ Normal completion order:
 run_report(state=completed | blocked | failed)
   → evidence_submit mapped to acceptance criterion IDs
   → evidence_correct when an immutable Evidence record must be superseded or retracted
+  → rework_request only when later counter-evidence invalidates an earlier completion premise
   → review_submit for each Runtime-permitted required review
   → complete
   → release
@@ -79,7 +82,8 @@ Read the affected Contract and current Goal Tree, then choose the smallest truth
 - Mark the Run blocked only when work genuinely cannot continue; otherwise keep working on the same Goal.
 - Reuse an existing unfinished Goal that already owns the correction.
 - If correction is independently deliverable, independently verifiable, or separately schedulable, use a Candidate or Goal Tree Proposal. Use `part_of` for missing scope and `depends_on` only when another Goal consumes the correction result.
-- If a completed result is now shown wrong, preserve its history and propose corrective work or supported revalidation. Do not silently rewrite it.
+- If an unfinished Goal has already reached a completion gate but new traceable counter-evidence disproves an earlier acceptance premise, call `goalboard_v1_rework_request` for the affected criteria. Then re-read Available, execute the same Goal, submit fresh Evidence, and repeat required Reviews. Do not resolve an unrelated completion Risk or create a duplicate Goal merely to regain an executor entry.
+- If a completed Goal is now shown wrong, preserve its history and propose corrective work or supported revalidation. Do not silently rewrite it.
 - A failure that has already happened is not merely a future Risk.
 
 Do not continue unrelated work while a completion-blocking problem lacks a visible owner and next action.

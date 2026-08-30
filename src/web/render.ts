@@ -103,6 +103,7 @@ export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "revalidation_pending",
   "revalidating",
   "revalidation_blocked",
+  "replaced",
   "invalidated",
   "satisfied",
   "trashed",
@@ -290,6 +291,7 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   revalidation_pending: "refresh",
   revalidating: "refresh",
   revalidation_blocked: "blocked",
+  replaced: "refresh",
   invalidated: "alert",
   satisfied: "completed",
   trashed: "archive",
@@ -464,6 +466,7 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "revalidation_blocked",
   "clarification_blocked",
   "waiting_children",
+  "replaced",
   "invalidated",
   "satisfied",
   "archived",
@@ -520,7 +523,7 @@ export function displayedPassedCriterionIds(item: WebGoalView): string[] {
 }
 
 export function isBlockedWorkStatus(status: WebGoalStatus): boolean {
-  return status.endsWith("_blocked") || status === "invalidated";
+  return status.endsWith("_blocked") || status === "replaced" || status === "invalidated";
 }
 
 function partOfChildViews(parentId: string, view: GoalBoardWebView): WebGoalView[] {
@@ -639,11 +642,71 @@ export function goalTreeReferenceLabel(goalId: string): string | null {
   return null;
 }
 
+const GOAL_REFERENCE_GENERIC_SUFFIXES = new Set([
+  "ai",
+  "baseline",
+  "goal",
+  "kol",
+  "list",
+  "quality",
+  "roster",
+]);
+
+function goalTreeReferenceSuffix(goalId: string, referenceLabel: string): { compact: string; full: string } {
+  const segments = goalId.trim().split(/[-_.:/\s]+/).filter(Boolean);
+  const referenceIndex = segments.findIndex((segment) => segment.toUpperCase() === referenceLabel);
+  if (referenceIndex < 0) return { compact: "", full: "" };
+  const suffix = segments.slice(referenceIndex + 1);
+  return {
+    compact: suffix.filter((segment) => !GOAL_REFERENCE_GENERIC_SUFFIXES.has(segment.toLowerCase())).join("-").toUpperCase(),
+    full: suffix.join("-").toUpperCase(),
+  };
+}
+
+export function goalTreeReferenceLabels(goalIds: readonly string[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  const groups = new Map<string, string[]>();
+  for (const goalId of goalIds) {
+    const base = goalTreeReferenceLabel(goalId);
+    if (!base) continue;
+    groups.set(base, [...(groups.get(base) ?? []), goalId]);
+  }
+  for (const [base, groupedGoalIds] of groups) {
+    if (groupedGoalIds.length === 1) {
+      labels.set(groupedGoalIds[0]!, base);
+      continue;
+    }
+    const suffixes = groupedGoalIds.map((goalId) => ({ goalId, ...goalTreeReferenceSuffix(goalId, base) }));
+    const baseEntry = suffixes
+      .filter((entry) => !entry.compact)
+      .sort((left, right) => left.full.length - right.full.length || left.goalId.localeCompare(right.goalId))[0];
+    if (baseEntry) labels.set(baseEntry.goalId, base);
+    const usedDiscriminators = new Set<string>();
+    const entriesToDisambiguate = suffixes
+      .filter((entry) => entry.goalId !== baseEntry?.goalId)
+      .map((entry) => ({ ...entry, source: entry.compact || entry.full || entry.goalId.toUpperCase() }))
+      .sort((left, right) => left.source.length - right.source.length || left.source.localeCompare(right.source));
+    for (const entry of entriesToDisambiguate) {
+      let length = entry.source.length <= 3 ? entry.source.length : 1;
+      let discriminator = entry.source.slice(0, length);
+      while (usedDiscriminators.has(discriminator) && length < entry.source.length) {
+        length += 1;
+        discriminator = entry.source.slice(0, length);
+      }
+      if (usedDiscriminators.has(discriminator)) discriminator = entry.goalId.toUpperCase();
+      usedDiscriminators.add(discriminator);
+      labels.set(entry.goalId, `${base}/${discriminator}`);
+    }
+  }
+  return labels;
+}
+
 function renderGoalTree(
   view: GoalBoardWebView,
   selectedGoalId: string,
   items: WebGoalView[] = view.goals,
 ): string {
+  const referenceLabels = goalTreeReferenceLabels(view.goals.map((item) => item.goal.goal_id));
   const byId = new Map(items.map((item) => [item.goal.goal_id, item]));
   const children = new Map<string, WebGoalView[]>();
   const parent = new Map<string, string>();
@@ -668,7 +731,7 @@ function renderGoalTree(
     const hasChildren = nodeChildren.length > 0;
     const searchValue = `${item.goal.goal_id} ${item.goal.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
     const selected = item.goal.goal_id === selectedGoalId;
-    const referenceLabel = goalTreeReferenceLabel(item.goal.goal_id);
+    const referenceLabel = referenceLabels.get(item.goal.goal_id) ?? null;
     const reference = referenceLabel == null
       ? ""
       : `<small title="Goal ID: ${escapeHtml(item.goal.goal_id)}" aria-label="${L("Goal 编号")} ${escapeHtml(referenceLabel)}">${escapeHtml(referenceLabel)}</small>`;
@@ -961,8 +1024,12 @@ function renderClaimCell(item: WebGoalView): string {
 function renderRunCell(item: WebGoalView): string {
   const run = item.runs.at(-1);
   if (!run) return `<p class="empty-row">${L("认领后可开始执行")}</p>`;
+  const current = item.active_claim?.claim_id === run.claim_id &&
+    (run.state === "started" || run.state === "blocked");
   return `<dl class="runtime-facts"><div><dt>Run</dt><dd>${escapeHtml(run.run_id)}</dd></div><div><dt>${L("状态")}</dt><dd>${escapeHtml(run.state)}</dd></div><div><dt>${L("开始")}</dt><dd>${formatDate(run.started_at)}</dd></div>${
-    run.block_reason ? `<div><dt>${L("阻塞")}</dt><dd>${escapeHtml(run.block_reason)}</dd></div>` : ""
+    run.block_reason
+      ? `<div><dt>${current ? L("当前阻塞") : L("当时报告的阻塞")}</dt><dd>${escapeHtml(run.block_reason)}${current ? "" : `<small>${L("这条历史记录不会自动成为当前阻塞。")}</small>`}</dd></div>`
+      : ""
   }</dl>${
     run.output_refs.length
       ? `<div class="ref-stack">${run.output_refs.map((ref) => renderReference(ref)).join("")}</div>`
@@ -1001,9 +1068,12 @@ function renderEvidenceRecord(evidence: EvidenceRecord): string {
       ? L("替代记录：{id}", { id: evidence.correction.replacement_evidence_id })
       : L("这条记录不再计入完成判断")}${evidence.correction.reason ? ` · ${escapeHtml(evidence.correction.reason)}` : ""}</small>`
     : "";
+  const locatorReference = evidence.locator_status === "unverified" && isProjectReference(evidence.locator)
+    ? `<button class="inline-ref" type="button" data-copy-value="${escapeHtml(evidence.locator)}" title="${L("复制引用")}">${icon("copy")}<span>${escapeHtml(evidence.locator)}</span></button>`
+    : renderReference(evidence.locator, evidence.locator, evidence.evidence_id);
   return `<article class="evidence-record evidence-record--${evidence.lifecycle_state}">
     <span class="evidence-result evidence-result--${evidence.result}">${icon(evidenceResultIcon(evidence.result))}</span>
-    <div><header><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><span class="evidence-lifecycle evidence-lifecycle--${evidence.lifecycle_state}">${escapeHtml(lifecycleLabel)}</span><span class="evidence-locator-status evidence-locator-status--${evidence.locator_status}">${escapeHtml(locatorLabel)}</span><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="${L("复制 Evidence ID")}">${escapeHtml(evidence.evidence_id)}</button></header>${renderReference(evidence.locator, evidence.locator, evidence.evidence_id)}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、") || L("未绑定验收项"))}</small><small class="evidence-locator-reason">${escapeHtml(L(evidence.locator_validation_reason))}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}${correctionDetail}</div>
+    <div><header><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))}</strong><span class="evidence-lifecycle evidence-lifecycle--${evidence.lifecycle_state}">${escapeHtml(lifecycleLabel)}</span><span class="evidence-locator-status evidence-locator-status--${evidence.locator_status}">${escapeHtml(locatorLabel)}</span><button class="record-id" type="button" data-copy-value="${escapeHtml(evidence.evidence_id)}" title="${L("复制 Evidence ID")}">${escapeHtml(evidence.evidence_id)}</button></header>${locatorReference}<small>${escapeHtml(evidence.producer_actor_id)} · ${formatDate(evidence.captured_at)} · ${escapeHtml(evidence.criterion_ids.join(currentLocale() === "en" ? ", " : "、") || L("未绑定验收项"))}</small><small class="evidence-locator-reason">${escapeHtml(L(evidence.locator_validation_reason))}</small>${evidence.digest ? `<p>${escapeHtml(evidence.digest)}</p>` : ""}${correctionDetail}</div>
   </article>`;
 }
 
@@ -1695,6 +1765,34 @@ function renderHumanReviewScenario(item: WebGoalView): string {
   });
 }
 
+function humanVerdictPrefill(
+  item: WebGoalView,
+  obligation: ReviewObligationRecord,
+): EvidenceRecord | null {
+  if (!obligation.criterion_scope.length) return null;
+  const obligationCreatedAt = Date.parse(obligation.created_at);
+  return item.evidence
+    .filter((evidence) =>
+      evidence.lifecycle_state === "effective" &&
+      evidence.kind === "human_verdict" &&
+      evidence.result === "passed" &&
+      evidence.locator.startsWith("conversation://") &&
+      Boolean(evidence.digest?.trim()) &&
+      Number.isFinite(obligationCreatedAt) &&
+      Date.parse(evidence.captured_at) >= obligationCreatedAt &&
+      obligation.criterion_scope.every((criterionId) => evidence.criterion_ids.includes(criterionId))
+    )
+    .sort((left, right) => right.captured_at.localeCompare(left.captured_at))[0] ?? null;
+}
+
+function renderHumanVerdictPrefill(evidence: EvidenceRecord): string {
+  return `<aside class="human-verdict-prefill" data-human-verdict-prefill>
+    <span>${icon("user")}</span><div><strong>${L("已找到当前对话中的明确验收")}</strong>
+    <p>${L("GoalBoard 已把结论、原话和对话来源预填到下方，但尚未记录为用户验收；请核对后只提交一次。")}</p>
+    <dl><div><dt>${L("对话原话")}</dt><dd>${escapeHtml(evidence.digest ?? "")}</dd></div><div><dt>${L("对话来源")}</dt><dd>${escapeHtml(evidence.locator)}</dd></div></dl></div>
+  </aside>`;
+}
+
 function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
   const pending = item.review_obligations.filter(
     (obligation) => obligation.role === "human_approver" && obligation.state === "pending",
@@ -1706,16 +1804,17 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
     item.evidence.some((evidence) => evidence.lifecycle_state === "effective" && evidence.result === "passed" && evidence.criterion_ids.includes(criterion.criterion_id)),
   );
   const effectiveEvidence = item.evidence.filter((evidence) => evidence.lifecycle_state === "effective");
-  const evidenceChoices = effectiveEvidence.length
+  const renderEvidenceChoices = (selectedEvidenceIds = new Set<string>()) => effectiveEvidence.length
     ? effectiveEvidence
         .slice()
         .reverse()
         .map(
           (evidence) =>
-            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"><span><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.locator_status === "verified" ? L("已验证") : "UNVERIFIED")}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
+            `<label class="evidence-choice"><input type="checkbox" name="evidence_refs" value="${escapeHtml(evidence.evidence_id)}"${selectedEvidenceIds.has(evidence.evidence_id) ? " checked" : ""}><span><strong>${escapeHtml(L(EVIDENCE_KIND_LABELS[evidence.kind]))} · ${escapeHtml(L(EVIDENCE_RESULT_LABELS[evidence.result]))} · ${escapeHtml(evidence.locator_status === "verified" ? L("已验证") : "UNVERIFIED")}</strong><small>${escapeHtml(evidence.locator)}</small></span></label>`,
         )
         .join("")
     : `<p class="empty-row">${L("当前还没有已提交的完成依据。你可以在下方补充外部引用。")}</p>`;
+  const evidenceChoices = renderEvidenceChoices();
   return `<div class="decision-record human-review-list"><header class="decision-record-heading"><span class="decision-kind">${icon("user")} ${L("确认工作结果")}${renderNewDecisionBadge(pending[0]!.created_at, view, "review", pending[0]!.obligation_id)}</span></header><div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
     whyNow: L("工作结果已经提交，其他必要检查也已走到需要你确认的阶段。"),
     recommendation: hasReliableRecommendation ? L("建议确认通过") : null,
@@ -1728,14 +1827,19 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
     ],
   })}${renderHumanReviewScenario(item)}<details class="decision-details"><summary>${L("查看完成标准和已有依据")}${icon("chevron-down")}</summary><div class="review-context"><section><h4>${L("完成标准")}</h4>${renderAcceptanceSummary(item)}</section><section><h4>${L("已有依据")}</h4><div class="evidence-choice-list">${evidenceChoices}</div></section></div></details></div>${pending
     .map(
-      (obligation) => `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}" novalidate>
-        <label class="review-verdict"><span>${L("你的结论")}</span><select name="verdict"><option value="" selected disabled>${L("请选择结论")}</option><option value="pass">${L("通过")}</option><option value="needs_changes">${L("需要修改")}</option><option value="fail">${L("不通过")}</option><option value="inconclusive">${L("证据不足")}</option></select></label>
-        <fieldset><legend>${L("选择支持结论的已有依据")}</legend><div class="evidence-choice-list">${evidenceChoices}</div></fieldset>
+      (obligation) => {
+        const prefill = humanVerdictPrefill(item, obligation);
+        const preselectedEvidence = prefill ? new Set([prefill.evidence_id]) : new Set<string>();
+        return `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}" novalidate>
+        ${prefill ? renderHumanVerdictPrefill(prefill) : ""}
+        <label class="review-verdict"><span>${L("你的结论")}</span><select name="verdict"><option value=""${prefill ? "" : " selected"} disabled>${L("请选择结论")}</option><option value="pass"${prefill ? " selected" : ""}>${L("通过")}</option><option value="needs_changes">${L("需要修改")}</option><option value="fail">${L("不通过")}</option><option value="inconclusive">${L("证据不足")}</option></select></label>
+        <fieldset><legend>${L("选择支持结论的已有依据")}</legend><div class="evidence-choice-list">${renderEvidenceChoices(preselectedEvidence)}</div></fieldset>
         <label><span>${L("补充依据链接")} <small>${L("可选，每行一条")}</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="${L("https://… 或项目内文件引用")}"></textarea></label>
-        <label><span>${L("判断理由")}（${L("必填")}）</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些依据支撑判断")}"></textarea></label>
+        <label><span>${L("判断理由")}（${L("必填")}）</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些依据支撑判断")}">${escapeHtml(prefill?.digest ?? "")}</textarea></label>
         <p class="form-error" data-review-error role="alert" hidden></p>
         <footer><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>${escapeHtml(obligation.independence_rule)} · ${escapeHtml(obligation.obligation_id)}</small></details><button class="button-primary" type="submit">${L("提交结果确认")}</button></footer>
-      </form>`,
+      </form>`;
+      },
     )
     .join("")}</div>`;
 }
@@ -2791,14 +2895,41 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
     : [];
   const inScope = Array.isArray(contractPayload?.in_scope) ? contractPayload.in_scope.map(String) : [];
   const outOfScope = Array.isArray(contractPayload?.out_of_scope) ? contractPayload.out_of_scope.map(String) : [];
+  const semanticItemCopies = new Map(
+    proposal.items.map((item) => [item.item_id, goalTreeProposalItemCopy(item, view, proposal)]),
+  );
+  const narrative = proposal.narrative;
+  const narrativeSummary = narrative
+    ? `<section class="goal-tree-proposal-narrative" aria-label="${L("变更说明")}">
+        <h4>${L("这次变更主要解决什么？")}</h4>
+        <dl>
+          <div><dt>${L("为什么现在改")}</dt><dd>${escapeHtml(narrative.why_now)}</dd></div>
+          <div><dt>${L("原目标哪里不再成立")}</dt><dd>${escapeHtml(narrative.problem)}</dd></div>
+          <div><dt>${L("变更后的主链路")}</dt><dd><ol>${narrative.main_path.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol></dd></div>
+          <div><dt>${L("预期效果")}</dt><dd>${escapeHtml(narrative.expected_effect)}</dd></div>
+          <div><dt>${L("本次不改变")}</dt><dd>${narrative.non_goals.length ? `<ul>${narrative.non_goals.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : L("没有额外非目标")}</dd></div>
+        </dl>
+      </section>`
+    : proposal.items.length >= 5
+      ? `<section class="goal-tree-proposal-narrative is-missing" role="note"><h4>${L("这份历史方案缺少整体验证说明")}</h4><p>${L("它创建于语义摘要成为大型提案必填项之前。请先让 Runtime 补充原问题、变更后的主链路、预期效果和非目标，再决定是否采用。")}</p></section>`
+      : "";
   const renderItemRow = (item: GoalTreeProposalRecord["items"][number]): string => {
     const copy = goalTreeProposalItemCopy(item, view, proposal);
+    const explanation = item.explanation;
+    const dependencyLabels = (explanation?.depends_on_item_ids ?? []).map((itemId) =>
+      semanticItemCopies.get(itemId)?.title ?? itemId);
+    const semanticExplanation = `<dl class="goal-tree-proposal-item-explanation">
+      <div><dt>${L("主要解决")}</dt><dd>${escapeHtml(explanation?.problem ?? item.reason)}</dd></div>
+      ${explanation ? `<div><dt>${L("会改变什么")}</dt><dd>${escapeHtml(explanation.expected_effect)}</dd></div>
+      <div><dt>${L("明确不改变")}</dt><dd>${explanation.non_goals.length ? escapeHtml(explanation.non_goals.join(L("；"))) : L("没有额外边界")}</dd></div>
+      <div><dt>${L("关联变更")}</dt><dd>${dependencyLabels.length ? escapeHtml(dependencyLabels.join(L("；"))) : L("可独立理解，无前置 change")}</dd></div>` : ""}
+    </dl>`;
     const issueCopy = issuesByItem.get(item.item_id) ?? [];
     const riskRepair = repairableRiskItemIds.has(item.item_id) ? renderGoalTreeRiskRepair(item) : "";
     const blocked = item.state === "conflict" || issueCopy.length > 0;
     return `<li class="goal-tree-proposal-item${item.state === "conflict" ? " is-conflict" : ""}${issueCopy.length ? " is-invalid" : ""}">
       <input type="hidden" name="item_id" value="${escapeHtml(item.item_id)}">
-      <span>${icon(blocked ? "blocked" : "check")}</span><div><strong>${escapeHtml(copy.title)}</strong><small>${escapeHtml(copy.detail)}</small>${copy.facts.length ? `<ul class="goal-tree-proposal-item-facts">${copy.facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>` : ""}${issueCopy.length ? `<div class="goal-tree-proposal-item-error"><strong>${riskRepair ? L("这项需要你选择处理方式") : L("这项现在不能采用")}</strong>${issueCopy.map((issue) => `<p>${escapeHtml(issue.message)} ${escapeHtml(issue.recovery)}</p>`).join("")}</div>` : ""}${riskRepair}</div>
+      <span>${icon(blocked ? "blocked" : "check")}</span><div><strong>${escapeHtml(copy.title)}</strong><small>${escapeHtml(copy.detail)}</small>${semanticExplanation}${copy.facts.length ? `<ul class="goal-tree-proposal-item-facts">${copy.facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>` : ""}${issueCopy.length ? `<div class="goal-tree-proposal-item-error"><strong>${riskRepair ? L("这项需要你选择处理方式") : L("这项现在不能采用")}</strong>${issueCopy.map((issue) => `<p>${escapeHtml(issue.message)} ${escapeHtml(issue.recovery)}</p>`).join("")}</div>` : ""}${riskRepair}</div>
     </li>`;
   };
   const itemRows = undecidedItems.map(renderItemRow).join("");
@@ -2876,6 +3007,7 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
     <header class="decision-record-heading"><span class="decision-kind">${icon("tree")} ${L("目标说明")}${renderNewDecisionBadge(proposal.created_at, view, "goalTree", proposal.proposal_id)}</span><details class="decision-record-tech"><summary>${L("记录信息")}</summary><small>${L("方案版本 {version}", { version: proposal.version })} · ${escapeHtml(proposal.proposal_id)}</small></details></header>
     <div class="decision-record-body"><h3>${invalidItemCount ? invalidHeading : L("这份 Goal 方案要采用，还是退回修改？")}</h3><p>${invalidItemCount ? repairableRiskItemCount ? L("方案中的其他内容仍可查看。先完成下面的风险选择；保存后页面会继续列出剩余问题。") : L("方案中的其他内容仍可查看，但当前不能写入 Goal Tree。请先退回，让 Runtime 修正后重新提交。") : L("Runtime 已经把目标、完成条件和关系变化整理成一份方案。采用后这些内容才会进入 Goal Tree；退回则保持当前内容不变。")}</p>
       <div class="goal-tree-proposal-summary"><small>${L("准备确认的 Goal")}</small><strong>${escapeHtml(proposedTitle)}</strong><p>${escapeHtml(proposedOutcome)}</p></div>
+      ${narrativeSummary}
       ${invalidMessage}
       ${renderDecisionGuidance({
         whyNow: invalidItemCount
@@ -3016,6 +3148,7 @@ interface RecentDecisionResult {
   effects: string[];
   links: Array<{ href: string; label: string }>;
   reason?: string;
+  reasonLabel?: string;
 }
 
 function eventPayload(event: WebEventRecord): Record<string, unknown> {
@@ -3049,6 +3182,9 @@ function recentDecisionResults(view: GoalBoardWebView): RecentDecisionResult[] {
   const candidateById = new Map(view.snapshot.candidates.map((candidate) => [candidate.candidate_id, candidate]));
   const goalTreeById = new Map(view.snapshot.goal_tree_proposals.map((proposal) => [proposal.proposal_id, proposal]));
   const reviewById = new Map(view.snapshot.reviews.map((review) => [review.review_id, review]));
+  const reviewObligationById = new Map(
+    view.snapshot.review_obligations.map((obligation) => [obligation.obligation_id, obligation]),
+  );
 
   for (const event of view.events) {
     if (results.length >= 6) break;
@@ -3191,6 +3327,7 @@ function recentDecisionResults(view: GoalBoardWebView): RecentDecisionResult[] {
       if (!review) continue;
       seen.add(seenKey);
       const goal = goalById.get(review.goal_id);
+      const runtimeReview = reviewObligationById.get(review.obligation_id)?.role !== "human_approver";
       const verdictLabels: Record<string, string> = {
         pass: L("已通过"),
         needs_changes: L("需要修改"),
@@ -3200,13 +3337,18 @@ function recentDecisionResults(view: GoalBoardWebView): RecentDecisionResult[] {
       results.push({
         event,
         kind: "review",
-        kindLabel: L("结果确认"),
+        kindLabel: runtimeReview ? L("Runtime 复核") : L("结果确认"),
         state: verdictLabels[review.verdict] ?? review.verdict,
         title: goal?.goal.title ?? review.goal_id,
-        effects: [review.verdict === "pass"
-          ? L("本次用户确认已通过；Goal 是否完成仍由全部完成条件共同决定。")
-          : L("本次结果没有确认通过；后续工作会保留你的判断和依据。")],
+        effects: [runtimeReview
+          ? review.verdict === "pass"
+            ? L("本次 Runtime 复核已通过；它不能代替用户验收，Goal 是否完成仍由全部完成条件共同决定。")
+            : L("本次 Runtime 复核没有通过；后续工作会保留检查者的判断和依据。")
+          : review.verdict === "pass"
+            ? L("本次用户确认已通过；Goal 是否完成仍由全部完成条件共同决定。")
+            : L("本次结果没有确认通过；后续工作会保留你的判断和依据。")],
         links: goal ? [{ href: goalResultHref(goal, `goal-panel-completion-${goal.goal.goal_id}`), label: L("查看「{title}」的完成情况", { title: goal.goal.title }) }] : [],
+        reasonLabel: runtimeReview ? L("复核理由") : undefined,
       });
       continue;
     }
@@ -3256,7 +3398,7 @@ function renderRecentDecisionResults(view: GoalBoardWebView): string {
     <header><div><h2 id="decision-results-title">${L("最近处理结果")}</h2><p>${L("这些决定已经写入 GoalBoard，可直接打开对应 Goal 核对。")}</p></div><small>${L("最近 {count} 项", { count: results.length })}</small></header>
     <div class="decision-result-list">${results.map((result) => `<article class="decision-result decision-result--${result.kind}">
       <span class="decision-result-icon">${icon(result.kind === "risk" ? "risk" : result.kind === "rewire" ? "link" : result.kind === "review" ? "user" : result.kind === "candidate" ? "plus" : result.kind === "goalTree" ? "tree" : "clipboard")}</span>
-      <div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>
+      <div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(result.reasonLabel ? `${result.reasonLabel}：${result.reason ?? result.event.reason}` : L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>
       ${result.links.length ? `<div class="decision-result-links">${result.links.map((link) => `<a href="${link.href}">${escapeHtml(link.label)}${icon("chevron-right")}</a>`).join("")}</div>` : ""}
     </article>`).join("")}</div>
   </section>`;
@@ -3588,7 +3730,7 @@ function renderRecentResultFeedDetail(entry: FeedDirectoryEntry, selected: boole
   const result = entry.recentResult!;
   return `<article class="feed-detail feed-detail--result" data-feed-detail="${escapeHtml(entry.id)}"${selected ? "" : " hidden"}>
     <header class="feed-detail-header"><div class="feed-detail-kicker"><span>Inbox Message</span><span>${escapeHtml(result.kindLabel)}</span><span>${escapeHtml(result.state)}</span></div><h1>${escapeHtml(result.title)}</h1><p>${escapeHtml(result.effects.join(currentLocale() === "en" ? " " : "；"))}</p><div class="feed-detail-meta"><span>${icon("workflow")}GoalBoard</span><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div></header>
-    <section class="decision-results feed-result-record" aria-label="${L("最近处理结果")}"><article class="decision-result decision-result--${result.kind}"><span class="decision-result-icon">${icon(entry.icon)}</span><div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>${result.links.length ? `<div class="decision-result-links">${result.links.map((link) => `<a href="${link.href}">${escapeHtml(link.label)}${icon("chevron-right")}</a>`).join("")}</div>` : ""}</article></section>
+    <section class="decision-results feed-result-record" aria-label="${L("最近处理结果")}"><article class="decision-result decision-result--${result.kind}"><span class="decision-result-icon">${icon(entry.icon)}</span><div class="decision-result-copy"><div><span>${escapeHtml(result.kindLabel)}</span><strong>${escapeHtml(result.state)}</strong><time datetime="${escapeHtml(result.event.at)}">${formatDate(result.event.at)}</time></div><h3>${escapeHtml(result.title)}</h3>${result.effects.map((effect) => `<p>${escapeHtml(effect)}</p>`).join("")}<small>${escapeHtml(result.reasonLabel ? `${result.reasonLabel}：${result.reason ?? result.event.reason}` : L("你的理由：{reason}", { reason: result.reason ?? result.event.reason }))}</small></div>${result.links.length ? `<div class="decision-result-links">${result.links.map((link) => `<a href="${link.href}">${escapeHtml(link.label)}${icon("chevron-right")}</a>`).join("")}</div>` : ""}</article></section>
   </article>`;
 }
 
@@ -3632,6 +3774,28 @@ export function countGoalDecisions(view: GoalBoardWebView, goalId: string): numb
   const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
   if (!group) return 0;
   return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
+}
+
+function goalDecisionsTakePriority(item: WebGoalView, view: GoalBoardWebView): boolean {
+  const group = buildDecisionGroups(view).find((candidate) => candidate.item?.goal.goal_id === item.goal.goal_id);
+  const hasNonRiskDecision = Boolean(group && (
+    group.goalTreeProposals.length ||
+    group.contractProposals.length ||
+    group.candidates.length ||
+    group.rewires.length ||
+    group.humanReview
+  ));
+  if (hasNonRiskDecision) return true;
+  return new Set<GoalPresentationState>([
+    "clarification_decision_pending",
+    "clarification_blocked",
+    "execution_blocked",
+    "completion_blocked",
+    "review_blocked",
+    "waiting_for_human",
+    "revalidation_blocked",
+    "invalidated",
+  ]).has(item.status);
 }
 
 function renderDraftGaps(item: WebGoalView): string {
@@ -3796,7 +3960,7 @@ function renderFocusSectionDeck(cards: FocusSectionCardOptions[], label: string,
 function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): string {
   const goalId = item.goal.goal_id;
   const decisions = countGoalDecisions(view, goalId);
-  if (decisions > 0) {
+  if (decisions > 0 && goalDecisionsTakePriority(item, view)) {
     return `<a class="goal-primary-action" href="/decisions#decision-goal-${encodeURIComponent(goalId)}">${icon("user")}<span>${L("处理 {count} 项决定", { count: decisions })}</span></a>`;
   }
   const explanation = explainWorkState(item.status);
@@ -3837,8 +4001,9 @@ function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
     (reason) => reason.severity === "blocker" && reason.code !== "work.handoff_pending",
   );
   const decisions = countGoalDecisions(view, item.goal.goal_id);
-  const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisions ? L("先完成等待你的决定") : explanation.nextAction);
-  const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisions ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
+  const decisionsFirst = decisions > 0 && goalDecisionsTakePriority(item, view);
+  const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisionsFirst ? L("先完成等待你的决定") : explanation.nextAction);
+  const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisionsFirst ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
   return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
     <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2></header>
     <div class="goal-now-body"><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
@@ -3982,12 +4147,20 @@ function plainRunState(run: RunRecord | undefined): string {
 
 function renderProgressOverview(item: WebGoalView): string {
   const latestRun = item.runs.at(-1);
+  const latestRunIsCurrent = latestRun != null &&
+    item.active_claim?.claim_id === latestRun.claim_id &&
+    (latestRun.state === "started" || latestRun.state === "blocked");
+  const latestBlocker = latestRun?.block_reason
+    ? latestRunIsCurrent
+      ? `<small>${L("当前阻塞：{reason}", { reason: latestRun.block_reason })}</small>`
+      : `<small>${L("当时记录：{reason}。这不是当前阻塞；当前状态以“当前阻塞”页为准。", { reason: latestRun.block_reason })}</small>`
+    : "";
   const activeRisks = item.risks.filter((risk) => risk.state === "open" || risk.state === "triggered");
   const pendingReviews = item.review_obligations.filter((review) => review.state === "pending").length;
   const independentReviews = item.resolved_policy.cross_reviewers + item.resolved_policy.adversarial_reviewers;
   const stateBody = `<dl class="progress-facts">
       <div><dt>${L("谁在推进")}</dt><dd>${escapeHtml(item.active_claim_actor ? L("{name} 正在推进", { name: item.active_claim_actor }) : L("现在还没有人或工具在推进"))}</dd></div>
-      <div><dt>${L("最近进展")}</dt><dd>${escapeHtml(plainRunState(latestRun))}${latestRun?.block_reason ? `<small>${escapeHtml(latestRun.block_reason)}</small>` : ""}</dd></div>
+      <div><dt>${L("最近进展")}</dt><dd>${escapeHtml(plainRunState(latestRun))}${latestBlocker}</dd></div>
       <div><dt>${L("完成依据")}</dt><dd>${L("已有 {evidence} 条依据，{passed}/{total} 条完成标准通过", { evidence: item.evidence.length, passed: displayedPassedCriterionIds(item).length, total: item.goal.acceptance_criteria.length })}</dd></div>
       <div><dt>${L("还要检查")}</dt><dd>${pendingReviews ? L("还有 {count} 项检查没有完成", { count: pendingReviews }) : L("当前没有未完成的检查")}</dd></div>
     </dl>`;
@@ -4524,6 +4697,7 @@ const STYLES = `
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
   .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--waiting_for_human, .goal-status--revalidation_pending { color: #1768bf; }
   .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
+  .goal-status--replaced { color: var(--muted); }
   .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }
   .goal-status--trashed, .goal-status--archived { color: #626b76; }
@@ -4912,6 +5086,14 @@ const MORE_STYLES = `
   .human-review-list > header { padding: 11px 0; display: flex; align-items: baseline; gap: 12px; }
   .human-review-list > header p { margin: 0; color: var(--muted); font-size: 12px; }
   .human-review-form { padding: 14px 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+  .human-verdict-prefill { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+  .human-verdict-prefill > span { color: var(--accent); }
+  .human-verdict-prefill strong { display: block; margin-bottom: 3px; }
+  .human-verdict-prefill p { margin: 0; color: var(--muted); }
+  .human-verdict-prefill dl { margin: 9px 0 0; display: grid; gap: 6px; }
+  .human-verdict-prefill dl div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+  .human-verdict-prefill dt { color: var(--muted); }
+  .human-verdict-prefill dd { margin: 0; overflow-wrap: anywhere; }
   .human-review-form > label, .human-review-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: start; gap: 14px; }
   .human-review-form > label > span, .human-review-form legend { padding-top: 7px; font-weight: 650; }
   .human-review-form input:not([type=checkbox]), .human-review-form textarea, .human-review-form select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; }
@@ -5484,6 +5666,15 @@ const MORE_STYLES = `
   .goal-tree-proposal-summary > small { color: var(--blue-dark); font-size: 10px; font-weight: 700; }
   .goal-tree-proposal-summary > strong { font-size: 15px; }
   .goal-tree-proposal-summary > p { margin: 2px 0 0; color: var(--ink); overflow-wrap: anywhere; }
+  .goal-tree-proposal-narrative { margin-top: 10px; padding: 12px; border: 1px solid var(--line); background: var(--surface); }
+  .goal-tree-proposal-narrative.is-missing { border-color: var(--amber); background: var(--amber-soft); }
+  .goal-tree-proposal-narrative > h4 { margin: 0 0 8px; font-size: 13px; }
+  .goal-tree-proposal-narrative > p { margin: 0; color: var(--ink); }
+  .goal-tree-proposal-narrative dl, .goal-tree-proposal-item-explanation { margin: 0; display: grid; gap: 7px; }
+  .goal-tree-proposal-narrative dl > div, .goal-tree-proposal-item-explanation > div { display: grid; grid-template-columns: minmax(88px, .3fr) minmax(0, 1fr); gap: 8px; }
+  .goal-tree-proposal-narrative dt, .goal-tree-proposal-item-explanation dt { color: var(--muted); font-size: 10px; font-weight: 700; }
+  .goal-tree-proposal-narrative dd, .goal-tree-proposal-item-explanation dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .goal-tree-proposal-narrative ol, .goal-tree-proposal-narrative ul { margin: 0; padding-left: 18px; }
   .goal-tree-proposal-readiness { margin-top: 11px; padding: 11px 12px; border: 1px solid #efb8b8; background: var(--red-soft); display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
   .goal-tree-proposal-readiness > div:first-child { color: var(--red); }
   .goal-tree-proposal-readiness h4 { margin: 0 0 3px; color: var(--red); font-size: 13px; }
@@ -5501,6 +5692,7 @@ const MORE_STYLES = `
   .goal-tree-proposal-item > div { min-width: 0; display: grid; gap: 1px; }
   .goal-tree-proposal-item strong, .goal-tree-proposal-item small { overflow-wrap: anywhere; }
   .goal-tree-proposal-item small { color: var(--muted); }
+  .goal-tree-proposal-item-explanation { margin-top: 7px; padding: 8px 9px; border-left: 2px solid var(--blue); background: var(--blue-soft); font-size: 11px; }
   .goal-tree-proposal-item-facts { margin: 6px 0 0; padding-left: 18px; color: var(--ink); font-size: 11px; }
   .goal-tree-proposal-item-facts li { margin: 3px 0; overflow-wrap: anywhere; }
   .goal-tree-proposal-item-error { margin-top: 7px; padding: 8px 9px; border: 1px solid #efb8b8; background: var(--red-soft); }
@@ -8344,7 +8536,7 @@ const CLIENT_SCRIPT = `
         container.replaceChildren(records);
         container.dataset.loaded = "true";
         const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-        if (hashTarget) revealFocusTarget(hashTarget);
+        if (hashTarget) revealDeepLinkTarget(hashTarget);
       } catch (error) {
         if (isAbortError(error)) return;
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
@@ -8503,6 +8695,15 @@ const CLIENT_SCRIPT = `
       const sectionKey = card?.dataset?.focusSectionCard || body?.dataset?.focusSectionBody;
       const trigger = sectionKey ? deck?.querySelector?.('[data-focus-section-trigger="' + CSS.escape(sectionKey) + '"]') : null;
       return trigger ? activateFocusSection(trigger) : false;
+    };
+
+    const revealDeepLinkTarget = (target) => {
+      let disclosure = target?.matches?.("details") ? target : target?.closest?.("details");
+      while (disclosure) {
+        disclosure.open = true;
+        disclosure = disclosure.parentElement?.closest?.("details");
+      }
+      return revealFocusTarget(target);
     };
 
     const setGoalPanel = (panelName, persist = true, updateHash = false, resetScroll = false) => {
@@ -8747,7 +8948,7 @@ const CLIENT_SCRIPT = `
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
       const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-      if (hashTarget) revealFocusTarget(hashTarget);
+      if (hashTarget) revealDeepLinkTarget(hashTarget);
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
       documentPane.scrollTop = hashTarget?.matches?.("[data-goal-panel]") && activeDesktopSurface === "goal"
         ? 0
@@ -9935,12 +10136,7 @@ const CLIENT_SCRIPT = `
           if (targetPanel) setGoalPanel(targetPanel, true);
           const targetFactor = targetElement.closest("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
           if (targetFactor) setGoalFactor(targetFactor, true);
-          revealFocusTarget(targetElement);
-          let disclosure = targetElement.closest("details");
-          while (disclosure) {
-            disclosure.open = true;
-            disclosure = disclosure.parentElement?.closest("details");
-          }
+          revealDeepLinkTarget(targetElement);
           history.replaceState(null, "", "#" + targetId);
           requestAnimationFrame(() => targetElement.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
           return;
@@ -10755,7 +10951,12 @@ const CLIENT_SCRIPT = `
             fail: L("结果已确认未通过；你的理由和依据已保留。"),
             inconclusive: L("结果暂未判断；请补充与完成标准对应的依据。"),
           };
-          showDecisionReceipt(resultMessages[result?.review?.verdict] || L("结果确认已记录。"), receiptContext);
+          const receiptMessage = resultMessages[result?.review?.verdict] || L("结果确认已记录。");
+          sessionStorage.setItem("goalboard-decision-receipt", JSON.stringify({
+            message: receiptMessage,
+            context: receiptContext,
+          }));
+          location.reload();
         } catch (error) {
           errorBox.textContent = humanDecisionError(error.message, "结果确认保存失败，请检查输入后重试");
           errorBox.hidden = false;
@@ -10821,7 +11022,7 @@ const CLIENT_SCRIPT = `
       if (factor) setGoalFactor(factor, true);
       const target = targetId ? document.getElementById(targetId) : null;
       if (target) {
-        revealFocusTarget(target);
+        revealDeepLinkTarget(target);
         if (target.matches?.("[data-goal-panel]")) documentPane.scrollTop = 0;
         else requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
       }
@@ -10957,6 +11158,20 @@ const CLIENT_SCRIPT = `
       setWorkspaceMode("runtime", false);
       setMobileView("tui");
       saveUiState();
+    }
+    const initialHashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (initialHashTarget) {
+      revealDeepLinkTarget(initialHashTarget);
+      requestAnimationFrame(() => initialHashTarget.scrollIntoView({ block: "start" }));
+    }
+    try {
+      const storedDecisionReceipt = JSON.parse(sessionStorage.getItem("goalboard-decision-receipt") || "null");
+      sessionStorage.removeItem("goalboard-decision-receipt");
+      if (storedDecisionReceipt?.message) {
+        showDecisionReceipt(storedDecisionReceipt.message, storedDecisionReceipt.context);
+      }
+    } catch {
+      sessionStorage.removeItem("goalboard-decision-receipt");
     }
     if (selected && tuiPane) {
       tuiPane.setAttribute("data-goal-id", selected);
@@ -11200,8 +11415,10 @@ function renderDiagnosticsSettings(view: GoalBoardSettingsView): string {
       ? [["start", L("启动")], ["remove", L("移除")]]
       : service.state === "unhealthy"
         ? [["restart", L("重启并检查")], ["remove", L("移除")]]
-      : service.state === "absent" || service.state === "needs_repair"
+      : service.state === "absent"
         ? [["install", L("启用常驻服务")]]
+        : service.state === "needs_repair"
+          ? [["install", L("修复常驻服务")]]
         : [];
   const serviceButtons = serviceActions.map(([action, label]) => `<button type="button" data-web-service-action="${action}">${label}</button>`).join("");
   return `<section class="settings-document" aria-labelledby="settings-title">

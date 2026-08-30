@@ -27,6 +27,8 @@ For every material answer, first separate:
 
 Then call `goalboard_v1_draft_dialogue_turn` with the saved understanding and exactly one `next_question` or a `proposal_summary`. If persistence fails, say it was not saved and stop rather than continuing from chat memory.
 
+Both `draft_dialogue_turn` and `draft_dialogue_resume` return a compact checkpoint by default: `latest_turn`, `turn_count`, dialogue, Claim/Run, work state, and cursor. Do not request the whole history on every write. When older wording is genuinely needed, set `include_history=true` with a bounded `history_limit`; follow `history.next_before_turn_index` through `history_before_turn_index` for earlier pages.
+
 Clarify in two natural passes, not a form interview:
 
 1. obtain enough user language for `title`, `outcome`, `why`, and `business_logic`;
@@ -56,7 +58,7 @@ Return to the user's original outcome instead of the most recently discussed top
 
 ### 2. Select methods without a preset bundle
 
-Call `goalboard_v1_planning_methods`.
+Call `goalboard_v1_planning_methods` with `include_instructions=false` first. This returns the lightweight selection catalog, its `catalog_id`, and the project floor in `composition.method_pack_ids` without expanding every method body.
 
 - Every `composition.method_pack_ids` entry is a user-configured project floor and must be included.
 - Add every other method whose distinct professional check materially applies to the current task.
@@ -65,7 +67,7 @@ Call `goalboard_v1_planning_methods`.
 - Compare selected coverage with all available method summaries. An unselected method that contributes a material uncovered check must be added.
 - If no domain method fits, use `meta-domain-pack-builder` to research domain objects, lifecycle, professional artifacts, evidence, dependencies, and failures. Save a user-confirmed project method before using it to split the real Goal.
 
-Read every selected `methods[].instructions` body completely. `composition.method_paths` repeats only project-floor bodies; methods added from task inspection still come from the full `methods[]` library. Treat bodies as complementary planning Skills, not serial phases and not one Goal per method.
+After selection, call `goalboard_v1_planning_methods` with exactly those `method_ids`. Verify the response has the same `catalog_id` and that `returned_method_ids` contains every selected ID, then read every returned `methods[].instructions` body completely. If the catalog changed, restart selection from the new lightweight catalog. Treat bodies as complementary planning Skills, not serial phases and not one Goal per method. The legacy no-argument call still returns the whole library for compatibility, but do not use it for normal planning because large catalogs can exceed the tool output budget.
 
 ### 3. Recall connected themes through their outputs
 
@@ -230,11 +232,27 @@ leaf_readiness: {
 
 Exactly one output is primary. Supporting outputs are required for the same acceptance; independently valuable outputs belong in another Goal. If at least two of “separately deliverable,” “separately acceptable,” and “independently reworkable” are true, split it and use `split_required`.
 
+`split_candidates[].decision` is deliberately binary: use only `keep` or `split`. Do not write `defer`. Work that is explicitly outside the current Goal and not yet ready to become another Goal belongs in the Goal's `out_of_scope` or the Proposal narrative's deferred/non-goal explanation, not in `split_candidates`. Work that has an independently useful result uses `split` and becomes its own Goal.
+
 A ready leaf has no unresolved decision or independent deliverable, covers every promised output and acceptance criterion exactly, and states scope, non-goals, required inputs, outputs, and evidence. Otherwise keep it open for clarification rather than submitting a pseudo-leaf.
 
 ### 9. Propose, check, explain, and decide
 
 Use one `goalboard_v1_goal_tree_propose` for the complete change set, then `goalboard_v1_goal_tree_read` and `goalboard_v1_goal_tree_check`. Include parent and child Goal/Contract changes, `part_of`, `depends_on`, Risks, Policy, Candidates, and Rewires where applicable.
+
+The Proposal must reference this Runtime's currently active clarifier Run. If `goal_tree_propose` reports that its Run is missing, inactive, released, or expired, call `goalboard_v1_draft_dialogue_resume` for the same Draft Goal and retry the unchanged Proposal with the returned new `run_id`. Do not create a duplicate Draft or keep retrying the rejected Run id.
+
+`goal_tree_read` is also the recovery view for historical Contract Proposals, Candidates, and Rewires. When it returns a `legacy-contract-proposal:*`, `legacy-candidate:*`, or `legacy-rewire:*` proposal, pass that exact `proposal_id` and its exact `item_id` to `goal_tree_decide`; do not guess a dedicated legacy decision tool or create a duplicate native Proposal. These legacy handles support one confirm/reject decision. If an exactly equivalent pure-relation native Proposal has already landed, re-read first: the legacy Rewire should be marked applied and identify the superseding native Proposal rather than asking the user again.
+
+For a Proposal with five or more change items, add a formal user-facing `narrative` instead of relying on a short summary or an explanation outside GoalBoard:
+
+- `why_now`: why this decision is needed now;
+- `problem`: what no longer works in the current Goal Tree;
+- `main_path`: the post-confirmation result chain in dependency order, written in business language;
+- `expected_effect`: what becomes different for the user or downstream work; and
+- `non_goals`: what this change set intentionally does not change.
+
+Every item in that larger Proposal also needs `explanation`: `problem`, `expected_effect`, `non_goals`, and `depends_on_item_ids`. Use the item’s stable `item_id` for semantic dependencies. For `part_of` and `depends_on`, explain the provider/consumer or parent/child consequence in business language; do not merely repeat the relation type or internal IDs. Small Proposals may omit these structured fields, but their required `summary` and item `reason` must still be understandable to the user.
 
 Treat `goalboard_v1_goal_tree_check` as the required preflight before asking the user to decide: it checks semantic baselines and dry-runs the same materialization invariants without changing the canonical tree. If it returns any conflict or planning issue, explain and revise first. `confirm_all_pending` is all-or-nothing: one stale or invalid item leaves every pending item untouched. Use explicit per-item decisions only when the user intentionally wants independent safe items to land separately; do not turn a failed whole change set into an implicit partial application.
 
