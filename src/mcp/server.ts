@@ -1017,7 +1017,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "goalboard_v1_planning_analyze_change",
-    description: "用户提出新要求时，只读计算受影响的上层 Goal、下游依赖、可复用工作和重新审查顺序；不会自动改树。",
+    description: "用户提出新要求时，只读计算受影响的上层 Goal、下游消费者、变更 Goal 直接消费的相邻上游依赖、可复用工作和重新审查顺序；不会自动改树。Goal Tree 决定成功后也会在 semantic_review 中自动返回同一影响结构。",
     inputSchema: {
       type: "object",
       properties: { ...V1_COMMON, changed_goal_ids: V1_STRING_ARRAY },
@@ -1193,7 +1193,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本。包含 5 项及以上变化时，必须提供 narrative，并为每项提供 explanation，让审批人直接看到原问题、变更后主链路、逐项效果、非目标和 change 依赖。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本；该字段接受 native Proposal ID，也接受 goal_tree_read 返回的 legacy Contract Proposal raw/synthetic handle，并会让旧 Contract Proposal 原子退出待决定状态。Legacy Candidate 请使用 candidate item 晋升，Legacy Rewire 则在等价关系变更确认落地后自动关闭，不能把这两类 handle 当成普通修订。包含 5 项及以上变化时，必须提供 narrative，并为每项提供 explanation，让审批人直接看到原问题、变更后主链路、逐项效果、非目标和 change 依赖。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1205,7 +1205,10 @@ const V1_TOOLS: McpToolDefinition[] = [
         narrative: GOAL_TREE_PROPOSAL_NARRATIVE,
         items: { type: "array", items: GOAL_TREE_ITEM },
         base_event_cursor: { type: "integer", minimum: 0 },
-        supersedes_proposal_id: { type: ["string", "null"] },
+        supersedes_proposal_id: {
+          type: ["string", "null"],
+          description: "要修订的 native Proposal ID，或 pending legacy Contract Proposal 的 raw/synthetic handle；其他 legacy 类型会返回精确恢复动作",
+        },
         idempotency_key: V1_STRING,
       },
       required: ["board_id", "actor_id", "discovered_in_run_id", "summary", "items", "idempotency_key"],
@@ -1244,7 +1247,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_decide",
     description:
-      "把用户对 Goal Tree 提案的决定物化；goal_tree_read 返回的 native 或 legacy handle 都可直接使用，历史 Contract Proposal、Candidate、Rewire 的单项 confirm/reject 会分派到原有审计路径。逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。管理入口必须提供可审计的用户与消息引用。",
+      "把用户对 Goal Tree 提案的决定物化；goal_tree_read 返回的 native 或 legacy handle 都可直接使用，历史 Contract Proposal、Candidate、Rewire 的单项 confirm/reject 会分派到原有审计路径。逐项决定仍允许互不依赖的安全条目分别落地，confirm_all_pending 则全有或全无，任一冲突都会让整份确认保持未写入。成功应用后响应和 proposal readback 的 semantic_review 会把结构校验通过与仍需复核的祖先、下游消费者、相邻上游依赖分开，并返回 review_affected_subgraph；Runtime 必须先复核这些 Contract，任何后续重编排仍须新 Proposal 和用户确认。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。管理入口必须提供可审计的用户与消息引用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1496,7 +1499,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_evidence_submit",
-    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor。超过 512 KiB 的项目内普通文件会在确认路径安全后登记为 UNVERIFIED，不会全文读取或打开；调用方提供的 digest 只按原样记录，不代表 GoalBoard 已核验，建议同时提交小型 sidecar summary。外部、不透明或 file:/// 机器本地 locator 也会保留但明确标为 UNVERIFIED；file:/// 只登记、不可从 Web 打开。",
+    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件、当前 canonical Git 仓库正式登记的隔离 worktree 文件与 Markdown anchor。超过 512 KiB 的项目内普通文件会在确认路径安全后登记为 UNVERIFIED，不会全文读取或打开；调用方提供的 digest 只按原样记录，不代表 GoalBoard 已核验，建议同时提交小型 sidecar summary。外部、不透明或 file:/// 机器本地 locator 也会保留但明确标为 UNVERIFIED；file:/// 只登记、不可从 Web 打开。`human_verdict` 只用于把用户针对唯一待决人工验收的明确原话交接到预填表单：必须使用 Contract 返回的 criterion_ids、conversation:// 来源和原话 digest；它不是 canonical Human Review，也不允许 Runtime 代替用户提交。",
     {
       goal_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1507,7 +1510,7 @@ const V1_TOOLS: McpToolDefinition[] = [
       locator: {
         type: "string",
         description:
-          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；超过 512 KiB 的项目内文件只确认路径并以 UNVERIFIED 登记，不可在 Web 预览。跨仓或项目外的 file:///path/to/artifact 可仅登记为 UNVERIFIED：GoalBoard 不会读取或确认文件存在，调用方提供的 digest 也未核验；HTTP 与其他不透明协议同样保留为 UNVERIFIED。",
+          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。若绝对路径位于当前 canonical Git 仓库通过 git worktree 正式登记的隔离工作树，GoalBoard 会在 realpath containment 通过后同样验证，并记录实际 worktree 根；不同仓库、伪造 .git 目录和 symlink 逃逸仍拒绝。安全的 repo: 输入会统一存为 project://；超过 512 KiB 的项目内文件只确认路径并以 UNVERIFIED 登记，不可在 Web 预览。跨仓或项目外的 file:///path/to/artifact 可仅登记为 UNVERIFIED：GoalBoard 不会读取或确认文件存在，调用方提供的 digest 也未核验；HTTP 与其他不透明协议同样保留为 UNVERIFIED。",
       },
       digest: { type: ["string", "null"] },
       result: { type: "string", enum: ["passed", "failed", "inconclusive"] },
@@ -1914,7 +1917,7 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
         ["user_confirmed", "confirmation_summary"],
       );
     clone.description =
-      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，并要求上一问明确点名本次 proposal_id，其他无关 pending Proposal 不制造歧义。逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
+      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，并要求上一问明确点名本次 proposal_id，其他无关 pending Proposal 不制造歧义。逐项 decisions 才允许独立安全条目分别落地。成功应用后 semantic_review 会把结构校验通过与仍需复核的祖先、下游消费者、相邻上游依赖分开；Runtime 必须完成受影响子图复核，后续 canonical 调整仍需新 Proposal 和用户确认。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
   if (tool.name !== "goalboard_v1_review_submit") return clone;

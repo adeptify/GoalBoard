@@ -291,7 +291,7 @@ Before asking for a decision, explain:
 
 End with one unambiguous choice: confirm the whole named Proposal, reject it, or revise named items. Call `goalboard_v1_goal_tree_decide` with `user_confirmed=true` only after the user's explicit current-conversation answer and record a faithful `confirmation_summary`. A short “可以” is whole confirmation only when the immediately preceding message explicitly named the same complete `proposal_id` as the decision and set `whole_confirmation_prompted=true`; unrelated pending Proposals elsewhere on the Board do not make that exact prompt ambiguous.
 
-Nothing in a Proposal is canonical before the decision. Re-read affected state afterward and run `goalboard_v1_planning_graph_check` after confirmed graph changes.
+Nothing in a Proposal is canonical before the decision. After confirmed items materialize, consume the returned `semantic_review` before reporting the planning change complete. `structural_validation=passed` means the graph is well-formed; it does not mean every existing Contract still matches the changed result. When `status=required`, read the returned changed Goals, ancestors, downstream consumers, and adjacent upstream dependencies in `review_order`, explain which Contracts still hold or may have drifted, and prepare a new Proposal only for the necessary corrections. Do not silently update, block, or reparent any Goal. Every canonical follow-up still requires the user's explicit decision. The same review remains recoverable from `goal_tree_read(...).proposal.decision.semantic_review` if the deciding response was compacted. Run `goalboard_v1_planning_graph_check` after confirmed graph changes as the separate structural check.
 
 ## Requirement changes: replan the affected subgraph
 
@@ -299,7 +299,7 @@ When the user adds or changes a requirement:
 
 1. identify the directly affected Goal IDs;
 2. call `goalboard_v1_planning_analyze_change`;
-3. inspect returned ancestors and downstream consumers in order;
+3. inspect returned ancestors, downstream consumers, and direct upstream providers in order;
 4. reuse compatible unfinished Goals and preserve unaffected Goals;
 5. rerun the planning loop for affected themes and dependencies;
 6. propose only changed Contracts and Relations.

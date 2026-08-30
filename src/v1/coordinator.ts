@@ -280,8 +280,17 @@ export interface GoalTreeProposalDecisionResult {
   rejected_item_ids: string[];
   revised_item_ids: string[];
   conflict_item_ids: string[];
+  semantic_review: GoalTreeSemanticReview | null;
   observed_event_cursor: number;
   replayed: boolean;
+}
+
+export interface GoalTreeSemanticReview extends GoalChangeImpact {
+  structural_validation: "passed";
+  status: "required" | "not_required";
+  next_action: "review_affected_subgraph" | "continue";
+  review_tool: "goalboard_v1_planning_analyze_change";
+  canonical_changes_require_new_user_confirmation: true;
 }
 
 interface ActorWrite {
@@ -3085,6 +3094,23 @@ export class GoalBoardCoordinator {
     return analyzeGoalChangeImpact(snapshot.goals, snapshot.relations, input.changed_goal_ids);
   }
 
+  private goalTreeSemanticReview(boardId: string, changedGoalIds: string[]): GoalTreeSemanticReview | null {
+    const changed = unique(changedGoalIds).sort();
+    if (changed.length === 0) return null;
+    const impact = this.analyzePlanningChange({ board_id: boardId, changed_goal_ids: changed });
+    const required = impact.affected_ancestors.length > 0 ||
+      impact.affected_dependents.length > 0 ||
+      impact.adjacent_dependencies.length > 0;
+    return {
+      ...impact,
+      structural_validation: "passed",
+      status: required ? "required" : "not_required",
+      next_action: required ? "review_affected_subgraph" : "continue",
+      review_tool: "goalboard_v1_planning_analyze_change",
+      canonical_changes_require_new_user_confirmation: true,
+    };
+  }
+
   validatePlanningGraph(boardId: string): { issues: PlanningGraphIssue[]; observed_event_cursor: number } {
     this.requireBoard(boardId);
     const snapshot = this.store.snapshot(boardId);
@@ -3907,7 +3933,33 @@ export class GoalBoardCoordinator {
 
       let previous: GoalTreeProposalRecord | null = null;
       if (supersedesProposalId) {
-        previous = this.readNativeGoalTreeProposal(input.board_id, supersedesProposalId);
+        previous = this.listGoalTreeProposals({
+          board_id: input.board_id,
+          proposal_id: supersedesProposalId,
+          include_legacy: true,
+        }).proposals[0] ?? null;
+        if (!previous) {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.not_found",
+            `找不到 Goal Tree 提案: ${supersedesProposalId}`,
+          );
+        }
+        if (previous.origin !== "native" && previous.origin !== "legacy_contract_proposal") {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.legacy_supersession_unsupported",
+            `supersedes_proposal_id=${supersedesProposalId} 指向 ${previous.origin}；当前只支持修订 native Proposal 或 legacy Contract Proposal。Candidate 请用 candidate item 晋升，Rewire 只会在等价关系变更确认落地后自动关闭。`,
+            {
+              path: "supersedes_proposal_id",
+              received_value: supersedesProposalId,
+              resolved_proposal_id: previous.proposal_id,
+              origin: previous.origin,
+              allowed_origins: ["native", "legacy_contract_proposal"],
+              next_action: previous.origin === "legacy_candidate"
+                ? "promote_candidate_with_candidate_item"
+                : "submit_equivalent_relation_change_without_supersedes_handle",
+            },
+          );
+        }
         if (previous.state !== "pending") {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.revision_not_pending",
@@ -3921,6 +3973,11 @@ export class GoalBoardCoordinator {
           );
         }
       }
+      const canonicalSupersedesProposalId = previous?.proposal_id ?? null;
+      const supersedesNativeProposalId = previous?.origin === "native" ? previous.proposal_id : null;
+      const supersedesLegacyProposalId = previous?.origin === "legacy_contract_proposal"
+        ? previous.proposal_id
+        : null;
       const effectiveRootGoalId = rootGoalId ?? previous?.root_goal_id ?? proposalRun.goal_id;
       if (
         items.some((item) => this.isRiskLifecycleChange(input.board_id, item)) &&
@@ -3999,9 +4056,10 @@ export class GoalBoardCoordinator {
         .prepare(`
           INSERT INTO goal_tree_proposals (
             proposal_id, board_id, root_goal_id, submitted_by, discovered_in_run_id,
-            state, version, supersedes_proposal_id, base_event_cursor, summary,
-            narrative_json, decision_json, created_at, updated_at, decided_at
-          ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+            state, version, supersedes_proposal_id, supersedes_legacy_proposal_id,
+            base_event_cursor, summary, narrative_json, decision_json,
+            created_at, updated_at, decided_at
+          ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
         `)
         .run(
           proposalId,
@@ -4010,7 +4068,8 @@ export class GoalBoardCoordinator {
           actorId,
           input.discovered_in_run_id,
           version,
-          supersedesProposalId,
+          supersedesNativeProposalId,
+          supersedesLegacyProposalId,
           baseEventCursor,
           summary,
           narrative == null ? null : sqliteJson(narrative),
@@ -4049,16 +4108,36 @@ export class GoalBoardCoordinator {
         );
       }
       if (previous) {
-        this.store.db
-          .prepare("UPDATE goal_tree_proposals SET state = 'superseded', updated_at = ? WHERE proposal_id = ?")
-          .run(now, previous.proposal_id);
-        this.store.db
-          .prepare(`
-            UPDATE goal_tree_proposal_items
-            SET state = 'superseded', updated_at = ?
-            WHERE proposal_id = ? AND state IN ('pending', 'conflict')
-          `)
-          .run(now, previous.proposal_id);
+        if (previous.origin === "native") {
+          this.store.db
+            .prepare("UPDATE goal_tree_proposals SET state = 'superseded', updated_at = ? WHERE proposal_id = ?")
+            .run(now, previous.proposal_id);
+          this.store.db
+            .prepare(`
+              UPDATE goal_tree_proposal_items
+              SET state = 'superseded', updated_at = ?
+              WHERE proposal_id = ? AND state IN ('pending', 'conflict')
+            `)
+            .run(now, previous.proposal_id);
+        } else {
+          const rawLegacyProposalId = previous.proposal_id.slice("legacy-contract-proposal:".length);
+          this.store.db
+            .prepare(`
+              UPDATE contract_proposals
+              SET state = 'superseded', decided_at = ?, decision_json = ?
+              WHERE board_id = ? AND proposal_id = ? AND state = 'pending'
+            `)
+            .run(
+              now,
+              sqliteJson({
+                reason: "clarifier 用新的 native Goal Tree Proposal 修订了这份历史 Contract Proposal",
+                superseded_by: actorId,
+                superseded_by_goal_tree_proposal_id: proposalId,
+              }),
+              input.board_id,
+              rawLegacyProposalId,
+            );
+        }
       }
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
@@ -4075,7 +4154,7 @@ export class GoalBoardCoordinator {
           discovered_in_run_id: input.discovered_in_run_id,
           base_event_cursor: baseEventCursor,
           version,
-          supersedes_proposal_id: supersedesProposalId,
+          supersedes_proposal_id: canonicalSupersedesProposalId,
           item_ids: items.map((item) => item.item_id),
         },
         at: now,
@@ -4803,7 +4882,19 @@ export class GoalBoardCoordinator {
         revisedItemIds.push(item.item_id);
       }
 
-      this.refreshGoalTreeProposalState(input.board_id, proposal.proposal_id, authority.actor_id, now);
+      const changedGoalIds = confirmed
+        .filter((entry) => appliedItemIds.includes(entry.item.item_id))
+        .flatMap((entry) => entry.item.affected_objects)
+        .filter((object) => object.object_type === "goal")
+        .map((object) => object.object_id);
+      const semanticReview = this.goalTreeSemanticReview(input.board_id, changedGoalIds);
+      this.refreshGoalTreeProposalState(
+        input.board_id,
+        proposal.proposal_id,
+        authority.actor_id,
+        now,
+        semanticReview,
+      );
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -4824,6 +4915,7 @@ export class GoalBoardCoordinator {
           revised_item_ids: revisedItemIds,
           conflict_item_ids: conflictItemIds,
           revision_proposal_ids: revisionProposals.map((item) => item.proposal_id),
+          semantic_review: semanticReview,
         },
         at: now,
       });
@@ -4834,6 +4926,7 @@ export class GoalBoardCoordinator {
         rejected_item_ids: rejectedItemIds,
         revised_item_ids: revisedItemIds,
         conflict_item_ids: conflictItemIds,
+        semantic_review: semanticReview,
         observed_event_cursor: cursor,
       };
       this.remember(
@@ -4991,6 +5084,14 @@ export class GoalBoardCoordinator {
       rejected_item_ids: decision.decision === "reject" ? [item.item_id] : [],
       revised_item_ids: [],
       conflict_item_ids: [],
+      semantic_review: decision.decision === "confirm"
+        ? this.goalTreeSemanticReview(
+            input.board_id,
+            item.affected_objects
+              .filter((object) => object.object_type === "goal")
+              .map((object) => object.object_id),
+          )
+        : null,
       observed_event_cursor: observedEventCursor,
       replayed,
     };
@@ -6281,6 +6382,13 @@ export class GoalBoardCoordinator {
                 : "evidence.locator_invalid";
         throw new GoalBoardV1Error(code, error.message);
       }
+      const locatorWorkspaceRoot = locatorValidation.status === "verified"
+        ? locatorValidation.verified_project_root ?? input.locator_context?.project_root ?? null
+        : null;
+      const locatorWorkspaceId = locatorValidation.status === "verified"
+        && locatorValidation.verified_via !== "registered_git_worktree"
+        ? input.locator_context?.workspace_id ?? null
+        : null;
       this.store.db
         .prepare(`
           INSERT INTO evidence (
@@ -6302,8 +6410,8 @@ export class GoalBoardCoordinator {
           locatorValidation.status,
           locatorValidation.reason,
           locatorValidation.checked_at,
-          locatorValidation.status === "verified" ? input.locator_context?.workspace_id ?? null : null,
-          locatorValidation.status === "verified" ? input.locator_context?.project_root ?? null : null,
+          locatorWorkspaceId,
+          locatorWorkspaceRoot,
           input.digest ?? null,
           now,
           input.result,
@@ -8627,6 +8735,7 @@ export class GoalBoardCoordinator {
     proposalId: string,
     actorId: string,
     at: string,
+    semanticReview: GoalTreeSemanticReview | null,
   ): void {
     const proposal = this.readNativeGoalTreeProposal(boardId, proposalId);
     const states = proposal.items.map((item) => item.state);
@@ -8659,6 +8768,7 @@ export class GoalBoardCoordinator {
         sqliteJson({
           item_states: Object.fromEntries(proposal.items.map((item) => [item.item_id, item.state])),
           latest_decision_ids: proposal.decisions.map((decision) => decision.decision_id),
+          semantic_review: semanticReview ?? proposal.decision?.semantic_review ?? null,
         }),
         at,
         hasOpen ? null : at,
@@ -11333,6 +11443,30 @@ export class GoalBoardCoordinator {
         ...pendingHumanReviewObligations.flatMap((obligation) => obligation.criterion_scope),
         ...uncoveredHumanCriterionIds,
       ]).sort();
+      const singlePendingHumanObligation = pendingHumanReviewObligations.length === 1
+        ? pendingHumanReviewObligations[0]
+        : null;
+      const singleHumanObligation = singlePendingHumanObligation &&
+          unique(singlePendingHumanObligation.criterion_scope).sort().length === criterionIds.length &&
+          unique(singlePendingHumanObligation.criterion_scope).sort().every(
+            (criterionId, index) => criterionId === criterionIds[index],
+          )
+        ? singlePendingHumanObligation
+        : null;
+      const conversationApprovalHandoff = singleHumanObligation
+        ? {
+            requires_single_pending_obligation: true,
+            evidence_tool: "goalboard_v1_evidence_submit",
+            evidence_kind: "human_verdict",
+            evidence_result: "passed",
+            criterion_ids: singleHumanObligation.criterion_scope,
+            obligation_id: singleHumanObligation.obligation_id,
+            locator_scheme: "conversation://",
+            digest_source: "exact_user_quote",
+            final_action: "open_goalboard_inbox_for_single_user_submit",
+            runtime_can_submit_human_review: false,
+          }
+        : null;
       return {
         ...base,
         work_state: "waiting_for_human",
@@ -11346,9 +11480,16 @@ export class GoalBoardCoordinator {
             {
               criterion_ids: criterionIds,
               obligation_ids: pendingHumanReviewObligations.map((item) => item.obligation_id),
-              next_action: "open_goalboard",
+              next_action: conversationApprovalHandoff
+                ? "record_explicit_user_approval_or_open_goalboard"
+                : "open_goalboard",
+              ...(conversationApprovalHandoff
+                ? { conversation_approval_handoff: conversationApprovalHandoff }
+                : {}),
             },
-            "请用户在 GoalBoard 中完成真实操作、提交决定及相应验收依据；Runtime 不要重复领取 Review。",
+            conversationApprovalHandoff
+              ? "若用户在当前对话明确批准这一项唯一待决验收，Runtime 只把用户原话登记为 human_verdict Evidence 并打开已预填 Inbox；最终 Human Review 仍由用户提交。含糊回复、多个待决项或不通过结论继续使用 Inbox。"
+              : "请用户在 GoalBoard 中完成真实操作、提交决定及相应验收依据；Runtime 不要重复领取 Review。",
           ),
         ],
       };

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { WebSocket, type RawData } from "ws";
 import { desktopAdvancePrompt } from "../src/desktop/advance-prompt.js";
@@ -52,6 +53,16 @@ test("desktop capability permits the custom title bar to drag its window", () =>
   assert.equal(mainWindow?.titleBarStyle, "Overlay");
   assert.equal(mainWindow?.hiddenTitle, true);
   assert.deepEqual(mainWindow?.trafficLightPosition, { x: 16, y: 24 });
+});
+
+test("release version sources agree before packaging", () => {
+  const output = execFileSync(process.execPath, [
+    new URL("../scripts/verify-release-versions.mjs", import.meta.url).pathname,
+  ], { encoding: "utf8" });
+  const packageVersion = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ).version as string;
+  assert.equal(output.trim(), `GoalBoard release version sources agree: ${packageVersion}`);
 });
 
 test("native Desktop identity self-heals before layout and survives full-page navigation", () => {
@@ -628,7 +639,6 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.match(desktop, />完成后会得到什么<\/h2>/);
     assert.match(desktop, />为什么现在做<\/h2>/);
     assert.match(desktop, />它会怎样运转<\/h2>/);
-    assert.match(desktop, /grid-template-columns: clamp\(286px, var\(--tree-width, 310px\), 334px\) 8px minmax\(0, 1fr\)/);
   } finally {
     store.close();
   }

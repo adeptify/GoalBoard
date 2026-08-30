@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,7 @@ import {
 import { runV1Cli } from "../src/v1/cli.js";
 import { main as runPublicCli } from "../src/cli/main.js";
 import { GoalBoardServer } from "../src/mcp/server.js";
+import { ProjectReferenceError, readProjectReference } from "../src/evidence/locator.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -3420,6 +3421,133 @@ test("a file URI outside the current workspace is registered without reading the
   store.close();
 });
 
+test("Evidence verifies an uncommitted file in a registered worktree of the canonical Git repository", async () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "same-repository-worktree-evidence");
+
+  const repositoryRoot = mkdtempSync(join(tmpdir(), "goalboard-evidence-repository-"));
+  writeFileSync(join(repositoryRoot, "README.md"), "# Evidence repository\n");
+  await execFileAsync("git", ["-C", repositoryRoot, "init"]);
+  await execFileAsync("git", ["-C", repositoryRoot, "config", "user.name", "GoalBoard Test"]);
+  await execFileAsync("git", ["-C", repositoryRoot, "config", "user.email", "goalboard-test@example.invalid"]);
+  await execFileAsync("git", ["-C", repositoryRoot, "add", "README.md"]);
+  await execFileAsync("git", ["-C", repositoryRoot, "commit", "-m", "test: initialize evidence repository"]);
+
+  const worktreeParent = mkdtempSync(join(tmpdir(), "goalboard-evidence-worktree-parent-"));
+  const worktreeRoot = join(worktreeParent, "isolated-worktree");
+  await execFileAsync("git", [
+    "-C",
+    repositoryRoot,
+    "worktree",
+    "add",
+    "-b",
+    "goalboard-evidence-worktree",
+    worktreeRoot,
+  ]);
+  const worktreeFile = join(worktreeRoot, "uncommitted-evidence.txt");
+  writeFileSync(worktreeFile, "fresh evidence from an isolated worktree\n");
+
+  const submitted = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "same-repository-worktree-evidence",
+    actor_id: "runtime-a",
+    criterion_ids: ["same-repository-worktree-evidence-criterion"],
+    kind: "test",
+    locator: worktreeFile,
+    digest: "sha256:consumer-supplied-worktree-digest",
+    result: "passed",
+    locator_context: {
+      project_root: repositoryRoot,
+      workspace_id: "canonical-workspace",
+    },
+    idempotency_key: "same-repository-worktree-file",
+  }).evidence;
+
+  assert.equal(submitted.locator_status, "verified");
+  assert.equal(submitted.locator, "project://uncommitted-evidence.txt");
+  assert.equal(submitted.locator_workspace_id, null);
+  assert.match(submitted.locator_validation_reason, /同一 Git 仓库.*worktree/);
+  const recordedRoot = (
+    store.db
+      .prepare("SELECT locator_workspace_root FROM evidence WHERE evidence_id = ?")
+      .get(submitted.evidence_id) as { locator_workspace_root: string }
+  ).locator_workspace_root;
+  assert.equal(recordedRoot, realpathSync(worktreeRoot));
+  assert.match(
+    readProjectReference(recordedRoot, submitted.locator).content.toString("utf8"),
+    /fresh evidence from an isolated worktree/,
+  );
+
+  const otherRepository = mkdtempSync(join(tmpdir(), "goalboard-evidence-other-repository-"));
+  await execFileAsync("git", ["-C", otherRepository, "init"]);
+  const otherFile = join(otherRepository, "other.txt");
+  writeFileSync(otherFile, "not the canonical repository\n");
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "same-repository-worktree-evidence",
+      actor_id: "runtime-a",
+      criterion_ids: ["same-repository-worktree-evidence-criterion"],
+      kind: "test",
+      locator: otherFile,
+      result: "passed",
+      locator_context: { project_root: repositoryRoot },
+      idempotency_key: "different-repository-file",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
+
+  const forgedDirectory = mkdtempSync(join(tmpdir(), "goalboard-evidence-forged-worktree-"));
+  writeFileSync(join(forgedDirectory, ".git"), `gitdir: ${join(repositoryRoot, ".git")}\n`);
+  const forgedFile = join(forgedDirectory, "forged.txt");
+  writeFileSync(forgedFile, "not registered by git worktree\n");
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "same-repository-worktree-evidence",
+      actor_id: "runtime-a",
+      criterion_ids: ["same-repository-worktree-evidence-criterion"],
+      kind: "test",
+      locator: forgedFile,
+      result: "passed",
+      locator_context: { project_root: repositoryRoot },
+      idempotency_key: "forged-worktree-file",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
+
+  const outsideFile = join(worktreeParent, "outside.txt");
+  writeFileSync(outsideFile, "outside registered worktree\n");
+  mkdirSync(join(worktreeRoot, "links"));
+  const escapingLink = join(worktreeRoot, "links", "outside.txt");
+  symlinkSync(outsideFile, escapingLink);
+  assert.throws(
+    () => coordinator.submitEvidence({
+      board_id: "board-1",
+      goal_id: "same-repository-worktree-evidence",
+      actor_id: "runtime-a",
+      criterion_ids: ["same-repository-worktree-evidence-criterion"],
+      kind: "test",
+      locator: escapingLink,
+      result: "passed",
+      locator_context: { project_root: repositoryRoot },
+      idempotency_key: "worktree-symlink-escape",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
+  );
+
+  await execFileAsync("git", ["-C", repositoryRoot, "worktree", "remove", "--force", worktreeRoot]);
+  assert.throws(
+    () => readProjectReference(recordedRoot, submitted.locator),
+    (error: unknown) => error instanceof ProjectReferenceError && error.status === 404,
+  );
+  assert.equal(
+    store.snapshot("board-1").evidence.find((item) => item.evidence_id === submitted.evidence_id)?.locator_status,
+    "verified",
+  );
+  store.close();
+});
+
 test("Runtime can submit a Candidate Goal but only a user can decide it", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "current-goal");
@@ -6091,6 +6219,39 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
     goal_id: "tree-decision-parent",
     idempotency_key: "tree-decision-dialogue",
   });
+  createAcceptedCompoundParent(coordinator, "tree-decision-root");
+  createLeaf(coordinator, "tree-decision-provider");
+  createAcceptedCompoundParent(coordinator, "tree-decision-consumer");
+  createLeaf(coordinator, "tree-decision-consumer-child");
+  createLeaf(coordinator, "tree-decision-unrelated");
+  coordinator.addRelation("board-1", {
+    from_goal_id: "tree-decision-parent",
+    to_goal_id: "tree-decision-root",
+    type: "part_of",
+    state: "active",
+    reason: "当前重规划 Goal 属于稳定的根结果。",
+  }, { actor_id: "user-1", idempotency_key: "tree-decision-parent-root" });
+  coordinator.addRelation("board-1", {
+    from_goal_id: "tree-decision-parent",
+    to_goal_id: "tree-decision-provider",
+    type: "depends_on",
+    state: "active",
+    reason: "当前重规划 Goal 消费上游输入。",
+  }, { actor_id: "user-1", idempotency_key: "tree-decision-provider-link" });
+  coordinator.addRelation("board-1", {
+    from_goal_id: "tree-decision-consumer",
+    to_goal_id: "tree-decision-parent",
+    type: "depends_on",
+    state: "active",
+    reason: "下游消费者依赖当前重规划结果。",
+  }, { actor_id: "user-1", idempotency_key: "tree-decision-consumer-link" });
+  coordinator.addRelation("board-1", {
+    from_goal_id: "tree-decision-consumer-child",
+    to_goal_id: "tree-decision-consumer",
+    type: "part_of",
+    state: "active",
+    reason: "消费者内部叶子不应因上游变化被自动误报。",
+  }, { actor_id: "user-1", idempotency_key: "tree-decision-consumer-child-link" });
   const proposal = coordinator.submitGoalTreeProposal({
     board_id: "board-1",
     actor_id: "runtime-clarifier",
@@ -6245,6 +6406,16 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.deepEqual(applied.rejected_item_ids, ["rejected-relation"]);
   assert.deepEqual(applied.revised_item_ids, ["revised-future-child"]);
   assert.deepEqual(applied.conflict_item_ids, []);
+  assert.equal(applied.semantic_review?.structural_validation, "passed");
+  assert.equal(applied.semantic_review?.status, "required");
+  assert.ok(applied.semantic_review?.changed_goal_ids.includes("tree-decision-parent"));
+  assert.deepEqual(applied.semantic_review?.affected_ancestors, ["tree-decision-root"]);
+  assert.deepEqual(applied.semantic_review?.affected_dependents, ["tree-decision-consumer"]);
+  assert.deepEqual(applied.semantic_review?.adjacent_dependencies, ["tree-decision-provider"]);
+  assert.ok(!applied.semantic_review?.review_order.includes("tree-decision-consumer-child"));
+  assert.ok(!applied.semantic_review?.review_order.includes("tree-decision-unrelated"));
+  assert.equal(applied.semantic_review?.next_action, "review_affected_subgraph");
+  assert.equal(applied.semantic_review?.canonical_changes_require_new_user_confirmation, true);
   assert.equal(applied.proposal.state, "closed");
   assert.equal(applied.revision_proposals.length, 1);
   assert.equal(applied.revision_proposals[0]?.items[0]?.state, "pending");
@@ -6285,6 +6456,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.equal(persisted?.materialized_objects[0]?.object_type, "goal");
   const replay = coordinator.decideGoalTreeProposal(decisionInput);
   assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.semantic_review, applied.semantic_review);
   assert.deepEqual(replay.applied_item_ids.sort(), applied.applied_item_ids.sort());
   assert.equal(treeClarificationCloseCount(), 1);
   const databasePath = store.path;
@@ -6298,6 +6470,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   }).proposals[0];
   assert.equal(recovered?.items.find((item) => item.item_id === "rejected-relation")?.decision?.decision, "rejected");
   assert.equal(recovered?.items.find((item) => item.item_id === "revised-future-child")?.revision_proposal_id, applied.revision_proposals[0]?.proposal_id);
+  assert.deepEqual(recovered?.decision?.semantic_review, applied.semantic_review);
   recoveredStore.close();
 });
 
@@ -8335,6 +8508,122 @@ test("the unified Goal Tree decision handle routes legacy Contract, Candidate, a
   store.close();
 });
 
+test("a native Goal Tree proposal supersedes a pending legacy Contract Proposal by raw or mapped handle", () => {
+  for (const handleKind of ["raw", "mapped"] as const) {
+    const { store, coordinator } = fixture();
+    const actorId = `runtime-legacy-contract-revision-${handleKind}`;
+    const goalId = `legacy-contract-revision-${handleKind}`;
+    const dialogue = coordinator.startDraftDialogue({
+      board_id: "board-1",
+      actor_id: actorId,
+      rough_idea: "把旧 Contract Proposal 收进新的完整 Goal Tree 修订链。",
+      goal_id: goalId,
+      idempotency_key: `legacy-contract-revision-dialogue-${handleKind}`,
+    });
+    const proposedGoal = {
+      goal_id: goalId,
+      title: "原生修订后的正式 Goal",
+      outcome: "旧 Contract Proposal 被一份 native Goal Tree Proposal 明确替代",
+      why: "用户只应面对一条待决定链",
+      business_logic: "native Proposal 保留旧提案引用，并让旧提案退出待决定状态。",
+      in_scope: ["legacy 到 native 的修订链"],
+      out_of_scope: ["不自动确认新提案"],
+      constraints: [],
+      required_inputs: ["pending legacy Contract Proposal"],
+      promised_outputs: ["单一 pending native Proposal"],
+      priority: 50,
+      definition_state: "accepted" as const,
+      decomposition_state: "closed_leaf" as const,
+      acceptance_criteria: [{
+        criterion_id: `legacy-contract-revision-criterion-${handleKind}`,
+        statement: "旧提案被新的 native 提案替代",
+        decision_method: "inspection" as const,
+        pass_condition: "旧提案为 superseded，新提案仍 pending 且可读回来源 handle",
+        required_evidence: ["统一 Goal Tree 读回"],
+      }],
+      leaf_readiness: readyLeafReadiness(
+        "单一 pending native Proposal",
+        [`legacy-contract-revision-criterion-${handleKind}`],
+      ),
+    };
+    const legacy = coordinator.submitContractProposal({
+      board_id: "board-1",
+      goal_id: goalId,
+      actor_id: actorId,
+      discovered_in_run_id: dialogue.run!.run_id,
+      proposed_goal: proposedGoal,
+      field_sources: contractFieldSources(dialogue.run!.run_id) as never,
+      review_policy: {
+        goal_mode: "preferred",
+        required_capabilities: [],
+        self_verification: true,
+        cross_reviewers: 0,
+        adversarial_reviewers: 0,
+        human_approval: false,
+        max_lease_seconds: 1800,
+      },
+      idempotency_key: `legacy-contract-revision-submit-${handleKind}`,
+    }).proposal;
+    const mappedHandle = `legacy-contract-proposal:${legacy.proposal_id}`;
+    const supersedesProposalId = handleKind === "raw" ? legacy.proposal_id : mappedHandle;
+    const native = coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: actorId,
+      discovered_in_run_id: dialogue.run!.run_id,
+      root_goal_id: goalId,
+      summary: "用新的完整 native Proposal 替代旧 Contract Proposal。",
+      items: [goalTreeProposalItem({
+        item_id: `legacy-contract-native-item-${handleKind}`,
+        kind: "contract",
+        operation: "update",
+        payload: proposedGoal,
+        object_type: "goal",
+        object_id: goalId,
+      })],
+      supersedes_proposal_id: supersedesProposalId,
+      idempotency_key: `legacy-contract-native-submit-${handleKind}`,
+    }).proposal;
+
+    assert.equal(native.state, "pending");
+    assert.equal(native.version, 2);
+    assert.equal(native.supersedes_proposal_id, mappedHandle);
+    const legacyAfter = store.snapshot("board-1").contract_proposals.find(
+      (item) => item.proposal_id === legacy.proposal_id,
+    )!;
+    assert.equal(legacyAfter.state, "superseded");
+    assert.equal(legacyAfter.decision?.superseded_by_goal_tree_proposal_id, native.proposal_id);
+    assert.equal(store.getGoal(goalId)?.definition_state, "draft");
+
+    const databasePath = store.path;
+    store.close();
+    const recoveredStore = new SqliteGoalBoardStore(databasePath);
+    const recovered = new GoalBoardCoordinator(recoveredStore).listGoalTreeProposals({
+      board_id: "board-1",
+      proposal_id: native.proposal_id,
+      include_legacy: true,
+    }).proposals[0]!;
+    assert.equal(recovered.supersedes_proposal_id, mappedHandle);
+    recoveredStore.close();
+  }
+});
+
+test("migration 28 adds persisted legacy Proposal supersession handles", () => {
+  const { store } = fixture();
+  store.db.exec(`
+    DROP INDEX goal_tree_proposals_supersedes_legacy_idx;
+    ALTER TABLE goal_tree_proposals DROP COLUMN supersedes_legacy_proposal_id;
+    DELETE FROM schema_migrations WHERE migration_id = 28;
+  `);
+  const databasePath = store.path;
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  const columns = migrated.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === "supersedes_legacy_proposal_id"));
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 28").get());
+  migrated.close();
+});
+
 test("a native relation proposal precisely supersedes an equivalent pending legacy Rewire", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "legacy-supersession-consumer");
@@ -10037,7 +10326,21 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
   assert.equal(waiting.work_state, "waiting_for_human");
   assert.equal(waiting.next_action, null);
   assert.deepEqual(waiting.reasons[0]?.facts?.criterion_ids, ["human-routing-owner-decision"]);
-  assert.equal(waiting.reasons[0]?.facts?.next_action, "open_goalboard");
+  assert.equal(waiting.reasons[0]?.facts?.next_action, "record_explicit_user_approval_or_open_goalboard");
+  assert.deepEqual(waiting.reasons[0]?.facts?.conversation_approval_handoff, {
+    requires_single_pending_obligation: true,
+    evidence_tool: "goalboard_v1_evidence_submit",
+    evidence_kind: "human_verdict",
+    evidence_result: "passed",
+    criterion_ids: ["human-routing-owner-decision"],
+    obligation_id: store.snapshot("board-1").review_obligations.find(
+      (item) => item.goal_id === "human-decision-routing" && item.role === "human_approver",
+    )?.obligation_id,
+    locator_scheme: "conversation://",
+    digest_source: "exact_user_quote",
+    final_action: "open_goalboard_inbox_for_single_user_submit",
+    runtime_can_submit_human_review: false,
+  });
 
   const available = coordinator.queryAvailable({
     board_id: "board-1",
@@ -10066,6 +10369,28 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
   assert.equal(executorRetry.allowed, false);
   assert.equal(executorRetry.work_state?.work_state, "waiting_for_human");
   assert.ok(executorRetry.reasons.some((item) => item.code === "review.user_approval_required"));
+
+  store.db.prepare(`
+    INSERT INTO review_obligations (
+      obligation_id, board_id, goal_id, role, required_count,
+      independence_rule, criterion_scope_json, state, created_at
+    ) VALUES (?, ?, ?, 'human_approver', 1, ?, ?, 'pending', ?)
+  `).run(
+    "human-routing-second-user-decision",
+    "board-1",
+    "human-decision-routing",
+    "user_only",
+    JSON.stringify(["human-routing-owner-decision"]),
+    new Date().toISOString(),
+  );
+  const multiplePending = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "human-decision-routing",
+  });
+  assert.equal(multiplePending.reasons[0]?.facts?.next_action, "open_goalboard");
+  assert.equal(multiplePending.reasons[0]?.facts?.conversation_approval_handoff, undefined);
+  store.db.prepare("DELETE FROM review_obligations WHERE obligation_id = ?")
+    .run("human-routing-second-user-decision");
 
   const humanObligation = store.snapshot("board-1").review_obligations
     .find((item) => item.goal_id === "human-decision-routing" && item.role === "human_approver")!;

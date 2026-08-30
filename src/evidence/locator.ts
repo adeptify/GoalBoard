@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -18,6 +19,8 @@ export interface EvidenceLocatorValidation {
   reason: string;
   checked_at: string;
   normalized_locator: string;
+  verified_project_root?: string;
+  verified_via?: "current_workspace" | "registered_git_worktree";
 }
 
 interface ResolvedProjectReference {
@@ -47,7 +50,46 @@ function splitProjectLocator(locator: string): { path: string; anchor: string | 
   return { path: locatorPath, anchor };
 }
 
-function normalizeAbsoluteProjectLocator(projectRoot: string, locator: string): string {
+interface NormalizedAbsoluteProjectLocator {
+  locator: string;
+  validationRoot: string;
+  verifiedVia: "current_workspace" | "registered_git_worktree";
+}
+
+function registeredGitWorktreeRoots(realProjectRoot: string): string[] {
+  let output: string;
+  try {
+    output = execFileSync(
+      "git",
+      ["-C", realProjectRoot, "worktree", "list", "--porcelain", "-z"],
+      {
+        encoding: "utf8",
+        timeout: 2_000,
+        maxBuffer: 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+  } catch {
+    return [];
+  }
+  const roots: string[] = [];
+  for (const field of output.split("\0")) {
+    if (!field.startsWith("worktree ")) continue;
+    const listedPath = field.slice("worktree ".length);
+    try {
+      const realWorktreeRoot = fs.realpathSync(listedPath);
+      if (!roots.includes(realWorktreeRoot)) roots.push(realWorktreeRoot);
+    } catch {
+      // A stale or removed worktree is not an authorized readable root.
+    }
+  }
+  return roots;
+}
+
+function normalizeAbsoluteProjectLocator(
+  projectRoot: string,
+  locator: string,
+): NormalizedAbsoluteProjectLocator {
   const { path: locatorPath, anchor } = splitProjectLocator(locator);
   let realRoot: string;
   try {
@@ -61,12 +103,29 @@ function normalizeAbsoluteProjectLocator(projectRoot: string, locator: string): 
   } catch {
     throw new ProjectReferenceError(404, "项目内引用文件不存在");
   }
+  let validationRoot = realRoot;
+  let verifiedVia: NormalizedAbsoluteProjectLocator["verifiedVia"] = "current_workspace";
   if (!isWithinDirectory(realFile, realRoot)) {
-    throw new ProjectReferenceError(400, "Evidence locator 不能指向当前项目范围外的本地文件");
+    const registeredRoots = registeredGitWorktreeRoots(realRoot);
+    if (!registeredRoots.includes(realRoot)) {
+      throw new ProjectReferenceError(400, "Evidence locator 不能指向当前项目范围外的本地文件");
+    }
+    const matchingRoot = registeredRoots
+      .filter((candidate) => candidate !== realRoot && isWithinDirectory(realFile, candidate))
+      .sort((left, right) => right.length - left.length)[0];
+    if (!matchingRoot) {
+      throw new ProjectReferenceError(400, "Evidence locator 不能指向当前项目范围外的本地文件");
+    }
+    validationRoot = matchingRoot;
+    verifiedVia = "registered_git_worktree";
   }
-  const relativePath = path.relative(realRoot, realFile).split(path.sep).join("/");
+  const relativePath = path.relative(validationRoot, realFile).split(path.sep).join("/");
   const anchorSuffix = anchor === null ? "" : `#${encodeURIComponent(anchor)}`;
-  return `project://${relativePath}${anchorSuffix}`;
+  return {
+    locator: `project://${relativePath}${anchorSuffix}`,
+    validationRoot,
+    verifiedVia,
+  };
 }
 
 export function projectReferenceSegments(locator: string): string[] {
@@ -221,11 +280,16 @@ export function validateEvidenceLocator(
   let normalizedLocator = value.startsWith("repo:")
     ? `project://${value.slice("repo:".length)}`
     : value;
+  let validationRoot = options.projectRoot ?? null;
+  let verifiedVia: EvidenceLocatorValidation["verified_via"];
   if (path.isAbsolute(splitProjectLocator(value).path)) {
     if (!options.projectRoot) {
       throw new ProjectReferenceError(404, "项目引用根目录不可用");
     }
-    normalizedLocator = normalizeAbsoluteProjectLocator(options.projectRoot, value);
+    const normalized = normalizeAbsoluteProjectLocator(options.projectRoot, value);
+    normalizedLocator = normalized.locator;
+    validationRoot = normalized.validationRoot;
+    verifiedVia = normalized.verifiedVia;
   }
   const isOpaqueProtocol =
     /^[a-z][a-z0-9+.-]*:/i.test(normalizedLocator) && !normalizedLocator.startsWith("project://");
@@ -237,7 +301,7 @@ export function validateEvidenceLocator(
       normalized_locator: normalizedLocator,
     };
   }
-  if (!options.projectRoot) {
+  if (!validationRoot) {
     return {
       status: "unverified",
       reason: "当前入口没有可用的项目目录，项目内 locator 尚未验证",
@@ -246,17 +310,20 @@ export function validateEvidenceLocator(
     };
   }
 
-  const resolved = resolveProjectReference(options.projectRoot, normalizedLocator);
+  const resolved = resolveProjectReference(validationRoot, normalizedLocator);
   if (resolved.size > MAX_PROJECT_REFERENCE_BYTES) {
     const anchorBoundary = resolved.anchor === null ? "" : "Markdown anchor 未校验；";
+    const worktreeBoundary = verifiedVia === "registered_git_worktree"
+      ? "路径属于当前 canonical 仓库正式登记的隔离 worktree；"
+      : "";
     return {
       status: "unverified",
-      reason: `项目内文件路径已确认，但文件大小 ${resolved.size} 字节超过可全文打开上限 512 KiB（${MAX_PROJECT_REFERENCE_BYTES} 字节）；内容未全文预检；${anchorBoundary}如有 digest，它只会按原样记录，GoalBoard 未核验。建议同时提交小型 sidecar summary。`,
+      reason: `项目内文件路径已确认；${worktreeBoundary}但文件大小 ${resolved.size} 字节超过可全文打开上限 512 KiB（${MAX_PROJECT_REFERENCE_BYTES} 字节）；内容未全文预检；${anchorBoundary}如有 digest，它只会按原样记录，GoalBoard 未核验。建议同时提交小型 sidecar summary。`,
       checked_at: checkedAt,
       normalized_locator: normalizedLocator,
     };
   }
-  const reference = readProjectReference(options.projectRoot, normalizedLocator);
+  const reference = readProjectReference(validationRoot, normalizedLocator);
   if (reference.anchor !== null) {
     if (!/\.(?:md|markdown)$/i.test(reference.realFile)) {
       throw new ProjectReferenceError(400, "只有 Markdown 文件可以校验章节 anchor");
@@ -267,15 +334,23 @@ export function validateEvidenceLocator(
     }
     return {
       status: "verified",
-      reason: "项目内 Markdown 文件与 anchor 已完成只读预检",
+      reason: verifiedVia === "registered_git_worktree"
+        ? "同一 Git 仓库正式登记的隔离 worktree 内 Markdown 文件与 anchor 已完成只读预检"
+        : "项目内 Markdown 文件与 anchor 已完成只读预检",
       checked_at: checkedAt,
       normalized_locator: normalizedLocator,
+      verified_project_root: validationRoot,
+      verified_via: verifiedVia,
     };
   }
   return {
     status: "verified",
-    reason: "项目内文本文件已完成只读预检",
+    reason: verifiedVia === "registered_git_worktree"
+      ? "同一 Git 仓库正式登记的隔离 worktree 内文本文件已完成只读预检"
+      : "项目内文本文件已完成只读预检",
     checked_at: checkedAt,
     normalized_locator: normalizedLocator,
+    verified_project_root: validationRoot,
+    verified_via: verifiedVia,
   };
 }

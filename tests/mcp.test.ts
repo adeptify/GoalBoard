@@ -229,8 +229,15 @@ describe("mcp server", () => {
     const planningMethodKind = planningMethodSaveTool?.inputSchema.properties?.method.properties?.kind as { enum?: string[] } | undefined;
     assert.deepEqual(planningMethodKind?.enum, ["meta", "work_type", "domain", "industry", "overlay", "custom"]);
     assert.ok(names.includes("goalboard_v1_planning_analyze_change"));
+    const planningAnalyzeChangeTool = listedTools.find(
+      (tool) => tool.name === "goalboard_v1_planning_analyze_change",
+    );
+    assert.match(planningAnalyzeChangeTool?.description ?? "", /相邻上游依赖/);
     assert.ok(names.includes("goalboard_v1_planning_graph_check"));
     assert.ok(names.includes("goalboard_v1_goal_tree_decide"));
+    const goalTreeDecideTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
+    assert.match(goalTreeDecideTool?.description ?? "", /semantic_review/);
+    assert.match(goalTreeDecideTool?.description ?? "", /结构校验通过.*仍需复核/s);
     assert.ok(names.includes("goalboard_v1_contract_propose"));
     assert.ok(names.includes("goalboard_v1_candidate_submit"));
     assert.ok(names.includes("goalboard_v1_dependency_propose"));
@@ -726,6 +733,8 @@ describe("mcp server", () => {
     assert.match(planning, /Exactly one output is primary/);
     assert.match(planning, /confirm the whole named Proposal, reject it, or revise named items/);
     assert.match(planning, /replan the affected subgraph/);
+    assert.match(planning, /structural_validation=passed.*does not mean/s);
+    assert.match(planning, /proposal\.decision\.semantic_review/);
     assert.match(execution, /Work only inside the selected accepted leaf Contract/);
     assert.match(execution, /evidence_submit mapped to acceptance criterion IDs/);
     assert.match(execution, /A required human approval cannot be replaced by a Runtime review/);

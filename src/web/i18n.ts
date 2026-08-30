@@ -142,6 +142,7 @@ export const EN: Record<string, string> = {
   "{kinds}，共 {count} 项等待判断。": "{kinds}; {count} items await a decision.",
   "Inbox Message · 处理结果": "Inbox Message · processed result",
   "待处理": "To process",
+  "待处理决定": "Pending decision",
   "已保存为资料": "Saved as material",
   "已升格为 Goal": "Promoted to Goal",
   "处理中": "In progress",
