@@ -4003,7 +4003,13 @@ function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
   const decisions = countGoalDecisions(view, item.goal.goal_id);
   const decisionsFirst = decisions > 0 && goalDecisionsTakePriority(item, view);
   const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisionsFirst ? L("先完成等待你的决定") : explanation.nextAction);
-  const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisionsFirst ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
+  const guidance = handoff
+    ? explanation.howToContinue
+    : item.status === "clarification_decision_pending"
+      ? explanation.howToContinue
+      : decisionsFirst
+        ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。")
+        : explanation.howToContinue;
   return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
     <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2></header>
     <div class="goal-now-body"><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
@@ -8535,8 +8541,8 @@ const CLIENT_SCRIPT = `
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
         container.replaceChildren(records);
         container.dataset.loaded = "true";
-        const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-        if (hashTarget) revealDeepLinkTarget(hashTarget);
+        const hashTargetId = decodeURIComponent(location.hash.slice(1));
+        if (hashTargetId) void revealDeepLinkFromId(hashTargetId);
       } catch (error) {
         if (isAbortError(error)) return;
         if (!article.isConnected || article.dataset.goalView !== goalId) return;
@@ -8697,13 +8703,83 @@ const CLIENT_SCRIPT = `
       return trigger ? activateFocusSection(trigger) : false;
     };
 
+    const decisionActionSelector = "[data-human-review-form], [data-goal-tree-decision-form], [data-contract-decision-form], [data-candidate-decision-form], [data-rewire-decision-form], [data-risk-state-form]";
+
+    const activateDecisionFeedItem = (itemId) => {
+      setFeedPreset("inbox_message", false);
+      setDesktopDirectory("feed", false, false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface("feed", false, false);
+      if (matchMedia("(max-width: 760px)").matches) setMobileView("document");
+      let row = [...feedList.querySelectorAll("[data-feed-entry-id]")]
+        .find((candidate) => candidate.dataset.feedEntryId === itemId);
+      if (row?.hidden) {
+        if (feedSearch) feedSearch.value = "";
+        if (feedSourceFilter) feedSourceFilter.value = "all";
+        if (feedStatusFilter) feedStatusFilter.value = "active";
+        filterFeedItems(false);
+        row = [...feedList.querySelectorAll("[data-feed-entry-id]")]
+          .find((candidate) => candidate.dataset.feedEntryId === itemId);
+      }
+      if (row && !row.hidden) selectFeedItem(itemId);
+      return row;
+    };
+
     const revealDeepLinkTarget = (target) => {
+      const decisionDetail = target?.matches?.("[data-feed-detail^='decision:']")
+        ? target
+        : target?.closest?.("[data-feed-detail^='decision:']");
+      let scrollTarget = target;
+      if (decisionView && decisionDetail && feedList && feedWorkbench) {
+        const itemId = decisionDetail.dataset.feedDetail;
+        activateDecisionFeedItem(itemId);
+        scrollTarget = decisionDetail.querySelector(decisionActionSelector) || target;
+      }
       let disclosure = target?.matches?.("details") ? target : target?.closest?.("details");
       while (disclosure) {
         disclosure.open = true;
         disclosure = disclosure.parentElement?.closest?.("details");
       }
-      return revealFocusTarget(target);
+      revealFocusTarget(target);
+      return scrollTarget;
+    };
+
+    const deepLinkTargetFromId = (targetId) => {
+      const directTarget = targetId ? document.getElementById(targetId) : null;
+      if (directTarget || !decisionView || !targetId?.startsWith("decision-goal-")) return directTarget;
+      const goalId = targetId.slice("decision-goal-".length);
+      const itemId = "decision:" + goalId;
+      return [...(feedWorkbench?.querySelectorAll("[data-feed-detail]") || [])]
+        .find((candidate) => candidate.dataset.feedDetail === itemId) || null;
+    };
+
+    const revealDeepLinkFromId = async (targetId, behavior = "auto") => {
+      let target = deepLinkTargetFromId(targetId);
+      const legacyDecisionGoalId = decisionView && targetId?.startsWith("decision-goal-")
+        ? targetId.slice("decision-goal-".length)
+        : "";
+      if (!target && legacyDecisionGoalId && feedList && feedWorkbench) {
+        const itemId = "decision:" + legacyDecisionGoalId;
+        activateDecisionFeedItem(itemId);
+        if (!(await ensureFeedWorkbenchLoaded())) return null;
+        target = [...feedWorkbench.querySelectorAll("[data-feed-detail]")]
+          .find((candidate) => candidate.dataset.feedDetail === itemId) || null;
+      }
+      if (!target) return null;
+      const scrollTarget = revealDeepLinkTarget(target);
+      requestAnimationFrame(() => {
+        scrollTarget.scrollIntoView({ behavior, block: "start" });
+        if (scrollTarget.matches?.(decisionActionSelector)) {
+          scrollTarget.setAttribute("tabindex", "-1");
+          if (!scrollTarget.hasAttribute("aria-label")) {
+            scrollTarget.setAttribute(
+              "aria-label",
+              scrollTarget.querySelector('button[type="submit"]')?.textContent?.trim() || L("待处理决定"),
+            );
+          }
+          scrollTarget.focus({ preventScroll: true });
+        }
+      });
+      return target;
     };
 
     const setGoalPanel = (panelName, persist = true, updateHash = false, resetScroll = false) => {
@@ -8947,23 +9023,21 @@ const CLIENT_SCRIPT = `
       setGraphZoom(graphZoom, false);
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
-      const hashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-      if (hashTarget) revealDeepLinkTarget(hashTarget);
+      const hashTargetId = decodeURIComponent(location.hash.slice(1));
+      const hashTarget = hashTargetId ? document.getElementById(hashTargetId) : null;
       treeScroll.scrollTop = Number(ui?.treeTop || 0);
       documentPane.scrollTop = hashTarget?.matches?.("[data-goal-panel]") && activeDesktopSurface === "goal"
         ? 0
         : activeDesktopSurface === "goal" && ui?.selected === selected
           ? Number(ui?.documentTop || 0)
           : Number(desktopSurfaceScroll[activeDesktopSurface] || 0);
-      if (hashTarget && !hashTarget.matches?.("[data-goal-panel]")) {
-        requestAnimationFrame(() => hashTarget.scrollIntoView({ block: "start" }));
-      }
       const restoredMobileView = desktopCompanionActive && selected ? "document" : ui?.mobileView || "tree";
       if (matchMedia("(max-width: 760px)").matches) {
         if (restoredMobileView === "tui") setWorkspaceMode("runtime", false);
         if (restoredMobileView === "document") setWorkspaceMode("focus", false);
       }
       setMobileView(restoredMobileView);
+      if (hashTargetId) void revealDeepLinkFromId(hashTargetId);
     };
 
     const saveUiState = () => {
@@ -10136,9 +10210,9 @@ const CLIENT_SCRIPT = `
           if (targetPanel) setGoalPanel(targetPanel, true);
           const targetFactor = targetElement.closest("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
           if (targetFactor) setGoalFactor(targetFactor, true);
-          revealDeepLinkTarget(targetElement);
+          const deepLinkScrollTarget = revealDeepLinkTarget(targetElement);
           history.replaceState(null, "", "#" + targetId);
-          requestAnimationFrame(() => targetElement.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+          requestAnimationFrame(() => deepLinkScrollTarget.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
           return;
         }
       }
@@ -11021,11 +11095,8 @@ const CLIENT_SCRIPT = `
       const factor = goalFactorFromHash();
       if (factor) setGoalFactor(factor, true);
       const target = targetId ? document.getElementById(targetId) : null;
-      if (target) {
-        revealDeepLinkTarget(target);
-        if (target.matches?.("[data-goal-panel]")) documentPane.scrollTop = 0;
-        else requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
-      }
+      if (target?.matches?.("[data-goal-panel]")) documentPane.scrollTop = 0;
+      if (targetId) void revealDeepLinkFromId(targetId);
     });
     addEventListener("pagehide", saveUiState);
     addEventListener("keydown", (event) => {
@@ -11159,11 +11230,8 @@ const CLIENT_SCRIPT = `
       setMobileView("tui");
       saveUiState();
     }
-    const initialHashTarget = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-    if (initialHashTarget) {
-      revealDeepLinkTarget(initialHashTarget);
-      requestAnimationFrame(() => initialHashTarget.scrollIntoView({ block: "start" }));
-    }
+    const initialHashTargetId = decodeURIComponent(location.hash.slice(1));
+    if (!restoredUi && initialHashTargetId) void revealDeepLinkFromId(initialHashTargetId);
     try {
       const storedDecisionReceipt = JSON.parse(sessionStorage.getItem("goalboard-decision-receipt") || "null");
       sessionStorage.removeItem("goalboard-decision-receipt");

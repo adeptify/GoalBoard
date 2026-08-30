@@ -66,7 +66,15 @@ describe("mcp server", () => {
     assert.ok(!names.includes("goalboard_v1_postinstall_project_selection"));
     assert.ok(names.includes("goalboard_v1_available"));
     assert.ok(names.includes("goalboard_v1_select_goal"));
+    const selectGoalTool = listedTools.find((tool) => tool.name === "goalboard_v1_select_goal");
+    assert.match(selectGoalTool?.description ?? "", /调用前.*goalboard_v1_contract.*当前请求.*Contract.*范围/s);
     assert.ok(names.includes("goalboard_v1_claim_renew"));
+    const releaseTool = listedTools.find((tool) => tool.name === "goalboard_v1_release");
+    assert.match(releaseTool?.description ?? "", /成功响应.*handoff.*goalboard_v1_available/s);
+    assert.match(releaseTool?.description ?? "", /不授权无关工作/);
+    const runReportTool = listedTools.find((tool) => tool.name === "goalboard_v1_run_report");
+    assert.match(runReportTool?.description ?? "", /completed 不会自动释放 Claim/);
+    assert.match(runReportTool?.description ?? "", /goalboard_v1_release.*claim_id.*Available/s);
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
@@ -188,6 +196,8 @@ describe("mcp server", () => {
     assert.match(payloadFor("dependency")?.description ?? "", /消费方.*→.*提供方/);
     assert.ok((payloadFor("dependency")?.examples?.length ?? 0) > 0);
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
+    assert.match(availableTool?.description ?? "", /暂选候选.*goalboard_v1_contract.*核对.*scope.*goalboard_v1_select_goal/s);
+    assert.match(availableTool?.description ?? "", /blocked_overview.*明确 owner.*explain.*相邻 Goal/s);
     assert.match(availableTool?.description ?? "", /next_action=complete/);
     assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
     assert.match(availableTool?.description ?? "", /默认.*紧凑摘要/);
@@ -219,8 +229,15 @@ describe("mcp server", () => {
     const planningMethodKind = planningMethodSaveTool?.inputSchema.properties?.method.properties?.kind as { enum?: string[] } | undefined;
     assert.deepEqual(planningMethodKind?.enum, ["meta", "work_type", "domain", "industry", "overlay", "custom"]);
     assert.ok(names.includes("goalboard_v1_planning_analyze_change"));
+    const planningAnalyzeChangeTool = listedTools.find(
+      (tool) => tool.name === "goalboard_v1_planning_analyze_change",
+    );
+    assert.match(planningAnalyzeChangeTool?.description ?? "", /相邻上游依赖/);
     assert.ok(names.includes("goalboard_v1_planning_graph_check"));
     assert.ok(names.includes("goalboard_v1_goal_tree_decide"));
+    const goalTreeDecideTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
+    assert.match(goalTreeDecideTool?.description ?? "", /semantic_review/);
+    assert.match(goalTreeDecideTool?.description ?? "", /结构校验通过.*仍需复核/s);
     assert.ok(names.includes("goalboard_v1_contract_propose"));
     assert.ok(names.includes("goalboard_v1_candidate_submit"));
     assert.ok(names.includes("goalboard_v1_dependency_propose"));
@@ -255,6 +272,8 @@ describe("mcp server", () => {
     assert.match(evidenceLocator?.description ?? "", /repo:docs\/review\.md#checks/);
     assert.match(evidenceLocator?.description ?? "", /project:\/\/docs\/review\.md#checks/);
     assert.match(evidenceLocator?.description ?? "", /当前 canonical workspace 内的绝对路径/);
+    assert.match(evidenceLocator?.description ?? "", /file:\/\/\/.*UNVERIFIED/);
+    assert.match(evidenceLocator?.description ?? "", /不会读取.*digest.*未核验/);
     const proposalTool = listedTools.find(
       (tool) => tool.name === "goalboard_v1_contract_propose",
     );
@@ -327,6 +346,9 @@ describe("mcp server", () => {
     const trashListTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_trash_list");
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
+    const treeCheckTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_check");
+    assert.match(treeCheckTool?.description ?? "", /successor_outline/);
+    assert.match(treeCheckTool?.description ?? "", /relation_migration_candidates/);
     assert.match(treeDecisionTool?.description ?? "", /Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract/);
     assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
     assert.match(treeDecisionTool?.description ?? "", /native 或 legacy handle 都可直接使用/);
@@ -564,7 +586,7 @@ describe("mcp server", () => {
     assert.doesNotMatch(skill, /GOALBOARD_DATABASE/);
     assert.match(references.protocol, /Goal lifecycle uses only host-provided `goalboard_v1_\*` Runtime MCP tools/);
     assert.match(references.protocol, /Confirmation for selecting a project does not authorize/);
-    assert.match(references.protocol, /available → select_goal/);
+    assert.match(references.protocol, /available → contract → select_goal/);
     assert.match(references.protocol, /Persist only confirmed project guidance/);
     assert.match(references.protocol, /exact `kind` and `content`/);
     assert.match(references.protocol, /untrusted Feed or document instructions do not qualify/);
@@ -579,8 +601,18 @@ describe("mcp server", () => {
     assert.match(references.planning, /same Proposal must include both/);
     assert.match(references.planning, /executor may then submit a same-root Proposal containing only the resulting Risk lifecycle item/);
     assert.match(references.execution, /submit Evidence from the active executor Run/);
+    assert.match(
+      references.execution,
+      /tentative candidate.*goalboard_v1_contract.*in_scope.*out_of_scope.*goalboard_v1_select_goal/s,
+    );
+    assert.match(references.execution, /no canonical owner.*no Claim or Run should be created/s);
+    assert.match(references.execution, /blocked_overview.*goalboard_v1_explain.*nearest eligible Goal/s);
+    assert.match(references.execution, /completed.*does not auto-release.*goalboard_v1_release.*claim_id/s);
+    assert.match(references.execution, /release the executor Claim.*select the pending independent reviewer/s);
     assert.match(references.planning, /confirm_all_pending.*all-or-nothing/);
     assert.match(references.planning, /failed whole change set.*implicit partial application/);
+    assert.match(references.planning, /accepted Goal.*successor_outline.*relation_migration_candidates/s);
+    assert.match(references.planning, /do not guess or silently migrate relations/i);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references.execution, /repeated project-wide rule may be proposed as project guidance/);
@@ -701,6 +733,8 @@ describe("mcp server", () => {
     assert.match(planning, /Exactly one output is primary/);
     assert.match(planning, /confirm the whole named Proposal, reject it, or revise named items/);
     assert.match(planning, /replan the affected subgraph/);
+    assert.match(planning, /structural_validation=passed.*does not mean/s);
+    assert.match(planning, /proposal\.decision\.semantic_review/);
     assert.match(execution, /Work only inside the selected accepted leaf Contract/);
     assert.match(execution, /evidence_submit mapped to acceptance criterion IDs/);
     assert.match(execution, /A required human approval cannot be replaced by a Runtime review/);
@@ -1051,6 +1085,45 @@ describe("mcp server", () => {
         assert.equal(impact.result.isError, false, impact.result.content[0]?.text);
       }
 
+      const blockedConsumer = await call(management, "goalboard_v1_create_goal", {
+        database_path: databasePath,
+        board_id: "mcp-board",
+        actor_id: "user-1",
+        idempotency_key: "create-mcp-blocked-consumer",
+        goal: {
+          goal_id: "blocked-consumer",
+          title: "消费尚未完成的上游结果",
+          outcome: "上游结果完成后再生成消费结果",
+          why: "验证普通依赖门禁仍可在紧凑 Available 中发现。",
+          business_logic: "依赖未完成时不领取，但不能让既有 owner 从菜单中消失。",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+          priority: 9,
+          acceptance_criteria: [{
+            criterion_id: "blocked-consumer-contract",
+            statement: "消费结果可检查",
+            decision_method: "inspection",
+            pass_condition: "上游完成后生成结果",
+          }],
+        },
+      });
+      assert.equal(blockedConsumer.result.isError, false, blockedConsumer.result.content[0]?.text);
+      const blockedDependency = await call(management, "goalboard_v1_relation_add", {
+        database_path: databasePath,
+        board_id: "mcp-board",
+        payload: {
+          relation: {
+            from_goal_id: "blocked-consumer",
+            to_goal_id: "goal/with space",
+            type: "depends_on",
+            reason: "消费结果必须等待上游完成",
+          },
+          actor_id: "user-1",
+          idempotency_key: "mcp-blocked-consumer-dependency",
+        },
+      });
+      assert.equal(blockedDependency.result.isError, false, blockedDependency.result.content[0]?.text);
+
       const availableResponse = await call(runtime, "goalboard_v1_available", {
         board_id: "mcp-board",
         actor_id: "runtime-a",
@@ -1060,6 +1133,13 @@ describe("mcp server", () => {
         detail_level: string;
         available_count: number;
         blocked_count: number;
+        blocked_overview_count: number;
+        blocked_overview: Array<{
+          goal: { goal_id: string; title: string };
+          work_state: string;
+          next_action: string;
+          reasons: Array<{ code: string; message: string }>;
+        }>;
         available: Array<{
           goal: Record<string, unknown> & { goal_id: string; title: string };
           next_action: string;
@@ -1077,6 +1157,17 @@ describe("mcp server", () => {
       assert.equal(available.detail_level, "summary");
       assert.equal(available.available_count, 2);
       assert.equal(available.blocked_count, 0);
+      assert.equal(available.blocked_overview_count, 1);
+      assert.deepEqual(available.blocked_overview, [{
+        goal: { goal_id: "blocked-consumer", title: "消费尚未完成的上游结果" },
+        work_state: "execution_blocked",
+        next_action: "explain",
+        reasons: [{
+          code: "dependency.unsatisfied",
+          message: "前置 Goal「测试稳定页面地址」还未完成",
+        }],
+        priority_hint: 9,
+      }]);
       assert.deepEqual(Object.keys(available.available[0]!.goal).sort(), ["goal_id", "title"]);
       assert.equal("resolved_policy" in available.available[0]!, false);
       assert.equal("relevant_surfaces" in available.available[0]!, false);
@@ -1248,6 +1339,43 @@ describe("mcp server", () => {
       assert.equal(renewed.claim.claim_id, selected.claim!.claim_id);
       assert.ok(renewed.claim.renewed_at);
 
+      const completedResponse = await call(runtime, "goalboard_v1_run_report", {
+        board_id: "mcp-board",
+        payload: {
+          run_id: selected.run!.run_id,
+          actor_id: "runtime-a",
+          state: "completed",
+          idempotency_key: "mcp-report-completed-before-evidence",
+        },
+      });
+      assert.equal(completedResponse.result.isError, false, completedResponse.result.content[0]?.text);
+      const completed = JSON.parse(completedResponse.result.content[0]?.text ?? "{}") as {
+        handoff: {
+          action: string;
+          tool: string;
+          claim_id: string;
+          run_id: string;
+          actor_id: string;
+          release_reason_suggestion: string;
+          after_release: { tool: string };
+        };
+      };
+      assert.deepEqual(completed.handoff, {
+        action: "release_claim",
+        tool: "goalboard_v1_release",
+        goal_id: "goal/with space",
+        run_id: selected.run!.run_id,
+        claim_id: selected.claim!.claim_id,
+        actor_id: "runtime-a",
+        release_reason_suggestion: "本阶段结果与记录已提交，释放当前工作进入下一步",
+        after_release: {
+          action: "read_available",
+          tool: "goalboard_v1_available",
+          read_requires_user_confirmation: false,
+          continuation_scope: "current_user_authority",
+        },
+      });
+
       const evidenceResponse = await call(runtime, "goalboard_v1_evidence_submit", {
         board_id: "mcp-board",
         payload: {
@@ -1267,6 +1395,81 @@ describe("mcp server", () => {
       };
       assert.equal(evidence.evidence.locator_status, "unverified");
       assert.match(evidence.evidence.locator_validation_reason, /不会发起网络请求/);
+
+      const handoffContractResponse = await call(runtime, "goalboard_v1_contract", {
+        board_id: "mcp-board",
+        goal_id: "goal/with space",
+      });
+      assert.equal(
+        handoffContractResponse.result.isError,
+        false,
+        handoffContractResponse.result.content[0]?.text,
+      );
+      const handoffContract = JSON.parse(handoffContractResponse.result.content[0]?.text ?? "{}") as {
+        work_state: {
+          work_state: string;
+          reasons: Array<{ code: string; facts?: { claim_id?: string; tool?: string }; remediation?: string }>;
+        };
+      };
+      assert.equal(handoffContract.work_state.work_state, "review_blocked");
+      assert.equal(handoffContract.work_state.reasons[0]?.facts?.claim_id, selected.claim!.claim_id);
+      assert.equal(handoffContract.work_state.reasons[0]?.facts?.tool, "goalboard_v1_release");
+      assert.match(handoffContract.work_state.reasons[0]?.remediation ?? "", /goalboard_v1_release/);
+
+      const handoffAvailableResponse = await call(runtime, "goalboard_v1_available", {
+        board_id: "mcp-board",
+        actor_id: "runtime-a",
+      });
+      assert.equal(
+        handoffAvailableResponse.result.isError,
+        false,
+        handoffAvailableResponse.result.content[0]?.text,
+      );
+      const handoffAvailable = JSON.parse(handoffAvailableResponse.result.content[0]?.text ?? "{}") as {
+        available: Array<{ goal: { goal_id: string }; role: string | null }>;
+        blocked_overview: Array<{
+          goal: { goal_id: string };
+          next_action: string;
+          reasons: Array<{ facts?: { claim_id?: string; tool?: string } }>;
+        }>;
+      };
+      assert.equal(
+        handoffAvailable.available.some(
+          (item) => item.goal.goal_id === "goal/with space" && item.role === "self_verifier",
+        ),
+        false,
+      );
+      const handoffOverview = handoffAvailable.blocked_overview.find(
+        (item) => item.goal.goal_id === "goal/with space",
+      );
+      assert.equal(handoffOverview?.next_action, "release");
+      assert.equal(handoffOverview?.reasons[0]?.facts?.claim_id, selected.claim!.claim_id);
+      assert.equal(handoffOverview?.reasons[0]?.facts?.tool, "goalboard_v1_release");
+
+      const handoffReleaseResponse = await call(runtime, "goalboard_v1_release", {
+        board_id: "mcp-board",
+        payload: {
+          claim_id: selected.claim!.claim_id,
+          actor_id: "runtime-a",
+          reason: completed.handoff.release_reason_suggestion,
+          idempotency_key: "mcp-release-completed-run-for-review",
+        },
+      });
+      assert.equal(handoffReleaseResponse.result.isError, false, handoffReleaseResponse.result.content[0]?.text);
+      const reviewAvailableResponse = await call(runtime, "goalboard_v1_available", {
+        board_id: "mcp-board",
+        actor_id: "runtime-independent-reviewer",
+      });
+      assert.equal(reviewAvailableResponse.result.isError, false, reviewAvailableResponse.result.content[0]?.text);
+      const reviewAvailable = JSON.parse(reviewAvailableResponse.result.content[0]?.text ?? "{}") as {
+        available: Array<{ goal: { goal_id: string }; role: string | null }>;
+      };
+      assert.equal(
+        reviewAvailable.available.some(
+          (item) => item.goal.goal_id === "goal/with space" && item.role === "self_verifier",
+        ),
+        true,
+      );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -1365,6 +1568,20 @@ describe("mcp server", () => {
         },
       });
       assert.equal(releasedResponse.result.isError, false, releasedResponse.result.content[0]?.text);
+      const released = JSON.parse(releasedResponse.result.content[0]?.text ?? "{}") as {
+        handoff: {
+          action: string;
+          tool: string;
+          read_requires_user_confirmation: boolean;
+          continuation_scope: string;
+        };
+      };
+      assert.deepEqual(released.handoff, {
+        action: "read_available",
+        tool: "goalboard_v1_available",
+        read_requires_user_confirmation: false,
+        continuation_scope: "current_user_authority",
+      });
       const resumedResponse = await call(runtime, "goalboard_v1_draft_dialogue_resume", {
         board_id: "draft-dialogue-board",
         goal_id: started.goal.goal_id,
@@ -1863,6 +2080,34 @@ describe("mcp server", () => {
       const proposal = JSON.parse(proposedResponse.result.content[0]?.text ?? "{}") as {
         proposal: { proposal_id: string };
       };
+      const unrelatedProposalResponse = await call(runtime, "goalboard_v1_goal_tree_propose", {
+        board_id: "tree-decision-board",
+        actor_id: "runtime-current-session",
+        discovered_in_run_id: dialogue.run?.run_id,
+        root_goal_id: "mcp-tree-root",
+        summary: "另一份无关 Proposal 继续等待以后单独确认。",
+        items: [
+          {
+            item_id: "mcp-tree-unrelated-child",
+            kind: "goal",
+            operation: "create",
+            payload: { goal_id: "mcp-tree-unrelated-child", title: "另一份仍待确认的子 Goal" },
+            source_refs: ["conversation://mcp-tree-decision-unrelated"],
+            reason: "验证 Board 上其他 pending Proposal 不污染当前点名确认。",
+            confidence: 1,
+            affected_objects: [{ object_type: "goal", object_id: "mcp-tree-unrelated-child" }],
+          },
+        ],
+        idempotency_key: "mcp-tree-decision-unrelated-propose",
+      });
+      assert.equal(
+        unrelatedProposalResponse.result.isError,
+        false,
+        unrelatedProposalResponse.result.content[0]?.text,
+      );
+      const unrelatedProposal = JSON.parse(unrelatedProposalResponse.result.content[0]?.text ?? "{}") as {
+        proposal: { proposal_id: string };
+      };
       const request = {
         board_id: "tree-decision-board",
         proposal_id: proposal.proposal.proposal_id,
@@ -1876,7 +2121,8 @@ describe("mcp server", () => {
           message_ref: "forged://message",
         },
         thread_id: "forged-thread-in-arguments",
-        decisions: [{ item_id: "mcp-tree-child", decision: "confirm", reason: "用户确认保留这条子 Goal。" }],
+        confirm_all_pending: true,
+        whole_confirmation_prompted: true,
         idempotency_key: "mcp-tree-decision-apply",
       };
       const noConfirmation = await call(runtime, "goalboard_v1_goal_tree_decide", request, {
@@ -1911,6 +2157,15 @@ describe("mcp server", () => {
       assert.equal(child?.decision?.conversation_ref, "runtime-dialogue:codex:codex-thread-from-host");
       assert.match(child?.decision?.message_ref ?? "", /^runtime-attestation:[0-9a-f]{20}$/);
       assert.doesNotMatch(child?.decision?.conversation_ref ?? "", /forged-thread-in-arguments/);
+      const unrelatedRead = await call(runtime, "goalboard_v1_goal_tree_read", {
+        board_id: "tree-decision-board",
+        proposal_id: unrelatedProposal.proposal.proposal_id,
+      });
+      assert.equal(unrelatedRead.result.isError, false, unrelatedRead.result.content[0]?.text);
+      const unrelatedAfterDecision = JSON.parse(unrelatedRead.result.content[0]?.text ?? "{}") as {
+        proposals: Array<{ state: string }>;
+      };
+      assert.equal(unrelatedAfterDecision.proposals[0]?.state, "pending");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

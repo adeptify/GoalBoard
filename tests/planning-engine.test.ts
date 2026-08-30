@@ -469,4 +469,25 @@ test("planning order and requirement impact stay local and explain downstream va
   assert.deepEqual(impact.affected_dependents, ["feature", "release"]);
   assert.ok(impact.reusable_open_goal_ids.includes("feature"));
   assert.ok(!impact.review_order.includes("unrelated"));
+
+  const cgsGoals = ["root", "g1", "g2", "g3", "g4", "g4a", "g5", "g6"].map((goalId) => goal(goalId));
+  const cgsRelations = [
+    relation("p-g1", "g1", "root", "part_of"),
+    relation("p-g2", "g2", "root", "part_of"),
+    relation("p-g3", "g3", "root", "part_of"),
+    relation("p-g4", "g4", "root", "part_of"),
+    relation("p-g4a", "g4a", "g4", "part_of"),
+    relation("p-g5", "g5", "root", "part_of"),
+    relation("p-g6", "g6", "root", "part_of"),
+    relation("d-g3-g2", "g3", "g2", "depends_on"),
+    relation("d-g4-g3", "g4", "g3", "depends_on"),
+    relation("d-g5-g4", "g5", "g4", "depends_on"),
+    relation("d-g6-g5", "g6", "g5", "depends_on"),
+  ];
+  const cgsImpact = analyzeGoalChangeImpact(cgsGoals, cgsRelations, ["g3"]);
+  assert.deepEqual(cgsImpact.affected_ancestors, ["root"]);
+  assert.deepEqual(cgsImpact.affected_dependents, ["g4", "g5", "g6"]);
+  assert.deepEqual(cgsImpact.adjacent_dependencies, ["g2"]);
+  assert.ok(!cgsImpact.review_order.includes("g1"));
+  assert.ok(!cgsImpact.review_order.includes("g4a"));
 });

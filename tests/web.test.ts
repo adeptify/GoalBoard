@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -48,11 +48,302 @@ const WORKBENCH_CLIENT_SCRIPT = renderGoalBoardWorkbenchClientScript();
 const WORKBENCH_STYLES = renderGoalBoardWorkbenchStylesheet();
 let webRequestSequence = 0;
 
+type GoalTreeBrowserLayout = {
+  paneWidth: number;
+  titleWhiteSpace: string;
+  titleLineCount: number;
+  titleClientWidth: number;
+  titleScrollWidth: number;
+  titleClientHeight: number;
+  titleScrollHeight: number;
+};
+
+type DecisionDeepLinkBrowserState = {
+  selectedEntryId: string | null;
+  targetDetailHidden: boolean | null;
+  formVisible: boolean;
+  submitVisible: boolean;
+  formFocused: boolean;
+  mobileView: string | null;
+  searchValue: string | null;
+};
+
+let cachedGoalTreeBrowserLayout: Promise<GoalTreeBrowserLayout | null> | undefined;
+
+function readGoalTreeBrowserLayout(): Promise<GoalTreeBrowserLayout | null> {
+  if (cachedGoalTreeBrowserLayout !== undefined) return cachedGoalTreeBrowserLayout;
+  const browser = [
+    process.env.GOALBOARD_TEST_CHROME,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!browser) {
+    cachedGoalTreeBrowserLayout = Promise.resolve(null);
+    return cachedGoalTreeBrowserLayout;
+  }
+
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-tree-layout-"));
+  const htmlPath = join(directory, "layout.html");
+  const profilePath = join(directory, "chrome-profile");
+  mkdirSync(profilePath);
+  const longTitle = "建立即刻平台五十位以上经过逐项核验且保留完整证据边界的高质量人工智能创作者详细基线名单";
+  writeFileSync(htmlPath, `<!doctype html>
+    <html><head><meta charset="utf-8"><style>${WORKBENCH_STYLES}</style></head>
+    <body data-board-view="current" data-desktop-shell="true" data-native-desktop="true">
+      <div class="app"><main class="workspace" style="--tree-width: 519px; width: 1178px; height: 760px">
+        <aside class="tree-pane" data-desktop-directory="goals">
+          <section class="desktop-directory-panel desktop-goal-directory">
+            <div class="tree-scroll"><ul class="goal-tree"><li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item">
+              <div class="tree-row"><span class="tree-guide"></span><div class="tree-entry directory-list-row">
+                <button class="tree-node" type="button"><span class="tree-copy"><span class="tree-title-line"><strong id="target-title">${longTitle}</strong></span><small>G2G/J</small></span></button>
+                <span class="directory-row-state" id="target-status"><span class="goal-status goal-status--execution_blocked">执行受阻</span></span>
+                <span class="tree-meta-line"><span class="tree-progress"><span>1 个前置</span></span></span>
+              </div></div>
+            </li></ul></li></ul></li></ul></li></ul></div>
+          </section>
+        </aside><div class="tree-resizer"></div><section class="document-pane"></section>
+      </main></div>
+      <script>
+        const pane = document.querySelector(".tree-pane");
+        const title = document.querySelector("#target-title");
+        const range = document.createRange();
+        range.selectNodeContents(title);
+        const result = {
+          paneWidth: pane.getBoundingClientRect().width,
+          titleWhiteSpace: getComputedStyle(title).whiteSpace,
+          titleLineCount: range.getClientRects().length,
+          titleClientWidth: title.clientWidth,
+          titleScrollWidth: title.scrollWidth,
+          titleClientHeight: title.clientHeight,
+          titleScrollHeight: title.scrollHeight,
+        };
+        document.title = "RESULT:" + btoa(unescape(encodeURIComponent(JSON.stringify(result))));
+      </script>
+    </body></html>`);
+
+  cachedGoalTreeBrowserLayout = new Promise((resolve, reject) => {
+    const child = spawn(browser, [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-background-mode",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--no-default-browser-check",
+      "--no-first-run",
+      `--user-data-dir=${profilePath}`,
+      "--window-size=1178,760",
+      "--dump-dom",
+      `file://${htmlPath}`,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let result: GoalTreeBrowserLayout | null = null;
+    const timer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      const encoded = stdout.match(/<title>RESULT:([^<]+)<\/title>/)?.[1];
+      if (!encoded || result) return;
+      result = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as GoalTreeBrowserLayout;
+      child.kill("SIGTERM");
+    });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", (error) => reject(error));
+    child.on("close", () => {
+      clearTimeout(timer);
+      rmSync(directory, { recursive: true, force: true });
+      if (result) resolve(result);
+      else reject(new Error(`${stderr}\nBrowser layout result missing from DOM:\n${stdout.slice(0, 500)}`));
+    });
+  });
+  return cachedGoalTreeBrowserLayout;
+}
+
+function readDecisionDeepLinkBrowserState(
+  html: string,
+  goalId: string,
+  options: { width?: number; scenario?: "initial" | "after_feed_switch" | "restored_mobile_tree" } = {},
+): Promise<DecisionDeepLinkBrowserState | null> {
+  const browser = [
+    process.env.GOALBOARD_TEST_CHROME,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!browser) return Promise.resolve(null);
+
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-decision-deep-link-"));
+  const profilePath = join(directory, "chrome-profile");
+  const htmlPath = join(directory, "decisions.html");
+  mkdirSync(profilePath);
+  const scenario = options.scenario ?? "initial";
+  const browserHtml = html.replace(
+    '<script src="/assets/goalboard-workbench.js"></script>',
+    `<script>
+      if (${JSON.stringify(scenario)} === "restored_mobile_tree") {
+        const state = JSON.parse(document.querySelector("#goalboard-data").textContent);
+        const storageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id) + ":inbox";
+        sessionStorage.setItem(storageKey, JSON.stringify({
+          mobileView: "tree",
+          workSurface: "feed",
+          directory: "feed",
+          feedPreset: "inbox_message",
+          navigationVersion: 2,
+        }));
+      }
+      globalThis.__gb24InboxWorkbenchHtml = [...document.querySelectorAll("[data-feed-detail]")]
+        .map((detail) => detail.outerHTML).join("");
+      globalThis.__gb24Fetch = globalThis.fetch.bind(globalThis);
+      globalThis.fetch = (input, init) => {
+        const url = new URL(String(input), location.href);
+        if (url.pathname.endsWith("/api/feed/workbench")) {
+          const preset = url.searchParams.get("preset");
+          return Promise.resolve(new Response(
+            preset === "inbox_message" ? globalThis.__gb24InboxWorkbenchHtml : "",
+            { status: 200, headers: { "content-type": "text/html" } },
+          ));
+        }
+        return globalThis.__gb24Fetch(input, init);
+      };
+    </script><script>${WORKBENCH_CLIENT_SCRIPT}</script><script>
+      (async () => {
+        const nextFrame = () => new Promise((resolve) => setTimeout(resolve, 50));
+        await nextFrame();
+        await nextFrame();
+        if (${JSON.stringify(scenario)} === "after_feed_switch") {
+          document.querySelector('[data-work-surface-open="feed"][data-feed-preset="feed"]')?.click();
+          await nextFrame();
+          await nextFrame();
+          const search = document.querySelector("[data-feed-search]");
+          if (search) {
+            search.value = "__hide_every_decision__";
+            search.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          location.hash = ${JSON.stringify(`#decision-goal-${goalId}`)};
+        }
+        await nextFrame();
+        await nextFrame();
+        await nextFrame();
+        const targetEntryId = ${JSON.stringify(`decision:${goalId}`)};
+        const rows = [...document.querySelectorAll("[data-feed-entry-id]")];
+        const selectedRow = rows.find((row) => row.classList.contains("is-selected"));
+        const targetDetail = [...document.querySelectorAll("[data-feed-detail]")]
+          .find((detail) => detail.dataset.feedDetail === targetEntryId);
+        const form = targetDetail?.querySelector(
+          "[data-human-review-form], [data-goal-tree-decision-form], [data-contract-decision-form], [data-candidate-decision-form], [data-rewire-decision-form], [data-risk-state-form]",
+        );
+        const submit = form?.querySelector('button[type="submit"]');
+        const pane = document.querySelector("[data-document-pane]");
+        const paneRect = pane?.getBoundingClientRect();
+        const formRect = form?.getBoundingClientRect();
+        const submitRect = submit?.getBoundingClientRect();
+        const result = {
+          selectedEntryId: selectedRow?.dataset.feedEntryId ?? null,
+          targetDetailHidden: targetDetail ? targetDetail.hidden : null,
+          formVisible: Boolean(paneRect && formRect && formRect.top >= paneRect.top - 1 && formRect.top < paneRect.bottom),
+          submitVisible: Boolean(paneRect && submitRect && submitRect.top >= paneRect.top - 1 && submitRect.bottom <= paneRect.bottom + 1),
+          formFocused: document.activeElement === form,
+          mobileView: document.querySelector("[data-workspace]")?.dataset.mobileView ?? null,
+          searchValue: document.querySelector("[data-feed-search]")?.value ?? null,
+        };
+        document.title = "RESULT:" + btoa(unescape(encodeURIComponent(JSON.stringify(result))));
+      })();
+    </script>`,
+  );
+  writeFileSync(
+    htmlPath,
+    browserHtml,
+  );
+  return new Promise((resolve, reject) => {
+    const child = spawn(browser, [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-background-mode",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--no-default-browser-check",
+      "--no-first-run",
+      `--user-data-dir=${profilePath}`,
+      `--window-size=${options.width ?? 1280},800`,
+      "--virtual-time-budget=3000",
+      "--dump-dom",
+      `file://${htmlPath}${scenario === "after_feed_switch" ? "" : `#decision-goal-${encodeURIComponent(goalId)}`}`,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 15_000);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (/<title>RESULT:[^<]+<\/title>/.test(stdout)) child.kill("SIGTERM");
+    });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", () => {
+      clearTimeout(timer);
+      rmSync(directory, { recursive: true, force: true });
+      if (!stdout) {
+        reject(new Error(`${stderr}\nBrowser decision deep-link DOM is empty`));
+        return;
+      }
+      const encoded = stdout.match(/<title>RESULT:([^<]+)<\/title>/)?.[1];
+      if (!encoded) {
+        reject(new Error(`${stderr}\nBrowser decision deep-link result missing from DOM:\n${stdout.slice(0, 500)}`));
+        return;
+      }
+      resolve(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as DecisionDeepLinkBrowserState);
+    });
+  });
+}
+
+test("Goal Tree applies the width chosen with its splitter", async (context) => {
+  const layout = await readGoalTreeBrowserLayout();
+  if (!layout) return context.skip("Headless Chrome is unavailable");
+  assert.ok(Math.abs(layout.paneWidth - 519) <= 1, `expected 519px, received ${layout.paneWidth}px`);
+});
+
+test("Goal Tree shows a long nested title without clipping", async (context) => {
+  const layout = await readGoalTreeBrowserLayout();
+  if (!layout) return context.skip("Headless Chrome is unavailable");
+  assert.notEqual(layout.titleWhiteSpace, "nowrap");
+  assert.ok(layout.titleLineCount > 1, `expected wrapped title, received ${layout.titleLineCount} line`);
+  assert.ok(layout.titleScrollWidth <= layout.titleClientWidth + 1, "title is clipped horizontally");
+  assert.ok(layout.titleScrollHeight <= layout.titleClientHeight + 1, "title is clipped vertically");
+});
+
 test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
   assert.match(WORKBENCH_STYLES, /\.tree-copy > small \{[^}]*display:\s*block/);
   assert.doesNotMatch(
     WORKBENCH_STYLES,
     /body\[data-desktop-shell="true"\] \.tree-copy small \{[^}]*display:\s*none/,
+  );
+});
+
+test("desktop work tabs keep a readable width and scroll instead of overlapping", () => {
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tabs \{[^}]*overflow-x: auto;/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tab \{[^}]*flex: 0 0 clamp\(132px, 16vw, 190px\);/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tab > \[role="tab"\] span \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/,
   );
 });
 
@@ -539,7 +830,7 @@ function webFixture() {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-web-"));
   const databasePath = join(directory, "demo.db");
   seedDemoBoard(databasePath);
-  return { databasePath };
+  return { databasePath, homeDirectory: directory };
 }
 
 test("Web health identifies the process serving the response", async () => {
@@ -3965,8 +4256,8 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.match(page, /这份方案暂时不能采用/);
     assert.match(page, /当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree/);
     assert.doesNotMatch(page, /其中有风险信息或 Goal 拆解需要 Runtime 修正/);
-    assert.match(page, /已接受父 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
-    assert.match(page, /创建 successor \/ replacement Goal/);
+    assert.match(page, /已接受且尚未收口的复合 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
+    assert.match(page, /使用 successor_outline 创建 replacement Goal/);
     assert.match(page, /当前 Goal Tree 尚未改变/);
     assert.match(page, /value="confirm" disabled aria-disabled="true"/);
     assert.match(page, /value="reject">退回修正/);
@@ -3985,7 +4276,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.equal(directWholeConfirmation.status, 400);
     const directError = await directWholeConfirmation.text();
     assert.match(directError, /本次整份确认没有写入任何变更/);
-    assert.match(directError, /创建 successor \/ replacement Goal/);
+    assert.match(directError, /使用 successor_outline 创建 replacement Goal/);
     const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         goals: Array<{ goal_id: string }>;
@@ -6148,8 +6439,8 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
   }
 });
 
-test("Web edits project and Goal Policy and submits a user-only Human Review", async () => {
-  const { databasePath } = webFixture();
+test("Web edits project and Goal Policy and submits a user-only Human Review", async (context) => {
+  const { databasePath, homeDirectory } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
   coordinator.createGoal(
@@ -6176,7 +6467,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
   );
   store.close();
 
-  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID });
+  const server = createGoalBoardWebServer({ databasePath, boardId: DEMO_BOARD_ID, homeDirectory });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
@@ -6259,12 +6550,13 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       idempotency_key: "run-policy-web-completed",
     });
     const handoffPage = await (await webFetch(`${origin}/goals/POLICY-WEB`)).text();
-    assert.match(handoffPage, /goal-status--handoff_pending[^>]*[\s\S]*?<span>正在收尾<\/span>/);
-    assert.match(handoffPage, /结果已提交，正在进入检查/);
-    assert.match(handoffPage, /无需重新提交；当前执行收尾后即可开始检查/);
+    assert.match(handoffPage, /goal-status--handoff_pending[^>]*[\s\S]*?<span>等待交接<\/span>/);
+    assert.match(handoffPage, /结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
+    assert.match(handoffPage, /完成本轮记录后释放当前工作；刷新可推进项后即可进入独立检查或完成判断/);
+    assert.doesNotMatch(handoffPage, /goalboard_v1_release/);
     assert.doesNotMatch(handoffPage, /这个 Claim 没有未结束的 Run/);
     assert.doesNotMatch(handoffPage, /由领取 Runtime 启动 Run/);
-    assert.doesNotMatch(handoffPage, /当前有什么会挡住它[\s\S]*结果已提交，正在进入检查/);
+    assert.doesNotMatch(handoffPage, /当前有什么会挡住它[\s\S]*结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
     runtimeCoordinator.releaseClaim({
       board_id: DEMO_BOARD_ID,
       claim_id: claim.claim_id,
@@ -6290,6 +6582,27 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       idempotency_key: "evidence-policy-web-human-verdict",
     }).evidence;
     runtimeStore.close();
+
+    const boardRisk = await webFetch(`${origin}/api/goals/POLICY-WEB/risks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_ids: ["POLICY-WEB", "CORE"],
+        description: "共享规则需要用户决定，但不应抢走具体 Goal 的深链焦点",
+        probability: "low",
+        impact: "low",
+        affected_surfaces: ["Decision Center"],
+        trigger: "用户打开待决定页面",
+        treatment: "accept",
+        treatment_plan: "保留为独立的项目级待决定事项",
+        blocking_mode: "none",
+        revisit_condition: "规则发生变化",
+        owner: "product-owner",
+        reason: "制造一个比目标 Goal 更新的项目级 Inbox 项，验证深链不会默认停在第一项",
+        idempotency_key: "policy-web-cross-goal-risk",
+      }),
+    });
+    assert.equal(boardRisk.status, 201, await boardRisk.text());
 
     const page = await goalPageWithLazyContent(origin, "POLICY-WEB", ["factors"]);
     assert.match(page, /当前最终生效规则/);
@@ -6385,12 +6698,49 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     );
     assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealDeepLinkTarget = \(target\) =>/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /disclosure\.open = true/);
-    assert.match(WORKBENCH_CLIENT_SCRIPT, /const initialHashTarget = document\.getElementById/);
-    assert.match(WORKBENCH_CLIENT_SCRIPT, /revealDeepLinkTarget\(initialHashTarget\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /scrollTarget = decisionDetail\.querySelector\([\s\S]*data-human-review-form/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /deepLinkScrollTarget\.scrollIntoView/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const deepLinkTargetFromId = \(targetId\) =>/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const itemId = "decision:" \+ goalId/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealDeepLinkFromId = async \(targetId/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /await ensureFeedWorkbenchLoaded\(\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /scrollTarget\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /if \(!restoredUi && initialHashTargetId\) void revealDeepLinkFromId/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.setItem\("goalboard-decision-receipt"/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /location\.reload\(\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.getItem\("goalboard-decision-receipt"\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /showDecisionReceipt\(storedDecisionReceipt\.message/);
+
+    const deepLinkState = await readDecisionDeepLinkBrowserState(
+      reviewDecisionPage,
+      "POLICY-WEB",
+    );
+    if (!deepLinkState) return context.skip("Headless Chrome is unavailable");
+    assert.equal(deepLinkState.selectedEntryId, "decision:POLICY-WEB");
+    assert.equal(deepLinkState.targetDetailHidden, false);
+    assert.equal(deepLinkState.formVisible, true);
+    assert.equal(deepLinkState.submitVisible, true);
+    assert.equal(deepLinkState.formFocused, true);
+
+    const recoveredDeepLinkState = await readDecisionDeepLinkBrowserState(
+      reviewDecisionPage,
+      "POLICY-WEB",
+      { scenario: "after_feed_switch" },
+    );
+    assert.ok(recoveredDeepLinkState);
+    assert.equal(recoveredDeepLinkState.selectedEntryId, "decision:POLICY-WEB");
+    assert.equal(recoveredDeepLinkState.targetDetailHidden, false);
+    assert.equal(recoveredDeepLinkState.formVisible, true);
+    assert.equal(recoveredDeepLinkState.searchValue, "");
+
+    const mobileDeepLinkState = await readDecisionDeepLinkBrowserState(
+      reviewDecisionPage,
+      "POLICY-WEB",
+      { width: 720, scenario: "restored_mobile_tree" },
+    );
+    assert.ok(mobileDeepLinkState);
+    assert.equal(mobileDeepLinkState.mobileView, "document");
+    assert.equal(mobileDeepLinkState.formVisible, true);
 
     const correctionStore = new SqliteGoalBoardStore(databasePath);
     const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
@@ -6680,6 +7030,30 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(externalEvidence.status, 201, await externalEvidence.clone().text());
     const externalResult = (await externalEvidence.json()) as { evidence: { evidence_id: string } };
 
+    const externalLocalEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["EVIDENCE-WEB-C1"],
+        kind: "artifact",
+        result: "inconclusive",
+        locator: "file:///private/goalboard-casebook/local-artifact.md",
+        digest: "sha256:consumer-supplied-external-local-digest",
+      }),
+    });
+    assert.equal(externalLocalEvidence.status, 201, await externalLocalEvidence.clone().text());
+    const externalLocalResult = (await externalLocalEvidence.json()) as {
+      evidence: {
+        evidence_id: string;
+        locator_status: string;
+        locator_validation_reason: string;
+        digest: string | null;
+      };
+    };
+    assert.equal(externalLocalResult.evidence.locator_status, "unverified");
+    assert.equal(externalLocalResult.evidence.digest, "sha256:consumer-supplied-external-local-digest");
+    assert.match(externalLocalResult.evidence.locator_validation_reason, /不会读取或确认文件存在/);
+
     const largeEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6764,6 +7138,14 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.match(goalRecords, /已验证/);
     assert.match(goalRecords, /UNVERIFIED/);
     assert.match(goalRecords, /不会发起网络请求/);
+    assert.match(goalRecords, new RegExp(externalLocalResult.evidence.evidence_id));
+    assert.match(goalRecords, /file:\/\/\/private\/goalboard-casebook\/local-artifact\.md/);
+    assert.match(goalRecords, /机器本地 locator/);
+    assert.doesNotMatch(goalRecords, /href="file:/);
+    assert.ok(
+      !goalRecords.includes(`/api/project-references/${encodeURIComponent("file:///private/goalboard-casebook/local-artifact.md")}?evidence_id=${externalLocalResult.evidence.evidence_id}`),
+      "an external local locator must never render as an openable project reference",
+    );
     assert.match(goalRecords, new RegExp(largeResult.evidence.evidence_id));
     assert.match(goalRecords, /文件路径已确认/);
     assert.match(goalRecords, /内容未全文预检/);
@@ -6921,6 +7303,108 @@ test("Web opens a verified Evidence locator from its recorded Runtime workspace,
     const content = await opened.text();
     assert.match(content, /Correct source/);
     assert.doesNotMatch(content, /Wrong source/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web opens verified Evidence from the recorded root of a registered Git worktree", async () => {
+  const fixture = await webProjectCatalogFixture();
+  const repositoryRoot = join(fixture.homeDirectory, "canonical-repository");
+  const worktreeRoot = join(fixture.homeDirectory, "isolated-worktree");
+  mkdirSync(repositoryRoot, { recursive: true });
+  const git = (args: string[]) => {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  };
+  git(["-C", repositoryRoot, "init"]);
+  git(["-C", repositoryRoot, "config", "user.name", "GoalBoard Test"]);
+  git(["-C", repositoryRoot, "config", "user.email", "goalboard-test@example.invalid"]);
+  writeFileSync(join(repositoryRoot, "README.md"), "# Canonical repository\n");
+  git(["-C", repositoryRoot, "add", "README.md"]);
+  git(["-C", repositoryRoot, "commit", "-m", "test: initialize canonical repository"]);
+  git([
+    "-C",
+    repositoryRoot,
+    "worktree",
+    "add",
+    "-b",
+    "goalboard-web-evidence-worktree",
+    worktreeRoot,
+  ]);
+  const worktreeFile = join(worktreeRoot, "fresh-review.txt");
+  writeFileSync(worktreeFile, "reviewed from the registered isolated worktree\n");
+
+  const store = new SqliteGoalBoardStore(fixture.alpha.database_path);
+  let evidenceId: string;
+  try {
+    const coordinator = new GoalBoardCoordinator(store);
+    coordinator.createGoal(
+      fixture.alpha.board_id,
+      {
+        goal_id: "WORKTREE-EVIDENCE-WEB",
+        title: "打开隔离 worktree 的验证证据",
+        outcome: "Web 使用提交时记录的真实 worktree 根",
+        why: "隔离实现不能因为路径位于 canonical checkout 外就失去可追溯性。",
+        business_logic: "只信任 canonical Git 仓库正式登记且未越界的 worktree。",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        acceptance_criteria: [{
+          criterion_id: "WORKTREE-EVIDENCE-WEB-C1",
+          statement: "打开 worktree 中的未提交文本证据",
+          decision_method: "inspection",
+          pass_condition: "内容来自提交 Evidence 时的 worktree",
+          required_evidence: ["artifact"],
+        }],
+      },
+      { actor_id: "test-user", idempotency_key: "worktree-evidence-web-goal" },
+    );
+    const evidence = coordinator.submitEvidence({
+      board_id: fixture.alpha.board_id,
+      goal_id: "WORKTREE-EVIDENCE-WEB",
+      actor_id: "runtime-codex",
+      criterion_ids: ["WORKTREE-EVIDENCE-WEB-C1"],
+      kind: "artifact",
+      locator: worktreeFile,
+      result: "passed",
+      locator_context: {
+        project_root: repositoryRoot,
+        workspace_id: "canonical-workspace-id",
+      },
+      idempotency_key: "worktree-evidence-web-submit",
+    }).evidence;
+    assert.equal(evidence.locator_status, "verified");
+    assert.equal(evidence.locator, "project://fresh-review.txt");
+    assert.equal(evidence.locator_workspace_id, null);
+    evidenceId = evidence.evidence_id;
+  } finally {
+    store.close();
+  }
+
+  const server = createGoalBoardWebServer({ homeDirectory: fixture.homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const prefix = `/projects/${encodeURIComponent(fixture.alpha.project_id)}`;
+    const records = await (
+      await webFetch(`${origin}${prefix}/api/goals/WORKTREE-EVIDENCE-WEB/records?view=current`)
+    ).text();
+    assert.match(records, /同一 Git 仓库正式登记的隔离 worktree/);
+    assert.match(records, new RegExp(`evidence_id=${evidenceId}`));
+
+    const referenceUrl = `${origin}${prefix}/api/project-references/${encodeURIComponent("project://fresh-review.txt")}?evidence_id=${evidenceId}`;
+    const opened = await webFetch(referenceUrl);
+    assert.equal(opened.status, 200, await opened.clone().text());
+    assert.match(await opened.text(), /reviewed from the registered isolated worktree/);
+
+    git(["-C", repositoryRoot, "worktree", "remove", "--force", worktreeRoot]);
+    const removed = await webFetch(referenceUrl);
+    assert.equal(removed.status, 404);
+    assert.match(await removed.text(), /项目引用根目录不可用/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

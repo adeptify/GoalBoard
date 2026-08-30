@@ -4689,7 +4689,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .workspace.is-desktop-tui:has(> .tree-pane[data-navigator-view="graph"]) {
       grid-column: 1;
       grid-row: 1;
-      grid-template-columns: clamp(286px, var(--tree-width, 310px), 334px) 8px minmax(0, 1fr) !important;
+      grid-template-columns: var(--tree-width, clamp(286px, 26vw, 334px)) 8px minmax(0, 1fr) !important;
       grid-template-rows: var(--desktop-titlebar-height) minmax(0, 1fr);
       border: 0;
       border-radius: 0;
@@ -5076,6 +5076,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .desktop-work-tab {
       min-width: 0;
       max-width: 245px;
+      flex: 0 0 clamp(132px, 16vw, 190px);
       height: 34px;
       padding: 0 3px 0 0;
       border-radius: 10px;
@@ -5917,7 +5918,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .workspace,
     body[data-desktop-shell="true"] .workspace.is-desktop-tui,
     body[data-desktop-shell="true"] .workspace.is-desktop-tui.is-tui-collapsed {
-      grid-template-columns: clamp(274px, var(--tree-width, 286px), 300px) 7px minmax(0, 1fr) !important;
+      grid-template-columns: var(--tree-width, clamp(274px, 27vw, 300px)) 7px minmax(0, 1fr) !important;
     }
     body[data-desktop-shell="true"] .desktop-work-tab { max-width: 190px; }
     body[data-desktop-shell="true"] .goal-brief-grid { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
@@ -6086,7 +6087,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     flex: 1 1 auto;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 22px 18px;
+    grid-template-rows: auto auto;
     align-items: center;
   }
   body[data-desktop-shell="true"] .desktop-goal-directory .tree-entry:hover {
@@ -6099,7 +6100,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-color) 28%, transparent);
   }
   body[data-desktop-shell="true"] .desktop-goal-directory .tree-entry:has(.tree-relations[open]) {
-    grid-template-rows: 22px auto;
+    grid-template-rows: auto auto;
   }
   body[data-desktop-shell="true"] .desktop-goal-directory .tree-node {
     width: auto;
@@ -6144,8 +6145,9 @@ export const VISUAL_FOUNDATION_STYLES = `
     font-weight: 620;
     line-height: 1.35;
     letter-spacing: -.008em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
   }
   body[data-desktop-shell="true"] .desktop-goal-directory .tree-entry.is-selected .tree-title-line strong {
     font-weight: 690;

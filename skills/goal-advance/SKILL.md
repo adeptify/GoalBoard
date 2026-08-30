@@ -26,9 +26,10 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 2. **Recover the real request.** Read the named Goal or start/resume the smallest Draft. Separate user-confirmed facts, traceable project facts, Runtime assumptions, and recommendations.
 3. **Clarify only consequential gaps.** Ask one question at a time. Save each material answer before asking the next question.
 4. **Plan before closing complex work.** Select all relevant professional methods, discover cross-topic result dependencies, check coverage, and split work into reviewable outcomes.
-5. **Ask for a real decision.** Present one readable, complete Goal Tree change set. Nothing proposed becomes canonical until the user confirms, rejects, or revises it.
+5. **Ask for a real decision.** Present one readable, complete Goal Tree change set. Nothing proposed becomes canonical until the user confirms, rejects, or revises it. After applied changes, consume `semantic_review`: structural success is not semantic closure, and an affected subgraph must be reviewed before planning is reported complete.
 6. **Execute from derived state.** Choose an eligible leaf, work inside its accepted Contract, submit evidence and permitted reviews, complete it, and release the Claim.
-7. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
+7. **Hand off to the next cycle.** After release, refresh Available and state the next Goal, action, why-now, and continuation boundary; keep going when it is safe and already authorized instead of treating one Run as the conversation endpoint.
+8. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
 
 ## Keep Goals finite and operations recurring
 
@@ -117,4 +118,4 @@ Use the full `goalboard_v1_` tool names. If GoalBoard MCP is unavailable, report
 
 During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Reuse the Claim's exact actor; after compaction, `claim.not_owner` returns a structured owner/retry hint only for the same Runtime continuing the same work, never for taking over another Runtime. Do not create background heartbeat loops.
 
-When work state is `waiting_for_human`, report the returned human criterion IDs and action, then stop Runtime review work. Do not select another Runtime Review, infer the user's verdict, or treat engineering evidence as user acceptance.
+When work state is `waiting_for_human`, report the returned human criterion IDs and action, then stop Runtime review work. Do not select another Runtime Review, infer the user's verdict, or treat engineering evidence as user acceptance. If the returned reason includes `conversation_approval_handoff`, follow the exact-quote handoff in the execution reference: a Runtime may record an explicit approval as `human_verdict` Evidence only for the one returned pending obligation, then open the prefilled Inbox for the user's final submit. The Evidence is not the Human Review and does not authorize the Runtime to submit one.

@@ -81,7 +81,7 @@ test("work state labels stay concise and professional", () => {
   assert.equal(explainWorkState("clarifying").label, "目标澄清中");
   assert.equal(explainWorkState("clarification_decision_pending").label, "待你确认");
   assert.equal(explainWorkState("compound_closure_pending").label, "待确认父目标");
-  assert.equal(explainWorkState("handoff_pending").label, "正在收尾");
+  assert.equal(explainWorkState("handoff_pending").label, "等待交接");
   assert.equal(explainWorkState("execution_blocked").label, "执行受阻");
   assert.equal(explainWorkState("completion_pending").label, "待完成");
   assert.equal(explainWorkState("completion_blocked").label, "完成受阻");

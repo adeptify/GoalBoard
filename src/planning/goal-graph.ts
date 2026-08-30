@@ -40,6 +40,8 @@ export interface GoalChangeImpact {
   changed_goal_ids: string[];
   affected_ancestors: string[];
   affected_dependents: string[];
+  /** Direct upstream providers consumed by a changed Goal. */
+  adjacent_dependencies: string[];
   reusable_open_goal_ids: string[];
   review_order: string[];
   graph_issues: PlanningGraphIssue[];
@@ -295,18 +297,35 @@ export function analyzeGoalChangeImpact(
   const active = relations.filter((relation) => relation.state === "active");
   const ancestors = new Map<string, Set<string>>();
   const dependents = new Map<string, Set<string>>();
+  const dependencies = new Map<string, Set<string>>();
   for (const relation of active) {
     if (relation.type === "part_of") addEdge(ancestors, relation.from_goal_id, relation.to_goal_id);
-    if (relation.type === "depends_on") addEdge(dependents, relation.to_goal_id, relation.from_goal_id);
+    if (relation.type === "depends_on") {
+      addEdge(dependents, relation.to_goal_id, relation.from_goal_id);
+      addEdge(dependencies, relation.from_goal_id, relation.to_goal_id);
+    }
   }
   const changed = [...new Set(changedGoalIds)];
+  const changedSet = new Set(changed);
   const affectedAncestors = new Set<string>();
   const affectedDependents = new Set<string>();
+  const adjacentDependencies = new Set<string>();
   for (const goalId of changed) {
     for (const candidate of reachable(ancestors, goalId)) affectedAncestors.add(candidate);
     for (const candidate of reachable(dependents, goalId)) affectedDependents.add(candidate);
+    for (const candidate of dependencies.get(goalId) ?? []) adjacentDependencies.add(candidate);
   }
-  const related = new Set([...changed, ...affectedAncestors, ...affectedDependents]);
+  for (const goalId of changedSet) {
+    affectedAncestors.delete(goalId);
+    affectedDependents.delete(goalId);
+    adjacentDependencies.delete(goalId);
+  }
+  const related = new Set([
+    ...changed,
+    ...affectedAncestors,
+    ...affectedDependents,
+    ...adjacentDependencies,
+  ]);
   const reusable = goals.filter((goal) => related.has(goal.goal_id) && !goal.trashed_at && goal.fulfillment_state !== "satisfied" && ["abstract", "frontier_open", "closed_leaf"].includes(goal.decomposition_state)).map((goal) => goal.goal_id);
   const metrics = planningMetrics(goals, active);
   const reviewOrder = [...related].sort((left, right) => (metrics.get(left)?.topological_level ?? 0) - (metrics.get(right)?.topological_level ?? 0) || left.localeCompare(right));
@@ -314,6 +333,7 @@ export function analyzeGoalChangeImpact(
     changed_goal_ids: changed,
     affected_ancestors: [...affectedAncestors].sort(),
     affected_dependents: [...affectedDependents].sort(),
+    adjacent_dependencies: [...adjacentDependencies].sort(),
     reusable_open_goal_ids: reusable.sort(),
     review_order: reviewOrder,
     graph_issues: validatePlanningGraph(goals, active),

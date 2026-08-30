@@ -474,6 +474,7 @@ export class SqliteGoalBoardStore {
           state TEXT NOT NULL CHECK (state IN ('pending', 'superseded', 'approved', 'partially_applied', 'rejected', 'dismissed', 'closed')),
           version INTEGER NOT NULL,
           supersedes_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
+          supersedes_legacy_proposal_id TEXT,
           base_event_cursor INTEGER NOT NULL,
           summary TEXT NOT NULL,
           narrative_json TEXT,
@@ -486,6 +487,8 @@ export class SqliteGoalBoardStore {
           ON goal_tree_proposals(board_id, root_goal_id, state, created_at DESC, proposal_id);
         CREATE INDEX goal_tree_proposals_supersedes_idx
           ON goal_tree_proposals(supersedes_proposal_id);
+        CREATE INDEX goal_tree_proposals_supersedes_legacy_idx
+          ON goal_tree_proposals(supersedes_legacy_proposal_id);
 
         CREATE TABLE goal_tree_proposal_items (
           item_id TEXT PRIMARY KEY,
@@ -695,6 +698,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (28, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -849,6 +855,14 @@ export class SqliteGoalBoardStore {
       !goalTreeProposalColumns.some((column) => column.name === "narrative_json") ||
       !goalTreeProposalItemColumns.some((column) => column.name === "explanation_json")
     ) this.migrateGoalTreeProposalNarrative();
+    const goalTreeLegacySupersessionApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 28")
+      .get();
+    const refreshedProposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
+    if (
+      !goalTreeLegacySupersessionApplied ||
+      !refreshedProposalColumns.some((column) => column.name === "supersedes_legacy_proposal_id")
+    ) this.migrateGoalTreeLegacySupersession();
   }
 
   private migrateClarifierRoles(): void {
@@ -1145,6 +1159,7 @@ export class SqliteGoalBoardStore {
           state TEXT NOT NULL CHECK (state IN ('pending', 'superseded', 'approved', 'partially_applied', 'rejected', 'dismissed', 'closed')),
           version INTEGER NOT NULL,
           supersedes_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
+          supersedes_legacy_proposal_id TEXT,
           base_event_cursor INTEGER NOT NULL,
           summary TEXT NOT NULL,
           decision_json TEXT,
@@ -1156,6 +1171,8 @@ export class SqliteGoalBoardStore {
           ON goal_tree_proposals(board_id, root_goal_id, state, created_at DESC, proposal_id);
         CREATE INDEX goal_tree_proposals_supersedes_idx
           ON goal_tree_proposals(supersedes_proposal_id);
+        CREATE INDEX goal_tree_proposals_supersedes_legacy_idx
+          ON goal_tree_proposals(supersedes_legacy_proposal_id);
 
         CREATE TABLE goal_tree_proposal_items (
           item_id TEXT PRIMARY KEY,
@@ -1699,6 +1716,22 @@ export class SqliteGoalBoardStore {
       }
       this.db
         .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateGoalTreeLegacySupersession(): void {
+    this.immediate(() => {
+      const columns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "supersedes_legacy_proposal_id")) {
+        this.db.exec("ALTER TABLE goal_tree_proposals ADD COLUMN supersedes_legacy_proposal_id TEXT");
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS goal_tree_proposals_supersedes_legacy_idx
+          ON goal_tree_proposals(supersedes_legacy_proposal_id);
+      `);
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (28, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -2379,7 +2412,8 @@ function mapGoalTreeProposal(
     discovered_in_run_id: optionalText(row.discovered_in_run_id),
     state: text(row.state) as GoalTreeProposalRecord["state"],
     version: number(row.version),
-    supersedes_proposal_id: optionalText(row.supersedes_proposal_id),
+    supersedes_proposal_id:
+      optionalText(row.supersedes_proposal_id) ?? optionalText(row.supersedes_legacy_proposal_id),
     base_event_cursor: number(row.base_event_cursor),
     summary: text(row.summary),
     narrative: parseJson<GoalTreeProposalRecord["narrative"]>(row.narrative_json, null),

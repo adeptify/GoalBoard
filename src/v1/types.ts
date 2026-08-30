@@ -630,6 +630,7 @@ export interface GoalTreeProposalDecisionAuthority {
   conversation_ref: string;
   message_ref: string;
   whole_confirmation_prompted?: boolean;
+  prompted_proposal_id?: string;
 }
 
 export interface GoalTreeProposalDecisionRecord {
@@ -880,6 +881,21 @@ export interface BlockedAvailableGoal {
   reasons: DecisionReason[];
   priority_hint: number;
   risk_summary: string[];
+}
+
+/** A compact pointer to an ordinary phase blocker that can be expanded with Explain. */
+export interface BlockedAvailableOverview {
+  goal: GoalRecord;
+  work_state:
+    | "clarification_blocked"
+    | "waiting_children"
+    | "execution_blocked"
+    | "review_blocked"
+    | "revalidation_blocked"
+    | "invalidated";
+  next_action: "explain" | "release";
+  reasons: Array<Pick<DecisionReason, "code" | "message" | "facts" | "remediation">>;
+  priority_hint: number;
 }
 
 export interface ParallelRuntimeAssignment {
