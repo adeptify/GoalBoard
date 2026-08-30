@@ -1487,7 +1487,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_evidence_submit",
-    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor。超过 512 KiB 的项目内普通文件会在确认路径安全后登记为 UNVERIFIED，不会全文读取或打开；调用方提供的 digest 只按原样记录，不代表 GoalBoard 已核验，建议同时提交小型 sidecar summary。外部或不透明 locator 也会保留但明确标为 UNVERIFIED。",
+    "提交与验收条件绑定的 Evidence；GoalBoard 会只读预检当前项目内文件与 Markdown anchor。超过 512 KiB 的项目内普通文件会在确认路径安全后登记为 UNVERIFIED，不会全文读取或打开；调用方提供的 digest 只按原样记录，不代表 GoalBoard 已核验，建议同时提交小型 sidecar summary。外部、不透明或 file:/// 机器本地 locator 也会保留但明确标为 UNVERIFIED；file:/// 只登记、不可从 Web 打开。",
     {
       goal_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1498,7 +1498,7 @@ const V1_TOOLS: McpToolDefinition[] = [
       locator: {
         type: "string",
         description:
-          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；超过 512 KiB 的项目内文件只确认路径并以 UNVERIFIED 登记，不可在 Web 预览；HTTP 与其他不透明协议也保留为 UNVERIFIED。",
+          "可验证的项目文件格式：普通相对路径 docs/review.md#checks、输入别名 repo:docs/review.md#checks、canonical 格式 project://docs/review.md#checks，或当前 canonical workspace 内的绝对路径。安全的 repo: 输入会统一存为 project://；超过 512 KiB 的项目内文件只确认路径并以 UNVERIFIED 登记，不可在 Web 预览。跨仓或项目外的 file:///path/to/artifact 可仅登记为 UNVERIFIED：GoalBoard 不会读取或确认文件存在，调用方提供的 digest 也未核验；HTTP 与其他不透明协议同样保留为 UNVERIFIED。",
       },
       digest: { type: ["string", "null"] },
       result: { type: "string", enum: ["passed", "failed", "inconclusive"] },

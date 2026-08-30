@@ -6680,6 +6680,30 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.equal(externalEvidence.status, 201, await externalEvidence.clone().text());
     const externalResult = (await externalEvidence.json()) as { evidence: { evidence_id: string } };
 
+    const externalLocalEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["EVIDENCE-WEB-C1"],
+        kind: "artifact",
+        result: "inconclusive",
+        locator: "file:///private/goalboard-casebook/local-artifact.md",
+        digest: "sha256:consumer-supplied-external-local-digest",
+      }),
+    });
+    assert.equal(externalLocalEvidence.status, 201, await externalLocalEvidence.clone().text());
+    const externalLocalResult = (await externalLocalEvidence.json()) as {
+      evidence: {
+        evidence_id: string;
+        locator_status: string;
+        locator_validation_reason: string;
+        digest: string | null;
+      };
+    };
+    assert.equal(externalLocalResult.evidence.locator_status, "unverified");
+    assert.equal(externalLocalResult.evidence.digest, "sha256:consumer-supplied-external-local-digest");
+    assert.match(externalLocalResult.evidence.locator_validation_reason, /不会读取或确认文件存在/);
+
     const largeEvidence = await webFetch(`${origin}/api/goals/EVIDENCE-WEB/evidence`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6764,6 +6788,14 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     assert.match(goalRecords, /已验证/);
     assert.match(goalRecords, /UNVERIFIED/);
     assert.match(goalRecords, /不会发起网络请求/);
+    assert.match(goalRecords, new RegExp(externalLocalResult.evidence.evidence_id));
+    assert.match(goalRecords, /file:\/\/\/private\/goalboard-casebook\/local-artifact\.md/);
+    assert.match(goalRecords, /机器本地 locator/);
+    assert.doesNotMatch(goalRecords, /href="file:/);
+    assert.ok(
+      !goalRecords.includes(`/api/project-references/${encodeURIComponent("file:///private/goalboard-casebook/local-artifact.md")}?evidence_id=${externalLocalResult.evidence.evidence_id}`),
+      "an external local locator must never render as an openable project reference",
+    );
     assert.match(goalRecords, new RegExp(largeResult.evidence.evidence_id));
     assert.match(goalRecords, /文件路径已确认/);
     assert.match(goalRecords, /内容未全文预检/);

@@ -207,7 +207,15 @@ export function validateEvidenceLocator(
       normalized_locator: value,
     };
   }
-  if (/^file:\/\//i.test(value) || /^[a-z]:[\\/]/i.test(value)) {
+  if (/^file:\/\//i.test(value)) {
+    return {
+      status: "unverified",
+      reason: "机器本地 locator 已按原样保留为 UNVERIFIED；GoalBoard 不会读取或确认文件存在；调用方提供的 digest 未核验；如需 verified，请从该仓库的受控 workspace 重新提交项目内 locator，或同时提交可读的 sidecar summary。",
+      checked_at: checkedAt,
+      normalized_locator: value,
+    };
+  }
+  if (/^[a-z]:[\\/]/i.test(value)) {
     throw new ProjectReferenceError(400, "Evidence locator 不能指向项目范围外的本地文件");
   }
   let normalizedLocator = value.startsWith("repo:")

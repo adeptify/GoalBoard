@@ -68,6 +68,7 @@
 | GB-20260830-31 | replacement Goal 已生效，旧 Goal 仍进入 Ready | Goal replacement 生命周期与 Ready 过滤缺陷 | 已确认 | 已修复 | 真实 CGS 副本证明旧 Goal 不可领取；最终 App 保留历史并显示“已被替代” | P0 |
 | GB-20260830-32 | leaf_readiness 非法枚举被误报为“没写判断”，无 clarification Run 也缺恢复动作 | Goal Tree 输入校验与恢复提示缺陷 | 已确认 | 已修复 | 最终安装 MCP schema 显示 `keep | split`，精确错误与 resume hint 回归通过 | P1 |
 | GB-20260830-33 | 单轮 Run 收口后只汇报过去，不交代或继续下一轮 | GoalBoard Skill + MCP handoff 可发现性设计债，消费者遗漏为直接触发 | 已确认（修正归因） | 已修复（本地待发布） | Release handoff、Skill 连续推进协议与 MCP 实操通过；最终安装和新 Session 消费行为待发布后验收 | P1 |
+| GB-20260830-34 | 跨仓库 Goal 的本地 Evidence 无法诚实落档 | Evidence locator 分类与恢复契约缺陷；多 workspace 验证属延后能力 | 已确认 | 已修复（本地待发布） | 328/328、真实 Casebook 路径与 computer-use 通过；最终安装和用户验收待发布 | P2 |
 
 ---
 
@@ -1924,6 +1925,61 @@ GoalBoard 将 Claim/Run 做成有限租约并要求显式 release，初衷是及
 
 ---
 
+## GB-20260830-34：跨仓库 Goal 的本地 Evidence 无法诚实落档
+
+**来源**：GoalBoard 内部 Casebook 消费者反馈（会话 `01a04e4e-f21d-7950-94de-c4d5d1446d14`）
+**Bug 确认**：已确认；项目外文件不可 verified 是合理限制，但 `file:` 在 opaque UNVERIFIED 分支前被硬拒绝，与工具承诺矛盾
+**修复决定**：已按 Owner 当前授权批准自主修复，P2；先补只登记、不读取的 `file:` locator，不新增多仓验证权限
+**修复状态**：本地实现、工程验证、真实 Casebook 产品实操与 Owner 验收通过；尚未打包、安装或推送
+
+### 1. 真实场景
+
+Runtime 当前 canonical workspace 是 GoalBoard 仓库，但 Goal `casebook-private-foundation` 的已确认跨仓库产物位于私有仓库 `goalboard-casebook`。消费者以五个 `file:///.../goalboard-casebook/...` locator 和 SHA-256 提交 Evidence，均收到“不能指向项目范围外的本地文件”；在尚无 commit/push 授权时，也不能用 GitHub commit URL 冒充已发布证据。
+
+### 2. 事实与归因
+
+已用当前 locator 校验器稳定复现：同一个项目外文件写成 `file:///...` 返回 400“项目范围外”；写成 `artifact://goalboard-casebook/...` 会原样保存为 UNVERIFIED；裸绝对路径也按项目外拒绝。源码显示 `file:` 与 Windows 盘符在 opaque protocol 判定前被特判抛错，而 MCP description 明确承诺“外部或不透明 locator 也会保留”。因此问题成立为 GoalBoard locator 分类和恢复契约缺陷。项目 catalog 的确能让一个 GoalBoard 项目关联多个 workspace，但当前 Evidence 只使用本次 Runtime 的 canonical workspace；把所有历史关联目录都变成当前可读取根会扩大本地文件访问权，不是本轮最小修复。
+
+### 3. 现有流程的问题
+
+当前可验证路径只承认 canonical workspace 内文件，这一点正确；问题是显式表达“仅登记这个本地位置”的标准 `file:` URI 也被当成越界读取请求拒绝，错误没有告诉消费者可用什么不透明格式。消费者只能把同一路径改写成自造 scheme 试错，或伪造尚不存在的远端 URL。
+
+### 4. 设计根因与初衷
+
+初衷是把项目内只读预检限制在明确 canonical workspace 中，防止任意本机文件读取、路径逃逸和把外部内容冒充 verified；`file:` 的早期拒绝延续了这一保守规则。这个读取边界合理，但“允许登记”和“允许读取/验证”被错误耦合：系统已经用 UNVERIFIED 表达 HTTP、自定义协议和过大项目文件，却没有把同一语义用于显式 `file:` URI。
+
+### 5. 当前影响
+
+影响实现跨多个本地仓库、但 GoalBoard 项目只绑定一个 canonical workspace 的 Goal。它不阻止产物生成，但会让真实本地 Evidence 无法以清晰、稳定、可审计的 locator 落档，并把“未由 GoalBoard 预检”误解成“不能登记”。
+
+### 6. 复杂度审查
+
+- **当前必须**：把 `file:` 作为仅登记的机器本地 locator 原样保存为 UNVERIFIED；明确未读取、未确认存在、未核验 digest，并让 Web 只复制不打开。同步 MCP 和 Skill 的恢复说明。
+- **可以延后**：Goal/Project 正式关联多个可验证 workspace，或从项目 membership 中选择第二个验证根；只有用户明确需要 GoalBoard 打开并校验第二仓文件时再评估其授权模型。
+- **应当删除**：不允许任意 `file://` 绕过范围检查，不因同机路径存在就标为 verified，不把未 push 的本地文件伪装成 GitHub Evidence。
+
+### 7. 修复必要性与优先级
+
+需要修，P2。跨仓产物常见且现有 UNVERIFIED 模型已经能安全表达，不修只会迫使消费者发明 scheme、重复提交或留下虚假远端地址；但已有 opaque workaround，且不阻断产物本身，所以不是 P0/P1。
+
+### 8. 修复前后体验差异
+
+- **修复前**：跨仓本地路径被当作越界读取直接拒绝，消费者靠猜测 locator 或虚构远端地址才能继续。
+- **修复后**：系统明确区分“当前项目内、可预检”与“项目外、仅登记且 UNVERIFIED”；后者保留 locator 和 digest，并清楚说明未读取、未验哈希和如何升级为受控验证。
+
+### 9. 最小修复范围
+
+复用现有 Evidence 字段与 UNVERIFIED 状态：仅把 `file:` 从硬拒绝分支移入独立的外部本地 locator 分支，保留原 locator 与 digest，返回明确原因；同步 MCP description、Skill 和 Web 安全回归。裸绝对项目外路径、Windows 本地路径、symlink 逃逸仍拒绝；不新增多仓权限表、跨仓文件打开、自动 digest 校验或远端发布假设。
+
+### 10. 验收边界
+
+- **工程验证**：TDD RED 已证明旧行为的三个边界：Core 抛 `evidence.locator_outside_project`、Web POST 返回 400、MCP schema 缺少 `file:` 恢复方式。最小实现后同三条 GREEN 3/3：Core 原样保留 locator/digest 且不记录 verified workspace，MCP 明确 `file:///` 仅登记规则，Web 显示 UNVERIFIED 并且不生成 `file:` 链接或项目引用打开端点。最新完整 `pnpm test` 为 328/328、0 fail，`pnpm typecheck` 与 `git diff --check` 通过；原项目内 absolute/`project://`/`repo:`、裸项目外路径拒绝、symlink 逃逸、大文件和项目引用打开回归均保留。
+- **产品实操**：通过源码真实路径。使用实际 `/Users/oreal/adeptify-home/repos/goalboard-casebook/README.md` 和 SHA-256 `4f8194b4e27027ec866fdc65a028b40601f7a5390df3a279251e39c3d1096134`，在临时 GoalBoard 数据库、当前 workspace=`goalboard` 下提交：`file:///.../goalboard-casebook/README.md` 一次创建为 UNVERIFIED，locator 与 digest 原样保留、`locator_workspace_id=null`；同轮 `goalboard/README.md` 规范化成 `project://README.md` 并 verified，跨仓裸绝对路径继续返回 `evidence.locator_outside_project`。随后 computer use 打开“记录 → 执行与检查”，页面可见完整 locator、UNVERIFIED、digest、未读取/未核验和升级说明；该 locator 是“复制引用”按钮，不是链接，也没有项目引用打开入口。临时数据和服务已清理，Casebook 仓库未修改。
+- **Owner 最终验收**：通过。修复消除了协议矛盾并保留原安全目标：`file:` 不触发 `realpath/stat/read`，不验证存在或 digest，不记录 verified workspace，也不能从 Web 打开；裸项目外路径和 symlink 逃逸仍拒绝。多 workspace verified 能力不在本次范围。
+- **用户验收**：待进入正式安装包并由真实 Runtime 新 Session 提交 Casebook 五个文件后确认；当前安装版不包含本修复。
+
+---
+
 ## 2026-08-30 第三方视角全量复审
 
 本节在全部实现、统一安装和代表性实操完成后重新审查“这张卡是否真的成立”，不以已经写了代码反推其合理性。判断标准只有四项：是否有可复现事实；是否增加了无必要操作、歧义或错误状态；是否影响正确性、闭环或审计；最小修复是否保留了原设计要保护的边界。它覆盖并更新上方按时间记录的阶段性判断。
@@ -1963,10 +2019,11 @@ GoalBoard 将 Claim/Run 做成有限租约并要求显式 release，初衷是及
 | GB31 | 成立，Ready 没有消费 canonical `replaces` | 官方队列会引导执行过期、与现行授权相反的 Contract | 修统一派生 replaced 并禁止领取；保留旧 Goal 历史与可逆关系 |
 | GB32 | 成立；schema 部分与 GB14 去重，错误归因和恢复提示独立成立 | 合法文案因非法 enum 被误报“没写清”，消费者只能查源码 | 修精确枚举错误与 resume hint；不新增未经需要的 `defer` 状态 |
 | GB33 | 成立为 Skill + MCP handoff 可发现性设计债，消费者遗漏是直接触发 | 单轮 Run 收口被误当成对话终点，用户必须追问“然后呢”才能知道下一步 | 修 release 的只读 Available handoff 与固定 cycle checkpoint；不自动派发、不越授权 |
+| GB34 | 成立为 locator 分类与恢复契约缺陷，不是跨仓读取权限缺失 | 同一外部本地位置换成自造 scheme 可登记，标准 `file:` 却被误当越界读取拒绝，迫使试错或虚构远端 URL | 修 `file:` 仅登记为 UNVERIFIED 并清楚说明边界；不读取第二仓、不自动信任历史 workspace 关联 |
 
 ### 复审结论
 
-- 33 张卡中，30 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15 和 GB26 是部分重叠、部分跨系统，已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
+- 34 张卡中，31 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15 和 GB26 是部分重叠、部分跨系统，已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
 - GB13 的体验问题真实成立，但唯一主要归因在 CGS 领域模型与编辑台；GoalBoard 的正确决定是明确不修并保留路由状态，而不是为了“全部修完”制造跨仓耦合。
 - GB27 是本轮最重要的客观纠偏：原始 claim-gate 解释不符合真实 canonical 历史，最终只修可复现的 rework 恢复缺口，证明台账不是把每条消费者抱怨自动认定为原始描述中的 Bug。
 - 当前最小方案没有删除用户确认、项目绑定、租约 ownership、completion Risk、accepted Contract 不变量或历史审计；修复集中在消除重复操作、错误派生、不可发现协议、非原子写入和双真相。

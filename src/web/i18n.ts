@@ -433,6 +433,7 @@ export const EN: Record<string, string> = {
   "这条记录不再计入完成判断": "This record no longer counts toward completion",
   "外部 URL 已保留，但 GoalBoard 不会发起网络请求或保证长期可用性": "The external URL is retained, but GoalBoard does not make a network request or guarantee long-term availability.",
   "不透明或外部 locator 已保留为 UNVERIFIED；GoalBoard 不会调用自定义协议": "The opaque or external locator is retained as UNVERIFIED; GoalBoard does not invoke custom protocols.",
+  "机器本地 locator 已按原样保留为 UNVERIFIED；GoalBoard 不会读取或确认文件存在；调用方提供的 digest 未核验；如需 verified，请从该仓库的受控 workspace 重新提交项目内 locator，或同时提交可读的 sidecar summary。": "The machine-local locator is retained as UNVERIFIED. GoalBoard does not read the file or confirm that it exists; the caller-supplied digest is not verified. For verified Evidence, resubmit a project locator from that repository's controlled workspace or add a readable sidecar summary.",
   "当前入口没有可用的项目目录，项目内 locator 尚未验证": "No project directory is available in this entry, so the project locator remains unverified.",
   "项目内 Markdown 文件与 anchor 已完成只读预检": "The project Markdown file and anchor passed a read-only preflight.",
   "项目内文本文件已完成只读预检": "The project text file passed a read-only preflight.",

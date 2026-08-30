@@ -3285,6 +3285,36 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   store.close();
 });
 
+test("a file URI outside the current workspace is registered without reading the local file", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "external-local-evidence");
+
+  const submitted = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "external-local-evidence",
+    actor_id: "runtime-a",
+    criterion_ids: ["external-local-evidence-criterion"],
+    kind: "artifact",
+    locator: "file:///private/goalboard-casebook/not-present-in-test.md",
+    digest: "sha256:consumer-supplied-external-local-digest",
+    result: "inconclusive",
+    locator_context: {
+      project_root: "/current/runtime/workspace",
+      workspace_id: "current-runtime-workspace",
+    },
+    idempotency_key: "external-local-file-uri",
+  }).evidence;
+
+  assert.equal(submitted.locator, "file:///private/goalboard-casebook/not-present-in-test.md");
+  assert.equal(submitted.locator_status, "unverified");
+  assert.equal(submitted.locator_workspace_id, null);
+  assert.equal(submitted.digest, "sha256:consumer-supplied-external-local-digest");
+  assert.match(submitted.locator_validation_reason, /机器本地 locator/);
+  assert.match(submitted.locator_validation_reason, /不会读取或确认文件存在/);
+  assert.match(submitted.locator_validation_reason, /digest.*未核验/);
+  store.close();
+});
+
 test("Runtime can submit a Candidate Goal but only a user can decide it", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "current-goal");

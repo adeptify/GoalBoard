@@ -258,6 +258,8 @@ describe("mcp server", () => {
     assert.match(evidenceLocator?.description ?? "", /repo:docs\/review\.md#checks/);
     assert.match(evidenceLocator?.description ?? "", /project:\/\/docs\/review\.md#checks/);
     assert.match(evidenceLocator?.description ?? "", /当前 canonical workspace 内的绝对路径/);
+    assert.match(evidenceLocator?.description ?? "", /file:\/\/\/.*UNVERIFIED/);
+    assert.match(evidenceLocator?.description ?? "", /不会读取.*digest.*未核验/);
     const proposalTool = listedTools.find(
       (tool) => tool.name === "goalboard_v1_contract_propose",
     );
