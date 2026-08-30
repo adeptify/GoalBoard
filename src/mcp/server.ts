@@ -1229,7 +1229,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_check",
     description:
-      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；原生 Goal Tree Proposal 和 legacy Contract Proposal 均可使用，后者可传原始 raw ID 或读取结果中的映射 ID。某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。",
+      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；原生 Goal Tree Proposal 和 legacy Contract Proposal 均可使用，后者可传原始 raw ID 或读取结果中的映射 ID。某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。已接受 Goal 的 Contract 变化需要 replacement 时，冲突会返回可复用的 successor_outline 与逐条 relation_migration_candidates；消费者必须复核后再形成新提案，不能自动迁移。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1260,6 +1260,7 @@ const V1_TOOLS: McpToolDefinition[] = [
             conversation_ref: V1_STRING,
             message_ref: V1_STRING,
             whole_confirmation_prompted: { type: "boolean" },
+            prompted_proposal_id: V1_STRING,
           },
           required: ["actor_id", "actor_kind", "authority_source", "conversation_ref", "message_ref"],
         },
@@ -1481,7 +1482,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_run_report",
-    "报告 Run 阻塞或终态。",
+    "报告 Run 阻塞或终态。completed 不会自动释放 Claim，因为同一执行者仍可补齐 Evidence；成功响应会返回 handoff，明确 goalboard_v1_release、claim_id、建议理由，以及释放后重新读取 Available 的动作。",
     {
       run_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1903,7 +1904,7 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
     };
     inputProperties.whole_confirmation_prompted = {
       type: "boolean",
-      description: "上一问是否明确要求用户确认当前唯一整份提案；仅用于 confirm_all_pending。",
+      description: "上一问是否明确要求用户确认本次 proposal_id 指向的整份提案；仅用于 confirm_all_pending。其他无关 pending Proposal 不影响这次精确确认。",
     };
     const required = clone.inputSchema.required as string[];
     clone.inputSchema.required = required
@@ -1913,7 +1914,7 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
         ["user_confirmed", "confirmation_summary"],
       );
     clone.description =
-      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，任一冲突都会保持整份提案未写入，逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
+      "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，并要求上一问明确点名本次 proposal_id，其他无关 pending Proposal 不制造歧义。逐项 decisions 才允许独立安全条目分别落地。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
@@ -2624,6 +2625,8 @@ export class GoalBoardServer {
                 work_context_id: workContextId,
                 session_id_source: callContext.sessionIdSource,
                 confirmation_summary: confirmationSummary,
+                proposal_id: String(arguments_.proposal_id),
+                whole_confirmation_prompted: arguments_.whole_confirmation_prompted === true,
                 idempotency_key: String(arguments_.idempotency_key),
               }))
               .digest("hex")
@@ -2639,6 +2642,9 @@ export class GoalBoardServer {
                 conversation_ref: conversationRef,
                 message_ref: `runtime-attestation:${attestationDigest}`,
                 whole_confirmation_prompted: arguments_.whole_confirmation_prompted === true,
+                prompted_proposal_id: arguments_.whole_confirmation_prompted === true
+                  ? String(arguments_.proposal_id)
+                  : undefined,
               },
               decisions: arguments_.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"],
               reason: arguments_.reason == null ? confirmationSummary : String(arguments_.reason),

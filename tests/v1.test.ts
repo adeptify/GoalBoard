@@ -2172,6 +2172,99 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
   store.close();
 });
 
+test("a completed Run keeps its Claim until Evidence is ready and exposes the exact release handoff", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "completed-run-handoff", 12);
+  const selected = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "completed-run-handoff",
+    actor_id: "runtime-completed-run-handoff",
+    role: "executor",
+    idempotency_key: "completed-run-handoff-select",
+  });
+
+  const reported = coordinator.reportRun({
+    board_id: "board-1",
+    run_id: selected.run!.run_id,
+    actor_id: "runtime-completed-run-handoff",
+    state: "completed",
+    idempotency_key: "completed-run-handoff-report",
+  });
+  assert.deepEqual(reported.handoff, {
+    action: "release_claim",
+    tool: "goalboard_v1_release",
+    goal_id: "completed-run-handoff",
+    run_id: selected.run!.run_id,
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-completed-run-handoff",
+    release_reason_suggestion: "本阶段结果与记录已提交，释放当前工作进入下一步",
+    after_release: {
+      action: "read_available",
+      tool: "goalboard_v1_available",
+      read_requires_user_confirmation: false,
+      continuation_scope: "current_user_authority",
+    },
+  });
+  assert.equal(store.snapshot("board-1").claims.find((item) => item.claim_id === selected.claim!.claim_id)?.state, "active");
+
+  const evidence = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "completed-run-handoff",
+    actor_id: "runtime-completed-run-handoff",
+    run_id: selected.run!.run_id,
+    criterion_ids: ["completed-run-handoff-criterion"],
+    kind: "test",
+    locator: "command://completed-run-handoff-test",
+    result: "passed",
+    idempotency_key: "completed-run-handoff-evidence",
+  }).evidence;
+  assert.equal(evidence.run_id, selected.run!.run_id);
+
+  const contractState = coordinator.getGoalWorkState({
+    board_id: "board-1",
+    goal_id: "completed-run-handoff",
+  });
+  assert.equal(contractState.work_state, "review_blocked");
+  assert.deepEqual(contractState.reasons[0]?.facts, reported.handoff);
+  assert.match(contractState.reasons[0]?.remediation ?? "", /goalboard_v1_release/);
+
+  const beforeRelease = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-completed-run-handoff",
+  });
+  assert.equal(
+    beforeRelease.available.some(
+      (item) => item.goal.goal_id === "completed-run-handoff" && item.role === "self_verifier",
+    ),
+    false,
+  );
+  const handoffOverview = beforeRelease.blocked_overview.find(
+    (item) => item.goal.goal_id === "completed-run-handoff",
+  );
+  assert.equal(handoffOverview?.next_action, "release");
+  assert.deepEqual(handoffOverview?.reasons[0]?.facts, reported.handoff);
+  assert.match(handoffOverview?.reasons[0]?.remediation ?? "", /释放当前 Claim/);
+
+  coordinator.releaseClaim({
+    board_id: "board-1",
+    claim_id: selected.claim!.claim_id,
+    actor_id: "runtime-completed-run-handoff",
+    reason: reported.handoff!.release_reason_suggestion,
+    idempotency_key: "completed-run-handoff-release",
+  });
+  const afterRelease = coordinator.queryAvailable({
+    board_id: "board-1",
+    actor_id: "runtime-independent-reviewer",
+  });
+  assert.equal(
+    afterRelease.available.some(
+      (item) => item.goal.goal_id === "completed-run-handoff" && item.role === "self_verifier",
+    ),
+    true,
+  );
+  store.close();
+});
+
 test("Contract presents an expired Claim and its Run as one recoverable lifecycle", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-contract");
@@ -7386,15 +7479,33 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
         board_id: "board-1",
         proposal_id: confirmationB.proposal_id,
         runtime_actor_id: "runtime-clarifier",
-        authority: { ...authority, whole_confirmation_prompted: true },
+        authority: {
+          ...authority,
+          whole_confirmation_prompted: true,
+          prompted_proposal_id: confirmationA.proposal_id,
+        },
         reason: "确认。",
         confirm_all_pending: true,
         idempotency_key: "decision-short-ambiguous",
       }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.whole_confirmation_ambiguous",
   );
+  const exactWholeConfirmation = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: confirmationB.proposal_id,
+    runtime_actor_id: "runtime-clarifier",
+    authority: {
+      ...authority,
+      whole_confirmation_prompted: true,
+      prompted_proposal_id: confirmationB.proposal_id,
+    },
+    reason: "用户确认唯一点名的第二份整份提案。",
+    confirm_all_pending: true,
+    idempotency_key: "decision-short-exact-proposal",
+  });
   assert.equal(store.getGoal("ambiguity-a-goal"), null);
-  assert.equal(store.getGoal("ambiguity-b-goal"), null);
+  assert.ok(store.getGoal("ambiguity-b-goal"));
+  assert.deepEqual(exactWholeConfirmation.applied_item_ids, ["ambiguity-b"]);
   store.close();
 });
 
@@ -7485,6 +7596,7 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
         conversation_ref: "conversation://atomic-confirm",
         message_ref: "message://atomic-confirm",
         whole_confirmation_prompted: true,
+        prompted_proposal_id: decidedFixture.proposal.proposal_id,
       },
       reason: "确认整份提案。",
       confirm_all_pending: true,
@@ -7536,6 +7648,7 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
         conversation_ref: "conversation://atomic-confirm-partial",
         message_ref: "message://atomic-confirm-partial-whole",
         whole_confirmation_prompted: true,
+        prompted_proposal_id: partialFixture.proposal.proposal_id,
       },
       reason: "再确认剩余内容。",
       confirm_all_pending: true,
@@ -7546,6 +7659,130 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
       error.code === "goal_tree_proposal.whole_confirmation_requires_pristine_proposal",
   );
   partialFixture.store.close();
+});
+
+test("accepted leaf Contract changes return an accurate successor migration outline", () => {
+  const { store, coordinator } = fixture();
+  createAcceptedCompoundParent(coordinator, "accepted-leaf-parent");
+  createLeaf(coordinator, "accepted-leaf-revision", 8);
+  createLeaf(coordinator, "accepted-leaf-provider", 7);
+  const partOf = coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "accepted-leaf-revision",
+      to_goal_id: "accepted-leaf-parent",
+      type: "part_of",
+      reason: "叶子属于现有父 Goal",
+    },
+    { actor_id: "user-1", idempotency_key: "accepted-leaf-part-of" },
+  );
+  const dependsOn = coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "accepted-leaf-revision",
+      to_goal_id: "accepted-leaf-provider",
+      type: "depends_on",
+      reason: "叶子消费 provider 输出",
+    },
+    { actor_id: "user-1", idempotency_key: "accepted-leaf-depends-on" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-leaf-revision",
+    rough_idea: "用户纠正已接受叶子 Goal 的业务边界。",
+    goal_id: "accepted-leaf-revision-context",
+    idempotency_key: "accepted-leaf-revision-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-leaf-revision",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "accepted-leaf-revision-context",
+    summary: "尝试原地改写已接受叶子 Goal。",
+    items: [goalTreeProposalItem({
+      item_id: "accepted-leaf-contract-update",
+      kind: "contract",
+      operation: "update",
+      payload: treeGoalPayload({
+        goal_id: "accepted-leaf-revision",
+        title: "用户纠偏后的叶子 Goal",
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+      }),
+      object_type: "goal",
+      object_id: "accepted-leaf-revision",
+    })],
+    idempotency_key: "accepted-leaf-revision-proposal",
+  }).proposal;
+  const snapshotBefore = store.snapshot("board-1");
+
+  const checked = coordinator.checkGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-leaf-revision",
+    idempotency_key: "accepted-leaf-revision-check",
+  });
+  const conflict = checked.proposal.items[0]?.conflict;
+  assert.equal(conflict?.code, "goal.accepted_contract_immutable");
+  assert.match(String(conflict?.message), /已接受的叶子 Goal/);
+  assert.doesNotMatch(String(conflict?.message), /父 Goal/);
+  assert.deepEqual(conflict?.current_goal, {
+    goal_id: "accepted-leaf-revision",
+    title: "完成 accepted-leaf-revision",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+    fulfillment_state: "unmet",
+  });
+  assert.deepEqual(conflict?.successor_outline, {
+    source_item_id: "accepted-leaf-contract-update",
+    create_goal: {
+      operation: "create",
+      contract_source: "当前冲突条目的 proposed Goal",
+      requires_new_goal_id: true,
+      requires_new_criterion_ids: true,
+    },
+    replaces_relation: {
+      from_goal_id: "<replacement_goal_id>",
+      to_goal_id: "accepted-leaf-revision",
+      type: "replaces",
+    },
+  });
+  assert.deepEqual(conflict?.relation_migration_candidates, [
+    {
+      relation_id: dependsOn.relation_id,
+      from_goal_id: "accepted-leaf-revision",
+      to_goal_id: "accepted-leaf-provider",
+      type: "depends_on",
+      reason: "叶子消费 provider 输出",
+      replacement_relation: {
+        from_goal_id: "<replacement_goal_id>",
+        to_goal_id: "accepted-leaf-provider",
+        type: "depends_on",
+        reason: "叶子消费 provider 输出",
+      },
+      deactivate_original_after_confirmation: true,
+      requires_review: true,
+    },
+    {
+      relation_id: partOf.relation_id,
+      from_goal_id: "accepted-leaf-revision",
+      to_goal_id: "accepted-leaf-parent",
+      type: "part_of",
+      reason: "叶子属于现有父 Goal",
+      replacement_relation: {
+        from_goal_id: "<replacement_goal_id>",
+        to_goal_id: "accepted-leaf-parent",
+        type: "part_of",
+        reason: "叶子属于现有父 Goal",
+      },
+      deactivate_original_after_confirmation: true,
+      requires_review: true,
+    },
+  ]);
+  const snapshotAfter = store.snapshot("board-1");
+  assert.equal(snapshotAfter.goals.length, snapshotBefore.goals.length);
+  assert.equal(snapshotAfter.relations.length, snapshotBefore.relations.length);
+  store.close();
 });
 
 test("Goal Tree preflight reports acceptance criterion ID collisions before confirmation", () => {
@@ -11600,12 +11837,8 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     goal_id: "review-phase",
   });
   assert.equal(reviewHandoff.work_state, "review_blocked");
-  assert.match(reviewHandoff.reasons[0]?.message ?? "", /结果已提交，正在进入检查/);
-  assert.match(reviewHandoff.reasons[0]?.remediation ?? "", /无需重新提交/);
-  assert.doesNotMatch(
-    `${reviewHandoff.reasons[0]?.message} ${reviewHandoff.reasons[0]?.remediation}`,
-    /Claim|Run|Runtime/,
-  );
+  assert.match(reviewHandoff.reasons[0]?.message ?? "", /释放当前 Claim 后进入检查/);
+  assert.match(reviewHandoff.reasons[0]?.remediation ?? "", /goalboard_v1_release.*Available.*self_verifier/);
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: reviewExecution.claim!.claim_id,

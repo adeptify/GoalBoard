@@ -60,17 +60,21 @@ A parent whose current children are complete is not silently done. If they cover
 - A required human approval cannot be replaced by a Runtime review.
 - During execution, a repeated project-wide rule may be proposed as project guidance, but it is not part of Goal completion and must follow the protocol's exact-text user confirmation flow. Do not interrupt work for one-off implementation detail or save it automatically.
 
-Normal completion order:
+Normal executor-to-review order:
 
 ```text
 run_report(state=completed | blocked | failed)
   → evidence_submit mapped to acceptance criterion IDs
   → evidence_correct when an immutable Evidence record must be superseded or retracted
+  → release the executor Claim using the completed Run's returned handoff
+  → available → select the pending independent reviewer
   → rework_request only when later counter-evidence invalidates an earlier completion premise
   → review_submit for each Runtime-permitted required review
+  → run_report(state=completed) and release the reviewer Claim
   → complete
-  → release
 ```
+
+`run_report(state=completed)` deliberately does not auto-release: the current writer may still need to attach Evidence or correct the execution record, and a reviewer must not race that final write window. The completed response, Contract `work.handoff_pending` reason, and Available `blocked_overview` all identify `goalboard_v1_release`, the exact `claim_id`, and the subsequent `goalboard_v1_available` read. Do not wait for an automatic handoff and do not start a reviewer while the executor Claim remains active.
 
 ## Close every Run with a cycle handoff
 

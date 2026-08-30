@@ -289,7 +289,7 @@ Before asking for a decision, explain:
 - material Risks, Policy changes, and unresolved assumptions;
 - the work state each affected Goal will have after confirmation.
 
-End with one unambiguous choice: confirm the whole named Proposal, reject it, or revise named items. Call `goalboard_v1_goal_tree_decide` with `user_confirmed=true` only after the user's explicit current-conversation answer and record a faithful `confirmation_summary`. A vague “可以” is whole confirmation only when the immediately preceding message made that one complete Proposal the sole decision and set `whole_confirmation_prompted=true`.
+End with one unambiguous choice: confirm the whole named Proposal, reject it, or revise named items. Call `goalboard_v1_goal_tree_decide` with `user_confirmed=true` only after the user's explicit current-conversation answer and record a faithful `confirmation_summary`. A short “可以” is whole confirmation only when the immediately preceding message explicitly named the same complete `proposal_id` as the decision and set `whole_confirmation_prompted=true`; unrelated pending Proposals elsewhere on the Board do not make that exact prompt ambiguous.
 
 Nothing in a Proposal is canonical before the decision. Re-read affected state afterward and run `goalboard_v1_planning_graph_check` after confirmed graph changes.
 
@@ -304,4 +304,4 @@ When the user adds or changes a requirement:
 5. rerun the planning loop for affected themes and dependencies;
 6. propose only changed Contracts and Relations.
 
-Impact analysis is not permission to rewrite the tree automatically. If a changed requirement creates a new independently valuable result, propose it; if it only changes an existing owner, update that Goal instead of creating a duplicate.
+Impact analysis is not permission to rewrite the tree automatically. If a changed requirement creates a new independently valuable result, propose it. If it only changes an existing Draft owner, update that Goal instead of creating a duplicate. An accepted Goal keeps its original Contract immutable even while it is unmet: submit the intended update to `goal_tree_check`, then use the returned `successor_outline` and `relation_migration_candidates` to prepare one replacement Proposal with new Goal and criterion IDs, a `replaces` relation, and reviewed relation migrations. Do not guess or silently migrate relations, and do not treat the outline as user confirmation or canonical state.

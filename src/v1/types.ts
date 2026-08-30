@@ -630,6 +630,7 @@ export interface GoalTreeProposalDecisionAuthority {
   conversation_ref: string;
   message_ref: string;
   whole_confirmation_prompted?: boolean;
+  prompted_proposal_id?: string;
 }
 
 export interface GoalTreeProposalDecisionRecord {
@@ -892,8 +893,8 @@ export interface BlockedAvailableOverview {
     | "review_blocked"
     | "revalidation_blocked"
     | "invalidated";
-  next_action: "explain";
-  reasons: Array<Pick<DecisionReason, "code" | "message">>;
+  next_action: "explain" | "release";
+  reasons: Array<Pick<DecisionReason, "code" | "message" | "facts" | "remediation">>;
   priority_hint: number;
 }
 

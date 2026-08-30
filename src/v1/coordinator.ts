@@ -131,12 +131,43 @@ export interface ClaimReleaseResult {
   handoff: ClaimReleaseHandoff;
 }
 
+export interface RunCompletionHandoff {
+  action: "release_claim";
+  tool: "goalboard_v1_release";
+  goal_id: string;
+  run_id: string;
+  claim_id: string;
+  actor_id: string;
+  release_reason_suggestion: string;
+  after_release: ClaimReleaseHandoff;
+}
+
+export interface RunReportResult {
+  run: RunRecord;
+  replayed: boolean;
+  observed_event_cursor: number;
+  handoff?: RunCompletionHandoff;
+}
+
 const CLAIM_RELEASE_HANDOFF: ClaimReleaseHandoff = Object.freeze({
   action: "read_available",
   tool: "goalboard_v1_available",
   read_requires_user_confirmation: false,
   continuation_scope: "current_user_authority",
 });
+
+function runCompletionHandoff(run: RunRecord): RunCompletionHandoff {
+  return {
+    action: "release_claim",
+    tool: "goalboard_v1_release",
+    goal_id: run.goal_id,
+    run_id: run.run_id,
+    claim_id: run.claim_id,
+    actor_id: run.actor_id,
+    release_reason_suggestion: "本阶段结果与记录已提交，释放当前工作进入下一步",
+    after_release: CLAIM_RELEASE_HANDOFF,
+  };
+}
 
 export class GoalBoardV1Error extends Error {
   constructor(
@@ -838,6 +869,13 @@ function normalizeGoalTreeProposalDecisionAuthority(
       "Goal Tree 决定需要确认消息引用",
     ),
     whole_confirmation_prompted: authority.whole_confirmation_prompted === true,
+    prompted_proposal_id: authority.prompted_proposal_id == null
+      ? undefined
+      : requiredDialogueText(
+        authority.prompted_proposal_id,
+        "goal_tree_proposal.prompted_proposal_id_required",
+        "整份确认需要记录上一问明确指向的 Proposal ID",
+      ),
   };
 }
 
@@ -3130,11 +3168,15 @@ export class GoalBoardCoordinator {
         workState.work_state === "revalidation_blocked" ||
         workState.work_state === "invalidated"
       ) {
+        const handoffPending = workState.reasons.some((item) => item.code === "work.handoff_pending");
         blockedOverview.push({
           goal,
           work_state: workState.work_state,
-          next_action: "explain",
-          reasons: workState.reasons.map(({ code, message }) => ({ code, message })),
+          next_action: handoffPending ? "release" : "explain",
+          reasons: workState.reasons.map(({ code, message, facts, remediation }) =>
+            code === "work.handoff_pending"
+              ? { code, message, facts, remediation }
+              : { code, message }),
           priority_hint: goal.priority,
         });
       }
@@ -4426,21 +4468,20 @@ export class GoalBoardCoordinator {
             },
           );
         }
-        const activeProposals = this.store
-          .snapshot(input.board_id)
-          .goal_tree_proposals.filter(
-            (candidate) =>
-              (candidate.state === "pending" || candidate.state === "partially_applied") &&
-              candidate.items.some((item) => item.state === "pending"),
-          );
         if (
           authority.whole_confirmation_prompted !== true ||
           (authority.authority_source === "runtime_dialogue" &&
-            (activeProposals.length !== 1 || activeProposals[0]?.proposal_id !== proposal.proposal_id))
+            authority.prompted_proposal_id !== proposal.proposal_id)
         ) {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.whole_confirmation_ambiguous",
-            "简短确认只有在上一问明确请求确认唯一整份提案时才能生效；请说明要确认哪些条目",
+            "简短确认只有在上一问明确点名这一整份提案时才能生效；请绑定准确的 Proposal ID，或逐项说明决定",
+            {
+              proposal_id: proposal.proposal_id,
+              whole_confirmation_prompted: authority.whole_confirmation_prompted === true,
+              prompted_proposal_id: authority.prompted_proposal_id ?? null,
+              next_action: "bind_confirmation_to_exact_proposal_or_decide_items",
+            },
           );
         }
         const existingConflict = proposal.items.find((item) => item.state === "conflict");
@@ -4776,6 +4817,8 @@ export class GoalBoardCoordinator {
           authority_source: authority.authority_source,
           conversation_ref: authority.conversation_ref,
           message_ref: authority.message_ref,
+          whole_confirmation_prompted: authority.whole_confirmation_prompted === true,
+          prompted_proposal_id: authority.prompted_proposal_id ?? null,
           applied_item_ids: appliedItemIds,
           rejected_item_ids: rejectedItemIds,
           revised_item_ids: revisedItemIds,
@@ -4837,10 +4880,20 @@ export class GoalBoardCoordinator {
           "整份确认不能同时携带逐项决定；请二选一",
         );
       }
-      if (authority.whole_confirmation_prompted !== true) {
+      if (
+        authority.whole_confirmation_prompted !== true ||
+        (authority.authority_source === "runtime_dialogue" &&
+          authority.prompted_proposal_id !== proposalId)
+      ) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.whole_confirmation_ambiguous",
-          "简短确认只有在上一问明确请求确认这一份历史提案时才能生效",
+          "简短确认只有在上一问明确点名这一份历史提案时才能生效",
+          {
+            proposal_id: proposalId,
+            whole_confirmation_prompted: authority.whole_confirmation_prompted === true,
+            prompted_proposal_id: authority.prompted_proposal_id ?? null,
+            next_action: "bind_confirmation_to_exact_proposal_or_decide_item",
+          },
         );
       }
       decisions = [{
@@ -5998,16 +6051,22 @@ export class GoalBoardCoordinator {
     output_refs?: string[];
     discovery_refs?: string[];
     idempotency_key: string;
-  }): { run: RunRecord; replayed: boolean; observed_event_cursor: number } {
+  }): RunReportResult {
     const hash = requestHash(input);
-    const replay = this.replay<{ run: RunRecord; observed_event_cursor: number }>(
+    const replay = this.replay<Omit<RunReportResult, "replayed">>(
       input.board_id,
       input.actor_id,
       "report_run",
       input.idempotency_key,
       hash,
     );
-    if (replay) return { ...replay, replayed: true };
+    if (replay) {
+      return {
+        ...replay,
+        ...(replay.run.state === "completed" ? { handoff: runCompletionHandoff(replay.run) } : {}),
+        replayed: true,
+      };
+    }
     const leaseRecovery = this.store.immediate(() => {
       const row = this.store.db
         .prepare(`
@@ -6053,14 +6112,20 @@ export class GoalBoardCoordinator {
       );
     }
     return this.store.immediate(() => {
-      const replay = this.replay<{ run: RunRecord; observed_event_cursor: number }>(
+      const replay = this.replay<Omit<RunReportResult, "replayed">>(
         input.board_id,
         input.actor_id,
         "report_run",
         input.idempotency_key,
         hash,
       );
-      if (replay) return { ...replay, replayed: true };
+      if (replay) {
+        return {
+          ...replay,
+          ...(replay.run.state === "completed" ? { handoff: runCompletionHandoff(replay.run) } : {}),
+          replayed: true,
+        };
+      }
       const row = this.store.db
         .prepare("SELECT * FROM runs WHERE run_id = ? AND board_id = ?")
         .get(input.run_id, input.board_id) as Row | undefined;
@@ -6136,8 +6201,12 @@ export class GoalBoardCoordinator {
             ? this.store.eventCursor(input.board_id)
             : cursor,
       };
-      this.remember(input.board_id, input.actor_id, "report_run", input.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
+      const reportOutcome = {
+        ...outcome,
+        ...(outcome.run.state === "completed" ? { handoff: runCompletionHandoff(outcome.run) } : {}),
+      };
+      this.remember(input.board_id, input.actor_id, "report_run", input.idempotency_key, hash, reportOutcome, now);
+      return { ...reportOutcome, replayed: false };
     });
   }
 
@@ -8526,6 +8595,8 @@ export class GoalBoardCoordinator {
         authority_source: input.authority.authority_source,
         conversation_ref: input.authority.conversation_ref,
         message_ref: input.authority.message_ref,
+        whole_confirmation_prompted: input.authority.whole_confirmation_prompted === true,
+        prompted_proposal_id: input.authority.prompted_proposal_id ?? null,
         runtime_actor_id: input.runtime_actor_id,
         materialized_objects: input.materialized_objects,
         revision_proposal_id: input.revision_proposal_id,
@@ -8933,17 +9004,81 @@ export class GoalBoardCoordinator {
     goalId: string,
   ): Record<string, unknown> | null {
     const objects = [{ object_type: "goal", object_id: goalId }];
+    const relationMigrationCandidates = this.store.snapshot(boardId).relations
+      .filter(
+        (relation) =>
+          relation.state === "active" &&
+          (relation.from_goal_id === goalId || relation.to_goal_id === goalId),
+      )
+      .sort(
+        (left, right) =>
+          left.type.localeCompare(right.type) ||
+          left.from_goal_id.localeCompare(right.from_goal_id) ||
+          left.to_goal_id.localeCompare(right.to_goal_id) ||
+          left.relation_id.localeCompare(right.relation_id),
+      )
+      .map((relation) => ({
+        relation_id: relation.relation_id,
+        from_goal_id: relation.from_goal_id,
+        to_goal_id: relation.to_goal_id,
+        type: relation.type,
+        reason: relation.reason,
+        replacement_relation: {
+          from_goal_id: relation.from_goal_id === goalId ? "<replacement_goal_id>" : relation.from_goal_id,
+          to_goal_id: relation.to_goal_id === goalId ? "<replacement_goal_id>" : relation.to_goal_id,
+          type: relation.type,
+          reason: relation.reason,
+        },
+        deactivate_original_after_confirmation: true,
+        requires_review: true,
+      }));
     const replacement = {
       objects,
+      current_goal: {
+        goal_id: existing.goal_id,
+        title: existing.title,
+        definition_state: existing.definition_state,
+        decomposition_state: existing.decomposition_state,
+        fulfillment_state: existing.fulfillment_state,
+      },
       next_action: "create_replacement_goal",
       required_relation: "replaces",
       migrate_relations: true,
-      recovery: "创建 successor / replacement Goal 承载变更后的 Contract，以 replaces 关系关联旧 Goal，并在同一待确认提案中显式迁移受影响关系；不要原地重写已接受 Contract。当前 Goal Tree 尚未改变。",
+      successor_outline: {
+        source_item_id: item.item_id,
+        create_goal: {
+          operation: "create",
+          contract_source: "当前冲突条目的 proposed Goal",
+          requires_new_goal_id: true,
+          requires_new_criterion_ids: true,
+        },
+        replaces_relation: {
+          from_goal_id: "<replacement_goal_id>",
+          to_goal_id: goalId,
+          type: "replaces",
+        },
+      },
+      relation_migration_candidates: relationMigrationCandidates,
+      recovery: "使用 successor_outline 创建 replacement Goal，以 replaces 关系关联旧 Goal；逐项复核 relation_migration_candidates，在同一待确认提案中新增替代关系并停用原关系。不要原地重写已接受 Contract，当前 Goal Tree 尚未改变。",
     };
     if (item.operation !== "update" || goal.definition_state !== "accepted") {
       return {
         code: "goal.accepted_compound_closure_invalid",
-        message: "已接受父 Goal 的拆分收口只能保留 accepted 状态并更新已有 Goal",
+        message: "已接受 Goal 的受支持收口只能保留 accepted 状态并更新已有 Goal",
+        ...replacement,
+      };
+    }
+    if (existing.decomposition_state === "closed_leaf") {
+      return {
+        code: "goal.accepted_contract_immutable",
+        message: "已接受的叶子 Goal 不能原地改写业务 Contract；需求变化需要 successor / replacement Goal",
+        ...replacement,
+      };
+    }
+    if (existing.decomposition_state === "closed_compound") {
+      return {
+        code: "goal.accepted_contract_immutable",
+        message: "已接受且已收口的复合 Goal 不能原地改写业务 Contract；需求变化需要 successor / replacement Goal",
         ...replacement,
       };
     }
@@ -8953,7 +9088,7 @@ export class GoalBoardCoordinator {
     ) {
       return {
         code: "goal.accepted_compound_closure_invalid",
-        message: "已接受父 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound",
+        message: "已接受且尚未收口的复合 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound",
         ...replacement,
       };
     }
@@ -11330,7 +11465,7 @@ export class GoalBoardCoordinator {
     if (latestRun?.state === "completed") {
       const enteringReview = phase === "execution" && base.pending_review_roles.length > 0;
       const message = enteringReview
-        ? "结果已提交，正在进入检查"
+        ? "结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查"
         : phase === "review"
           ? "检查结果已提交，当前检查正在收尾"
           : phase === "clarification"
@@ -11338,9 +11473,10 @@ export class GoalBoardCoordinator {
             : phase === "revalidation"
               ? "重新核对的结果已提交，当前工作正在收尾"
               : "结果已提交，当前执行正在收尾";
+      const handoff = runCompletionHandoff(latestRun);
       const remediation = enteringReview
-        ? "无需重新提交；当前执行收尾后即可开始检查。"
-        : "无需重复操作；收尾完成后系统会继续判断下一步。";
+        ? "确认本轮 Evidence 已补齐后，调用 goalboard_v1_release 释放当前 Claim；随后重新读取 Available 获取 self_verifier。"
+        : "确认本阶段记录已补齐后，调用 goalboard_v1_release 释放当前 Claim；随后重新读取 Available 判断下一步。";
       return {
         ...base,
         work_state: enteringReview ? "review_blocked" : (`${phase}_blocked` as GoalWorkState),
@@ -11351,7 +11487,7 @@ export class GoalBoardCoordinator {
             "claim",
             claim.claim_id,
             message,
-            undefined,
+            { ...handoff },
             remediation,
           ),
         ],

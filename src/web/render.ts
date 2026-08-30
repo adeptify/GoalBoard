@@ -4003,7 +4003,13 @@ function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
   const decisions = countGoalDecisions(view, item.goal.goal_id);
   const decisionsFirst = decisions > 0 && goalDecisionsTakePriority(item, view);
   const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisionsFirst ? L("先完成等待你的决定") : explanation.nextAction);
-  const guidance = handoff?.remediation ?? (item.status === "clarification_decision_pending" ? explanation.howToContinue : decisionsFirst ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。") : explanation.howToContinue);
+  const guidance = handoff
+    ? explanation.howToContinue
+    : item.status === "clarification_decision_pending"
+      ? explanation.howToContinue
+      : decisionsFirst
+        ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。")
+        : explanation.howToContinue;
   return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
     <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2></header>
     <div class="goal-now-body"><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>

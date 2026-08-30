@@ -58,17 +58,23 @@
 | GB-20260830-21 | 大型项目内 Evidence 因不可全文打开而无法登记 | GoalBoard Evidence 预检与登记耦合缺陷 | 已确认 | 已修复 | 大文件 locator+digest 登记、preview_unavailable 与修复建议通过；0.1.7 已安装 | P1 |
 | GB-20260830-22 | Legacy Proposal 可统一读取但 read/check/decide handle 不可组合 | GoalBoard 兼容视图与提案 API 不可组合 | 已确认 | 已修复 | Rewire/Contract raw 与 synthetic handle 的 read/check/decide 组合回归通过；0.1.7 已安装 | P0（解除 Arena 阻塞） |
 | GB-20260830-23 | Available 默认展开全部 Contract 导致输出截断 | GoalBoard MCP 默认读取粒度缺陷 | 已确认 | 已修复 | 最终安装 MCP schema 确认 summary 默认，full 显式展开；Owner 协议验收通过 | P1 |
-| GB-20260830-24 | 对话已完成人工验收，Inbox 仍要求重复填写且深链找不到表单 | GoalBoard 人工验收交接与 Decision 深链缺陷 | 已确认 | 已修复 | 最终安装 App 真实 G4A 深链、展开、预填、一次确认边界实操通过；未替用户提交 | P0 |
+| GB-20260830-24 | 对话已完成人工验收，Inbox 仍要求重复填写且深链找不到表单 | GoalBoard 人工验收交接与 Decision 深链缺陷 | 已确认 | 已修复（安装复验重开） | 源码旅程已通过；当前安装版仍无法消费对话验收并阻断新版子树，须用 0.1.9 新 Session 复验 | P0 |
 | GB-20260830-25 | 范围纠偏后历史 Run blocker 仍像当前有效阻塞 | GoalBoard 当前阻塞派生与历史展示缺陷 | 已确认 | 已修复 | blocker supersession/历史降级与当前真相展示工程、computer-use 实操通过 | P1 |
 | GB-20260830-26 | 大型 Proposal 预检漏掉不可变与唯一约束，决定后才部分失败 | GoalBoard Proposal 唯一约束与恢复诊断缺陷；原子性部分与 GB18 去重 | 已确认部分成立 | 已修复 | accepted/unique/原始数据库错误转换、replacement 指引和零写入恢复通过 | P1 |
 | GB-20260830-27 | 新反证出现后，完成门禁中的 unmet Goal 无法返回 executor 返工 | GoalBoard 生命周期恢复提示缺陷；原 claim-gate 归因不成立 | 已确认（修正归因） | 已修复 | 最终安装 Core 对真实 G2D 返回 rework_request 恢复；未修改 CGS 数据 | P0 |
 | GB-20260830-28 | Compaction 后续租只有 claim_id，无法从 context 得到正确 actor | GoalBoard 租约恢复错误契约设计债 | 已确认 | 已修复 | context/错误返回 owner 与 remediation，真实 MCP 恢复实操通过；0.1.7 已安装 | P2 |
 | GB-20260830-29 | Draft 每轮写入与恢复都返回完整历史，长对话输出被截断 | GoalBoard clarification 默认响应粒度缺陷 | 已确认 | 已修复 | 默认增量响应、显式 history 分页与 12 轮 MCP 实操通过；0.1.7 已安装 | P1 |
 | GB-20260830-30 | Contract Proposal 缺字段时抛出 undefined.trim 裸异常 | GoalBoard Contract schema 与运行时输入校验缺陷 | 已确认 | 已修复 | 完整 schema、字段路径、失败零写入与 Arena 成功恢复证据通过；0.1.7 已安装 | P0（解除 Arena 阻塞） |
-| GB-20260830-31 | replacement Goal 已生效，旧 Goal 仍进入 Ready | Goal replacement 生命周期与 Ready 过滤缺陷 | 已确认 | 已修复 | 真实 CGS 副本证明旧 Goal 不可领取；最终 App 保留历史并显示“已被替代” | P0 |
+| GB-20260830-31 | replacement Goal 已生效，旧 Goal 仍进入 Ready | Goal replacement 生命周期与 Ready 过滤缺陷 | 已确认 | 已修复（安装复验重开） | 源码安全副本已通过；当前安装版仍可领取旧 G2G，须用 0.1.9 新 Session 复验 | P0 |
 | GB-20260830-32 | leaf_readiness 非法枚举被误报为“没写判断”，无 clarification Run 也缺恢复动作 | Goal Tree 输入校验与恢复提示缺陷 | 已确认 | 已修复 | 最终安装 MCP schema 显示 `keep | split`，精确错误与 resume hint 回归通过 | P1 |
 | GB-20260830-33 | 单轮 Run 收口后只汇报过去，不交代或继续下一轮 | GoalBoard Skill + MCP handoff 可发现性设计债，消费者遗漏为直接触发 | 已确认（修正归因） | 已修复（本地待发布） | Release handoff、Skill 连续推进协议与 MCP 实操通过；最终安装和新 Session 消费行为待发布后验收 | P1 |
 | GB-20260830-34 | 跨仓库 Goal 的本地 Evidence 无法诚实落档 | Evidence locator 分类与恢复契约缺陷；多 workspace 验证属延后能力 | 已确认 | 已修复（本地待发布） | 328/328、真实 Casebook 路径与 computer-use 通过；最终安装和用户验收待发布 | P2 |
+| GB-20260830-35 | 依赖视图窄窗口顶部工作区标签文字互相重叠 | Web/Desktop 共用布局缺陷 | 已确认 | 已修复（本地待发布） | 当前源码的真实 Casebook Web/Desktop 实操通过；0.1.9 安装态待复验 | P1 |
+| GB-20260830-36 | Available 候选未提示请求产物与 Goal out_of_scope 冲突 | 消费顺序与范围可发现性设计债 | 已确认（修正归因） | 已修复（本地待发布） | Skill 强制 Available → Contract → Select，误领零写入协议回归通过；新 Session 待复验 | P1 |
+| GB-20260830-37 | 依赖阻塞的 accepted leaf 从 Available 完全消失 | Available 受阻入口可发现性缺陷 | 已确认 | 已修复（本地待发布） | `blocked_overview` 显示 Goal、依赖链和恢复动作；最终安装 MCP 待复验 | P1 |
+| GB-20260830-38 | accepted Goal 局部纠偏只返回抽象 successor 指令 | 错误归类与 successor 恢复信息缺陷；不可变设计本身成立 | 已确认（部分成立） | 已修复（本地待发布） | leaf/compound 文案、successor 骨架与逐关系迁移候选定向回归通过；0.1.9 实操待复验 | P1 |
+| GB-20260830-39 | 精确整份 Proposal 已获确认仍因 Board 其他待审项被拒绝 | whole-confirmation 授权绑定缺陷 | 已确认 | 已修复（本地待发布） | 精确 proposal attestation 与多 pending 隔离回归通过；0.1.9 新 Session 待复验 | P1 |
+| GB-20260830-40 | executor Run completed 后 Review 隐藏且“执行收尾”不说明要 release | Run→Review 交接动作可发现性缺陷；列表隐藏部分与 GB37 去重 | 已确认（部分新增） | 已修复（本地待发布） | completed 不自动 release；Run/Contract/Available/Skill 精确交接定向回归通过 | P1 |
 
 ---
 
@@ -1385,7 +1391,7 @@ Runtime 在 CGS 项目调用 `goalboard_v1_available` 选择下一项。项目�
 **来源**：CGS `cgs-g4a-platform-metric-semantics` 真人验收反馈
 **Bug 确认**：已确认，包含 GoalBoard Decision 深链可达性缺陷、Runtime Review 与人工验收标签混淆，以及同一对话真人验收交接缺口；不把 `human_verdict` Evidence 本身等同于 canonical human approval
 **修复决定**：来源任务已明确要求独立诊断、修复并验证；已授权处理
-**修复状态**：2026-08-30 最终收口：最终安装 App 从真实 G4A Goal 的“处理 1 项决定”进入后，hash 深链自动展开并定位；结论、对话原话/来源、理由和匹配 Evidence 预填，用户最多一次确认。Runtime 复核与真人验收主体分离。Owner 产品实操通过；未点击提交，用户本人验收仍 pending。
+**修复状态**：源码与安全副本修复已完成；2026-08-30 收到当前安装版真实复现后，撤回“最终安装态已验收”的结论并重开安装复验。当前安装版中 G4A 仍为 `waiting_for_human`，继续阻断 schema 与新版平台子 Goal。必须在 0.1.9 安装后用新 Session 复验对话验收交接；在此之前只可称源码产品旅程通过，不能称现场运行态已修复。
 
 ### 1. 真实场景
 
@@ -1430,7 +1436,7 @@ Runtime 在 CGS 项目调用 `goalboard_v1_available` 选择下一项。项目�
 
 - **工程验证**：通过（源码）。TypeScript 通过，Web 全量 46/46。回归覆盖合格 `human_verdict` 的通过/理由/Evidence 预填、普通 Evidence 不误选、Evidence 撤回后不再预填、深链展开，以及既有 user-only Review 权限、必填理由和审计路径。提交后的硬刷新用 session receipt 保留成功反馈，避免已满足的表单继续停在页面诱导二次提交。
 - **产品实操**：通过（真实 CGS 数据安全副本，源码服务）。提交前数据库为 obligation `pending` 且 human Review 数 0；Safari 通过 computer use 打开 G4A 深链后，目标卡自动展开，结论为“通过”，只选中 `conversation://current-cgs-request`，原话已预填。一次点击后 obligation=`satisfied`，新 Review 为 `actor_id=web-user / verdict=pass`，只引用该 Evidence；页面待办数 13→12、结果确认 1→0，原卡消失，最近结果显示“结果确认 / 已通过”。证据截图：`docs/qa/bug-revalidation/2026-08-30/gb24-deep-link-prefilled.png`、`gb24-after-one-confirm.png`。
-- **Owner 最终验收**：通过。最终安装 App 真实 G4A 深链、展开、预填与主体区分通过；用户本人尚未提交，措辞和信息密度的主观验收仍为 `UNVERIFIED`。
+- **Owner 最终验收**：源码安全副本通过，安装态复验重开。2026-08-30 当前安装版仍无法消费既有对话验收，G4A 门禁继续阻断 schema 与平台子 Goal；0.1.9 新 Session 复验前不得恢复“最终安装 App 已通过”结论。用户本人尚未提交，措辞和信息密度的主观验收仍为 `UNVERIFIED`。
 
 ---
 
@@ -1767,7 +1773,7 @@ Contract Proposal 要求完整 Draft Contract、字段来源与 Review Policy，
 **来源**：CGS AI KOL 研究消费者反馈
 **Bug 确认**：已确认是 GoalBoard Ready/Available/select 没有消费 canonical active `replaces` 关系的派生生命周期缺陷，不是 CGS 提案漏退役
 **修复决定**：已修复；保留旧 Goal 全部历史，用 active `new → replaces → old` 关系派生 `work_state=replaced`，禁止新领取并提供替代 Goal 与撤销关系的恢复说明
-**修复状态**：2026-08-30 最终收口：active `replaces` 统一派生 replaced；真实 CGS 副本中旧 G2G 不再进入 Ready/Available，select 零新增；最终 App 保留旧 Contract 并显示“已被替代”及 V2 指向。Owner 最终验收通过。
+**修复状态**：源码与真实 CGS 安全副本修复已完成；2026-08-30 收到当前安装版真实复现后，撤回“最终安装态已验收”的结论并重开安装复验。当前安装版 `available` 仍返回旧 `cgs-g2g-ai-kol-quality-roster`，且 `select` 确实能创建 Claim/Run；消费者读到 active V2 `replaces` 后已立即 release，未写 Evidence。必须在 0.1.9 安装后的新 Session 复验旧 Goal 不可见且不可领取。
 
 ### 1. 真实场景
 
@@ -1812,7 +1818,7 @@ GoalBoard 将 Relation 与 Goal 生命周期分离，初衷是保留历史、避
 
 - **工程验证**：通过（源码）。V1/MCP/Web/i18n 相关全量 178/178，TypeScript 通过。回归覆盖 replacement 生效前旧 Goal 可领取、生效后 Ready/Available 删除可执行入口、blocked/explain 精确指向替代 Goal、select 原子拒绝且不产生 Claim/Run、旧 Goal/关系历史保留，以及停用 relation 后旧 Goal 恢复 `execution_pending`。Web 回归覆盖 `replaced` 状态、新版仍可执行和旧 Contract 可读。
 - **产品实操**：通过（真实 CGS 数据安全副本，源码服务）。源码 Runtime 读回旧 Goal=`replaced`、V2=`waiting_children`；旧 Goal 不在 Ready/Available，select 返回 `goal.replaced`，前后 Claims/Runs 均为 0。Safari computer use 打开旧 G2G 后，顶栏显示“已被替代”，下一步是“转到替代 Goal 继续”，正文明确显示新版 `建立七个平台各 50+ 的高质量 AI KOL 详细基线名单` 和“旧 Contract/历史保留但不再允许 Runtime 领取”；关系页仍可打开替代 Goal并看到 12 条已解除历史关系。截图：`docs/qa/bug-revalidation/2026-08-30/gb31-replaced-goal-retired.png`、`gb31-replacement-relation.png`。
-- **Owner 最终验收**：通过。事实源、队列、拒绝路径、历史保留与可逆恢复一致；最终 App 已显示旧 Goal“已被替代”，用户主观视觉措辞仍为 `UNVERIFIED`。
+- **Owner 最终验收**：源码安全副本通过，安装态复验重开。2026-08-30 当前安装版仍会把旧 G2G 放入 Available 并允许创建 Claim/Run，证明之前的“最终 App 已通过”结论超过了现场证据；0.1.9 新 Session 必须同时验证 Available 过滤、直接 select 零写入和 Web 替代标识。历史截图只保留为源码旅程证据，不再代表当前安装态。
 
 ---
 
@@ -1985,7 +1991,7 @@ Runtime 当前 canonical workspace 是 GoalBoard 仓库，但 Goal `casebook-pri
 **来源**：GoalBoard Owner 在「GoalBoard 内部 Casebook」真实 Web 使用中的直接反馈与截图
 **Bug 确认**：已确认，GoalBoard 共享工作区标签栏的响应式布局缺陷；真实 Casebook 的 Web 与桌面 0.1.8 均稳定复现
 **修复决定**：已按 Owner 当前授权批准自主最小修复，P1；保留共享 UI 和横向滚动设计，只修标签 flex 收缩边界
-**修复状态**：本地最小实现、工程验证、真实 Casebook Web/桌面产品实操与 Owner 验收通过；已提交于 `7839567`，尚未打包、安装或发布，当前重新打开的官方 0.1.8 仍不包含修复
+**修复状态**：最小实现、工程验证、真实 Casebook Web/桌面产品实操与 Owner 验收通过；实际提交为 `a638d67`。修复已进入此前安装的本机 0.1.9，安装 App 复验通过；未推送或发布 GitHub Release
 
 ### 1. 真实场景
 
@@ -2029,8 +2035,8 @@ Runtime 当前 canonical workspace 是 GoalBoard 仓库，但 Goal `casebook-pri
 ### 10. 验收边界
 
 - **工程验证**：通过（本地源码）。TDD RED 先证明工作区样式只有滚动容器、标签仍可默认收缩且缺少可读宽度约束；最小修复为 `.desktop-work-tab` 增加 `flex: 0 0 clamp(132px, 16vw, 190px)`，既有标题省略与关闭列不变。回归已进入默认 `tests/web.test.ts`，相关测试、TypeScript、`git diff --check` 和完整 `pnpm test` 329/329 均通过。`tests/visual-foundation.test.ts` 有两条与本卡无关且在 HEAD 已存在的陈旧断言（颜色 token 与 workbench grid 列数）未被默认测试脚本收录，本卡没有顺手改写或把它们冒充通过。
-- **产品实操**：通过（真实 Casebook 数据、当前源码服务）。修复前分别用 Chrome Web 与安装版桌面 0.1.8 打开真实「GoalBoard 内部 Casebook」关系视图并保留 4 个长标题标签，两端都稳定复现相邻标题覆盖。修复后以同一项目、同一关系视图和同样 4 个标签复测：Web 与桌面壳层中每个标签均保持独立可读盒子，长标题只在本标签内省略，关闭按钮保留，不再串入相邻标签。桌面复测使用现有 App 壳层加载当前源码服务，不等于正式 0.1.8 App 已包含补丁；验收后临时服务已停止，受管 LaunchAgent 重新注册并恢复 `running / owned / health=ok`，桌面 App 已重新打开官方服务。
-- **Owner 最终验收**：通过（本地实现）。根因、最小 diff、Web/桌面真实像素结果和服务恢复均已独立检查；不扩展为标签系统重构。
+- **产品实操**：通过（真实 Casebook 数据）。修复前分别用 Chrome Web 与安装版桌面 0.1.8 打开真实「GoalBoard 内部 Casebook」关系视图并保留 4 个长标题标签，两端都稳定复现相邻标题覆盖。源码修复后以同一项目、同一关系视图和同样 4 个标签复测通过。2026-08-30 又用 computer use 直接打开 `/Applications/GoalBoard.app`，Info.plist 为 0.1.9，服务 launcher 也指向 `goalboard-0.1.9` 且 `/health` 正常；真实 Casebook 保留 5 个长标题标签并切到“可视化工作区”后，各标签仍有独立盒子，长标题只在自身范围内省略，关闭按钮与当前选中态清楚，没有再重叠。
+- **Owner 最终验收**：通过（含安装 App）。根因、最小 diff、Web/桌面真实像素结果和安装产物均已独立检查；不扩展为标签系统重构。
 - **用户验收**：待用户在最终安装包中确认标签可读与切换体验。
 
 ---
@@ -2040,7 +2046,7 @@ Runtime 当前 canonical workspace 是 GoalBoard 仓库，但 Goal `casebook-pri
 **来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
 **Bug 确认**：已确认，属于 Runtime Skill / MCP 工具说明的领取顺序缺陷；不是 Available Core 应自动理解自然语言意图的缺陷
 **修复决定**：已按 Owner 授权批准自主最小修复，P2；把选中候选的 Contract scope 核对移到原子创建 Claim/Run 之前，并补领取工具的边界提示
-**修复状态**：本地协议与 MCP 说明最小修复、工程验证及 Owner 验收通过；已提交于 `7839567`，尚未打包、安装或发布，真实 CGS 新 Session 消费仍待发布后实操
+**修复状态**：协议与 MCP 说明最小修复、工程验证及 Owner 验收通过；实际提交为 `a638d67`。修复已进入此前安装的本机 0.1.9，安装产物协议实操通过；未推送或发布 GitHub Release
 
 ### 1. 真实场景
 
@@ -2084,8 +2090,8 @@ Available 的初衷是从 canonical 状态、依赖、Risk、角色和优先级�
 ### 10. 验收边界
 
 - **工程验证**：通过（本地源码）。TDD RED 先证明 MCP 工具说明和正式 Skill 仍要求 `available → select_goal`，且不存在“暂选候选、先读 Contract、核对 scope”门禁；修复后相关 MCP/Skill 回归通过，完整 `pnpm test` 329/329、TypeScript 和 `git diff --check` 均通过。Core Available、Contract 数据模型、Claim/Run 原子性与紧凑 summary 均未改变。
-- **产品实操**：协议级局部通过，最终消费层待发布。源码 `tools/list` 与 Skill readback 已明确 `available → contract → select_goal`，命中 `out_of_scope`、Contract 矛盾或没有 canonical owner 时不得创建 Claim/Run；但当前正在运行的 0.1.8 MCP 仍返回旧工具说明，旧 Session 也不会热加载新 Skill，因此不能把源码 readback 冒充真实 CGS 新 Session 已不再误领。发布后需用相邻 Goal、当前请求明确命中另一个 Goal `out_of_scope` 的安全 fixture 或新 CGS Session 复测，并确认 Claim/Run 数量不增加。
-- **Owner 最终验收**：通过（本地协议边界）。只纠正只读 scope 核对与原子领取的顺序，不让 Core 猜自然语言、不把所有 Contract 塞回 Available，也不自动创建新 Goal。
+- **产品实操**：通过（安装产物协议）。源码 `tools/list` 与 Skill readback 已明确 `available → contract → select_goal`，命中 `out_of_scope`、Contract 矛盾或没有 canonical owner 时不得创建 Claim/Run。2026-08-30 直接加载本机 `goalboard-0.1.9/dist/mcp/server.js` 的 Runtime `tools/list`，实际 `available` description 要求暂选后先读 Contract scope，`select_goal` description 再次要求先核对 Contract；安装 Skill 同步写明命中 `out_of_scope` 不得创建 Claim/Run。真实 CGS 旧 Session 不热加载新声明，仍需新 Session 做自然语言消费验收。
+- **Owner 最终验收**：通过（含安装产物协议边界）。只纠正只读 scope 核对与原子领取的顺序，不让 Core 猜自然语言、不把所有 Contract 塞回 Available，也不自动创建新 Goal。
 - **用户验收**：若进入发布，待真实 CGS 新 Session 在同类 handoff 中确认不再误领。
 
 ---
@@ -2095,7 +2101,7 @@ Available 的初衷是从 canonical 状态、依赖、Risk、角色和优先级�
 **来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
 **Bug 确认**：部分成立。普通 dependency/review blocker 从 Available 完全不可发现是 GoalBoard 可见性缺陷；三条 active 依赖仍未满足时不自动放行 G2B 是正确门禁，不能由仓库里存在 fresh Report 推翻
 **修复决定**：已按 Owner 授权批准最小修复，P1/P2；增加紧凑 `blocked_overview` 并要求明确 owner 缺席时先 Explain，不增加 artifact-level dependency 或自动绕过依赖
-**修复状态**：本地 Core/MCP/Skill 最小实现、完整工程验证、真实 CGS 安全副本协议实操与 Web computer-use 核对通过；Owner 验收通过，已提交于 `7839567`，尚未打包、安装或发布，不阻塞 CGS 主线
+**修复状态**：Core/MCP/Skill 最小实现、完整工程验证、真实 CGS 安全副本协议实操与 Web computer-use 核对通过；实际提交为 `a638d67`。修复已进入此前安装的本机 0.1.9，安装产物隔离实操通过；未推送或发布 GitHub Release
 
 ### 1. 真实场景
 
@@ -2139,9 +2145,229 @@ Owner 已只读绑定真实 CGS 并复核 canonical 数据。G2B 是 `accepted /
 ### 10. 验收边界
 
 - **工程验证**：通过（本地源码）。TDD RED 先证明 dependency-blocked accepted leaf 的 `blocked_overview` 为 undefined；实现后 Core、MCP summary、tool description 与正式 Skill 回归通过，要求 overview→Explain→不得领取相邻 Goal。完整 `pnpm test` 329/329、TypeScript 和 `git diff --check` 均通过；MCP 全文件在受限沙箱首次受 SQLite 临时目录影响，正常本机权限下完整归零。
-- **产品实操**：通过（真实 CGS 只读事实 + 安全副本源码协议）。官方 0.1.8 MCP 中 G2B 在 Available/blocked 缺席，Explain 返回三条真实依赖；Contract/历史时间线证明现有通过证据早于新依赖。用 SQLite 在线只读 backup 生成临时 CGS 副本后，当前源码返回 `available=7 / blocked=4 / blocked_overview=13`，其中 G2B 为 `review_blocked / next_action=explain` 并保留三条依赖摘要；尝试选择 G2B 返回 `allowed=false`，Claim/Run 增量均为 0。computer use 又打开官方桌面 App 的真实 G2B：Goal Tree 和详情均显示“复核受阻”、3 个前置与三条具体阻塞，证明 Web 事实没有丢失，问题只在 Runtime Available 的可发现性。临时副本未改 CGS，最终安装后的新 Session overview 仍待发布后验收。
-- **Owner 最终验收**：通过（本地实现）。既有 owner 现在可在紧凑协议中被发现，消费者有确定的 Explain 动作；三条依赖、旧 Evidence 与禁止领取边界均保留。明确拒绝把 fresh 文件存在性升级为 provider fulfillment，也不把局部 UI owner 归属误解为依赖已满足。
+- **产品实操**：通过（真实 CGS 只读事实 + 安全副本源码协议 + 安装产物隔离协议）。官方 0.1.8 MCP 中 G2B 在 Available/blocked 缺席，Explain 返回三条真实依赖；Contract/历史时间线证明现有通过证据早于新依赖。用 SQLite 在线只读 backup 生成临时 CGS 副本后，源码返回 `available=7 / blocked=4 / blocked_overview=13`，其中 G2B 为 `review_blocked / next_action=explain` 并保留三条依赖摘要；尝试选择 G2B 返回 `allowed=false`，Claim/Run 增量均为 0。computer use 又核对真实 G2B Web 状态。2026-08-30 直接使用已安装 0.1.9 dist 创建隔离 provider/consumer 依赖：consumer 出现在 `blocked_overview`，`work_state=execution_blocked`、`next_action=explain`、reason=`dependency.unsatisfied`，不进入 Available 且 select `allowed=false`。未修改 CGS。
+- **Owner 最终验收**：通过（含安装产物）。既有 owner 现在可在紧凑协议中被发现，消费者有确定的 Explain 动作；真实依赖与禁止领取边界均保留。明确拒绝把 fresh 文件存在性升级为 provider fulfillment，也不把局部 UI owner 归属误解为依赖已满足。
 - **用户验收**：若发布，待真实 CGS 新 Session 确认 G2B owner 与阻塞原因可见，且不会误放行不可信输入。
+
+---
+
+## GB-20260830-38：accepted 未完成 Goal 的局部纠偏被迫手工扩成整图 successor 迁移
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
+**Bug 确认**：部分成立。accepted Contract 不可原地改写是必要审计边界，不是 Bug；真实缺陷是 closed leaf 被错误归为 compound closure、文案误称“父 Goal”，且强制 successor 时只给抽象动作，不提供 canonical 关系迁移清单与可复用骨架
+**修复决定**：保留不可变设计，最小修复现有冲突契约与恢复信息；不新增 Contract revision 状态，不自动迁移关系，不改 CGS canonical 数据
+**修复状态**：本地源码已修复并完成全量工程验证与已安装 0.1.9 隔离产品实操；已进入本节所在的本地合并 bugfix commit。此前安装的 0.1.9 已包含本卡实现，本轮没有重新构建；真实 CGS 新 Session 与用户主观验收仍待后续
+
+### 1. 真实场景
+
+用户纠正 CGS 的 Opportunity、Content Bet 与写作 angle 边界后，Runtime 在既有 clarifier Run 中提议更新仍未完成的 G2 父 Goal和 G2B closed leaf。`goal_tree_propose` 成功，`goal_tree_check` 对两项均以 `goal.accepted_compound_closure_invalid` 拒绝，要求创建 replacement Goal、增加 `replaces` 并迁移关系；G2B 明明是 `closed_leaf`，错误仍称“已接受父 Goal”。
+
+### 2. 事实与归因
+
+源码核对确认 `acceptedCompoundClosureConflict` 同时承接 accepted leaf 与 compound 变化，旧实现让 closed leaf 也落入 `goal.accepted_compound_closure_invalid`，且 recovery 只有 `create_replacement_goal / migrate_relations=true`。但 accepted Contract 不可变仍保护执行、Evidence 和 Review 所依据的历史承诺；不能因为 Goal 尚未 satisfied 就原地改写。因此归因为恢复契约缺陷，不把不可变设计本身判成 Bug。
+
+### 3. 现有流程的问题
+
+一次已确认的局部语义纠偏无法直接得到可执行恢复方案：消费者只收到抽象动作名称，必须自行枚举 `part_of`、`depends_on`、下游关系和 replacement item ID，容易漏迁移；错误又把 leaf 误称为父 Goal，增加误诊。为避免高成本，Runtime 可能绕过 GoalBoard 在仓库外修复，或提交不完整 successor 图。
+
+### 4. 设计根因与初衷
+
+accepted Contract 不可变的初衷是避免执行和验收所依据的承诺被原地改写，保留“当时同意了什么”的历史真相；replacement + `replaces` + relation migration 让需求变化显式形成新版本。当前待查的是：同一不变量是否使用了过窄错误码/文案，以及 GoalBoard 既然强制 successor，是否缺少把 canonical 图转换成安全迁移草案的恢复能力。
+
+### 5. 当前影响
+
+影响已经 accepted 但尚未 satisfied、且用户在真实使用中继续纠偏的 Goal。直接代价是增加 proposal item、关系枚举、技术 ID 和再次核对成本，并引入漏迁移造成孤立/双真相的风险；本次 check 尚未改变 canonical tree，因此没有已发生的数据损坏证据。
+
+### 6. 复杂度审查
+
+- **当前必须**：区分 leaf/compound 的准确错误码与文案；返回必须处理的 active relations、受影响 Goal 与确定 recovery action；验证 check 与 decide 使用同一不变量。
+- **可以延后**：自动创建或自动提交完整 successor Proposal；为 accepted+unmet 引入受审计 Contract revision，只有证明人工确认后的 replacement 仍长期阻碍正常纠偏且审计语义可保持时再评估。
+- **应当删除**：不直接放开 accepted Contract 原地覆盖，不让系统猜测关系迁移方向，不为单一 CGS 案例建立第二套 Contract 版本模型。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1；已经完成本地最小修复。它影响每次 accepted Goal 需求变化的合法恢复，错误关系迁移会形成双真相。没有必要放宽不可变性或增加 revision 状态机。
+
+### 8. 修复前后体验差异
+
+- **修复前**：check 只说创建 replacement、replaces、迁移关系，leaf 还被称为父 Goal；消费者需查图并手写大提案。
+- **目标体验**：check 准确说明哪个不变量被触发、当前 Goal 是 leaf 还是 compound、哪些 active relations 必须保留/迁移，并给可直接用于下一步的结构化恢复清单；仍需用户确认新的业务语义，但不再靠猜内部图结构。
+
+### 9. 最小修复范围
+
+复用现有 replacement 机制：closed leaf 返回准确的 `goal.accepted_contract_immutable`，compound 保留 closure 语义；冲突中增加 `current_goal`、`successor_outline` 与按 active canonical relation 生成的 `relation_migration_candidates`。候选明确旧/新端点、关系类型、停用时机和 `requires_review`，但不自动决定、不自动 materialize、不放宽历史不可变性。
+
+### 10. 验收边界
+
+- **工程验证**：通过。accepted closed leaf 回归确认错误码、当前 Goal、new goal/criterion ID 要求、`replaces` 骨架、`part_of` / `depends_on` 逐关系迁移候选与 check 零写入；whole-confirm 同源预检回归同时通过。2026-08-30 最终整合态 `pnpm typecheck && pnpm test` 在正常本机权限下 331/331、0 fail；受限沙箱曾因 SQLite 临时目录权限出现 `unable to open database file`，同一代码在沙箱外完整归零，未把环境假失败计为代码回归。
+- **产品实操**：通过（已安装 0.1.9 隔离项目）。直接加载本机 `goalboard-0.1.9/dist` 创建 accepted/closed_leaf Goal，并保留一条 `depends_on` 与一条 `part_of` active relation；从正式 clarification Run 提交局部 Contract update，再执行 check，实际返回 `goal.accepted_contract_immutable`、`current_goal.decomposition_state=closed_leaf`、replacement 的 `replaces` 骨架，以及按 `depends_on`、`part_of` 排列的两条 relation migration candidates。check 没有修改 canonical Goal/Relation；未触碰真实 CGS proposal。
+- **Owner 最终验收**：通过（含安装产物）。设计边界、最小 diff、具体 recovery plan 与零写入预检均已复核。
+- **用户验收**：待最终安装版由真实 Runtime 确认无需查源码或手工猜迁移项。
+
+---
+
+## GB-20260830-39：唯一整份 Proposal 已明确询问并获简短确认，decide 仍拒绝 whole confirmation
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`），为 GB38 successor 恢复旅程中的后续独立故障
+**Bug 确认**：已确认。Runtime 已提交明确 whole-confirm 标志和目标 proposal_id；源码却用 Board 全局 pending Proposal 数量代替“上一问点名哪一份”的授权事实，无关待审提案会制造虚假歧义
+**修复决定**：P1，保留简短确认安全门禁，把 Runtime attestation 精确绑定到本次 `proposal_id`；不解析自然语言，不把确认扩展到其他 Proposal
+**修复状态**：本地源码已修复并完成全量工程验证与已安装 0.1.9 隔离产品实操；已进入本节所在的本地合并 bugfix commit。此前安装的 0.1.9 已包含本卡实现，本轮没有重新构建；真实 CGS 新 Session 与用户主观验收仍待后续
+
+### 1. 真实场景
+
+successor Proposal 已通过 `goal_tree_check`。Runtime 上一条消息把这一份 Proposal 作为唯一待决定项，并明确询问“确认按这份 Goal 变更落地吗？”，用户回复“好的”。调用 `goal_tree_decide(confirm_all_pending=true, whole_confirmation_prompted=true)` 仍被拒绝，要求说明确认哪些条目；消费者改成对同一 7 项逐项 `decisions=confirm` 后才成功。
+
+### 2. 事实与归因
+
+源码确认 Runtime wrapper 会从宿主 Session 生成 `conversation_ref`、从 `confirmation_summary` 生成 attestation，并把 `whole_confirmation_prompted` 传入 Core；但 Core 又要求整个 Board 的 active Proposal 数量恰为 1。这个条件既不能证明上一问，也会被无关 Proposal 破坏。归因是 GoalBoard 授权绑定缺陷，不是用户确认不足，也不是 CGS 误用。
+
+### 3. 现有流程的问题
+
+标准“展示唯一整份提案 → 明确询问 → 用户简短确认”不能一次落地，Runtime 必须把整份授权机械展开成 7 个逐项决定。额外复杂度会诱发漏 item、错误理由或把整份授权误解为独立逐项授权，也让用户误以为还需重复确认。
+
+### 4. 设计根因与初衷
+
+简短确认门禁的初衷是防止把脱离上下文的“好的”扩大解释成对多项写入的授权；只有上一问明确、唯一且完整时才允许 whole confirmation。当前待查的是 Runtime 能否向 GoalBoard 提供并持久核对这一上一问，还是服务端要求了调用方无法可靠证明的会话事实。
+
+### 5. 当前影响
+
+影响包含多 item 且采用自然对话确认的 Goal Tree Proposal。直接代价是重复 payload 和授权表达；本次逐项路径已成功落地，没有未应用或部分应用损坏证据，但绕行降低了 whole-confirm API 的可信度。
+
+### 6. 复杂度审查
+
+- **当前必须**：把上一问精确绑定到本次 `proposal_id`；attestation digest 覆盖 proposal、whole-confirm 标志与确认摘要；错误返回预期/收到的 Proposal 和确定 remediation；保证授权不被扩大到其他 Proposal。
+- **可以延后**：由宿主自动签名/绑定完整会话 turn；只有现有 message refs 无法稳定表达时再扩展协议。
+- **应当删除**：不因为用户说“好的”就取消歧义保护，不让 Runtime 自行声明不存在的上一问，不把逐项 decisions 永久作为 whole confirmation 的替代。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1；已经完成本地最小修复。它不造成部分写入，但会让正确的唯一点名授权失效，并迫使消费者机械展开逐项决定。
+
+### 8. 修复前后体验差异
+
+- **修复前**：用户已经回答唯一整份确认，Runtime 仍需把 7 项逐项展开后再调用。
+- **目标体验**：唯一 Proposal、明确上一问和当前用户确认能一次原子落地；若证据不足，错误准确指出缺少的上一问/message ref/summary，且不写入任何条目。
+
+### 9. 最小修复范围
+
+在现有 authority 中增加 `prompted_proposal_id`。Runtime wrapper 只在 `whole_confirmation_prompted=true` 时把当前调用的 `proposal_id` 写入 attestation，并把 proposal、whole 标志、确认摘要纳入 digest；Core 只接受精确 ID 匹配。管理/Web 入口继续使用原有显式 authority。没有新增会话存储，不修改已 materialize 的 CGS 数据。
+
+### 10. 验收边界
+
+- **工程验证**：通过。覆盖未提示 whole confirmation 拒绝、错误 proposal 绑定拒绝、同一 Board 另有 pending Proposal 时精确目标整份确认成功、目标条目落地且无关 Proposal 保持 pending；既有 whole-confirm 原子预检同时通过。2026-08-30 最终整合态 `pnpm typecheck && pnpm test` 在正常本机权限下 331/331、0 fail；没有依靠逐项 decisions 冒充 whole confirmation。
+- **产品实操**：通过（已安装 0.1.9 隔离项目）。同一 Board 创建 A、B 两份 pending Proposal，用 `authority_source=runtime_dialogue`、`whole_confirmation_prompted=true`、`prompted_proposal_id=B` 对 B 一次 `confirm_all_pending`；实际只应用 B 的唯一 item，B Goal 创建成功，A Goal 不存在且 A Proposal 仍为 pending。没有展开逐项 decisions，也没有把 A 的存在当成确认歧义。
+- **Owner 最终验收**：通过（含安装产物）。精确 proposal 授权、原子应用和无关 pending 保留边界均已复核。
+- **用户验收**：待最终安装版由真实新 Session 确认不再重复授权。
+
+---
+
+## GB-20260830-40：executor Run completed 后 Review 隐藏且“执行收尾”不说明要 release
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`），Goal `cgs-g2b-content-bet-decision-v2`
+**Bug 确认**：部分新增成立。completed Run 保持 active Claim 是必要写权交接边界，不应自动释放；当前源码的 GB37 已让 `review_blocked` 进入 `blocked_overview`，所以“完全消失”是尚未安装该修复的旧运行态，不重复计 Bug。新增真实缺陷是 Run report、Contract、Available 与 Skill 都没有明确唯一剩余动作，Skill 甚至把 Review 排在 executor release 之前
+**修复决定**：P1，保留显式 release，复用 GB33 handoff 与 GB37 blocked overview，统一返回精确工具、Claim、理由和 release 后 Available 动作；不修改 CGS 数据
+**修复状态**：本地源码已修复并完成全量工程验证与源码 MCP 协议实操；已进入本节所在的本地合并 bugfix commit，但未进入此前生成的 0.1.9 本地包；最终安装产品验收待用户再次发起构建后完成
+
+### 1. 真实场景
+
+executor 已调用 `goalboard_v1_run_report(state=completed)`，随后仍在同一 active Claim 下成功提交工程 Evidence。Contract 此时返回 `work_state=review_blocked`、reason=`work.handoff_pending`，只说“结果已提交，正在进入检查 / 当前执行收尾后即可开始检查”；executor Claim 仍 active，Available 完全不显示 pending self_verifier。消费者靠额外搜索工具列表才发现必须显式调用 `goalboard_v1_release`；release 后同一 Goal 才进入 self_verifier Available。
+
+### 2. 事实与归因
+
+消费者给出了 Run、Evidence、Contract、Available 和 release 前后状态变化，足以确认交接动作不可发现的真实摩擦。源码核对确认：`reportRun` 的 completed 响应原来只返回 Run/cursor；`work.handoff_pending` 明说“收尾后系统会继续”，但实际没有后台自动动作；当前本地 GB37 会把 `review_blocked` 放入 `blocked_overview`，却只投影 code/message；Skill 的 normal order 又把 review/complete 放在 release 之前。`completed` 后保留 Claim 的设计是正确的，因为 reviewer 不应和 executor 的最后 Evidence 写入并发。
+
+### 3. 现有流程的问题
+
+系统知道 active executor Claim 是 self-verifier 唯一剩余门禁，却只写抽象“收尾后”，不说明需要哪个动作、由谁执行、使用哪个 claim_id。用户和 Runtime会误以为自动交接尚在等待，或误诊 Review 丢失；只有盲搜工具才能继续，直接破坏 Run→Evidence→Release→Review 的连续推进。
+
+### 4. 设计根因与初衷
+
+显式 release 的初衷应是让当前 writer 在 Run 终态后仍能补齐 Evidence、确认报告与释放理由，并留下明确的写权交接事件；self-verifier 在 writer 放权前不可并发进入，避免边审边改和证据竞态。缺陷候选不是这条安全边界，而是 handoff 状态没有把必要 release 动作做成正式恢复契约。
+
+### 5. 当前影响
+
+影响所有 executor 完成后需要独立 Review 的正常闭环；频率等于每轮需复核的 Run。它不会直接丢数据，但会让自主推进静默停止、增加工具搜索和误操作，并让用户误以为 GoalBoard 会自动交接。
+
+### 6. 复杂度审查
+
+- **当前必须**：当 completed Run 只差 release 时，`run_report`、Contract 和 Available/blocked handoff 返回同一个 `goalboard_v1_release`、`claim_id`、actor、建议理由和 release 后 Available 动作；Skill 顺序与状态机一致。
+- **可以延后**：可配置 auto-release；只有证明不存在 completed 后补 Evidence/报告的合法路径时再评估。
+- **应当删除**：不把“自动释放”直接当默认答案，不新增第二套 handoff 状态，不让 self-verifier 在 executor Claim active 时并发领取。
+
+### 7. 修复必要性与优先级
+
+需要修复，P1；已经完成本地最小修复。它是每个需独立 Review 的 Run 都会遇到的高频闭环断点。Available 可见性本身复用 GB37，不重复扩展 full blocked 列表。
+
+### 8. 修复前后体验差异
+
+- **修复前**：Run completed → Contract 只说“收尾后” → Review 从 Available 消失 → Runtime 等待或盲搜 → 猜到 release → Review 出现。
+- **目标体验**：Run completed 后仍允许补 Evidence；每个相关返回都明确“当前 executor 仍持有 Claim，调用 release(claim_id) 完成交接；随后重新读取 Available 获取 self_verifier”，消费者无需猜工具，也不会误以为系统自动等待。
+
+### 9. 最小修复范围
+
+扩展既有 `work.handoff_pending` facts/remediation 和 completed run report：统一返回 `action=release_claim`、`tool=goalboard_v1_release`、goal/run/claim/actor、建议 release reason 和 `after_release=read_available`。GB37 的 `blocked_overview` 对该特定 reason 保留 facts/remediation 并把 next_action 写成 `release`；其他普通 blockers 仍保持紧凑。Skill 改成 executor completed→Evidence→release→Available→独立 reviewer，不改变 Claim/Run 状态、不自动释放、不修改 Review eligibility。
+
+### 10. 验收边界
+
+- **工程验证**：通过。红灯先证明 completed 响应没有 handoff；绿灯覆盖 completed 后 Claim 仍 active、Evidence 仍可提交、Run report/Contract/Available 返回同一 release 契约、release 前 self-verifier 不可领取、release 后立即 Available。实际 Runtime MCP 回归还覆盖默认 summary 保留 claim/tool、Skill 顺序，以及中英文 Web 状态“等待交接”。首次整仓运行暴露 1 条旧文案断言，修正为精确 release 契约后重新从头运行。提交前差异审查又发现 Web 会直接显示 MCP 工具名，把人类界面改为“释放当前工作并刷新”；随后再发现通用 handoff 被写成 executor 专属“交给独立检查”，以红灯证明后改为角色无关的“释放当前工作进入下一步”。Web/i18n、Core/MCP 定向回归通过后，2026-08-30 再次从头执行 `pnpm typecheck && pnpm test`，最终整合态 331/331、0 fail。
+- **产品实操**：源码 MCP 隔离旅程已由实际工具入口走通；仍需把同一结果从最终安装的新 Session 读取，当前按用户要求暂停新包构建，不修改真实 CGS 数据。
+- **Owner 最终验收**：根因、设计边界和最小 diff 审查通过；最终安装态未验收。
+- **用户验收**：最终安装版主观是否足够直白仍为 `UNVERIFIED`；当前暂停新包构建。
+
+---
+
+## GB-20260830-41：V2 KOL 子 Goal 被 completion-only Risk 挡出 executor Available
+
+**来源**：CGS KOL 消费者反馈（会话 `01a04df5-64d8-72e3-ae79-455907c85e86`），Board `project-bc1b9bac-c679-4ac5-ba00-bb51477d0008`
+**Bug 确认**：不是新的 GoalBoard Bug。当前源码与本机已安装的 0.1.9 都确定性允许 open/triggered 的 `completion` Risk 下首次 executor Available/select；消费者当前 Session 仍在使用安装前已启动的 MCP 进程，且同一消费者此前已报告 V2 子树存在 `depends_on` 前置未满足。当前矛盾应归入 GB16 的旧 Session 交付边界与真实 dependency gate，而不是再次归因给 completion Risk
+**修复决定**：不新增状态机修复；保留现有 completion/claim 分层，要求新 Session 读取 0.1.9，并以 Contract `reasons[].code` 区分 `dependency.unsatisfied` 与 `risk.blocks_claim`。旧 Goal 仍出现的问题继续归 GB31，不在本卡重复实现
+**修复状态**：分析与去重完成并进入本节所在的本地合并 bugfix commit；源码定向回归、全量工程门禁和已安装 0.1.9 隔离实操均通过。未构建新包、未修改 CGS 数据
+
+### 1. 真实场景
+
+canonical `cgs-g2g-ai-kol-quality-roster-v2` 的 9 个 child Goals（包括 `cgs-g2g-jike-roster`、`cgs-g2g-roster-integration`）均为 `execution_blocked`、`next_action=execute`，且没有 active Claim/Run。关联 Risk `cgs-g2-source-coverage-risk` 为 `triggered / blocking_mode=completion`，`cgs-g2g-scale-consistency-risk` 为 `open / blocking_mode=completion`。这些子 Goal 不进入 Available，Runtime 因此无法合法 select、登记 Run 或回填已存在的七平台研究 Evidence。
+
+### 2. 事实与归因
+
+消费者提供了具体 Board、Goal、Contract work state、Risk mode/state 和 Available 结果，证明该 Session 中确有阻塞，但没有提供 `reasons[].code`，不能由“Contract 同时列出 Risk”推导出“Risk 正在阻塞 execution”。源码 `evaluate(executor)` 只把 `blocking_mode=claim` 或 triggered `invalidate_on_trigger` 加入 `risk.blocks_claim`；`completion` Risk 只在完成阶段进入 `risk.blocks_completion`。现有 GB27/Web 回归分别证明执行结束后的 completion gate 和执行前 Risk 可见但不替换执行动作；本机已安装 0.1.9 的真实 dist 又以 open+triggered 两条 completion Risk 实操得到 `execution_pending`、Available executor 和 select allowed。当前源码与已安装 artifact 均无法复现原归因。
+
+### 3. 现有流程的问题
+
+当前 Session 的体验摩擦真实存在：它只展示 `execution_blocked` 和相邻 Risk，消费者自然会把两者当因果关系；旧 Session 又不会热加载安装后的 MCP，所以即使磁盘上已有修复，当前任务仍可能继续表现为旧行为。另一方面，平台子 Goal 依赖 schema、integration 依赖平台子 Goal，前置未满足本来就应阻止领取。缺少精确 reason code 时，消费者无法区分“旧 Runtime”“真实依赖门禁”和“Risk 错误阻塞”。
+
+### 4. 设计根因与初衷
+
+completion Risk 的初衷是允许团队继续实现和补证据，同时阻止对风险未收束的工作宣告完成；execution/dependency Risk 才应挡领取。当前实现遵守该边界。实际根因是两个既有设计边界叠加：Codex MCP 进程以 Session 为生命周期，安装新 release 不会热替换既有 Session；Goal 的 Risk 列表是相关事实，不代表每条 Risk 都是当前 work-state reason。V2 子树另有真实 `depends_on` 链，必须以 reason code 判断。
+
+### 5. 当前影响
+
+当前旧 Session 仍可能让 V2 子树无法形成 Run/Evidence，实际阻断 CGS canonical 闭环；但这不是当前源码仍会错误消费 completion Risk 的证据。若新 Session 返回 `dependency.unsatisfied`，阻塞是预期的 Contract 顺序；若新 Session 对无其他 blocker 的 child 返回 `risk.blocks_claim` 且 Risk mode 为 completion，才构成新的回归。CGS 不应写旧 Goal或绕过依赖。
+
+### 6. 复杂度审查
+
+- **当前必须**：验证当前源码与已安装 artifact；明确旧 Session 不能热加载；让消费者在新 Session 读取精确 reason code 后再判断真实依赖。
+- **可以延后**：在 Contract UI 中更强地区分“相关 Risk”和“当前 blocker”；若新 Session 仍有人持续误读再作为独立可理解性 Case 提报。
+- **应当删除**：不新增绕过 Available 的写入口，不把旧 Goal 当临时容器，不为已有 GB27 重复实现第二套 rework/readiness 状态机。
+
+### 7. 修复必要性与优先级
+
+不修新代码；归并 GB16/GB27/GB31 的发布与新 Session 验收。当前源码和已安装 0.1.9 都未复现，继续改 readiness 反而可能错误放宽真实 dependency gate。
+
+### 8. 修复前后体验差异
+
+- **消费者当前 Session**：只能看到旧运行态/真实依赖的混合结果，把相关 Risk 误认为 execution blocker。
+- **当前 0.1.9 行为**：无其他 blocker 时，open 与 triggered completion Risk 都保持 Risk 可见，但 Goal 是 `execution_pending`、进入 Available 且可 select；有未满足前置时仍返回 `dependency.unsatisfied`，不会假装可执行；最终 complete 才消费 completion Risk。
+
+### 9. 最小修复范围
+
+无新增实现。继续复用 GB27 的风险阶段判断、GB37 的 blocked overview、GB16 的新 Session 交付边界和 GB31 的 replaced Goal 过滤。当前只更新台账和验收结论，不改变 Risk、Goal、Relation、Evidence 或安装内容。
+
+### 10. 验收边界
+
+- **工程验证**：通过。当前源码定向回归 `a completion Risk after finished work stays out...` 与 `an open completion Risk stays visible...` 2/2；整合态 typecheck 与全量测试 331/331。源码审查确认 executor evaluate 不消费 completion mode。
+- **产品实操**：部分通过。直接使用本机已安装 `goalboard-0.1.9/dist` 创建隔离 Board，给同一 accepted leaf 关联一条 open 和一条 triggered completion Risk，实得 `execution_pending`、Available executor=true、select allowed=true。真实 CGS V2 子树的新 Session readback 尚未执行，保持 `UNVERIFIED`；未写入 CGS。
+- **Owner 最终验收**：通过“不新增 Bug/不新增修复”的去重结论；保留 completion/dependency 安全边界。
+- **用户验收**：待 CGS 新 Session 确认：无真实依赖的 V2 child 可领取，存在前置的 child 明确显示 `dependency.unsatisfied`，旧 Goal 由 GB31 修复不再进入 Available。
 
 ---
 
@@ -2185,11 +2411,19 @@ Owner 已只读绑定真实 CGS 并复核 canonical 数据。G2B 是 `accepted /
 | GB32 | 成立；schema 部分与 GB14 去重，错误归因和恢复提示独立成立 | 合法文案因非法 enum 被误报“没写清”，消费者只能查源码 | 修精确枚举错误与 resume hint；不新增未经需要的 `defer` 状态 |
 | GB33 | 成立为 Skill + MCP handoff 可发现性设计债，消费者遗漏是直接触发 | 单轮 Run 收口被误当成对话终点，用户必须追问“然后呢”才能知道下一步 | 修 release 的只读 Available handoff 与固定 cycle checkpoint；不自动派发、不越授权 |
 | GB34 | 成立为 locator 分类与恢复契约缺陷，不是跨仓读取权限缺失 | 同一外部本地位置换成自造 scheme 可登记，标准 `file:` 却被误当越界读取拒绝，迫使试错或虚构远端 URL | 修 `file:` 仅登记为 UNVERIFIED 并清楚说明边界；不读取第二仓、不自动信任历史 workspace 关联 |
+| GB35 | 成立，Web/Desktop 共用标签轨道在窄宽度没有正确建立可滚动布局 | 真实 Casebook 依赖视图中多个标签文字互相覆盖，直接破坏当前工作区辨识 | 修共用 CSS 的最小宽度、收缩与横向滚动；不拆两套视觉 |
+| GB36 | 成立为消费者协议顺序缺口，不是 Available 应理解任意自然语言 | Runtime 先领取后才从完整 Contract 发现 out_of_scope，只能 abandoned 并污染 Run 历史 | 修 Skill 强制 Available 暂选→Contract scope 核对→Select；不把请求语义匹配塞进 Core |
+| GB37 | 成立，普通依赖/Review 阻塞项从 Available 完全消失 | 已有明确 owner 的 Goal 看起来不存在，消费者会误领相邻 Goal 或把工作移到账本外 | 修紧凑 `blocked_overview` 与 explain 路由；不把全部 Contract 重新塞回 Available |
+| GB38 | 部分成立；accepted Contract 不可变合理，leaf 错误归类和抽象迁移提示不合理 | 小纠偏被迫查图、猜关系与技术 ID，漏迁移会形成双真相 | 保留不可变性；修准确错误与 successor/关系迁移候选，不自动迁移 |
+| GB39 | 成立，Board 全局 pending 数被错误当成当前上一问的唯一性证明 | 无关 Proposal 会让精确点名的整份确认失败，消费者只能机械展开逐项决定 | 修 attestation 精确绑定 proposal_id；不解析自然语言、不扩大授权 |
+| GB40 | 部分新增成立；自动 release 不合理，Review 隐藏已由 GB37 覆盖，精确交接缺失独立成立 | 每轮执行完成后都可能停在“收尾后”，Runtime 必须盲搜 release，Skill 顺序还与状态机相反 | 保留显式 release；统一 Run/Contract/Available/Skill handoff，不允许 reviewer 与 executor 并发 |
+| GB41 | 当前阻塞现象存在，但“completion Risk 挡首次执行”的新 Bug 归因不成立 | 旧 Session 与真实 depends_on 门禁混在同一 Contract 中，消费者会把相关 Risk 误认成 blocker | 不新增代码；已安装 0.1.9 隔离实操证明 completion Risk 可执行，转入 GB16/GB27/GB31 的新 Session 验收 |
 
 ### 复审结论
 
-- 34 张卡中，31 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15 和 GB26 是部分重叠、部分跨系统，已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
+- 41 张卡中，37 张包含需要 GoalBoard 修复的真实产品/API/工程问题；GB15、GB26、GB38 和 GB40 是部分重叠或原始方案部分不成立，GB41 是旧 Session/真实依赖被误归因为新 Risk Bug，均已按最小独立缺口去重；GB07 是发布工程缺陷而非产品 Bug。
 - GB13 的体验问题真实成立，但唯一主要归因在 CGS 领域模型与编辑台；GoalBoard 的正确决定是明确不修并保留路由状态，而不是为了“全部修完”制造跨仓耦合。
 - GB27 是本轮最重要的客观纠偏：原始 claim-gate 解释不符合真实 canonical 历史，最终只修可复现的 rework 恢复缺口，证明台账不是把每条消费者抱怨自动认定为原始描述中的 Bug。
+- GB38 与 GB40 延续同一判断纪律：前者拒绝为了省事放开 accepted Contract 原地覆盖，后者拒绝 completed 后自动释放 Claim；只修两条安全设计周围可复现的错误归类、隐藏动作和恢复信息。
 - 当前最小方案没有删除用户确认、项目绑定、租约 ownership、completion Risk、accepted Contract 不变量或历史审计；修复集中在消除重复操作、错误派生、不可发现协议、非原子写入和双真相。
 - 工程与 Owner 验收不能代替用户本人验收。最终安装版已做可安全执行的 computer-use 主路径；真人按钮、主观易懂性、新 Codex Session 热加载后的行为和 Apple 公证仍按各卡标为 `UNVERIFIED` 或 pending。

@@ -3980,8 +3980,8 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.match(page, /这份方案暂时不能采用/);
     assert.match(page, /当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree/);
     assert.doesNotMatch(page, /其中有风险信息或 Goal 拆解需要 Runtime 修正/);
-    assert.match(page, /已接受父 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
-    assert.match(page, /创建 successor \/ replacement Goal/);
+    assert.match(page, /已接受且尚未收口的复合 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
+    assert.match(page, /使用 successor_outline 创建 replacement Goal/);
     assert.match(page, /当前 Goal Tree 尚未改变/);
     assert.match(page, /value="confirm" disabled aria-disabled="true"/);
     assert.match(page, /value="reject">退回修正/);
@@ -4000,7 +4000,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.equal(directWholeConfirmation.status, 400);
     const directError = await directWholeConfirmation.text();
     assert.match(directError, /本次整份确认没有写入任何变更/);
-    assert.match(directError, /创建 successor \/ replacement Goal/);
+    assert.match(directError, /使用 successor_outline 创建 replacement Goal/);
     const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         goals: Array<{ goal_id: string }>;
@@ -6274,12 +6274,13 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       idempotency_key: "run-policy-web-completed",
     });
     const handoffPage = await (await webFetch(`${origin}/goals/POLICY-WEB`)).text();
-    assert.match(handoffPage, /goal-status--handoff_pending[^>]*[\s\S]*?<span>正在收尾<\/span>/);
-    assert.match(handoffPage, /结果已提交，正在进入检查/);
-    assert.match(handoffPage, /无需重新提交；当前执行收尾后即可开始检查/);
+    assert.match(handoffPage, /goal-status--handoff_pending[^>]*[\s\S]*?<span>等待交接<\/span>/);
+    assert.match(handoffPage, /结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
+    assert.match(handoffPage, /完成本轮记录后释放当前工作；刷新可推进项后即可进入独立检查或完成判断/);
+    assert.doesNotMatch(handoffPage, /goalboard_v1_release/);
     assert.doesNotMatch(handoffPage, /这个 Claim 没有未结束的 Run/);
     assert.doesNotMatch(handoffPage, /由领取 Runtime 启动 Run/);
-    assert.doesNotMatch(handoffPage, /当前有什么会挡住它[\s\S]*结果已提交，正在进入检查/);
+    assert.doesNotMatch(handoffPage, /当前有什么会挡住它[\s\S]*结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
     runtimeCoordinator.releaseClaim({
       board_id: DEMO_BOARD_ID,
       claim_id: claim.claim_id,

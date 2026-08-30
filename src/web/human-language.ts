@@ -59,11 +59,11 @@ const WORK_STATE_COPY: Record<GoalPresentationState, WorkStateCopy> = {
     actionKind: "close_parent",
   },
   handoff_pending: {
-    label: "正在收尾",
-    meaning: "当前结果已经提交，系统正在结束这一阶段。",
-    nextAction: "等待进入下一步",
-    howToContinue: "不用重新提交；收尾完成后会进入检查或完成判断。",
-    actionKind: "none",
+    label: "等待交接",
+    meaning: "结果已提交，但当前执行者仍持有写权，可以继续补齐 Evidence。",
+    nextAction: "补齐记录后释放当前工作",
+    howToContinue: "完成本轮记录后释放当前工作；刷新可推进项后即可进入独立检查或完成判断。",
+    actionKind: "resolve_blocker",
   },
   clarifying: {
     label: "目标澄清中",
