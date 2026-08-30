@@ -112,6 +112,7 @@ function availableResponse(
     detail_level: detailLevel,
     available_count: result.available.length,
     blocked_count: result.blocked.length,
+    blocked_overview_count: result.blocked_overview.length,
   };
   if (detailLevel === "full") return { ...metadata, ...result };
   return {
@@ -138,6 +139,13 @@ function availableResponse(
       reasons: item.reasons,
       priority_hint: item.priority_hint,
       risk_summary: item.risk_summary,
+    })),
+    blocked_overview: result.blocked_overview.map((item) => ({
+      goal: { goal_id: item.goal.goal_id, title: item.goal.title },
+      work_state: item.work_state,
+      next_action: item.next_action,
+      reasons: item.reasons,
+      priority_hint: item.priority_hint,
     })),
     parallel_suggestion: result.parallel_suggestion,
   };
@@ -954,7 +962,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成。默认 detail_level=summary，只返回选择下一项所需的紧凑摘要；选中后用 goalboard_v1_contract 读取完整 Contract。只有确需一次展开所有候选详情时才传 detail_level=full。初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成。默认 detail_level=summary，只返回选择下一项所需的紧凑摘要；把条目作为暂选候选后，先用 goalboard_v1_contract 核对当前请求与 Contract scope，核对通过后才调用 goalboard_v1_select_goal。普通依赖、Review 或重新验证门禁不会塞入完整 blocked 详情，而会在 blocked_overview 中用 Goal 标题、状态和原因摘要保持可发现；当前请求已有明确 owner 时，先对该 Goal 调用 explain，不要顺手领取相邻 Goal。只有确需一次展开所有候选详情时才传 detail_level=full。初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1063,7 +1071,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_select_goal",
     description:
-      "当前 Runtime 从 Available 集合选择一项后，原子创建 Claim 和工作 Run；成功后返回唯一 work_state。",
+      "当前 Runtime 从 Available 集合选择一项后，原子创建 Claim 和工作 Run；调用前必须先用 goalboard_v1_contract 核对当前请求在 Contract 范围内，且未命中 out_of_scope；成功后返回唯一 work_state。",
     inputSchema: {
       type: "object",
       properties: {

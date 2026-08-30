@@ -1980,6 +1980,171 @@ Runtime 当前 canonical workspace 是 GoalBoard 仓库，但 Goal `casebook-pri
 
 ---
 
+## GB-20260830-35：依赖视图顶部工作区标签重叠，标题无法辨认
+
+**来源**：GoalBoard Owner 在「GoalBoard 内部 Casebook」真实 Web 使用中的直接反馈与截图
+**Bug 确认**：已确认，GoalBoard 共享工作区标签栏的响应式布局缺陷；真实 Casebook 的 Web 与桌面 0.1.8 均稳定复现
+**修复决定**：已按 Owner 当前授权批准自主最小修复，P1；保留共享 UI 和横向滚动设计，只修标签 flex 收缩边界
+**修复状态**：本地最小实现、工程验证、真实 Casebook Web/桌面产品实操与 Owner 验收通过；已提交于 `7839567`，尚未打包、安装或发布，当前重新打开的官方 0.1.8 仍不包含修复
+
+### 1. 真实场景
+
+用户在「GoalBoard 内部 Casebook」项目打开 Goal Tree，从列表视图切换到依赖/关系视图。主区域顶部同时打开多条 Goal 工作区标签后，右上方各标签的名称和状态文字堆叠到相邻标签上，无法辨认当前打开项和各标签边界。
+
+### 2. 事实与归因
+
+用户提供的 Web 截图已直接显示多个标签标题、状态圆点与文字发生横向重叠；Owner 又在 Chrome 打开真实 Casebook、切到依赖视图并依次打开 4 个 Goal，实际像素截图再次出现第 1、2 个标签内容覆盖。随后在安装版桌面 0.1.8 以同一项目、同一依赖视图、同样 4 个 Goal 标签复测，桌面顶部也出现相同覆盖，故问题属于共享 Web UI，不是某一外壳独有。源码显示父容器 `.desktop-work-tabs` 已设置 `overflow-x:auto`，设计本应在空间不足时滚动；但子项 `.desktop-work-tab` 同时使用 `min-width:0` 且未禁止默认 `flex-shrink:1`。标签被压到小于内部固定 24px 关闭列和文字网格所需宽度后，内容画出自身盒子并覆盖相邻项。根因是滚动容器与可收缩子项的约束相互抵消。
+
+### 3. 现有流程的问题
+
+切换依赖视图后，用户无法可靠判断当前选中的 Goal、相邻标签分别是什么，也无法安全切换或关闭目标标签；必须根据正文或反复点击猜测，破坏了多 Goal 对照工作流。
+
+### 4. 设计根因与初衷
+
+现有顶部工作区让多个 Goal 保持上下文并快速切换；容器刻意启用横向滚动并隐藏滚动条，初衷是在不增加多行高度的前提下容纳更多标签。实现时为支持标题省略给标签和按钮设置了 `min-width:0`，却没有为外层 flex item 设置不可继续压缩的可读宽度；默认收缩优先发生，导致原本的滚动降级从未被触发。这是合理初衷下的 CSS 约束遗漏。
+
+### 5. 当前影响
+
+直接影响使用关系图同时查看多个 Goal 的 Web 用户；若桌面端复现，则影响共用该 UI 的全部桌面用户。当前证据表明阅读与切换受到实质影响，但是否导致误关、误选或数据写错尚无证据，不扩大为数据正确性故障。
+
+### 6. 复杂度审查
+
+- **当前必须**：双端复现；找出真实宽度与 CSS 约束；保证标签标题不互相覆盖，当前标签和关闭/状态控件可辨认。
+- **可以延后**：标签拖拽排序、持久化宽度、自定义多行标签或完整标签管理器。
+- **应当删除**：不为单个响应式故障重做整个工作台，不复制一套桌面专属标签实现，不以隐藏标题或减少可打开 Goal 数量掩盖问题。
+
+### 7. 修复必要性与优先级
+
+需要修，P1 视觉可用性问题。它已在真实 Casebook 的两个正式入口复现，核心导航名称不可读且关闭/切换目标难以区分，不是轻微对齐偏差；修复只需恢复既有横向滚动设计，风险和复杂度都低。
+
+### 8. 修复前后体验差异
+
+- **修复前**：空间不足时相邻标签内容覆盖，用户看不清当前和目标标签，只能猜测切换。
+- **目标体验**：标签在同样窗口与同样数量下采用明确的截断、最小宽度或横向滚动策略；任何标签的文字和控件都不会画到相邻标签上，当前项仍清楚可见。
+
+### 9. 最小修复范围
+
+只调整共享 `.desktop-work-tab` 的 flex basis/收缩与可读最小宽度，让 `.desktop-work-tabs` 在超出容量时按既有设计横向滚动，并补 CSS 回归测试。Web 与桌面继续共用同一实现；不改变 Goal Tree、关系图、标签数据模型、打开/关闭语义、标签数量上限或桌面壳层。
+
+### 10. 验收边界
+
+- **工程验证**：通过（本地源码）。TDD RED 先证明工作区样式只有滚动容器、标签仍可默认收缩且缺少可读宽度约束；最小修复为 `.desktop-work-tab` 增加 `flex: 0 0 clamp(132px, 16vw, 190px)`，既有标题省略与关闭列不变。回归已进入默认 `tests/web.test.ts`，相关测试、TypeScript、`git diff --check` 和完整 `pnpm test` 329/329 均通过。`tests/visual-foundation.test.ts` 有两条与本卡无关且在 HEAD 已存在的陈旧断言（颜色 token 与 workbench grid 列数）未被默认测试脚本收录，本卡没有顺手改写或把它们冒充通过。
+- **产品实操**：通过（真实 Casebook 数据、当前源码服务）。修复前分别用 Chrome Web 与安装版桌面 0.1.8 打开真实「GoalBoard 内部 Casebook」关系视图并保留 4 个长标题标签，两端都稳定复现相邻标题覆盖。修复后以同一项目、同一关系视图和同样 4 个标签复测：Web 与桌面壳层中每个标签均保持独立可读盒子，长标题只在本标签内省略，关闭按钮保留，不再串入相邻标签。桌面复测使用现有 App 壳层加载当前源码服务，不等于正式 0.1.8 App 已包含补丁；验收后临时服务已停止，受管 LaunchAgent 重新注册并恢复 `running / owned / health=ok`，桌面 App 已重新打开官方服务。
+- **Owner 最终验收**：通过（本地实现）。根因、最小 diff、Web/桌面真实像素结果和服务恢复均已独立检查；不扩展为标签系统重构。
+- **用户验收**：待用户在最终安装包中确认标签可读与切换体验。
+
+---
+
+## GB-20260830-36：Available 未暴露关键 scope 冲突，消费者领取后才发现 Goal 不承接当前产物
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
+**Bug 确认**：已确认，属于 Runtime Skill / MCP 工具说明的领取顺序缺陷；不是 Available Core 应自动理解自然语言意图的缺陷
+**修复决定**：已按 Owner 授权批准自主最小修复，P2；把选中候选的 Contract scope 核对移到原子创建 Claim/Run 之前，并补领取工具的边界提示
+**修复状态**：本地协议与 MCP 说明最小修复、工程验证及 Owner 验收通过；已提交于 `7839567`，尚未打包、安装或发布，真实 CGS 新 Session 消费仍待发布后实操
+
+### 1. 真实场景
+
+用户当前授权动作是把 G2F「明确选题竞争力分析」产生的候选 Content Bet 接入既有选题编辑台。Runtime 读取 Available 后只看到可执行的 G2E「开放研究发现机会」，随即领取；领取后读取完整 Contract 才发现 G2E 的 `out_of_scope` 明确排除了「明确选题 Report」。Runtime 最终把误领 Run 标为 `abandoned`，未提交 G2E Evidence，产品接入在 Goal 生命周期外完成。
+
+### 2. 事实与归因
+
+消费者提供了请求、Available 选择、Contract 边界和 abandoned 收口，足以确认一次真实误领与额外 Run 噪声。源码与正式 Skill 核对显示，Available 默认摘要只返回 Goal ID、标题、角色、动作、依赖/Risk 和规划摘要，不携带完整 Contract；这符合既有的输出体积控制。真正缺陷在官方执行顺序：`execution.md` 第 5 步要求对非 complete 项先调用 `goalboard_v1_select_goal`，下一段才要求“选中后调用 Contract before acting”。`select_goal` 会原子创建 Claim 与 Run，因此 Contract 的 `out_of_scope` 只能在审计记录已经产生后才被看到；同一段又要求按 Contract 选择候选，前后语义矛盾。这不是消费者单纯误用，也不是 Available Core 能在没有接收当前自然语言意图时自行判断的内容路由问题。
+
+### 3. 现有流程的问题
+
+消费者在候选选择阶段只看到“可执行”，没有看到当前产物与 Goal scope 的冲突；完整边界直到创建 Claim/Run 后才出现。纠正虽然没有污染 Evidence，却多出一次领取、Run、abandon 和解释成本，并使真正的跨 Goal 接入动作仍没有 canonical 承接者。
+
+### 4. 设计根因与初衷
+
+Available 的初衷是从 canonical 状态、依赖、Risk、角色和优先级派生“哪些 Goal 可以被领取”，而不是理解任意对话任务或替 Runtime 做业务归属判断；默认 summary 也用于控制输出体积，避免项目 Goal 较多时再次出现超长响应和截断。这些边界合理。缺陷来自两阶段读取的顺序写反：为了紧凑而把 Contract 留到候选选中后读取是合理的，但“选中候选”不应等同于立即写入 Claim/Run；Runtime 应先把它作为 tentative candidate 只读核对 Contract，再执行原子领取。
+
+### 5. 当前影响
+
+影响一个项目中存在相邻但边界不同的 Goal、并需要把上游产物接入下游界面的消费者。直接影响是重复 Claim/Run 和审计噪声；如果消费者没有像本次一样及时 abandoned，还可能把 G2F 产物错误登记成 G2E Evidence，污染验收真相。当前没有证据表明 canonical 已被污染。
+
+### 6. 复杂度审查
+
+- **当前必须**：将正式 Skill 改为 `available summary → 暂选候选 → contract scope 核对 → select_goal`；明确当前请求命中 `out_of_scope` 时不得领取，并说明无匹配 owner 时不制造 Run；同步 Available / Select 工具说明，使 Runtime 在只看工具契约时也不会写反顺序。
+- **可以延后**：给 Available 增加可选的结构化 `current_intent` 或单独的 scope-match 能力；只有多次证明客户端 Contract 核对仍不足时再评估。
+- **应当删除**：不让 Core 猜测未传入的自然语言意图，不把所有 Goal 的完整 Contract 重新塞回 Available，不为一次跨 Goal 接入新建自动路由系统。
+
+### 7. 修复必要性与优先级
+
+需要修，P2 流程正确性问题。它不会使不合适的 Goal 在 canonical 资格判断上变成“错误 Ready”，但官方顺序会诱导创建错误 Claim/Run，并带来 Evidence 归属污染风险。修复不涉及 Core 状态机和数据迁移，只纠正只读核对与原子领取的先后关系。
+
+### 8. 修复前后体验差异
+
+- **修复前**：看到首个 `execute` 就领取，创建 Run 后才发现当前产物被该 Goal 明确排除，只能 abandoned。
+- **目标体验**：领取前即可看到与选择相关的关键 scope 警示，或被协议强制先核对选中 Goal Contract；没有匹配 owner 时明确返回“当前 Available 无承接 Goal”和下一恢复动作，而不是制造错误 Run。
+
+### 9. 最小修复范围
+
+复用现有紧凑 Available 与单 Goal Contract：修改 `goal-advance` 执行顺序，要求暂选候选后先只读 Contract，并在当前请求不属于 `in_scope`、命中 `out_of_scope` 或没有 canonical owner 时禁止 `select_goal`；同步 `goalboard_v1_available` 与 `goalboard_v1_select_goal` 的工具说明。暂不向 summary 增加完整 scope 字段，不修改 CGS Goal、不自动迁移 Evidence、不增加服务端自然语言分类器。
+
+### 10. 验收边界
+
+- **工程验证**：通过（本地源码）。TDD RED 先证明 MCP 工具说明和正式 Skill 仍要求 `available → select_goal`，且不存在“暂选候选、先读 Contract、核对 scope”门禁；修复后相关 MCP/Skill 回归通过，完整 `pnpm test` 329/329、TypeScript 和 `git diff --check` 均通过。Core Available、Contract 数据模型、Claim/Run 原子性与紧凑 summary 均未改变。
+- **产品实操**：协议级局部通过，最终消费层待发布。源码 `tools/list` 与 Skill readback 已明确 `available → contract → select_goal`，命中 `out_of_scope`、Contract 矛盾或没有 canonical owner 时不得创建 Claim/Run；但当前正在运行的 0.1.8 MCP 仍返回旧工具说明，旧 Session 也不会热加载新 Skill，因此不能把源码 readback 冒充真实 CGS 新 Session 已不再误领。发布后需用相邻 Goal、当前请求明确命中另一个 Goal `out_of_scope` 的安全 fixture 或新 CGS Session 复测，并确认 Claim/Run 数量不增加。
+- **Owner 最终验收**：通过（本地协议边界）。只纠正只读 scope 核对与原子领取的顺序，不让 Core 猜自然语言、不把所有 Contract 塞回 Available，也不自动创建新 Goal。
+- **用户验收**：若进入发布，待真实 CGS 新 Session 在同类 handoff 中确认不再误领。
+
+---
+
+## GB-20260830-37：已有可消费上游产物时，下游已归属修复仍从 Available 完全消失
+
+**来源**：CGS 消费者反馈（会话 `01a04fb1-96a1-74b3-9836-604f28f87521`）
+**Bug 确认**：部分成立。普通 dependency/review blocker 从 Available 完全不可发现是 GoalBoard 可见性缺陷；三条 active 依赖仍未满足时不自动放行 G2B 是正确门禁，不能由仓库里存在 fresh Report 推翻
+**修复决定**：已按 Owner 授权批准最小修复，P1/P2；增加紧凑 `blocked_overview` 并要求明确 owner 缺席时先 Explain，不增加 artifact-level dependency 或自动绕过依赖
+**修复状态**：本地 Core/MCP/Skill 最小实现、完整工程验证、真实 CGS 安全副本协议实操与 Web computer-use 核对通过；Owner 验收通过，已提交于 `7839567`，尚未打包、安装或发布，不阻塞 CGS 主线
+
+### 1. 真实场景
+
+用户在真实 G2B 选题编辑台看到：团队已有推荐 angle 与研究理由，Owner 仍被要求从空白 textarea 重填，并直接看到英文 Zod 错误。该最小修复已经由用户批准，且消费者判断它落在 G2B「让账号 Owner 无重复操作地决定内容机会并交给创作」的既有 `in_scope` 与 business logic 内；但 `goalboard_v1_available` 既不返回 G2B，也不将其列入 blocked，只有另行 Explain 才能看到 G2D/G2E/G2F 尚未 fulfillment 的依赖门禁。
+
+### 2. 事实与归因
+
+Owner 已只读绑定真实 CGS 并复核 canonical 数据。G2B 是 `accepted / closed_leaf / unmet / valid`，当前 `work_state=review_blocked`，有 1 个 pending self-verifier obligation；Explain 返回 G2D、G2E、G2F 三条 `dependency.unsatisfied`。这三条 active `depends_on` 均在 2026-08-29 15:49 后生效，而 G2B 的 8 条 passed Evidence、最近 executor/self-verifier Run 与 4 次 Review 都更早；现有 Evidence 因此不能证明新增依赖已满足。Available 的 `blocked` 只收 `completion_blocked / waiting_for_human / replaced`，真实 G2B 既不在 available，也不在 blocked，只有知道稳定 ID 后另调 Explain 才可发现。故可见性缺陷可复现；“fresh G2F Report 已存在，所以应允许执行”的归因证据不足，文件或局部输出不等于三条 provider Goal 已 canonical satisfied。
+
+### 3. 现有流程的问题
+
+严格按 Available 的 Runtime 无法发现这个局部修复已有 G2B owner；若直接在仓库修会形成生命周期外工作，若领取相邻 G2E/G2F 又会污染 Evidence。消费者还必须额外猜到并调用 Explain，才能知道 G2B 不是不存在，而是被依赖门禁隐藏。
+
+### 4. 设计根因与初衷
+
+依赖门禁的初衷是防止下游在 provider 结果尚未可信完成时提前执行，避免以半成品输入形成错误验收。待审查的设计点有两个：Available 是否过度过滤而没有保留 dependency-blocked 摘要；`depends_on` 是否只能表达“provider 整体完成”而不能表达“某个可消费输出已可用，但 provider 仍有其他未完成工作”。
+
+### 5. 当前影响
+
+直接影响已 accepted、已有真实局部输入、需要修复自身 UI 的下游 Goal。当前证据支持一次真实绕行风险和 owner 不可发现；尚无证据表明应普遍放宽所有依赖，也不把“fresh Report 存在”自动等同于已 canonical、可信且满足 G2B 所需输入。
+
+### 6. 复杂度审查
+
+- **当前必须**：让普通 phase/dependency blocker 以紧凑 overview 保持可发现；当前请求明确属于某个 owner 时，先 Explain 该 Goal，而不是领取相邻 Goal；保留完整依赖门禁。
+- **可以延后**：引入显式 provider output readiness / artifact-level dependency，以及“只修既有实现但不消费上游业务输出”的 maintenance/rework 模式；只有更多真实案例证明 Goal 级依赖过粗且可定义安全验收时再评估。
+- **应当删除**：不因一个 UI 缺陷就普遍忽略未完成依赖，不让 Runtime 用仓库文件存在性自行宣布上游可消费，不创建第二套隐形任务账本。
+
+### 7. 修复必要性与优先级
+
+需要修可发现性，P1/P2；不修自动放行。用户正在真实 G2B 页面且 Contract 明确承接窄 UI/恢复，说明 owner 归属可信；但 GoalBoard 不能据此宣布三条上游依赖满足。最小修复应阻止“owner 消失后误领最近 Goal”，而不是为解决一次 UI 缺陷削弱全局依赖语义。
+
+### 8. 修复前后体验差异
+
+- **修复前**：Available 看不到 G2B，也看不到它为何不可执行；Runtime 只能额外 Explain、账本外修复或误领相邻 Goal。
+- **目标体验**：Available 至少显示 G2B 的 dependency-blocked 摘要与恢复动作；若 canonical 已证明 G2B 所需输入可消费，则同一 G2B 可合法承接局部修复，否则清楚说明缺少哪项 provider 输出，而不是只给整体 fulfillment。
+
+### 9. 最小修复范围
+
+在 Core `queryAvailable` 增加与完整 `blocked` 分离的紧凑 `blocked_overview`：只列普通 clarification/waiting-children/execution/review/revalidation/invalidated 阶段的 Goal 标题、状态、原因 code/message、priority 和 `next_action=explain`；MCP summary 保持紧凑，Skill 规定明确 owner 缺席时先看 overview 并 Explain。现有 `blocked` 继续承载 completion/human/replaced 的完整恢复事实；不修改 CGS Goal、Evidence、Review 或 relation，不自动解除依赖，不扩展自然语言路由器。
+
+### 10. 验收边界
+
+- **工程验证**：通过（本地源码）。TDD RED 先证明 dependency-blocked accepted leaf 的 `blocked_overview` 为 undefined；实现后 Core、MCP summary、tool description 与正式 Skill 回归通过，要求 overview→Explain→不得领取相邻 Goal。完整 `pnpm test` 329/329、TypeScript 和 `git diff --check` 均通过；MCP 全文件在受限沙箱首次受 SQLite 临时目录影响，正常本机权限下完整归零。
+- **产品实操**：通过（真实 CGS 只读事实 + 安全副本源码协议）。官方 0.1.8 MCP 中 G2B 在 Available/blocked 缺席，Explain 返回三条真实依赖；Contract/历史时间线证明现有通过证据早于新依赖。用 SQLite 在线只读 backup 生成临时 CGS 副本后，当前源码返回 `available=7 / blocked=4 / blocked_overview=13`，其中 G2B 为 `review_blocked / next_action=explain` 并保留三条依赖摘要；尝试选择 G2B 返回 `allowed=false`，Claim/Run 增量均为 0。computer use 又打开官方桌面 App 的真实 G2B：Goal Tree 和详情均显示“复核受阻”、3 个前置与三条具体阻塞，证明 Web 事实没有丢失，问题只在 Runtime Available 的可发现性。临时副本未改 CGS，最终安装后的新 Session overview 仍待发布后验收。
+- **Owner 最终验收**：通过（本地实现）。既有 owner 现在可在紧凑协议中被发现，消费者有确定的 Explain 动作；三条依赖、旧 Evidence 与禁止领取边界均保留。明确拒绝把 fresh 文件存在性升级为 provider fulfillment，也不把局部 UI owner 归属误解为依赖已满足。
+- **用户验收**：若发布，待真实 CGS 新 Session 确认 G2B owner 与阻塞原因可见，且不会误放行不可信输入。
+
+---
+
 ## 2026-08-30 第三方视角全量复审
 
 本节在全部实现、统一安装和代表性实操完成后重新审查“这张卡是否真的成立”，不以已经写了代码反推其合理性。判断标准只有四项：是否有可复现事实；是否增加了无必要操作、歧义或错误状态；是否影响正确性、闭环或审计；最小修复是否保留了原设计要保护的边界。它覆盖并更新上方按时间记录的阶段性判断。

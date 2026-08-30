@@ -38,7 +38,7 @@ Read this reference before the first GoalBoard write in a flow. It contains only
 
 ## Atomicity and idempotency
 
-- Use `available → select_goal` for normal work selection; selection atomically creates both Claim and Run or neither.
+- Use `available → contract → select_goal` for normal work selection. Treat the Available item as tentative until its Contract scope matches the current request; selection then atomically creates both Claim and Run or neither.
 - Use one Goal Tree Proposal for one complete reviewable change set, then read and check it before asking for a decision.
 - Use a fresh `idempotency_key` for every changed operation. Reuse a key only for the exact same retry.
 - Read structured results such as `blocked`, `pending`, conflicts, and idempotent “already” states literally. Do not report a stronger result than GoalBoard returned.

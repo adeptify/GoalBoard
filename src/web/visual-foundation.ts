@@ -5076,6 +5076,7 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .desktop-work-tab {
       min-width: 0;
       max-width: 245px;
+      flex: 0 0 clamp(132px, 16vw, 190px);
       height: 34px;
       padding: 0 3px 0 0;
       border-radius: 10px;

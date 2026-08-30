@@ -1976,6 +1976,18 @@ test("ready query explains dependency and Goal Mode blockers in plain language",
     coordinator.queryReady({ board_id: "board-1", actor_id: "runtime-a" }).ready.length,
     0,
   );
+  const available = coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-a" });
+  const blockedOverview = available.blocked_overview.find(
+    (item) => item.goal.goal_id === "feature",
+  );
+  assert.equal(blockedOverview?.work_state, "execution_blocked");
+  assert.equal(blockedOverview?.next_action, "explain");
+  assert.deepEqual(blockedOverview?.reasons, [
+    {
+      code: "dependency.unsatisfied",
+      message: "前置 Goal「完成 foundation」还未完成",
+    },
+  ]);
   assert.deepEqual(
     coordinator
       .queryReady({

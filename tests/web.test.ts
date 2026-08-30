@@ -56,6 +56,21 @@ test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
   );
 });
 
+test("desktop work tabs keep a readable width and scroll instead of overlapping", () => {
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tabs \{[^}]*overflow-x: auto;/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tab \{[^}]*flex: 0 0 clamp\(132px, 16vw, 190px\);/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.desktop-work-tab > \[role="tab"\] span \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/,
+  );
+});
+
 test("Goal Tree uses compact Runtime references instead of long internal ids", () => {
   assert.equal(goalTreeReferenceLabel("cgs-g2a-opportunity-intelligence"), "G2A");
   assert.equal(goalTreeReferenceLabel("cgs-g2b-editorial-decision"), "G2B");

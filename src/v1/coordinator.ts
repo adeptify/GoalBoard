@@ -12,6 +12,7 @@ import {
   type AddProjectGuidanceResult,
   type BoardSnapshot,
   type BlockedAvailableGoal,
+  type BlockedAvailableOverview,
   type ClaimDecision,
   type ClaimRecord,
   type ClaimRenewRequest,
@@ -218,6 +219,7 @@ export interface AvailableQueryResult {
   observed_event_cursor: number;
   available: AvailableGoal[];
   blocked: BlockedAvailableGoal[];
+  blocked_overview: BlockedAvailableOverview[];
   parallel_suggestion: ParallelExecutionSuggestion | null;
 }
 
@@ -3101,6 +3103,7 @@ export class GoalBoardCoordinator {
     const metrics = planningMetrics(snapshot.goals, snapshot.relations);
     const available: AvailableGoal[] = [];
     const blocked: BlockedAvailableGoal[] = [];
+    const blockedOverview: BlockedAvailableOverview[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
       if (
@@ -3117,6 +3120,22 @@ export class GoalBoardCoordinator {
             : workState.reasons,
           priority_hint: goal.priority,
           risk_summary: this.riskSummary(goal.goal_id),
+        });
+      }
+      if (
+        workState.work_state === "clarification_blocked" ||
+        workState.work_state === "waiting_children" ||
+        workState.work_state === "execution_blocked" ||
+        workState.work_state === "review_blocked" ||
+        workState.work_state === "revalidation_blocked" ||
+        workState.work_state === "invalidated"
+      ) {
+        blockedOverview.push({
+          goal,
+          work_state: workState.work_state,
+          next_action: "explain",
+          reasons: workState.reasons.map(({ code, message }) => ({ code, message })),
+          priority_hint: goal.priority,
         });
       }
       const requiresParentConfirmation =
@@ -3171,10 +3190,15 @@ export class GoalBoardCoordinator {
       (left, right) =>
         right.priority_hint - left.priority_hint || left.goal.goal_id.localeCompare(right.goal.goal_id),
     );
+    blockedOverview.sort(
+      (left, right) =>
+        right.priority_hint - left.priority_hint || left.goal.goal_id.localeCompare(right.goal.goal_id),
+    );
     return {
       observed_event_cursor: snapshot.cursor,
       available,
       blocked,
+      blocked_overview: blockedOverview,
       parallel_suggestion: this.parallelExecutionSuggestion(available),
     };
   }

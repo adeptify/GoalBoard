@@ -882,6 +882,21 @@ export interface BlockedAvailableGoal {
   risk_summary: string[];
 }
 
+/** A compact pointer to an ordinary phase blocker that can be expanded with Explain. */
+export interface BlockedAvailableOverview {
+  goal: GoalRecord;
+  work_state:
+    | "clarification_blocked"
+    | "waiting_children"
+    | "execution_blocked"
+    | "review_blocked"
+    | "revalidation_blocked"
+    | "invalidated";
+  next_action: "explain";
+  reasons: Array<Pick<DecisionReason, "code" | "message">>;
+  priority_hint: number;
+}
+
 export interface ParallelRuntimeAssignment {
   runtime_slot: "current_runtime" | `additional_runtime_${number}`;
   goal_id: string;
