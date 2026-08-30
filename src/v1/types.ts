@@ -27,6 +27,7 @@ export type GoalWorkState =
   | "review_pending"
   | "reviewing"
   | "review_blocked"
+  | "waiting_for_human"
   | "revalidation_pending"
   | "revalidating"
   | "revalidation_blocked"
@@ -157,6 +158,8 @@ export interface GoalRecord {
   constraints: string[];
   required_inputs: string[];
   promised_outputs: string[];
+  /** Canonical user-confirmed decomposition and parent-to-child Contract trace. */
+  decomposition_review: DecompositionReview | null;
   definition_state: DefinitionState;
   decomposition_state: DecompositionState;
   validity_state: ValidityState;
@@ -244,6 +247,11 @@ export interface RiskRecord {
   revisit_condition: string;
   owner: string;
   state: "open" | "triggered" | "resolved" | "accepted" | "expired";
+  resolution_basis: {
+    summary: string;
+    evidence_refs: string[];
+    residual_gaps: string[];
+  } | null;
   created_at: string;
   updated_at: string;
 }
@@ -277,6 +285,25 @@ export interface DecompositionReview {
   }>;
   open_goal_ids: string[];
   next_step: string;
+  /**
+   * User-confirmed structural trace from this compound Goal's Contract to
+   * descendant Contracts. GoalBoard validates exact references; it does not
+   * infer semantic equivalence between differently worded results.
+   */
+  contract_coverage?: {
+    promised_outputs: Array<{
+      parent_promised_output: string;
+      status: "complete" | "partial" | "integration_required" | "uncovered";
+      child_outputs: Array<{ goal_id: string; promised_output: string }>;
+      reason: string;
+    }>;
+    acceptance_criteria: Array<{
+      parent_criterion_id: string;
+      status: "complete" | "partial" | "integration_required" | "uncovered";
+      child_criteria: Array<{ goal_id: string; criterion_id: string }>;
+      reason: string;
+    }>;
+  };
 }
 
 /**
@@ -787,6 +814,12 @@ export interface GoalWorkStateView {
   work_state: GoalWorkState;
   next_action: GoalWorkAction | null;
   active_claim: ClaimRecord | null;
+  active_claim_lease: {
+    remaining_seconds: number;
+    renewal_window_seconds: number;
+    renew_recommended: boolean;
+    next_action: "renew_claim" | null;
+  } | null;
   active_run: RunRecord | null;
   pending_review_roles: Array<"self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver">;
   child_goal_ids: string[];
@@ -813,7 +846,7 @@ export interface AvailableGoal extends Omit<ReadyGoal, "role"> {
 /** A Goal that is not claimable because its finished work is waiting on a completion gate. */
 export interface BlockedAvailableGoal {
   goal: GoalRecord;
-  work_state: "completion_blocked";
+  work_state: "completion_blocked" | "waiting_for_human";
   next_action: null;
   reasons: DecisionReason[];
   priority_hint: number;
@@ -868,6 +901,13 @@ export interface GoalContractView {
   observed_event_cursor: number;
   goal_path: string;
   goal: GoalRecord;
+  parent_contract_coverage: Array<{
+    parent_goal_id: string;
+    parent_goal_title: string;
+    record_status: "recorded" | "unrecorded";
+    promised_outputs: NonNullable<DecompositionReview["contract_coverage"]>["promised_outputs"];
+    acceptance_criteria: NonNullable<DecompositionReview["contract_coverage"]>["acceptance_criteria"];
+  }>;
   work_state: GoalWorkStateView;
   relations: GoalRelationRecord[];
   impacts: ImpactBindingRecord[];
@@ -901,7 +941,7 @@ export interface CreateGoalInput {
   promised_outputs?: string[];
   /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
   leaf_readiness?: LeafReadiness;
-  /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
+  /** User-confirmed decomposition evidence and parent-to-child Contract trace. */
   decomposition_review?: DecompositionReview;
   definition_state?: DefinitionState;
   decomposition_state?: DecompositionState;
@@ -926,6 +966,20 @@ export interface ClaimRequest {
   lease_seconds?: number;
   strengthen_policy?: Partial<GoalPolicy>;
   idempotency_key: string;
+}
+
+export interface ClaimRenewRequest {
+  board_id: string;
+  claim_id: string;
+  actor_id: string;
+  lease_seconds?: number;
+  idempotency_key: string;
+}
+
+export interface ClaimRenewResult {
+  claim: ClaimRecord;
+  replayed: boolean;
+  observed_event_cursor: number;
 }
 
 export interface ClaimDecision {

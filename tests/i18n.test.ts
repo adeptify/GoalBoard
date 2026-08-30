@@ -63,7 +63,7 @@ test("every work state explains what it means, what to do, and how to continue i
   const states: GoalPresentationState[] = [
     "clarification_pending", "clarification_decision_pending", "compound_closure_pending", "handoff_pending", "clarifying", "clarification_blocked", "waiting_children",
     "execution_pending", "executing", "execution_blocked", "completion_pending", "completion_blocked", "review_pending", "reviewing",
-    "review_blocked", "revalidation_pending", "revalidating", "revalidation_blocked",
+    "review_blocked", "waiting_for_human", "revalidation_pending", "revalidating", "revalidation_blocked",
     "invalidated", "satisfied", "trashed", "archived",
   ];
   for (const state of states) {
@@ -86,6 +86,7 @@ test("work state labels stay concise and professional", () => {
   assert.equal(explainWorkState("completion_pending").label, "待完成");
   assert.equal(explainWorkState("completion_blocked").label, "完成受阻");
   assert.equal(explainWorkState("review_pending").label, "待复核");
+  assert.equal(explainWorkState("waiting_for_human").label, "等待你验收");
   assert.equal(explainWorkState("satisfied").label, "已完成");
 });
 

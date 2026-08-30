@@ -627,7 +627,9 @@ export const VISUAL_FOUNDATION_STYLES = `
     white-space: nowrap;
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
+    font-size: 10px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
     letter-spacing: 0;
   }
   .tree-progress {
@@ -2603,6 +2605,7 @@ export const VISUAL_FOUNDATION_STYLES = `
   .goal-status--execution_pending,
   .goal-status--completion_pending,
   .goal-status--review_pending,
+  .goal-status--waiting_for_human,
   .goal-status--revalidation_pending { --goal-status-tone: var(--blue-dark); }
   .goal-status--clarification_blocked,
   .goal-status--execution_blocked,
@@ -5001,7 +5004,6 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .tree-node:focus-visible { outline: 0; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--blue) 62%, transparent); }
     body[data-desktop-shell="true"] .tree-node.is-selected { background: transparent; box-shadow: none; }
     body[data-desktop-shell="true"] .tree-copy strong { font-size: 11.5px; font-weight: 590; }
-    body[data-desktop-shell="true"] .tree-copy small { display: none; }
     body[data-desktop-shell="true"] .tree-node .goal-status { font-size: 8.5px; }
     body[data-desktop-shell="true"] .tree-footer {
       min-height: 28px;

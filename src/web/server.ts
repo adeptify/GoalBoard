@@ -512,6 +512,7 @@ export function buildGoalBoardWebView(
       reasons: workState.reasons,
       active_claim_actor: activeClaim?.actor_id ?? null,
       active_claim: activeClaim ?? null,
+      active_claim_lease: workState.active_claim_lease,
       claims,
       runs,
       evidence,
@@ -2984,6 +2985,9 @@ async function handleGoalBoardWebRequest(
           const body = await readBody(request);
           const state = String(body.state ?? "") as RiskRecord["state"];
           const reason = String(body.reason ?? "").trim();
+          const rawResolutionBasis = body.resolution_basis && typeof body.resolution_basis === "object" && !Array.isArray(body.resolution_basis)
+            ? body.resolution_basis as Record<string, unknown>
+            : null;
           try {
             const result = coordinator.setRiskState(
               options.boardId,
@@ -2991,6 +2995,19 @@ async function handleGoalBoardWebRequest(
                 risk_id: decodeURIComponent(riskStateMatch[1]),
                 state,
                 reason,
+                ...(rawResolutionBasis == null
+                  ? {}
+                  : {
+                      resolution_basis: {
+                        summary: String(rawResolutionBasis.summary ?? ""),
+                        evidence_refs: Array.isArray(rawResolutionBasis.evidence_refs)
+                          ? rawResolutionBasis.evidence_refs.map(String)
+                          : [],
+                        residual_gaps: Array.isArray(rawResolutionBasis.residual_gaps)
+                          ? rawResolutionBasis.residual_gaps.map(String)
+                          : [],
+                      },
+                    }),
               },
               {
                 actor_id: "web-user",
@@ -3491,18 +3508,13 @@ async function handleGoalBoardWebRequest(
             }
             return;
           }
-          if (body.confirm_all_pending === true) {
-            sendJson(response, 400, {
-              error: "Web 入口不能验证上一轮是否明确请求整份确认；请逐项选择，或在当前 Runtime 对话中确认整份提案。",
-            });
-            return;
-          }
           if (body.decisions != null && !Array.isArray(body.decisions)) {
             sendJson(response, 400, { error: "decisions 必须是条目决定列表" });
             return;
           }
           try {
             const proposalId = decodeURIComponent(goalTreeProposalMatch[1]);
+            const confirmsWholeProposal = body.confirm_all_pending === true;
             let decisions = body.decisions as Parameters<GoalBoardCoordinator["decideGoalTreeProposal"]>[0]["decisions"];
             let decisionReason = typeof body.reason === "string" ? body.reason.trim() : "";
             if (Array.isArray(decisions) && decisions.length > 0 && decisions.every((decision) => decision.decision === "reject")) {
@@ -3543,9 +3555,11 @@ async function handleGoalBoardWebRequest(
                 authority_source: "web",
                 conversation_ref: `web:${options.boardId}`,
                 message_ref: `web-decision:${randomUUID()}`,
+                whole_confirmation_prompted: confirmsWholeProposal,
               },
               decisions,
               reason: decisionReason || undefined,
+              confirm_all_pending: confirmsWholeProposal,
               idempotency_key: String(body.idempotency_key ?? `web-goal-tree-decision-${randomUUID()}`),
             });
             sendJson(response, 200, result);

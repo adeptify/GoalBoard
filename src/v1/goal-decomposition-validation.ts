@@ -140,7 +140,10 @@ export const PRODUCT_PATH_AREA_LABELS: Record<ProductPathArea, string> = {
 };
 
 export interface GoalDecompositionValidationContext {
-  goals: Array<Pick<GoalRecord, "goal_id" | "decomposition_state">>;
+  goals: Array<
+    Pick<GoalRecord, "goal_id" | "decomposition_state"> &
+    Partial<Pick<GoalRecord, "promised_outputs" | "acceptance_criteria">>
+  >;
   relations: Array<Pick<GoalRelationRecord, "relation_id" | "from_goal_id" | "to_goal_id" | "type" | "state">>;
 }
 
@@ -155,6 +158,7 @@ export interface GoalDecompositionValidationIssue {
     | "split_candidates"
     | "acceptance_coverage"
     | "decomposition_review"
+    | "contract_coverage"
     | "coverage"
     | "open_frontier";
   message: string;
@@ -203,6 +207,49 @@ export function readDecompositionReview(value: unknown): DecompositionReview | n
         reason: String(item.reason ?? "").trim(),
       }))
     : [];
+  const rawContractCoverage = record(raw.contract_coverage);
+  const contractCoverage = rawContractCoverage == null
+    ? undefined
+    : {
+        promised_outputs: Array.isArray(rawContractCoverage.promised_outputs)
+          ? rawContractCoverage.promised_outputs
+            .map(record)
+            .filter((item): item is Record<string, unknown> => item != null)
+            .map((item) => ({
+              parent_promised_output: String(item.parent_promised_output ?? "").trim(),
+              status: String(item.status ?? "") as NonNullable<DecompositionReview["contract_coverage"]>["promised_outputs"][number]["status"],
+              child_outputs: Array.isArray(item.child_outputs)
+                ? item.child_outputs
+                  .map(record)
+                  .filter((child): child is Record<string, unknown> => child != null)
+                  .map((child) => ({
+                    goal_id: String(child.goal_id ?? "").trim(),
+                    promised_output: String(child.promised_output ?? "").trim(),
+                  }))
+                : [],
+              reason: String(item.reason ?? "").trim(),
+            }))
+          : [],
+        acceptance_criteria: Array.isArray(rawContractCoverage.acceptance_criteria)
+          ? rawContractCoverage.acceptance_criteria
+            .map(record)
+            .filter((item): item is Record<string, unknown> => item != null)
+            .map((item) => ({
+              parent_criterion_id: String(item.parent_criterion_id ?? "").trim(),
+              status: String(item.status ?? "") as NonNullable<DecompositionReview["contract_coverage"]>["acceptance_criteria"][number]["status"],
+              child_criteria: Array.isArray(item.child_criteria)
+                ? item.child_criteria
+                  .map(record)
+                  .filter((child): child is Record<string, unknown> => child != null)
+                  .map((child) => ({
+                    goal_id: String(child.goal_id ?? "").trim(),
+                    criterion_id: String(child.criterion_id ?? "").trim(),
+                  }))
+                : [],
+              reason: String(item.reason ?? "").trim(),
+            }))
+          : [],
+      };
   return {
     status: String(raw.status ?? "") as DecompositionReview["status"],
     method_pack_ids: strings(raw.method_pack_ids),
@@ -213,6 +260,7 @@ export function readDecompositionReview(value: unknown): DecompositionReview | n
       ? {}
       : { product_context: String(raw.product_context) as LegacyProductContext }),
     coverage,
+    ...(contractCoverage == null ? {} : { contract_coverage: contractCoverage }),
     open_goal_ids: strings(raw.open_goal_ids),
     next_step: String(raw.next_step ?? "").trim(),
   };
@@ -596,6 +644,85 @@ function descendantsOf(goalId: string, children: Map<string, Set<string>>): stri
   return [...found];
 }
 
+/**
+ * Historical compound Goals may not have a recorded parent/child Contract map;
+ * that absence is displayed but does not rewrite their state. Once a map is
+ * recorded, however, every parent result must still resolve to exact canonical
+ * descendants before the parent may present or persist as complete.
+ */
+export function recordedContractCoverageBlocksClosure(
+  goal: Pick<GoalRecord, "goal_id" | "promised_outputs" | "acceptance_criteria" | "decomposition_review">,
+  context: GoalDecompositionValidationContext,
+): boolean {
+  const coverage = goal.decomposition_review?.contract_coverage;
+  if (coverage == null) return false;
+
+  const parentOutputIds = goal.promised_outputs;
+  const parentCriterionIds = goal.acceptance_criteria.map((criterion) => criterion.criterion_id);
+  if (
+    !sameStringSet(coverage.promised_outputs.map((entry) => entry.parent_promised_output), parentOutputIds) ||
+    !sameStringSet(coverage.acceptance_criteria.map((entry) => entry.parent_criterion_id), parentCriterionIds)
+  ) {
+    return true;
+  }
+  if (
+    coverage.promised_outputs.some((entry) =>
+      entry.status !== "complete" || !entry.reason || entry.child_outputs.length === 0,
+    ) ||
+    coverage.acceptance_criteria.some((entry) =>
+      entry.status !== "complete" || !entry.reason || entry.child_criteria.length === 0,
+    )
+  ) {
+    return true;
+  }
+
+  const children = new Map<string, Set<string>>();
+  for (const relation of context.relations) {
+    if (relation.state !== "active" || relation.type !== "part_of") continue;
+    const siblings = children.get(relation.to_goal_id) ?? new Set<string>();
+    siblings.add(relation.from_goal_id);
+    children.set(relation.to_goal_id, siblings);
+  }
+  const descendantIds = new Set(descendantsOf(goal.goal_id, children));
+  const contracts = new Map(context.goals.map((candidate) => [candidate.goal_id, {
+    promised_outputs: candidate.promised_outputs ?? [],
+    criterion_ids: (candidate.acceptance_criteria ?? []).map((criterion) => criterion.criterion_id),
+  }]));
+  return coverage.promised_outputs.some((entry) => entry.child_outputs.some((reference) =>
+    !descendantIds.has(reference.goal_id) ||
+    !contracts.get(reference.goal_id)?.promised_outputs.includes(reference.promised_output),
+  )) || coverage.acceptance_criteria.some((entry) => entry.child_criteria.some((reference) =>
+    !descendantIds.has(reference.goal_id) ||
+    !contracts.get(reference.goal_id)?.criterion_ids.includes(reference.criterion_id),
+  ));
+}
+
+function proposedGoalContracts(
+  items: ProposalItem[],
+  context: GoalDecompositionValidationContext,
+): Map<string, { promised_outputs: string[]; criterion_ids: string[] }> {
+  const contracts = new Map(context.goals.map((goal) => [goal.goal_id, {
+    promised_outputs: [...(goal.promised_outputs ?? [])],
+    criterion_ids: (goal.acceptance_criteria ?? []).map((criterion) => criterion.criterion_id),
+  }]));
+  for (const item of items) {
+    const goal = goalPayload(item);
+    if (!goal) continue;
+    const goalId = String(goal.goal_id ?? item.payload.goal_id ?? "").trim();
+    if (!goalId) continue;
+    const previous = contracts.get(goalId) ?? { promised_outputs: [], criterion_ids: [] };
+    contracts.set(goalId, {
+      promised_outputs: Array.isArray(goal.promised_outputs)
+        ? strings(goal.promised_outputs)
+        : previous.promised_outputs,
+      criterion_ids: Array.isArray(goal.acceptance_criteria)
+        ? goalAcceptanceCriteria(goal).map((criterion) => String(criterion.criterion_id ?? "").trim()).filter(Boolean)
+        : previous.criterion_ids,
+    });
+  }
+  return contracts;
+}
+
 function proposedDependencyPairs(
   items: ProposalItem[],
   context: GoalDecompositionValidationContext,
@@ -657,6 +784,7 @@ export function goalTreeProposalDecompositionIssues(
   const issues: GoalDecompositionValidationIssue[] = [];
   const { states, children } = proposedGraph(items, context);
   const dependencyPairs = proposedDependencyPairs(items, context);
+  const contracts = proposedGoalContracts(items, context);
 
   for (const item of items) {
     const goal = goalPayload(item);
@@ -871,6 +999,81 @@ export function goalTreeProposalDecompositionIssues(
         `Goal「${String(goal.title ?? goalId)}」下面仍有 ${openGoalIds.length} 条 Goal 没有拆完：${openGoalIds.join("、")}。`,
         "请继续拆解这些 Goal，或把父 Goal 保持为“仍需拆分”。",
         { open_goal_ids: openGoalIds },
+      ));
+      continue;
+    }
+
+    if (review.contract_coverage == null) {
+      issues.push(issue(
+        item,
+        goalId,
+        "contract_coverage",
+        "goal_tree_proposal.contract_coverage_required",
+        `Goal「${String(goal.title ?? goalId)}」还没有逐项说明父级承诺结果和完成条件由哪些子 Goal Contract 覆盖。`,
+        "请补充 contract_coverage；GoalBoard 只核对明确引用，不会根据标题猜测父子语义等价。",
+      ));
+      continue;
+    }
+
+    const contractCoverage = review.contract_coverage;
+    const parentContract = contracts.get(goalId) ?? { promised_outputs: [], criterion_ids: [] };
+    const coveredOutputs = contractCoverage.promised_outputs.map((entry) => entry.parent_promised_output);
+    const coveredCriteria = contractCoverage.acceptance_criteria.map((entry) => entry.parent_criterion_id);
+    const outputSetMatches = sameStringSet(coveredOutputs, parentContract.promised_outputs);
+    const criterionSetMatches = sameStringSet(coveredCriteria, parentContract.criterion_ids);
+    const incompleteEntries = [
+      ...contractCoverage.promised_outputs.map((entry) => ({ ...entry, kind: "output" as const })),
+      ...contractCoverage.acceptance_criteria.map((entry) => ({ ...entry, kind: "criterion" as const })),
+    ].filter((entry) => entry.status !== "complete" || !entry.reason);
+    if (!outputSetMatches || !criterionSetMatches || incompleteEntries.length) {
+      issues.push(issue(
+        item,
+        goalId,
+        "contract_coverage",
+        "goal_tree_proposal.contract_coverage_incomplete",
+        `Goal「${String(goal.title ?? goalId)}」仍有父级承诺结果或完成条件没有被子 Contract 完整覆盖。`,
+        "请逐项补齐父级 promised_outputs 和 acceptance_criteria；部分覆盖或仍需集成时，父 Goal 必须继续保持开放。",
+        {
+          affected_work_items: [
+            ...parentContract.promised_outputs.filter((output) => !coveredOutputs.includes(output)),
+            ...parentContract.criterion_ids.filter((criterionId) => !coveredCriteria.includes(criterionId)),
+            ...incompleteEntries.map((entry) => entry.kind === "output"
+              ? entry.parent_promised_output
+              : entry.parent_criterion_id),
+          ],
+        },
+      ));
+      continue;
+    }
+    const contractDescendantSet = new Set(descendantsOf(goalId, children));
+    const invalidOutputRefs = contractCoverage.promised_outputs.flatMap((entry) =>
+      entry.child_outputs.filter((reference) =>
+        !contractDescendantSet.has(reference.goal_id) ||
+        !contracts.get(reference.goal_id)?.promised_outputs.includes(reference.promised_output),
+      ),
+    );
+    const invalidCriterionRefs = contractCoverage.acceptance_criteria.flatMap((entry) =>
+      entry.child_criteria.filter((reference) =>
+        !contractDescendantSet.has(reference.goal_id) ||
+        !contracts.get(reference.goal_id)?.criterion_ids.includes(reference.criterion_id),
+      ),
+    );
+    const missingChildRefs = contractCoverage.promised_outputs.some((entry) => entry.child_outputs.length === 0) ||
+      contractCoverage.acceptance_criteria.some((entry) => entry.child_criteria.length === 0);
+    if (missingChildRefs || invalidOutputRefs.length || invalidCriterionRefs.length) {
+      issues.push(issue(
+        item,
+        goalId,
+        "contract_coverage",
+        "goal_tree_proposal.contract_coverage_reference_invalid",
+        `Goal「${String(goal.title ?? goalId)}」的父子 Contract 覆盖引用了不存在、非后代或不匹配的子级结果。`,
+        "请引用当前子树中真实存在的 child goal_id、promised_output 和 criterion_id。",
+        {
+          affected_work_items: [
+            ...invalidOutputRefs.map((reference) => `${reference.goal_id}:${reference.promised_output}`),
+            ...invalidCriterionRefs.map((reference) => `${reference.goal_id}:${reference.criterion_id}`),
+          ],
+        },
       ));
     }
   }

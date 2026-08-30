@@ -112,6 +112,7 @@ export class SqliteGoalBoardStore {
           constraints_json TEXT NOT NULL DEFAULT '[]',
           required_inputs_json TEXT NOT NULL DEFAULT '[]',
           promised_outputs_json TEXT NOT NULL DEFAULT '[]',
+          decomposition_review_json TEXT,
           definition_state TEXT NOT NULL CHECK (definition_state IN ('draft', 'accepted')),
           decomposition_state TEXT NOT NULL CHECK (decomposition_state IN ('abstract', 'frontier_open', 'closed_leaf', 'closed_compound')),
           validity_state TEXT NOT NULL CHECK (validity_state IN ('valid', 'needs_revalidation', 'invalidated')),
@@ -245,6 +246,7 @@ export class SqliteGoalBoardStore {
           revisit_condition TEXT NOT NULL,
           owner TEXT NOT NULL,
           state TEXT NOT NULL CHECK (state IN ('open', 'triggered', 'resolved', 'accepted', 'expired')),
+          resolution_basis_json TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -669,10 +671,10 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (20, ?)")
         .run(new Date().toISOString());
-      migrateFeedTables(this.db);
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
         .run(new Date().toISOString());
+      migrateFeedTables(this.db);
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (22, ?)")
         .run(new Date().toISOString());
@@ -684,6 +686,9 @@ export class SqliteGoalBoardStore {
         .run(new Date().toISOString());
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (25, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (26, ?)")
         .run(new Date().toISOString());
       });
       return;
@@ -768,21 +773,22 @@ export class SqliteGoalBoardStore {
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 20")
       .get();
     if (!evidenceLocatorSourceApplied) this.migrateEvidenceLocatorSource();
-    const feedWorkbenchApplied = this.db
+    const contractCoverageApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 21")
       .get();
-    if (!feedWorkbenchApplied) {
-      this.immediate(() => {
-        migrateFeedTables(this.db);
-        this.db
-          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
-          .run(new Date().toISOString());
-      });
+    const goalColumns = this.db.pragma("table_info(goals)") as Array<{ name: string }>;
+    const riskColumns = this.db.pragma("table_info(risks)") as Array<{ name: string }>;
+    if (
+      !contractCoverageApplied ||
+      !goalColumns.some((column) => column.name === "decomposition_review_json") ||
+      !riskColumns.some((column) => column.name === "resolution_basis_json")
+    ) {
+      this.migrateContractCoverageAndRiskResolution();
     }
-    const feedSourcesApplied = this.db
+    const feedWorkbenchApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 22")
       .get();
-    if (!feedSourcesApplied) {
+    if (!feedWorkbenchApplied) {
       this.immediate(() => {
         migrateFeedTables(this.db);
         this.db
@@ -790,10 +796,10 @@ export class SqliteGoalBoardStore {
           .run(new Date().toISOString());
       });
     }
-    const feedReadStateApplied = this.db
+    const feedSourcesApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 23")
       .get();
-    if (!feedReadStateApplied) {
+    if (!feedSourcesApplied) {
       this.immediate(() => {
         migrateFeedTables(this.db);
         this.db
@@ -801,15 +807,26 @@ export class SqliteGoalBoardStore {
           .run(new Date().toISOString());
       });
     }
-    const projectGuidanceApplied = this.db
+    const feedReadStateApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 24")
+      .get();
+    if (!feedReadStateApplied) {
+      this.immediate(() => {
+        migrateFeedTables(this.db);
+        this.db
+          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (24, ?)")
+          .run(new Date().toISOString());
+      });
+    }
+    const projectGuidanceApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 25")
       .get();
     const projectGuidanceTable = this.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_entries'")
       .get();
     if (!projectGuidanceApplied || !projectGuidanceTable) this.migrateProjectGuidance();
     const projectGuidanceRevisionsApplied = this.db
-      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 25")
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 26")
       .get();
     const projectGuidanceRevisionsTable = this.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_guidance_revisions'")
@@ -1579,7 +1596,7 @@ export class SqliteGoalBoardStore {
           ON project_guidance_entries(board_id, position, guidance_id);
       `);
       this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (24, ?)")
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (25, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -1634,7 +1651,23 @@ export class SqliteGoalBoardStore {
         FROM project_guidance_entries;
       `);
       this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (25, ?)")
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (26, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateContractCoverageAndRiskResolution(): void {
+    this.immediate(() => {
+      const goalColumns = this.db.pragma("table_info(goals)") as Array<{ name: string }>;
+      if (!goalColumns.some((column) => column.name === "decomposition_review_json")) {
+        this.db.exec("ALTER TABLE goals ADD COLUMN decomposition_review_json TEXT");
+      }
+      const riskColumns = this.db.pragma("table_info(risks)") as Array<{ name: string }>;
+      if (!riskColumns.some((column) => column.name === "resolution_basis_json")) {
+        this.db.exec("ALTER TABLE risks ADD COLUMN resolution_basis_json TEXT");
+      }
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -1933,6 +1966,7 @@ export class SqliteGoalBoardStore {
       constraints: parseJson<string[]>(row.constraints_json, []),
       required_inputs: parseJson<string[]>(row.required_inputs_json, []),
       promised_outputs: parseJson<string[]>(row.promised_outputs_json, []),
+      decomposition_review: parseJson<GoalRecord["decomposition_review"]>(row.decomposition_review_json, null),
       definition_state: text(row.definition_state) as GoalRecord["definition_state"],
       decomposition_state: text(row.decomposition_state) as GoalRecord["decomposition_state"],
       validity_state: text(row.validity_state) as GoalRecord["validity_state"],
@@ -2011,6 +2045,7 @@ function mapRisk(row: Row): RiskRecord {
     revisit_condition: text(row.revisit_condition),
     owner: text(row.owner),
     state: text(row.state) as RiskRecord["state"],
+    resolution_basis: parseJson<RiskRecord["resolution_basis"]>(row.resolution_basis_json, null),
     created_at: text(row.created_at),
     updated_at: text(row.updated_at),
   };

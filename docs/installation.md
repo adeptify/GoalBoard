@@ -45,7 +45,19 @@ pnpm install:local
 
 `status=needs_repair` 时直接执行 `service install`，不要先尝试 `restart`。`install` 会重写 GoalBoard 自己拥有的 plist 和 receipt、受控重启并在失败时回滚；未知 LaunchAgent 或外部端口监听者仍不会被接管。
 
-更新 MCP 或 Skill 后也要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
+本体升级不会静默改写 Runtime 配置或 Skill 链接。只要这次 Release 改过 MCP 或 `skills/goal-advance`，还必须打开 GoalBoard 的“设置 → AI 与执行工具”：已由 GoalBoard 管理但仍指向旧 Release 的 Runtime 会显示“需要修复”，先预览，再由用户确认修复。只有该页回到“已接入”、Skill 链接指向安装清单中的当前 Release，才可以对依赖 Runtime 协议的修复报告“已安装”。Core、App 和 Web service 版本一致不能代替这一步；未知同名配置或 Skill 仍保持冲突，不得覆盖。
+
+更新 MCP 或 Skill 后还要新开 Runtime Session，因为已经运行的 Session 不会重新加载工具。若要让内置 demo 使用新版示范内容，再单独执行 `goalboard demo reset --confirm`；它会清除 demo 内的改动，但不会影响用户项目。
+
+### 发布后的最终产物验收
+
+发布者只有逐层完成下面的核对，才能把消费者可见修复标成“已安装”：
+
+1. Git tag、Release 资产和校验和来自同一提交；App 内嵌 Runtime 与 `~/.goalboard` 安装清单版本一致。
+2. 常驻服务按 `status` 返回的动作恢复为 `running`，并确认 LaunchAgent、监听端口和 `/health` 属于同一实例。
+3. 对每个已经接入且由 GoalBoard 管理的 Runtime 检查“设置 → AI 与执行工具”；`needs_repair` 必须经当前用户预览并确认后收敛为 `connected`。这一步同时更新 MCP 配置与 Skill 链接，失败会回滚。
+4. 关闭并新建一个 Runtime Session，确认它加载了当前 Release 的工具声明和 Skill；旧 Session 不能作为新版本验收证据。
+5. 最后使用真实项目和代表性数据检查用户可见结果。源码、自动化测试、包内字符串、版本号和页面 HTML 只能分别证明对应层，不能代替最终 App 的计算后样式与完整旅程。
 
 如果旧 Session 随后报告 catalog schema 高于当前 reader 支持范围，这表示运行中的 MCP 已过期，不表示数据库损坏。不要回滚 `catalog.db`，也不要用 SQLite、CLI 或 Web 绕过写入。新建或 Fork Session 后，先确认消息确实落在新任务，再只读解析当前 GoalBoard 项目；解析成功后才继续写入。宿主显示“已导航”不等于下一条消息一定进入了新任务。
 

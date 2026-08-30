@@ -18,6 +18,7 @@ import {
   activeOutgoingDependsOn,
   displayedPassedCriterionIds,
   firstBlockedDescendant,
+  goalTreeReferenceLabel,
   renderGoalBoardGraphFragment,
   renderFeedWorkbenchFragment,
   renderGoalPanelFragment,
@@ -44,6 +45,22 @@ const WORKBENCH_CLIENT_SCRIPT = renderGoalBoardWorkbenchClientScript();
 const WORKBENCH_STYLES = renderGoalBoardWorkbenchStylesheet();
 let webRequestSequence = 0;
 
+test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
+  assert.match(WORKBENCH_STYLES, /\.tree-copy > small \{[^}]*display:\s*block/);
+  assert.doesNotMatch(
+    WORKBENCH_STYLES,
+    /body\[data-desktop-shell="true"\] \.tree-copy small \{[^}]*display:\s*none/,
+  );
+});
+
+test("Goal Tree uses compact Runtime references instead of long internal ids", () => {
+  assert.equal(goalTreeReferenceLabel("cgs-g2a-opportunity-intelligence"), "G2A");
+  assert.equal(goalTreeReferenceLabel("cgs-g2b-editorial-decision"), "G2B");
+  assert.equal(goalTreeReferenceLabel("cgs-g12f-topic-analysis"), "G12F");
+  assert.equal(goalTreeReferenceLabel("V1"), "V1");
+  assert.equal(goalTreeReferenceLabel("draft-e5f42553-1111-2222-3333-444444444444"), null);
+});
+
 test("completed Goal presentation closes criteria without inventing Evidence", () => {
   const item = {
     status: "satisfied",
@@ -64,6 +81,127 @@ test("completed Goal presentation closes criteria without inventing Evidence", (
   item.goal.fulfillment_state = "unmet";
   item.passed_criteria = ["ROOT-C1", "UNKNOWN"];
   assert.deepEqual(displayedPassedCriterionIds(item), ["ROOT-C1"]);
+});
+
+test("Web distinguishes local Contract satisfaction from recorded parent Contract coverage", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-contract-coverage-"));
+  const databasePath = join(directory, "coverage.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "coverage-board",
+    title: "Contract Coverage",
+    actor_id: "user-1",
+    idempotency_key: "coverage-board-create",
+  });
+  coordinator.createGoal(
+    "coverage-board",
+    {
+      goal_id: "coverage-parent",
+      title: "形成可解释的完整机会能力",
+      outcome: "多源研究能够形成可解释机会",
+      why: "避免把代表性样本误当成完整能力",
+      business_logic: "父级能力由多个子 Contract 的明确结果共同覆盖。",
+      promised_outputs: ["可解释的多源机会"],
+      definition_state: "accepted",
+      decomposition_state: "closed_compound",
+      decomposition_review: {
+        status: "complete",
+        task_context: "content_research",
+        coverage: [],
+        open_goal_ids: [],
+        next_step: "按子 Goal 推进。",
+        contract_coverage: {
+          promised_outputs: [
+            {
+              parent_promised_output: "可解释的多源机会",
+              status: "complete",
+              child_outputs: [
+                { goal_id: "coverage-child", promised_output: "三类代表性样本" },
+              ],
+              reason: "这是用户确认的父子结果映射。",
+            },
+          ],
+          acceptance_criteria: [
+            {
+              parent_criterion_id: "coverage-parent-criterion",
+              status: "complete",
+              child_criteria: [
+                { goal_id: "coverage-child", criterion_id: "coverage-child-criterion" },
+              ],
+              reason: "子级检查提供父级验收依据。",
+            },
+          ],
+        },
+      },
+      acceptance_criteria: [
+        {
+          criterion_id: "coverage-parent-criterion",
+          statement: "机会形成链路可解释",
+          decision_method: "inspection",
+          pass_condition: "父子结果均可追溯",
+          required_evidence: ["coverage-map"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-parent-create" },
+  );
+  coordinator.createGoal(
+    "coverage-board",
+    {
+      goal_id: "coverage-child",
+      title: "保存三类代表性样本",
+      outcome: "三类样本可读取",
+      why: "验证最小样本链路",
+      business_logic: "只交付被当前 Contract 承诺的代表性样本。",
+      promised_outputs: ["三类代表性样本"],
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [
+        {
+          criterion_id: "coverage-child-criterion",
+          statement: "三类样本存在",
+          decision_method: "inspection",
+          pass_condition: "每类至少一个样本",
+          required_evidence: ["sample-file"],
+        },
+      ],
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-child-create" },
+  );
+  coordinator.addRelation(
+    "coverage-board",
+    {
+      from_goal_id: "coverage-child",
+      to_goal_id: "coverage-parent",
+      type: "part_of",
+      reason: "样本属于父级机会能力的一部分。",
+    },
+    { actor_id: "user-1", idempotency_key: "coverage-relation" },
+  );
+  store.db.prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?").run("coverage-child");
+
+  const view = buildGoalBoardWebView(store, coordinator, { boardId: "coverage-board" });
+  const childHtml = renderGoalPanelFragment(view, "coverage-child", "completion") ?? "";
+  assert.match(childHtml, /本 Goal 按当前 Contract 已满足/);
+  assert.match(childHtml, /对父 Goal 的贡献/);
+  assert.match(childHtml, /形成可解释的完整机会能力/);
+  assert.match(childHtml, /可解释的多源机会/);
+  const parentHtml = renderGoalPanelFragment(view, "coverage-parent", "completion") ?? "";
+  assert.match(parentHtml, /父子 Contract 覆盖/);
+  assert.match(parentHtml, /三类代表性样本/);
+
+  store.db
+    .prepare("UPDATE goals SET decomposition_review_json = NULL, fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("coverage-parent");
+  const historicalView = buildGoalBoardWebView(store, coordinator, { boardId: "coverage-board" });
+  const historicalParentHtml = renderGoalPanelFragment(historicalView, "coverage-parent", "completion") ?? "";
+  assert.match(historicalParentHtml, /未记录父子 Contract 覆盖（历史数据）/);
+  assert.equal(store.getGoal("coverage-parent")?.fulfillment_state, "satisfied");
+  const historicalChildHtml = renderGoalPanelFragment(historicalView, "coverage-child", "completion") ?? "";
+  assert.match(historicalChildHtml, /这条历史父 Goal 未记录父子 Contract 覆盖/);
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
 });
 
 test("Goal Tree sorts ready work before blocked, waiting, and finished Goals", () => {
@@ -720,6 +858,23 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.ok(coreFactorsFragment);
   assert.ok(quickRecordFragment);
   assert.ok(graphFragment);
+  const waitingForHumanView = structuredClone(view);
+  const waitingForHumanGoal = waitingForHumanView.goals.find((item) => item.goal.goal_id === "CORE");
+  assert.ok(waitingForHumanGoal);
+  waitingForHumanGoal.status = "waiting_for_human";
+  waitingForHumanGoal.work_state = "waiting_for_human";
+  waitingForHumanGoal.reasons = [{
+    code: "review.user_approval_required",
+    severity: "blocker",
+    subject_type: "goal",
+    subject_id: "CORE",
+    message: "Runtime 可承担的检查已经结束，当前只剩用户本人验收与决定",
+    facts: { criterion_ids: ["CORE-HUMAN"], next_action: "open_goalboard" },
+    remediation: "请用户完成真实操作并提交验收依据。",
+  }];
+  waitingForHumanGoal.review_obligations = waitingForHumanGoal.review_obligations
+    .filter((item) => item.role !== "human_approver");
+  const waitingForHumanHtml = renderGoalBoardWeb(waitingForHumanView, "CORE");
   // Keep this broad presentation contract checking the same assembled workbench
   // surface even though production now serves shared assets and heavy Goal
   // panels through separate lazy fragments.
@@ -961,7 +1116,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /treeResizer\??\.addEventListener\("pointermove"/);
   assert.match(html, /treeResizer\??\.addEventListener\("keydown"/);
   assert.match(html, /class="tree-entry directory-list-row/);
-  assert.match(html, /tree-title-line"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><\/span><\/span>[\s\S]*class="tree-meta-line"><small title="Goal ID: V1">V1<\/small>/);
+  assert.match(html, /tree-title-line"><strong title="让第一次使用的人顺利完成一轮目标协作">让第一次使用的人顺利完成一轮目标协作<\/strong><\/span><small title="Goal ID: V1" aria-label="Goal 编号 V1">V1<\/small>/);
   assert.match(html, /class="directory-row-state">[\s\S]*class="goal-status/);
   assert.match(html, /class="feed-list-item directory-list-row/);
   assert.match(html, /class="feed-list-state directory-row-state" data-feed-disposition=/);
@@ -1009,6 +1164,11 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-companion-runtime/);
   assert.match(html, /data-companion-runtime-open/);
   assert.match(html, /target\.closest\("\[data-companion-runtime-open\]"\)\) \{\s*setWorkspaceMode\("runtime"\)/);
+  assert.match(coreHtml, /租约还剩 \d+ 分钟/);
+  assert.match(coreHtml, /到期前续租可保持当前 Claim 和 Run/);
+  assert.match(waitingForHumanHtml, /goal-status--waiting_for_human/);
+  assert.match(waitingForHumanHtml, /等待你验收/);
+  assert.match(waitingForHumanHtml, /完成真实操作并提交验收决定/);
   assert.match(html, /desktopCompanionActive && selected \? "document"/);
   assert.match(html, /const setWorkspaceMode =/);
   assert.match(html, /workspace\.dataset\.workspaceMode = nextMode/);
@@ -3101,7 +3261,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
   }
 });
 
-test("Web optionally uses the same Goal Tree decision path without enabling ambiguous whole confirmation", async () => {
+test("Web uses the named Goal Tree decision page for atomic whole confirmation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-web-tree-decision-"));
   const databasePath = join(directory, "goalboard.db");
   const store = new SqliteGoalBoardStore(databasePath);
@@ -3158,6 +3318,31 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     ],
     idempotency_key: "web-tree-propose",
   }).proposal;
+  const otherDialogue = coordinator.startDraftDialogue({
+    board_id: "web-tree-board",
+    actor_id: "runtime-other-clarifier",
+    goal_id: "web-tree-other-root",
+    rough_idea: "另一份同时等待决定的方案不能让当前 Web 页面确认变得含糊。",
+    idempotency_key: "web-tree-other-dialogue",
+  });
+  const otherProposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-tree-board",
+    actor_id: "runtime-other-clarifier",
+    discovered_in_run_id: otherDialogue.run!.run_id,
+    root_goal_id: "web-tree-other-root",
+    summary: "另一份独立等待决定的方案。",
+    items: [{
+      item_id: "web-tree-other-child",
+      kind: "goal",
+      operation: "create",
+      payload: { goal_id: "web-tree-other-child", title: "另一份方案里的 Draft" },
+      source_refs: ["conversation://web-tree-other"],
+      reason: "验证 Web 页面按明确 proposal_id 原子确认，而不是依赖全局唯一提案。",
+      confidence: 1,
+      affected_objects: [{ object_type: "goal", object_id: "web-tree-other-child" }],
+    }],
+    idempotency_key: "web-tree-other-propose",
+  }).proposal;
   store.close();
   const server = createGoalBoardWebServer({ databasePath, boardId: "web-tree-board" });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -3182,6 +3367,7 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     assert.match(decisionPage, /展开查看每项变化/);
     assert.match(decisionPage, /data-goal-tree-decision-form[\s\S]*novalidate/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /goalTreeDecisionForm[\s\S]*请填写决定理由或修改意见/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /decision === "confirm"[\s\S]*confirm_all_pending: true/);
     assert.match(rootPage, /查看并决定这份方案/);
     assert.match(rootPage, /处理 1 项决定/);
     assert.match(rootPage, /goal-status--clarification_decision_pending[^>]*[\s\S]*?<span>待你确认<\/span>/);
@@ -3189,16 +3375,6 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     assert.match(rootPage, /这条 Goal 不是还要继续澄清，而是在等你确认整理后的结果、范围和子 Goal/);
     assert.doesNotMatch(rootPage, /<div class="draft-gaps"><div><strong>这条 Goal 还没说清楚/);
     assert.doesNotMatch(rootPage, /<div class="goal-purpose">/);
-    const ambiguous = await webFetch(
-      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirm_all_pending: true, reason: "确认" }),
-      },
-    );
-    assert.equal(ambiguous.status, 400);
-    assert.match(await ambiguous.text(), /不能验证上一轮/);
     const blankSubjectiveRejection = await webFetch(
       `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
       {
@@ -3219,18 +3395,8 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          decisions: [
-            {
-              item_id: "web-tree-child",
-              decision: "confirm",
-              reason: "用户从可选 Web 页面确认保留这个 Draft 分支。",
-            },
-            {
-              item_id: "web-tree-child-relation",
-              decision: "confirm",
-              reason: "用户确认这条新工作属于当前 Goal。",
-            },
-          ],
+          confirm_all_pending: true,
+          reason: "用户在这份方案的 Web 决定页采用整份变更。",
           idempotency_key: "web-tree-decide",
         }),
       },
@@ -3255,14 +3421,176 @@ test("Web optionally uses the same Goal Tree decision path without enabling ambi
     const persisted = board.snapshot.goal_tree_proposals.find((item) => item.proposal_id === proposal.proposal_id);
     assert.equal(persisted?.items[0]?.decision?.authority_source, "web");
     assert.equal(persisted?.items[0]?.decision?.actor_id, "web-user");
+    const otherPersisted = board.snapshot.goal_tree_proposals.find(
+      (item) => item.proposal_id === otherProposal.proposal_id,
+    );
+    assert.ok(otherPersisted?.items.every((item) => item.decision === null));
     const updatedRootPage = await (await webFetch(`${origin}/goals/web-tree-root`)).text();
-    assert.match(updatedRootPage, /goal-status--clarifying[^>]*[\s\S]*?<span>目标澄清中<\/span>/);
-    assert.doesNotMatch(updatedRootPage, /<span class="goal-status goal-status--clarification_decision_pending"/);
+    const updatedRootStart = updatedRootPage.indexOf('<article class="goal-document" data-goal-view="web-tree-root"');
+    assert.ok(updatedRootStart >= 0);
+    const updatedRootHeaderEnd = updatedRootPage.indexOf("</header>", updatedRootStart);
+    assert.ok(updatedRootHeaderEnd >= 0);
+    const updatedRootDocument = updatedRootPage.slice(updatedRootStart, updatedRootHeaderEnd);
+    assert.match(updatedRootDocument, /goal-status--clarifying[^>]*[\s\S]*?<span>目标澄清中<\/span>/);
+    assert.doesNotMatch(updatedRootDocument, /goal-status--clarification_decision_pending/);
     const resultPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(resultPage, /最近处理结果/);
     assert.match(resultPage, /Goal 方案/);
     assert.match(resultPage, /已采用 2 项变化/);
-    assert.match(resultPage, /用户从可选 Web 页面确认保留这个 Draft 分支/);
+    assert.match(resultPage, /用户在这份方案的 Web 决定页采用整份变更/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("Web explains a materialization conflict before the user confirms a whole Goal Tree proposal", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-tree-preflight-"));
+  const databasePath = join(directory, "goalboard.db");
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: "web-tree-preflight-board",
+    title: "Web Tree Preflight",
+    actor_id: "web-user",
+    idempotency_key: "web-tree-preflight-init",
+  });
+  coordinator.createGoal(
+    "web-tree-preflight-board",
+    {
+      goal_id: "web-tree-accepted-parent",
+      title: "已经接受的父 Goal",
+      outcome: "保留已经确认的业务承诺",
+      why: "避免历史执行和验收对应的 Contract 被静默改写",
+      business_logic: "需求变化需要 successor，原 Goal 只允许明确的拆分收口。",
+      in_scope: ["保留已接受 Contract"],
+      out_of_scope: ["不原地重写业务承诺"],
+      required_inputs: ["用户已经接受的 Contract"],
+      promised_outputs: ["可追溯的原业务承诺"],
+      definition_state: "accepted",
+      decomposition_state: "abstract",
+      acceptance_criteria: [{
+        criterion_id: "web-tree-accepted-parent-contract",
+        statement: "原业务承诺保持可追溯",
+        decision_method: "inspection",
+        pass_condition: "已接受 Contract 不被原地改写",
+      }],
+    },
+    { actor_id: "web-user", idempotency_key: "web-tree-accepted-parent-create" },
+  );
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "web-tree-preflight-board",
+    actor_id: "runtime-tree-preflight",
+    goal_id: "web-tree-preflight-context",
+    rough_idea: "需求变化后尝试改写一个已经接受的父 Goal。",
+    idempotency_key: "web-tree-preflight-dialogue",
+  });
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "web-tree-preflight-board",
+    actor_id: "runtime-tree-preflight",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "web-tree-preflight-context",
+    summary: "错误示例：原地改写已接受父 Goal，而不是创建 successor。",
+    items: [
+      {
+        item_id: "web-tree-safe-child",
+        kind: "goal",
+        operation: "create",
+        payload: {
+          goal_id: "web-tree-safe-child",
+          title: "不能被半途创建的安全子 Goal",
+        },
+        source_refs: ["conversation://web-tree-preflight"],
+        reason: "验证整份确认失败时安全条目也不会单独落地。",
+        confidence: 1,
+        affected_objects: [{ object_type: "goal", object_id: "web-tree-safe-child" }],
+      },
+      {
+        item_id: "web-tree-invalid-accepted-update",
+        kind: "contract",
+        operation: "update",
+        payload: {
+          goal_id: "web-tree-accepted-parent",
+          title: "试图覆盖的全新业务承诺",
+          outcome: "把新需求写回旧 Goal",
+          why: "错误示例",
+          business_logic: "错误示例",
+          in_scope: ["新需求"],
+          out_of_scope: [],
+          required_inputs: ["新需求"],
+          promised_outputs: ["新结果"],
+          definition_state: "accepted",
+          decomposition_state: "frontier_open",
+          acceptance_criteria: [{
+            criterion_id: "web-tree-accepted-parent-contract",
+            statement: "新需求已经覆盖旧承诺",
+            decision_method: "inspection",
+            pass_condition: "错误示例",
+          }],
+        },
+        source_refs: ["conversation://web-tree-preflight"],
+        reason: "验证用户确认前能看到不可应用原因。",
+        confidence: 1,
+        affected_objects: [{ object_type: "goal", object_id: "web-tree-accepted-parent" }],
+      },
+    ],
+    idempotency_key: "web-tree-preflight-propose",
+  }).proposal;
+  const checked = coordinator.checkGoalTreeProposal({
+    board_id: "web-tree-preflight-board",
+    proposal_id: proposal.proposal_id,
+    actor_id: "runtime-tree-preflight",
+    idempotency_key: "web-tree-preflight-check",
+  });
+  assert.deepEqual(checked.conflict_item_ids, ["web-tree-invalid-accepted-update"]);
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId: "web-tree-preflight-board" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const page = await (await webFetch(`${origin}/decisions`)).text();
+    assert.match(page, /这份方案暂时不能采用/);
+    assert.match(page, /当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree/);
+    assert.doesNotMatch(page, /其中有风险信息或 Goal 拆解需要 Runtime 修正/);
+    assert.match(page, /已接受父 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
+    assert.match(page, /创建 successor \/ replacement Goal/);
+    assert.match(page, /当前 Goal Tree 尚未改变/);
+    assert.match(page, /value="confirm" disabled aria-disabled="true"/);
+    assert.match(page, /value="reject">退回修正/);
+    const directWholeConfirmation = await webFetch(
+      `${origin}/api/goal-tree-proposals/${encodeURIComponent(proposal.proposal_id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          confirm_all_pending: true,
+          reason: "即使直接调用 Web 接口，也必须保证整份方案原子落地。",
+          idempotency_key: "web-tree-preflight-atomic-decision",
+        }),
+      },
+    );
+    assert.equal(directWholeConfirmation.status, 400);
+    const directError = await directWholeConfirmation.text();
+    assert.match(directError, /本次整份确认没有写入任何变更/);
+    assert.match(directError, /创建 successor \/ replacement Goal/);
+    const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
+      snapshot: {
+        goals: Array<{ goal_id: string }>;
+        goal_tree_proposals: Array<{
+          proposal_id: string;
+          state: string;
+          items: Array<{ state: string; decision: unknown }>;
+        }>;
+      };
+    };
+    assert.equal(board.snapshot.goals.some((goal) => goal.goal_id === "web-tree-safe-child"), false);
+    const stored = board.snapshot.goal_tree_proposals.find((item) => item.proposal_id === proposal.proposal_id);
+    assert.equal(stored?.state, "pending");
+    assert.equal(stored?.items.some((item) => item.decision != null), false);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -3675,6 +4003,18 @@ test("Web explains incomplete product decomposition and shows who owns each prod
             })),
             open_goal_ids: [],
             next_step: "等待子 Goal 完成。",
+            contract_coverage: {
+              promised_outputs: [],
+              acceptance_criteria: [{
+                parent_criterion_id: "web-footballnia-complete",
+                status: "complete",
+                child_criteria: [{
+                  goal_id: "web-footballnia-product-slice",
+                  criterion_id: "web-footballnia-slice-complete",
+                }],
+                reason: "端到端子 Goal 的试玩检查覆盖父级完整路径验收。",
+              }],
+            },
           },
         },
         source_refs: ["conversation://web-footballnia"],
@@ -4009,6 +4349,18 @@ test("Web presents the shared result chain, AI-specific checks, and foundation d
             })),
             open_goal_ids: [],
             next_step: "按依赖顺序推进基础能力和核心能力。",
+            contract_coverage: {
+              promised_outputs: [],
+              acceptance_criteria: [{
+                parent_criterion_id: "web-ai-parent-complete",
+                status: "complete",
+                child_criteria: [
+                  { goal_id: coreGoalId, criterion_id: `${coreGoalId}-criterion` },
+                  { goal_id: foundationGoalId, criterion_id: `${foundationGoalId}-criterion` },
+                ],
+                reason: "核心与基础 Goal 的检查共同覆盖完整 AI 结果链。",
+              }],
+            },
           },
         },
         source_refs: ["conversation://web-task-chain"],
@@ -5043,6 +5395,9 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     const riskDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(riskDecisionPage, /<form class="decision-record risk-decision" data-risk-state-form/);
     assert.match(riskDecisionPage, /<option value="" selected disabled>请选择处理结果<\/option>/);
+    assert.match(riskDecisionPage, /name="resolution_summary"/);
+    assert.match(riskDecisionPage, /name="resolution_evidence_refs"/);
+    assert.match(riskDecisionPage, /name="resolution_residual_gaps"/);
     assert.match(riskDecisionPage, /保持待处理，继续阻塞完成/);
     assert.doesNotMatch(riskDecisionPage, /<option value="open" selected/);
     for (const state of ["open", "triggered", "resolved", "accepted", "expired"]) {
@@ -5070,13 +5425,22 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     });
     assert.equal(updateResponse.status, 200, await updateResponse.text());
 
-    for (const state of ["triggered", "resolved", "accepted", "expired", "open"] as const) {
+    for (const state of ["triggered", "accepted", "expired", "open", "resolved"] as const) {
       const stateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           state,
           reason: `用户确认进入 ${state}`,
+          ...(state === "resolved"
+            ? {
+                resolution_basis: {
+                  summary: "负责人确认外部规则版本已经冻结。",
+                  evidence_refs: ["conversation://rule-owner-confirmation"],
+                  residual_gaps: ["下一次规则发布后仍需重新检查"],
+                },
+              }
+            : {}),
           idempotency_key: `web-risk-state-${state}`,
         }),
       });
@@ -5094,7 +5458,11 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(updatedPage, /外部规则已经进入确认窗口/);
     assert.match(updatedPage, /60%/);
     assert.match(updatedPage, /规避 \/ 阻止领取/);
-    assert.match(updatedPage, /开放/);
+    assert.match(updatedPage, /已解决/);
+    assert.match(updatedPage, /解决依据/);
+    assert.match(updatedPage, /负责人确认外部规则版本已经冻结/);
+    assert.match(updatedPage, /conversation:\/\/rule-owner-confirmation/);
+    assert.match(updatedPage, /下一次规则发布后仍需重新检查/);
     assert.match(updatedPage, /交付风险工作台/);
     const verify = new SqliteGoalBoardStore(databasePath);
     try {
@@ -5107,9 +5475,28 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       assert.deepEqual(stored?.affected_surfaces, ["Contract", "tests"]);
       assert.equal(stored?.owner, "risk-owner");
       assert.equal(stored?.treatment_plan, "在规则冻结前不接入新的外部字段");
+      assert.deepEqual(stored?.resolution_basis, {
+        summary: "负责人确认外部规则版本已经冻结。",
+        evidence_refs: ["conversation://rule-owner-confirmation"],
+        residual_gaps: ["下一次规则发布后仍需重新检查"],
+      });
       assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'risk.updated'").get(created.risk.risk_id));
     } finally {
       verify.close();
+    }
+    const historical = new SqliteGoalBoardStore(databasePath);
+    try {
+      historical.db
+        .prepare("UPDATE risks SET resolution_basis_json = NULL WHERE risk_id = ?")
+        .run(created.risk.risk_id);
+      const historicalCoordinator = new GoalBoardCoordinator(historical);
+      const historicalView = buildGoalBoardWebView(historical, historicalCoordinator, {
+        boardId: "risk-workbench-board",
+      });
+      const historicalPage = renderGoalPanelFragment(historicalView, "RISK-B", "factors") ?? "";
+      assert.match(historicalPage, /未记录解决依据（历史数据）/);
+    } finally {
+      historical.close();
     }
   } finally {
     await new Promise<void>((resolve, reject) =>

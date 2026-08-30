@@ -65,6 +65,7 @@ describe("mcp server", () => {
     assert.ok(!names.includes("goalboard_v1_postinstall_project_selection"));
     assert.ok(names.includes("goalboard_v1_available"));
     assert.ok(names.includes("goalboard_v1_select_goal"));
+    assert.ok(names.includes("goalboard_v1_claim_renew"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
@@ -77,6 +78,74 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /改变已有 Risk 生命周期本身是一条正式 Goal/);
     assert.match(goalTreeProposeTool?.description ?? "", /不能只改 Risk 后留下空 Draft/);
     assert.match(goalTreeProposeTool?.description ?? "", /active executor Run.*仅含 Risk 生命周期变更/s);
+    const goalTreeItemSchema = goalTreeProposeTool?.inputSchema.properties?.items as {
+      items?: {
+        allOf?: Array<{
+          if?: { properties?: { kind?: { const?: string } } };
+          then?: {
+            properties?: {
+              payload?: {
+                description?: string;
+                properties?: Record<string, { enum?: string[] }>;
+                required?: string[];
+                examples?: Array<Record<string, unknown>>;
+              };
+            };
+          };
+        }>;
+      };
+    } | undefined;
+    const payloadBranches = goalTreeItemSchema?.items?.allOf ?? [];
+    assert.deepEqual(
+      payloadBranches.map((branch) => branch.if?.properties?.kind?.const),
+      ["goal", "contract", "relation", "dependency", "risk", "policy", "candidate", "rewire"],
+    );
+    const payloadFor = (kind: string) => payloadBranches.find(
+      (branch) => branch.if?.properties?.kind?.const === kind,
+    )?.then?.properties?.payload;
+    assert.deepEqual(payloadFor("goal")?.required, ["goal_id", "title"]);
+    assert.ok(payloadFor("goal")?.properties?.acceptance_criteria);
+    const decompositionReview = payloadFor("goal")?.properties?.decomposition_review as {
+      properties?: {
+        contract_coverage?: {
+          properties?: {
+            promised_outputs?: { items?: { required?: string[] } };
+            acceptance_criteria?: { items?: { required?: string[] } };
+          };
+          required?: string[];
+        };
+      };
+    } | undefined;
+    assert.deepEqual(decompositionReview?.properties?.contract_coverage?.required, [
+      "promised_outputs",
+      "acceptance_criteria",
+    ]);
+    assert.deepEqual(
+      decompositionReview?.properties?.contract_coverage?.properties?.promised_outputs?.items?.required,
+      ["parent_promised_output", "status", "child_outputs", "reason"],
+    );
+    assert.deepEqual(
+      decompositionReview?.properties?.contract_coverage?.properties?.acceptance_criteria?.items?.required,
+      ["parent_criterion_id", "status", "child_criteria", "reason"],
+    );
+    assert.match(payloadFor("goal")?.description ?? "", /父子关系必须另提 relation 条目/);
+    assert.ok(payloadFor("relation")?.properties?.from_goal_id);
+    assert.ok(payloadFor("relation")?.properties?.to_goal_id);
+    assert.deepEqual(payloadFor("relation")?.properties?.type?.enum, [
+      "part_of",
+      "depends_on",
+      "conflicts_with",
+      "mitigates",
+      "extends",
+      "replaces",
+      "corrects",
+      "invalidates",
+      "migrates_from",
+    ]);
+    assert.match(payloadFor("relation")?.description ?? "", /子 Goal → 父 Goal/);
+    assert.deepEqual(payloadFor("dependency")?.properties?.type?.enum, ["depends_on"]);
+    assert.match(payloadFor("dependency")?.description ?? "", /消费方.*→.*提供方/);
+    assert.ok((payloadFor("dependency")?.examples?.length ?? 0) > 0);
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
     assert.match(availableTool?.description ?? "", /next_action=complete/);
     assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
@@ -84,6 +153,8 @@ describe("mcp server", () => {
     assert.match(explainTool?.description ?? "", /ready 只表示执行 Claim 就绪/);
     assert.ok(names.includes("goalboard_v1_goal_tree_read"));
     assert.ok(names.includes("goalboard_v1_goal_tree_check"));
+    const goalTreeCheckTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_check");
+    assert.match(goalTreeCheckTool?.description ?? "", /物化不变量/);
     assert.ok(names.includes("goalboard_v1_planning_methods"));
     const planningMethodsTool = listedTools.find((tool) => tool.name === "goalboard_v1_planning_methods");
     assert.match(planningMethodsTool?.description ?? "", /methods\[\].*instructions/);
@@ -117,6 +188,7 @@ describe("mcp server", () => {
     );
     const contractTool = listedTools.find((tool) => tool.name === "goalboard_v1_contract");
     assert.ok(!("web_base_url" in (contractTool?.inputSchema.properties ?? {})));
+    assert.match(contractTool?.description ?? "", /parent_contract_coverage/);
     const candidateTool = listedTools.find((tool) => tool.name === "goalboard_v1_candidate_submit");
     assert.ok(candidateTool?.inputSchema.properties?.payload.properties?.proposed_goal);
     assert.ok(candidateTool?.inputSchema.properties?.payload.required?.includes("idempotency_key"));
@@ -179,6 +251,7 @@ describe("mcp server", () => {
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
     assert.match(treeDecisionTool?.description ?? "", /Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract/);
+    assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
     assert.ok(treeDecisionTool?.inputSchema.properties?.runtime_actor_id);
     assert.ok(treeDecisionTool?.inputSchema.properties?.user_confirmed);
     assert.ok(treeDecisionTool?.inputSchema.properties?.confirmation_summary);
@@ -194,9 +267,28 @@ describe("mcp server", () => {
       method: "tools/list",
       params: {},
     });
-    const managementNames = (
-      managementTools as { result: { tools: Array<{ name: string }> } }
-    ).result.tools.map((tool) => tool.name);
+    const managementListedTools = (
+      managementTools as {
+        result: {
+          tools: Array<{
+            name: string;
+            inputSchema: {
+              properties?: Record<string, { properties?: Record<string, unknown> }>;
+            };
+          }>;
+        };
+      }
+    ).result.tools;
+    const managementNames = managementListedTools.map((tool) => tool.name);
+    const riskStateTool = managementListedTools.find((tool) => tool.name === "goalboard_v1_risk_state");
+    const resolutionBasis = riskStateTool?.inputSchema.properties?.payload.properties?.risk as {
+      properties?: { resolution_basis?: { required?: string[] } };
+    } | undefined;
+    assert.deepEqual(resolutionBasis?.properties?.resolution_basis?.required, [
+      "summary",
+      "evidence_refs",
+      "residual_gaps",
+    ]);
     assert.ok(managementNames.includes("goalboard_v1_create_goal"));
     assert.ok(managementNames.includes("goalboard_v1_contract_decide"));
     assert.ok(managementNames.includes("goalboard_v1_candidate_decide"));
@@ -315,10 +407,24 @@ describe("mcp server", () => {
       assert.equal(tool.inputSchema.required?.includes("lease_seconds"), false, name);
     }
 
+    const renew = tools.find((item) => item.name === "goalboard_v1_claim_renew");
+    assert.ok(renew);
+    const renewPayload = renew.inputSchema.properties?.payload as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    const renewalLease = renewPayload.properties?.lease_seconds as { description?: string };
+    assert.match(renewalLease.description ?? "", /领取时确认的策略/);
+    assert.equal(renewPayload.required?.includes("lease_seconds"), false);
+
     const skill = fs.readFileSync(path.join(ROOT, "skills/goal-advance/SKILL.md"), "utf8");
     assert.match(skill, /Omit `lease_seconds` by default/);
     assert.match(skill, /resolved dynamic policy/);
     assert.match(skill, /explicit value only to shorten/);
+    assert.match(skill, /active_claim_lease/);
+    assert.match(skill, /goalboard_v1_claim_renew/);
+    assert.match(skill, /waiting_for_human/);
+    assert.match(skill, /do not select another Runtime Review/i);
   });
 
   it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {
@@ -361,6 +467,8 @@ describe("mcp server", () => {
     assert.match(references.planning, /same Proposal must include both/);
     assert.match(references.planning, /executor may then submit a same-root Proposal containing only the resulting Risk lifecycle item/);
     assert.match(references.execution, /submit Evidence from the active executor Run/);
+    assert.match(references.planning, /confirm_all_pending.*all-or-nothing/);
+    assert.match(references.planning, /failed whole change set.*implicit partial application/);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references.execution, /repeated project-wide rule may be proposed as project guidance/);
@@ -791,6 +899,21 @@ describe("mcp server", () => {
       assert.ok(selected.claim);
       assert.ok(selected.run);
       assert.equal(selected.work_state?.work_state, "executing");
+
+      const renewedResponse = await call(runtime, "goalboard_v1_claim_renew", {
+        board_id: "mcp-board",
+        payload: {
+          claim_id: selected.claim!.claim_id,
+          actor_id: "runtime-a",
+          idempotency_key: "mcp-renew-active-claim",
+        },
+      });
+      assert.equal(renewedResponse.result.isError, false, renewedResponse.result.content[0]?.text);
+      const renewed = JSON.parse(renewedResponse.result.content[0].text) as {
+        claim: { claim_id: string; renewed_at: string | null };
+      };
+      assert.equal(renewed.claim.claim_id, selected.claim!.claim_id);
+      assert.ok(renewed.claim.renewed_at);
 
       const evidenceResponse = await call(runtime, "goalboard_v1_evidence_submit", {
         board_id: "mcp-board",

@@ -52,7 +52,7 @@ function relayFixture(databasePath: string): Database.Database {
   return db;
 }
 
-test("migration 23 creates Feed runtime tables and persisted read state", () => {
+test("migration 24 creates Feed runtime tables and persisted read state", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-feed-schema-"));
   const databasePath = join(directory, "goalboard.sqlite");
   try {
@@ -65,9 +65,9 @@ test("migration 23 creates Feed runtime tables and persisted read state", () => 
       assert.ok(tables.has("feed_sources"));
       assert.ok(tables.has("feed_items"));
       assert.ok(tables.has("feed_materials"));
-      assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 21").get());
       assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 22").get());
       assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 23").get());
+      assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 24").get());
       const feedItemColumns = new Set((store.db.pragma("table_info(feed_items)") as Array<{ name: string }>).map((row) => row.name));
       assert.ok(feedItemColumns.has("read_at"));
       assert.ok(tables.has("feed_source_runs"));

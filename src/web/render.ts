@@ -14,6 +14,7 @@ import type {
   GoalRelationRecord,
   GoalTreeProposalRecord,
   GoalWorkState,
+  GoalWorkStateView,
   ImpactBindingRecord,
   ProjectGuidanceView,
   ReviewObligationRecord,
@@ -98,6 +99,7 @@ export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "review_pending",
   "reviewing",
   "review_blocked",
+  "waiting_for_human",
   "revalidation_pending",
   "revalidating",
   "revalidation_blocked",
@@ -167,6 +169,7 @@ export interface WebGoalView {
   reasons: DecisionReason[];
   active_claim_actor: string | null;
   active_claim: ClaimRecord | null;
+  active_claim_lease: GoalWorkStateView["active_claim_lease"];
   claims: ClaimRecord[];
   runs: RunRecord[];
   evidence: EvidenceRecord[];
@@ -283,6 +286,7 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   review_pending: "review",
   reviewing: "review",
   review_blocked: "blocked",
+  waiting_for_human: "user",
   revalidation_pending: "refresh",
   revalidating: "refresh",
   revalidation_blocked: "blocked",
@@ -447,6 +451,7 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "handoff_pending",
   "review_pending",
   "reviewing",
+  "waiting_for_human",
   "revalidation_pending",
   "revalidating",
   "clarification_decision_pending",
@@ -624,6 +629,16 @@ function renderTreeChildProgress(children: readonly WebGoalView[]): string {
   </span>`;
 }
 
+export function goalTreeReferenceLabel(goalId: string): string | null {
+  const normalized = goalId.trim();
+  const hierarchicalCode = normalized
+    .split(/[-_.:/\s]+/)
+    .find((segment) => /^g\d+[a-z]?$/i.test(segment));
+  if (hierarchicalCode) return hierarchicalCode.toUpperCase();
+  if (/^[a-z]{1,3}\d+[a-z]?$/i.test(normalized)) return normalized.toUpperCase();
+  return null;
+}
+
 function renderGoalTree(
   view: GoalBoardWebView,
   selectedGoalId: string,
@@ -653,6 +668,10 @@ function renderGoalTree(
     const hasChildren = nodeChildren.length > 0;
     const searchValue = `${item.goal.goal_id} ${item.goal.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
     const selected = item.goal.goal_id === selectedGoalId;
+    const referenceLabel = goalTreeReferenceLabel(item.goal.goal_id);
+    const reference = referenceLabel == null
+      ? ""
+      : `<small title="Goal ID: ${escapeHtml(item.goal.goal_id)}" aria-label="${L("Goal 编号")} ${escapeHtml(referenceLabel)}">${escapeHtml(referenceLabel)}</small>`;
     return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
       <div class="tree-row">
         ${
@@ -662,10 +681,10 @@ function renderGoalTree(
         }
         <div class="tree-entry directory-list-row${selected ? " is-selected" : ""}">
           <button class="tree-node${selected ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${selected}">
-            <span class="tree-copy"><span class="tree-title-line"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong></span></span>
+            <span class="tree-copy"><span class="tree-title-line"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong></span>${reference}</span>
           </button>
           <span class="directory-row-state">${renderStatus(item.status)}</span>
-          <span class="tree-meta-line"><small title="Goal ID: ${escapeHtml(item.goal.goal_id)}">${escapeHtml(item.goal.goal_id)}</small>${renderTreeChildProgress(nodeChildren)}${renderTreeDependencies(item, view)}</span>
+          <span class="tree-meta-line">${renderTreeChildProgress(nodeChildren)}${renderTreeDependencies(item, view)}</span>
         </div>
       </div>
       ${hasChildren ? `<ul class="tree-children">${nodeChildren.map((child) => renderNode(child, depth + 1)).join("")}</ul>` : ""}
@@ -1258,6 +1277,11 @@ function renderRiskRecord(
   readOnly = Boolean(item.goal.archived_at),
   idPrefix = "risk",
 ): string {
+  const resolutionBasis = risk.state === "resolved"
+    ? risk.resolution_basis == null
+      ? `<div class="risk-resolution risk-resolution--unrecorded"><strong>${L("解决依据")}</strong><p>${L("未记录解决依据（历史数据）；这条状态不会被自动改写。")}</p></div>`
+      : `<div class="risk-resolution"><strong>${L("解决依据")}</strong><p>${escapeHtml(risk.resolution_basis.summary)}</p><dl><div><dt>${L("证据引用")}</dt><dd>${risk.resolution_basis.evidence_refs.map((reference) => renderReference(reference)).join("")}</dd></div><div><dt>${L("剩余缺口")}</dt><dd>${risk.resolution_basis.residual_gaps.length ? renderList(risk.resolution_basis.residual_gaps, "") : L("没有已知剩余缺口")}</dd></div></dl></div>`
+    : "";
   return `<article class="risk-record" id="${escapeHtml(idPrefix)}-${escapeHtml(risk.risk_id)}">
     <header><span class="risk-record-icon">${icon("risk")}</span><div><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(L(RISK_STATE_LABELS[risk.state]))}</span><h4>${escapeHtml(risk.description)}</h4><small>${escapeHtml(risk.risk_id)} · 更新于 ${formatDate(risk.updated_at)}</small></div></header>
     <dl class="risk-facts">
@@ -1270,6 +1294,7 @@ function renderRiskRecord(
       <div><dt>${L("受影响区域")}</dt><dd>${risk.affected_surfaces.length ? escapeHtml(risk.affected_surfaces.join(currentLocale() === "en" ? ", " : "、")) : "未单独标记"}</dd></div>
       <div class="risk-fact-wide"><dt>${L("受影响 Goal")}</dt><dd>${renderRiskGoalLinks(risk, view)}</dd></div>
     </dl>
+    ${resolutionBasis}
     <p class="risk-effect risk-effect--${escapeHtml(risk.state)}">${icon(risk.state === "triggered" ? "blocked" : "info")}<span><strong>${L("当前影响")}</strong>${escapeHtml(riskStateEffect(risk.blocking_mode, risk.state))}</span></p>
     ${readOnly ? `<p class="risk-readonly">${L("这是一条只读记录；请到“关联与约束 → 风险”修改当前事实。")}</p>` : `<div class="risk-actions">
       <details data-persist-open="risk-edit-${escapeHtml(risk.risk_id)}"><summary><span>${icon("settings")}<strong>${L("修改风险信息")}</strong></span>${icon("chevron-down")}</summary>
@@ -2509,6 +2534,11 @@ function goalTreeProposalIssueCopy(
         message: L(issue.message),
         recovery: L(issue.recovery),
       };
+    case "resolution_basis":
+      return {
+        message: L("这条风险要标记为已解决，但没有留下完整的解决依据。"),
+        recovery: L("请补充解决摘要、至少一条证据引用，并明确是否还有剩余缺口。"),
+      };
   }
 }
 
@@ -2589,6 +2619,21 @@ function goalTreeDecompositionIssueCopy(
       return {
         message: L("Goal「{goal}」没有说清这棵树是已经拆完，还是这轮先暂停。", { goal }),
         recovery: L("请退回方案，让 Runtime 明确当前状态和下一步。"),
+      };
+    case "goal_tree_proposal.contract_coverage_required":
+      return {
+        message: L("Goal「{goal}」还没有逐项说明父级承诺由哪些子 Goal Contract 覆盖。", { goal }),
+        recovery: L("请退回方案，让 Runtime 补充父级结果和完成条件到子 Contract 的明确映射。"),
+      };
+    case "goal_tree_proposal.contract_coverage_incomplete":
+      return {
+        message: L("Goal「{goal}」仍有父级承诺或完成条件只是部分覆盖、尚未覆盖，或仍需父级集成。", { goal }),
+        recovery: L("请继续保持父 Goal 开放，直到每一项都由子 Contract 完整覆盖。"),
+      };
+    case "goal_tree_proposal.contract_coverage_reference_invalid":
+      return {
+        message: L("Goal「{goal}」的覆盖映射引用了不存在、不是后代或名称不匹配的子级结果。", { goal }),
+        recovery: L("请引用当前子树中真实存在的 Goal ID、承诺结果和完成条件 ID。"),
       };
     case "goal_tree_proposal.product_path_incomplete":
       return {
@@ -2687,7 +2732,14 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
   }
   const issuesByItem = new Map<string, Array<{ message: string; recovery: string }>>();
   for (const item of undecidedItems) {
+    const persistedConflict = item.state === "conflict"
+      ? [{
+          message: String(item.conflict?.message ?? L("这份方案仍有不能安全写入的内容，需要修正后再确认。")),
+          recovery: String(item.conflict?.recovery ?? L("当前 Goal Tree 不会改变；Runtime 会根据你的意见重新整理方案。")),
+        }]
+      : [];
     const issues = [
+      ...persistedConflict,
       ...(riskIssuesByItem.get(item.item_id) ?? []).map(goalTreeProposalIssueCopy),
       ...(decompositionIssuesByItem.get(item.item_id) ?? []).map((issue) =>
         goalTreeDecompositionIssueCopy(issue, view, proposal)),
@@ -2784,7 +2836,7 @@ function renderGoalTreeProposalDecision(proposal: GoalTreeProposalRecord, view: 
         ? L("这些 Goal 仍包含多个可独立交付的结果，或没有说明唯一主要结果和完成依据。", { count: leafInvalidItemCount })
         : decompositionOnly
         ? L("其中 {count} 个 Goal 还没有交代通用结果链、当前任务的必要路径，或下面仍有目标没有拆完。", { count: invalidItemCount })
-        : L("其中有风险信息或 Goal 拆解需要 Runtime 修正，修正前不会写入 Goal Tree。");
+        : L("当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree。");
   const invalidWhy = repairableRiskItemCount
     ? L("风险怎么处理应当由你决定。GoalBoard 会把处理类别和具体措施分开保存，并保留方案的其他内容。")
     : riskOnly
@@ -2944,6 +2996,11 @@ function renderRiskDecision(risk: RiskRecord, item: WebGoalView | null, view: Go
     })}<details class="decision-details"><summary>${L("查看触发条件和复查条件")}${icon("chevron-down")}</summary><dl class="risk-decision-details"><div><dt>${L("什么情况算已经发生")}</dt><dd>${escapeHtml(risk.trigger)}</dd></div><div><dt>${L("什么时候重新判断")}</dt><dd>${escapeHtml(risk.revisit_condition)}</dd></div></dl></details></div>
     <div class="risk-goal-links"><span>${L("关联 Goal")}</span><div>${affectedGoals.length ? affectedGoals.map((goalView) => renderDecisionGoalLink(goalView)).join("") : "未关联 Goal"}</div></div>
     <div class="risk-decision-choice"><label><span>${L("你决定怎么处理")}</span><select name="state" data-risk-state-select required>${stateOptions}</select></label><p class="risk-state-preview" data-risk-state-preview>${L("选择处理结果后，这里会说明会发生什么。")}</p></div>
+    <div class="risk-resolution-fields" data-risk-resolution-basis hidden>
+      <label><span>${L("解决摘要")}（${L("必填")}）</span><textarea name="resolution_summary" rows="2" placeholder="${L("说明什么事实证明这条风险已经按当前边界解决")}"></textarea></label>
+      <label><span>${L("证据引用")}（${L("每行一条，至少一条")}）</span><textarea name="resolution_evidence_refs" rows="2" placeholder="evidence://...&#10;conversation://..."></textarea></label>
+      <label><span>${L("剩余缺口")}（${L("每行一条；没有可留空")}）</span><textarea name="resolution_residual_gaps" rows="2" placeholder="${L("仍需观察或不在本次解决范围内的边界")}"></textarea></label>
+    </div>
     <label class="decision-reason"><span>${L("决定理由")}（${L("必填")}）</span><textarea name="reason" rows="2" required placeholder="${L("说明为什么现在这样处理，以及你依据了什么")}"></textarea></label>
     <p class="form-error" data-risk-error role="alert" hidden></p>
     <footer class="decision-actions"><span>${item ? `<a href="${href}">${L("返回 Goal 查看完整风险记录")}</a>` : ""}</span><button class="button-primary" type="submit">${L("保存风险决定")}</button></footer>
@@ -3763,6 +3820,9 @@ function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): str
   if (explanation.actionKind === "archive" && !item.goal.archived_at) {
     return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}" aria-label="${L("归档这条已完成的 Goal")}" title="${L("归档这条已完成的 Goal")}">${icon("archive")}<span>${L("归档 Goal")}</span></button>`;
   }
+  if (item.status === "waiting_for_human") {
+    return `<a class="goal-primary-action" href="#acceptance-${escapeHtml(goalId)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("user")}<span>${L("完成验收")}</span></a>`;
+  }
   const target = explanation.actionKind === "resolve_blocker" || explanation.actionKind === "view_progress" || explanation.actionKind === "review" || explanation.actionKind === "revalidate"
     ? `#progress-${goalId}`
     : `#completion-${goalId}`;
@@ -3841,6 +3901,7 @@ function renderGoalFocusOverview(item: WebGoalView, view: GoalBoardWebView): str
 
 function renderCompanionRuntime(item: WebGoalView): string {
   const claim = item.active_claim;
+  const lease = item.active_claim_lease;
   const run = [...item.runs].reverse().find((candidate) => candidate.state === "started" || candidate.state === "blocked") ?? item.runs.at(-1);
   const total = item.goal.acceptance_criteria.length;
   const passed = displayedPassedCriterionIds(item).length;
@@ -3849,9 +3910,13 @@ function renderCompanionRuntime(item: WebGoalView): string {
   const state = claim
     ? run?.state === "blocked" ? L("执行受阻") : L("正在推进")
     : run ? L("最近有进展") : L("尚未绑定");
+  const leaseNotice = lease
+    ? `<p class="companion-runtime-lease${lease.renew_recommended ? " is-warning" : ""}">${icon("clock")}<span>${L("租约还剩 {count} 分钟", { count: Math.max(1, Math.ceil(lease.remaining_seconds / 60)) })} · ${L("到期前续租可保持当前 Claim 和 Run")}</span></p>`
+    : "";
   return `<section class="companion-runtime" data-companion-runtime aria-labelledby="companion-runtime-${escapeHtml(item.goal.goal_id)}">
     <header><div><small>Runtime</small><h2 id="companion-runtime-${escapeHtml(item.goal.goal_id)}">${escapeHtml(runtime)}</h2></div><span class="companion-runtime-state${claim ? " is-active" : ""}"><i aria-hidden="true"></i>${escapeHtml(state)}</span></header>
     <p>${escapeHtml(plainRunState(run))}</p>
+    ${leaseNotice}
     <div class="companion-runtime-progress" aria-label="${L("完成标准进度 {passed}/{total}", { passed, total })}"><i><b style="--companion-progress:${progress}%"></b></i><span>${passed}/${total}</span></div>
     <dl><div><dt>${L("完成依据")}</dt><dd>${L("{count} 条", { count: item.evidence.length })}</dd></div><div><dt>${L("执行记录")}</dt><dd>${escapeHtml(run?.state ?? L("未开始"))}</dd></div></dl>
     <button type="button" data-companion-runtime-open>${L("在 Runtime 查看会话")}${icon("chevron-right")}</button>
@@ -4041,6 +4106,7 @@ function renderGoalCompletionPanel(item: WebGoalView, view: GoalBoardWebView): s
   const purposeBody = `${item.status === "clarification_decision_pending" ? "" : `<div class="goal-purpose"><section><h3>${L("完成后会得到什么")}</h3><p>${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></section><section><h3>${L("为什么现在做")}</h3><p>${escapeHtml(goal.why || L("还没有写清为什么要做。"))}</p></section><section><h3>${L("它会怎样运转")}</h3><p>${escapeHtml(goal.business_logic || L("还没有写清实际使用方式。"))}</p></section></div>`}
     ${goal.definition_state === "draft" ? `<details class="goal-edit-disclosure" id="goal-definition-${goalId}"><summary>${icon("settings")}<span><strong>${L("修改这条草稿")}</strong><small>${L("补全目标、范围和完成标准；保存后仍要经过确认才能开始。")}</small></span>${icon("chevron-down")}</summary>${renderDraftEditor(item)}</details>` : ""}`;
   const completionBody = `<div class="document-subsection" id="acceptance-${goalId}">${subsectionHeading("check", "完成标准", "每一条都应该能明确判断是否达到。")}${renderAcceptanceSummary(item)}</div>
+    ${renderContractCoverage(item, view)}
     ${renderChildProgress(item, view)}
     <div class="document-subsection">${subsectionHeading("folder", "工作边界", "明确这次做什么、不做什么。")}${renderCompletionBoundaries(item)}</div>
     <div class="document-subsection">${subsectionHeading("link", "前置事项", "未完成的前置事项会阻止这条 Goal 开始。")}${renderDependencySummary(item, view)}</div>`;
@@ -4060,6 +4126,49 @@ function renderGoalProgressPanel(item: WebGoalView): string {
 
 function renderLazyGoalPanelStatus(label: string): string {
   return `<p class="empty-row goal-panel-lazy-status" data-goal-panel-status role="status">${escapeHtml(label)}</p>`;
+}
+
+function renderContractCoverage(item: WebGoalView, view: GoalBoardWebView): string {
+  const goal = item.goal;
+  const satisfaction = goalWorkSatisfied(item)
+    ? `<p class="contract-scope-status">${icon("completed")}<strong>${L("本 Goal 按当前 Contract 已满足")}</strong><span>${L("这只表示当前 Goal 自己的承诺和完成条件已满足，不自动等于父 Goal 的完整能力已经实现。")}</span></p>`
+    : "";
+  const ownCoverage = goal.decomposition_state !== "closed_compound"
+    ? ""
+    : goal.decomposition_review?.contract_coverage == null
+      ? `<p class="empty-row">${L("未记录父子 Contract 覆盖（历史数据）；现有完成状态不会因此被自动改写。")}</p>`
+      : `<div class="contract-coverage-group"><h4>${L("父子 Contract 覆盖")}</h4>${[
+          ...goal.decomposition_review.contract_coverage.promised_outputs.map((entry) =>
+            `<article><strong>${escapeHtml(entry.parent_promised_output)}</strong><small>${escapeHtml(L(entry.status === "complete" ? "完整覆盖" : entry.status === "partial" ? "部分覆盖" : entry.status === "integration_required" ? "仍需父级集成" : "尚未覆盖"))}</small><p>${escapeHtml(entry.reason)}</p><ul>${entry.child_outputs.map((reference) => `<li><button type="button" data-select-goal="${escapeHtml(reference.goal_id)}">${escapeHtml(reference.promised_output)}</button></li>`).join("")}</ul></article>`,
+          ),
+          ...goal.decomposition_review.contract_coverage.acceptance_criteria.map((entry) =>
+            `<article><strong>${escapeHtml(entry.parent_criterion_id)}</strong><small>${escapeHtml(L(entry.status === "complete" ? "完整覆盖" : entry.status === "partial" ? "部分覆盖" : entry.status === "integration_required" ? "仍需父级集成" : "尚未覆盖"))}</small><p>${escapeHtml(entry.reason)}</p><ul>${entry.child_criteria.map((reference) => `<li><button type="button" data-select-goal="${escapeHtml(reference.goal_id)}">${escapeHtml(reference.criterion_id)}</button></li>`).join("")}</ul></article>`,
+          ),
+        ].join("")}</div>`;
+  const parents = view.snapshot.relations
+    .filter((relation) => relation.state === "active" && relation.type === "part_of" && relation.from_goal_id === goal.goal_id)
+    .map((relation) => findGoalView(view, relation.to_goal_id))
+    .filter((parent): parent is WebGoalView => parent != null);
+  const parentContributions = parents.length === 0
+    ? ""
+    : `<div class="contract-coverage-group"><h4>${L("对父 Goal 的贡献")}</h4>${parents.map((parent) => {
+        const coverage = parent.goal.decomposition_review?.contract_coverage;
+        if (!coverage) {
+          return `<article><strong>${escapeHtml(parent.goal.title)}</strong><p>${L("这条历史父 Goal 未记录父子 Contract 覆盖；当前子 Goal 的完成不会被解释成父级完整能力。")}</p></article>`;
+        }
+        const outputs = coverage.promised_outputs.filter((entry) =>
+          entry.child_outputs.some((reference) => reference.goal_id === goal.goal_id),
+        );
+        const criteria = coverage.acceptance_criteria.filter((entry) =>
+          entry.child_criteria.some((reference) => reference.goal_id === goal.goal_id),
+        );
+        return `<article><strong><button type="button" data-select-goal="${escapeHtml(parent.goal.goal_id)}">${escapeHtml(parent.goal.title)}</button></strong><ul>${[
+          ...outputs.map((entry) => `<li>${escapeHtml(entry.parent_promised_output)} · ${escapeHtml(L(entry.status === "complete" ? "完整覆盖" : "尚有缺口"))}</li>`),
+          ...criteria.map((entry) => `<li>${escapeHtml(entry.parent_criterion_id)} · ${escapeHtml(L(entry.status === "complete" ? "完整覆盖" : "尚有缺口"))}</li>`),
+        ].join("")}</ul></article>`;
+      }).join("")}</div>`;
+  if (!satisfaction && !ownCoverage && !parentContributions) return "";
+  return `<div class="document-subsection contract-coverage-summary">${subsectionHeading("link", "Contract 覆盖边界", "区分当前 Goal 自己满足了什么，以及它是否覆盖父级承诺。")}${satisfaction}${ownCoverage}${parentContributions}</div>`;
 }
 
 function renderGoalDocument(item: WebGoalView, view: GoalBoardWebView, selected: boolean): string {
@@ -4413,7 +4522,7 @@ const STYLES = `
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
   .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
-  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--revalidation_pending { color: #1768bf; }
+  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--waiting_for_human, .goal-status--revalidation_pending { color: #1768bf; }
   .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
   .goal-status--waiting_children { color: #5c6570; }
   .goal-status--satisfied { color: var(--green); }
@@ -4697,6 +4806,19 @@ const STYLES = `
   .section-heading p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
   .document-subsection { margin: 16px 0 0 31px; padding-top: 16px; border-top: 1px solid var(--line); scroll-margin-top: 12px; }
   .document-subsection:first-of-type { margin-top: 6px; padding-top: 0; border-top: 0; }
+  .contract-scope-status { margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--green); background: var(--green-soft); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; }
+  .contract-scope-status > svg { grid-row: 1 / 3; margin-top: 1px; color: var(--green); }
+  .contract-scope-status strong { font-size: 12px; }
+  .contract-scope-status span { color: var(--muted); font-size: 11px; }
+  .contract-coverage-group { margin-top: 12px; }
+  .contract-coverage-group > h4 { margin: 0 0 7px; font-size: 12px; }
+  .contract-coverage-group > article { padding: 9px 10px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfd; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
+  .contract-coverage-group > article + article { margin-top: 7px; }
+  .contract-coverage-group article > small { color: var(--muted); }
+  .contract-coverage-group article > p, .contract-coverage-group article > ul { grid-column: 1 / -1; }
+  .contract-coverage-group article > p { margin: 0; color: var(--muted); font-size: 11px; }
+  .contract-coverage-group article > ul { margin: 3px 0 0; padding-left: 18px; }
+  .contract-coverage-group article button { padding: 0; border: 0; color: var(--blue-dark); background: transparent; text-align: left; cursor: pointer; }
   .subsection-heading { margin: 0 0 10px; display: flex; align-items: flex-start; gap: 8px; }
   .subsection-heading > span { width: 20px; height: 20px; display: grid; place-items: center; color: var(--blue-dark); }
   .subsection-heading h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
@@ -4986,6 +5108,14 @@ const MORE_STYLES = `
   .risk-effect > svg { margin-top: 1px; color: inherit; }
   .risk-effect > span { display: grid; gap: 1px; }
   .risk-effect strong { color: var(--ink); font-size: 11px; }
+  .risk-resolution { margin: 0 14px 12px 54px; padding: 9px 10px; border-left: 2px solid var(--green); background: var(--green-soft); }
+  .risk-resolution > strong { font-size: 11px; }
+  .risk-resolution > p { margin: 2px 0 7px; }
+  .risk-resolution dl { margin: 0; display: grid; gap: 6px; }
+  .risk-resolution dl > div { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 8px; }
+  .risk-resolution dt { color: var(--muted); font-size: 10px; }
+  .risk-resolution dd { margin: 0; overflow-wrap: anywhere; }
+  .risk-resolution--unrecorded { border-left-color: var(--amber); background: var(--amber-soft); }
   .risk-readonly { margin: 0 14px 12px 54px; color: var(--muted); font-size: 11px; }
   .risk-actions { border-top: 1px solid var(--line); background: #fbfcfd; }
   .risk-actions > details { border-bottom: 1px solid var(--line); }
@@ -5008,6 +5138,11 @@ const MORE_STYLES = `
   .risk-form footer > span { color: var(--muted); font-size: 11px; }
   .risk-form button, .risk-state-form button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; cursor: pointer; }
   .risk-state-preview { min-width: 0; margin: 0; padding: 8px 10px; border-left: 2px solid var(--blue); background: #f5f9ff; color: var(--muted); font-size: 11px; }
+  .risk-resolution-fields { padding: 12px 14px; border-top: 1px solid var(--line); background: #fbfcfd; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .risk-resolution-fields[hidden] { display: none; }
+  .risk-resolution-fields label { min-width: 0; display: grid; gap: 5px; }
+  .risk-resolution-fields label > span { font-size: 11px; font-weight: 650; }
+  .risk-resolution-fields textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; resize: vertical; }
   .risk-decision-link { min-height: 50px; padding: 9px 14px 9px 54px; border-top: 1px solid var(--line); color: var(--blue-dark); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; text-decoration: none; }
   .risk-decision-link:hover { background: var(--blue-soft); }
   .risk-decision-link > span { min-width: 0; display: grid; }
@@ -5654,12 +5789,13 @@ const RESPONSIVE_STYLES = `
     .risk-fact-wide, .risk-form-wide, .risk-goal-picker { grid-column: 1; }
     .risk-record > header > div { grid-template-columns: 1fr; }
     .risk-record .risk-state { margin-bottom: 2px; }
-    .risk-effect, .risk-readonly { margin-left: 14px; }
+    .risk-effect, .risk-resolution, .risk-readonly { margin-left: 14px; }
     .risk-actions > details > summary, .risk-form, .risk-state-form { padding-left: 14px; }
     .risk-decision-link { padding-left: 14px; }
     .risk-goal-options { grid-template-columns: 1fr; }
     .risk-form footer, .risk-state-form footer { align-items: stretch; flex-direction: column; }
     .risk-form footer button, .risk-state-form footer button { align-self: flex-end; }
+    .risk-resolution-fields { grid-template-columns: 1fr; }
     .impact-facts, .impact-form { grid-template-columns: 1fr; }
     .impact-facts { padding-left: 14px; }
     .impact-fact-wide, .impact-form-wide { grid-column: 1; }
@@ -7660,6 +7796,8 @@ const CLIENT_SCRIPT = `
           ? L("保存后仍会留在待决定中。{effect}", { effect })
           : effect;
       }
+      const basis = riskForm?.querySelector("[data-risk-resolution-basis]");
+      if (basis && stateSelect) basis.hidden = stateSelect.value !== "resolved";
     };
 
     const updateRiskGoalCount = (picker) => {
@@ -10001,7 +10139,9 @@ const CLIENT_SCRIPT = `
             method: "POST",
             headers: goalboardControlHeaders(),
             body: JSON.stringify({
-              decisions: itemIds.map((itemId) => ({ item_id: itemId, decision, reason })),
+              ...(decision === "confirm"
+                ? { confirm_all_pending: true }
+                : { decisions: itemIds.map((itemId) => ({ item_id: itemId, decision, reason })) }),
               reason,
             }),
           });
@@ -10302,6 +10442,10 @@ const CLIENT_SCRIPT = `
         if (requireDecisionText(riskStateForm, errorBox, "state", "请选择风险处理结果，再保存。")) return;
         if (requireDecisionText(riskStateForm, errorBox, "reason", "请填写决定理由。说明你为什么这样选择，以及依据是什么。")) return;
         const values = new FormData(riskStateForm);
+        if (values.get("state") === "resolved") {
+          if (requireDecisionText(riskStateForm, errorBox, "resolution_summary", "请写清什么事实证明这条风险已经解决。")) return;
+          if (requireDecisionText(riskStateForm, errorBox, "resolution_evidence_refs", "请至少填写一条可追溯的证据引用。")) return;
+        }
         const submitLabel = submit.textContent;
         submit.disabled = true;
         submit.textContent = L("正在保存…");
@@ -10313,6 +10457,13 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify({
               state: values.get("state"),
               reason: String(values.get("reason") || "").trim(),
+              ...(values.get("state") === "resolved" ? {
+                resolution_basis: {
+                  summary: String(values.get("resolution_summary") || "").trim(),
+                  evidence_refs: String(values.get("resolution_evidence_refs") || "").split(/[\\n]+/).map((value) => value.trim()).filter(Boolean),
+                  residual_gaps: String(values.get("resolution_residual_gaps") || "").split(/[\\n]+/).map((value) => value.trim()).filter(Boolean),
+                },
+              } : {}),
             }),
           });
           const result = await response.json();

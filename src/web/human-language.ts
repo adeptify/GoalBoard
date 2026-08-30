@@ -142,6 +142,13 @@ const WORK_STATE_COPY: Record<GoalPresentationState, WorkStateCopy> = {
     howToContinue: "查看具体卡点，补交结果或依据，再重新检查。",
     actionKind: "resolve_blocker",
   },
+  waiting_for_human: {
+    label: "等待你验收",
+    meaning: "Runtime 能完成的检查已经结束，现在只剩你本人操作、判断或确认的完成标准。",
+    nextAction: "完成真实操作并提交验收决定",
+    howToContinue: "在待决定中提交你的判断；如果完成标准要求验收依据，也一并登记真实操作结果。",
+    actionKind: "decide",
+  },
   revalidation_pending: {
     label: "待重新验证",
     meaning: "依赖、风险或目标事实发生了变化，旧结论不能直接沿用。",

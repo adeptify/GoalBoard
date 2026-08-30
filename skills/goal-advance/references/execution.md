@@ -14,6 +14,8 @@ For an ordinary “继续推进” or “领一件能做的” request:
 
 GoalBoard does not dispatch one mandatory next task. The Runtime chooses among eligible work and explains which Goal it chose, why it fits now, and what state changed. Do not make the user choose unless there is a genuine intent or product tradeoff.
 
+At meaningful implementation and review checkpoints, read Contract's `active_claim_lease`. If `renew_recommended=true` and the same Runtime is still actively working, call `goalboard_v1_claim_renew` before continuing. This extends the current Claim without creating a second Run. An expired Claim is never renewable: follow the returned recovery action and select again. Do not poll or create a background heartbeat.
+
 When Available returns a non-null `parallel_suggestion`, proactively explain the concrete value of splitting those assignments across the returned abstract Runtime slots and ask whether the user wants that split. The suggestion is advisory only: do not start another Runtime, select or Claim any assignment, or imply that GoalBoard has dispatched work. After the user agrees, every participating Runtime must re-read Available with its real capabilities and individually call `goalboard_v1_select_goal` for its assigned Goal. If the suggestion is null, an Impact is unconfirmed, or the fresh read shows a conflict, do not claim that parallel execution is safe.
 
 `available` and `explain(role=executor)` answer whether the current action can proceed; they do not certify that `complete` will pass before finished work reaches the completion phase. A Risk with `blocking_mode=completion` deliberately allows initial execution. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
@@ -34,6 +36,7 @@ If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推�
 | `completion_pending` | Execution, Evidence, and required Reviews are already done. Call `goalboard_v1_complete` directly; do not select, Claim, or rerun the Goal. |
 | `completion_blocked` | Do not select executor work. Report the returned completion-gate reason and remediation; after that canonical gate is resolved, re-read Available and call `complete`. |
 | `reviewing` / `review_pending` | Inspect the Contract and submitted evidence; perform only the Review this Runtime may provide. |
+| `waiting_for_human` | Runtime-checkable Review is finished. Report the returned human criteria and user action; do not select another Runtime Review or impersonate the user's decision. |
 | `revalidating` / `revalidation_pending` | Recheck the Contract, active dependencies, Risks, and cited evidence; use `goalboard_v1_revalidate` only from the active revalidator Run. |
 | Any other `*_blocked` | Call `goalboard_v1_explain`, report the concrete blocker, then choose other eligible work or ask for the missing decision. |
 | `satisfied`, `archived`, `invalidated` | Do not claim it. Explain the state or choose other work. |

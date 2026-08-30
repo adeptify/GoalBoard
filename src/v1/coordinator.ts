@@ -14,6 +14,8 @@ import {
   type BlockedAvailableGoal,
   type ClaimDecision,
   type ClaimRecord,
+  type ClaimRenewRequest,
+  type ClaimRenewResult,
   type ClaimRunDecision,
   type ClaimRequest,
   type ClaimRole,
@@ -82,6 +84,7 @@ import {
   goalProposalLeafReadinessIssues,
   goalTreeProposalDecompositionIssues,
   readDecompositionReview,
+  recordedContractCoverageBlocksClosure,
 } from "./goal-decomposition-validation.js";
 import {
   composePlanningMethodPacks,
@@ -449,6 +452,73 @@ type GoalTreeProposalItemShape = Pick<
   "item_id" | "kind" | "operation" | "payload"
 >;
 
+function goalTreeProposalRelationPayloads(
+  item: GoalTreeProposalItemInput,
+  itemIndex: number,
+): Record<string, unknown>[] {
+  const source = item.payload.relations ?? item.payload.relation ?? item.payload;
+  const values = Array.isArray(source) ? source : [source];
+  if (values.length === 0) {
+    throw new GoalBoardV1Error(
+      "goal_tree_proposal.relations_required",
+      `第 ${itemIndex + 1} 个 ${item.kind} 条目至少需要一条关系；请在 payload 直接提供关系字段，或使用 relations 数组。`,
+    );
+  }
+  return values.map((value, relationIndex) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.item_payload_invalid",
+        `第 ${itemIndex + 1} 个 ${item.kind} 条目的第 ${relationIndex + 1} 条关系必须是结构化对象。`,
+      );
+    }
+    return value as Record<string, unknown>;
+  });
+}
+
+function validateGoalTreeProposalRelationPayload(
+  item: GoalTreeProposalItemInput,
+  itemIndex: number,
+): void {
+  if (item.kind !== "relation" && item.kind !== "dependency") return;
+  for (const [relationIndex, relation] of goalTreeProposalRelationPayloads(item, itemIndex).entries()) {
+    const location = `第 ${itemIndex + 1} 个 ${item.kind} 条目的第 ${relationIndex + 1} 条关系`;
+    const action = String(relation.action ?? (item.operation === "deactivate" ? "deactivate" : "add"));
+    if (action !== "add" && action !== "deactivate") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.relation_action_invalid",
+        `${location} 的 action 必须是 add 或 deactivate。`,
+      );
+    }
+    const relationId = String(relation.relation_id ?? "").trim();
+    const fromGoalId = String(relation.from_goal_id ?? "").trim();
+    const toGoalId = String(relation.to_goal_id ?? "").trim();
+    const relationType = String(relation.type ?? "").trim();
+    if (item.kind === "dependency" && relationType && relationType !== "depends_on") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.dependency_type_invalid",
+        `${location} 的 type 只能是 depends_on；kind=dependency 已固定该类型。方向是消费方/依赖方 Goal → 提供方/前置 Goal。`,
+      );
+    }
+    if (action === "deactivate" && relationId) continue;
+    const missing = [
+      ...(!fromGoalId ? ["from_goal_id"] : []),
+      ...(!toGoalId ? ["to_goal_id"] : []),
+      ...(item.kind === "relation" && !relationType ? ["type"] : []),
+    ];
+    if (missing.length === 0) continue;
+    if (item.kind === "dependency") {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.dependency_required",
+        `${location}缺少字段：${missing.join("、")}。规范格式示例：{"from_goal_id":"consumer-goal","to_goal_id":"provider-goal","type":"depends_on"}；方向是消费方/依赖方 Goal → 提供方/前置 Goal。`,
+      );
+    }
+    throw new GoalBoardV1Error(
+      "goal_tree_proposal.relation_required",
+      `${location}缺少字段：${missing.join("、")}。规范格式示例：{"from_goal_id":"child-goal","to_goal_id":"parent-goal","type":"part_of"}；part_of 方向是子 Goal → 父 Goal。`,
+    );
+  }
+}
+
 interface NormalizedGoalTreeProposalDecision {
   item_id: string;
   decision: GoalTreeProposalItemDecisionInput["decision"];
@@ -569,6 +639,7 @@ function normalizeGoalTreeProposalItems(
     if (!item.payload || typeof item.payload !== "object" || Array.isArray(item.payload)) {
       throw new GoalBoardV1Error("goal_tree_proposal.item_payload_invalid", `第 ${index + 1} 个条目必须带结构化内容`);
     }
+    validateGoalTreeProposalRelationPayload(item, index);
     const itemId = item.item_id?.trim() || `goal-tree-proposal-item-${randomUUID()}`;
     if (ids.has(itemId)) {
       throw new GoalBoardV1Error("goal_tree_proposal.item_id_duplicate", "同一份提案中的 item_id 不能重复");
@@ -592,7 +663,8 @@ function normalizeGoalTreeProposalItems(
       );
     }
     const seenObjects = new Set<string>();
-    const affectedObjects = item.affected_objects.map((object, objectIndex) => {
+    const affectedObjects: ProposalAffectedObject[] = [];
+    const addAffectedObject = (object: ProposalAffectedObject, objectIndex: number): void => {
       if (!PROPOSAL_AFFECTED_OBJECT_TYPES.has(object.object_type)) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.affected_object_type_invalid",
@@ -607,10 +679,21 @@ function normalizeGoalTreeProposalItems(
         );
       }
       const key = `${object.object_type}:${objectId}`;
-      if (seenObjects.has(key)) return null;
+      if (seenObjects.has(key)) return;
       seenObjects.add(key);
-      return { object_type: object.object_type, object_id: objectId };
-    }).filter((object): object is ProposalAffectedObject => object != null);
+      affectedObjects.push({ object_type: object.object_type, object_id: objectId });
+    };
+    item.affected_objects.forEach(addAffectedObject);
+    if (item.kind === "relation" || item.kind === "dependency") {
+      for (const relation of goalTreeProposalRelationPayloads(item, index)) {
+        const relationId = String(relation.relation_id ?? "").trim();
+        const fromGoalId = String(relation.from_goal_id ?? "").trim();
+        const toGoalId = String(relation.to_goal_id ?? "").trim();
+        if (relationId) addAffectedObject({ object_type: "relation", object_id: relationId }, affectedObjects.length);
+        if (fromGoalId) addAffectedObject({ object_type: "goal", object_id: fromGoalId }, affectedObjects.length);
+        if (toGoalId) addAffectedObject({ object_type: "goal", object_id: toGoalId }, affectedObjects.length);
+      }
+    }
     if (affectedObjects.length === 0) {
       throw new GoalBoardV1Error("goal_tree_proposal.affected_objects_required", `第 ${index + 1} 个条目必须标出受影响对象`);
     }
@@ -1118,10 +1201,10 @@ export class GoalBoardCoordinator {
           INSERT INTO goals (
             goal_id, board_id, title, outcome, why, business_logic,
             in_scope_json, out_of_scope_json, constraints_json,
-            required_inputs_json, promised_outputs_json,
+            required_inputs_json, promised_outputs_json, decomposition_review_json,
             definition_state, decomposition_state, validity_state, fulfillment_state,
             priority, accepted_by, accepted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
         `)
         .run(
           goalId,
@@ -1135,6 +1218,7 @@ export class GoalBoardCoordinator {
           sqliteJson(input.constraints ?? []),
           sqliteJson(input.required_inputs ?? []),
           sqliteJson(input.promised_outputs ?? []),
+          input.decomposition_review == null ? null : sqliteJson(input.decomposition_review),
           definitionState,
           decompositionState,
           input.priority ?? 0,
@@ -1270,6 +1354,7 @@ export class GoalBoardCoordinator {
             title = ?, outcome = ?, why = ?, business_logic = ?,
             in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
             required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_review_json = ?,
             decomposition_state = ?, priority = ?, updated_at = ?
           WHERE goal_id = ? AND board_id = ?
         `)
@@ -1283,6 +1368,7 @@ export class GoalBoardCoordinator {
           sqliteJson(normalized.constraints ?? []),
           sqliteJson(normalized.required_inputs ?? []),
           sqliteJson(normalized.promised_outputs ?? []),
+          normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
           normalized.decomposition_state ?? current.decomposition_state,
           normalized.priority ?? current.priority,
           now,
@@ -2057,7 +2143,12 @@ export class GoalBoardCoordinator {
 
   setRiskState(
     boardId: string,
-    input: { risk_id: string; state: RiskRecord["state"]; reason: string },
+    input: {
+      risk_id: string;
+      state: RiskRecord["state"];
+      reason: string;
+      resolution_basis?: NonNullable<RiskRecord["resolution_basis"]>;
+    },
     write: ActorWrite,
   ): { risk: RiskRecord; replayed: boolean; observed_event_cursor: number } {
     const hash = requestHash({ board_id: boardId, ...input });
@@ -2077,14 +2168,30 @@ export class GoalBoardCoordinator {
       if (!reasonText) {
         throw new GoalBoardV1Error("risk.reason_required", "变更 Risk 状态时必须说明原因");
       }
+      const resolutionBasis = input.state === "resolved"
+        ? (() => {
+            const raw = input.resolution_basis;
+            const summary = raw?.summary?.trim() ?? "";
+            const evidenceRefs = unique((raw?.evidence_refs ?? []).map((item) => item.trim()).filter(Boolean));
+            const residualGapsProvided = Array.isArray(raw?.residual_gaps);
+            const residualGaps = unique((raw?.residual_gaps ?? []).map((item) => item.trim()).filter(Boolean));
+            if (!summary || evidenceRefs.length === 0 || !residualGapsProvided) {
+              throw new GoalBoardV1Error(
+                "risk.resolution_basis_required",
+                "Risk 标记为已解决时，必须记录解决摘要、至少一条证据引用，并明确 residual_gaps（没有剩余缺口时传空数组）",
+              );
+            }
+            return { summary, evidence_refs: evidenceRefs, residual_gaps: residualGaps };
+          })()
+        : null;
       const row = this.store.db
         .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
         .get(input.risk_id, boardId) as Row | undefined;
       if (!row) throw new GoalBoardV1Error("risk.not_found", `Risk 不存在: ${input.risk_id}`);
       const now = this.clock().toISOString();
       this.store.db
-        .prepare("UPDATE risks SET state = ?, updated_at = ? WHERE risk_id = ?")
-        .run(input.state, now, input.risk_id);
+        .prepare("UPDATE risks SET state = ?, resolution_basis_json = ?, updated_at = ? WHERE risk_id = ?")
+        .run(input.state, resolutionBasis == null ? null : sqliteJson(resolutionBasis), now, input.risk_id);
       const linkedGoals = this.store.db
         .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
         .all(input.risk_id) as Row[];
@@ -2115,6 +2222,7 @@ export class GoalBoardCoordinator {
         payload: {
           previous_state: asText(row.state),
           state: input.state,
+          resolution_basis: resolutionBasis,
           blocking_mode: asText(row.blocking_mode),
           linked_goal_ids: linkedGoals.map((item) => asText(item.goal_id)),
         },
@@ -2691,10 +2799,13 @@ export class GoalBoardCoordinator {
     const blocked: BlockedAvailableGoal[] = [];
     for (const goal of snapshot.goals) {
       const workState = this.deriveGoalWorkState(input.board_id, goal, snapshot, now);
-      if (workState.work_state === "completion_blocked") {
+      if (
+        workState.work_state === "completion_blocked" ||
+        workState.work_state === "waiting_for_human"
+      ) {
         blocked.push({
           goal,
-          work_state: "completion_blocked",
+          work_state: workState.work_state,
           next_action: null,
           reasons: workState.reasons,
           priority_hint: goal.priority,
@@ -2809,7 +2920,10 @@ export class GoalBoardCoordinator {
     const workState = this.getGoalWorkState({ board_id: input.board_id, goal_id: input.goal_id });
     const completionReasons = role === "executor"
       ? this.executorHandoffReasons(workState)
-      : [];
+      : workState.work_state === "waiting_for_human" &&
+          (role === "self_verifier" || role === "cross_reviewer" || role === "adversarial_reviewer")
+        ? workState.reasons
+        : [];
     const reasons = [...evaluation.reasons, ...completionReasons]
       .filter(
         (item, index, items) =>
@@ -2878,11 +2992,30 @@ export class GoalBoardCoordinator {
         .prepare("SELECT risk_id FROM goal_risks WHERE goal_id = ? ORDER BY risk_id")
         .all(goalId) as Row[]).map((row) => asText(row.risk_id)),
     );
+    const parentContractCoverage = snapshot.relations
+      .filter((relation) => relation.state === "active" && relation.type === "part_of" && relation.from_goal_id === goalId)
+      .map((relation) => snapshot.goals.find((candidate) => candidate.goal_id === relation.to_goal_id))
+      .filter((parent): parent is GoalRecord => parent != null)
+      .map((parent) => {
+        const coverage = parent.decomposition_review?.contract_coverage;
+        return {
+          parent_goal_id: parent.goal_id,
+          parent_goal_title: parent.title,
+          record_status: coverage == null ? "unrecorded" as const : "recorded" as const,
+          promised_outputs: coverage?.promised_outputs.filter((entry) =>
+            entry.child_outputs.some((reference) => reference.goal_id === goalId),
+          ) ?? [],
+          acceptance_criteria: coverage?.acceptance_criteria.filter((entry) =>
+            entry.child_criteria.some((reference) => reference.goal_id === goalId),
+          ) ?? [],
+        };
+      });
     return {
       board: snapshot.board,
       observed_event_cursor: snapshot.cursor,
       goal_path: `/goals/${encodeURIComponent(goalId)}`,
       goal,
+      parent_contract_coverage: parentContractCoverage,
       work_state: this.deriveGoalWorkState(boardId, goal, snapshot, now),
       relations: snapshot.relations.filter(
         (item) => item.from_goal_id === goalId || item.to_goal_id === goalId,
@@ -3517,7 +3650,7 @@ export class GoalBoardCoordinator {
       `);
       for (const [index, item] of items.entries()) {
         const baselineVersions = item.affected_objects.map((object) =>
-          this.proposalObjectVersion(input.board_id, object),
+          this.proposalObjectVersion(input.board_id, object, item),
         );
         insertItem.run(
           item.item_id,
@@ -3629,7 +3762,7 @@ export class GoalBoardCoordinator {
       if (replay) return replay;
       const proposal = this.readNativeGoalTreeProposal(input.board_id, proposalId);
       const now = this.clock().toISOString();
-      const conflictItemIds: string[] = [];
+      const conflictItemIdSet = new Set<string>();
       const updateItem = this.store.db.prepare(`
         UPDATE goal_tree_proposal_items
         SET state = ?, conflict_json = ?, updated_at = ?
@@ -3639,7 +3772,7 @@ export class GoalBoardCoordinator {
         if (item.state !== "pending" && item.state !== "conflict") continue;
         const validationIssue = goalTreeProposalItemValidationIssues(item)[0];
         const baselineConflicts = item.baseline_versions.flatMap((baseline) => {
-          const current = this.proposalObjectVersion(input.board_id, baseline);
+          const current = this.proposalObjectVersionForBaseline(input.board_id, baseline, item);
           return baseline.exists === current.exists && baseline.version === current.version
             ? []
             : [{ object: { object_type: baseline.object_type, object_id: baseline.object_id }, baseline, current }];
@@ -3654,9 +3787,26 @@ export class GoalBoardCoordinator {
           : baselineConflicts.length > 0
             ? { objects: baselineConflicts }
             : null;
-        if (conflict) conflictItemIds.push(item.item_id);
+        if (conflict) conflictItemIdSet.add(item.item_id);
         updateItem.run(conflict ? "conflict" : "pending", conflict ? sqliteJson(conflict) : null, now, item.item_id, proposalId);
       }
+      const checkedItems = this.readNativeGoalTreeProposal(input.board_id, proposalId).items;
+      const materializationConflicts = this.preflightGoalTreeProposalMaterialization(
+        input.board_id,
+        checkedItems.filter((item) => item.state === "pending"),
+        actorId,
+        now,
+      );
+      for (const item of checkedItems) {
+        const conflict = materializationConflicts.get(item.item_id);
+        if (!conflict) continue;
+        conflictItemIdSet.add(item.item_id);
+        updateItem.run("conflict", sqliteJson(conflict), now, item.item_id, proposalId);
+      }
+      const conflictItemIds = proposal.items
+        .filter((item) => conflictItemIdSet.has(item.item_id))
+        .map((item) => item.item_id);
+      const planningIssues = this.goalTreePlanningIssues(input.board_id, proposal.items);
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -3669,14 +3819,14 @@ export class GoalBoardCoordinator {
           : "当前 Runtime 检查到 Goal Tree 提案的各条目基准仍有效",
         payload: {
           conflict_item_ids: conflictItemIds,
-          planning_issue_codes: this.goalTreePlanningIssues(input.board_id, proposal.items).map((issue) => issue.code),
+          planning_issue_codes: planningIssues.map((issue) => issue.code),
         },
         at: now,
       });
       const outcome: GoalTreeProposalCheckResult = {
         proposal: this.readNativeGoalTreeProposal(input.board_id, proposalId),
         conflict_item_ids: conflictItemIds,
-        planning_issues: this.goalTreePlanningIssues(input.board_id, proposal.items),
+        planning_issues: planningIssues,
         observed_event_cursor: cursor,
       };
       this.remember(
@@ -3693,12 +3843,13 @@ export class GoalBoardCoordinator {
   }
 
   /**
-   * Applies only the user-confirmed subset of one native Goal Tree proposal.
-   * A stale or structurally unsafe item becomes a persisted conflict while
-   * independent confirmed items in the same composite decision still land.
+   * Applies either an explicitly selected subset or one pristine whole proposal.
+   * Subset decisions preserve independent-item conflict handling; whole confirmation
+   * is all-or-nothing and rolls the transaction back when any item cannot land.
    */
   decideGoalTreeProposal(input: GoalTreeProposalDecideInput): GoalTreeProposalDecisionResult {
     const authority = normalizeGoalTreeProposalDecisionAuthority(input.authority);
+    const wholeConfirmation = input.confirm_all_pending === true;
     const proposalId = requiredDialogueText(
       input.proposal_id,
       "goal_tree_proposal.id_required",
@@ -3712,7 +3863,7 @@ export class GoalBoardCoordinator {
       authority,
       decisions: input.decisions ?? [],
       reason: input.reason ?? null,
-      confirm_all_pending: input.confirm_all_pending === true,
+      confirm_all_pending: wholeConfirmation,
     });
     return this.store.immediate(() => {
       const replay = this.replay<Omit<GoalTreeProposalDecisionResult, "replayed">>(
@@ -3732,13 +3883,41 @@ export class GoalBoardCoordinator {
           "只有仍有待处理条目的 Goal Tree 提案可以继续决定",
         );
       }
+      const abortWholeConfirmation = (
+        item: GoalTreeProposalItemRecord,
+        conflict: Record<string, unknown>,
+      ): never => {
+        const detail = String(conflict.message ?? conflict.code ?? "当前事实与提案不一致");
+        const recovery = String(conflict.recovery ?? this.goalTreeProposalConflictRecovery(conflict));
+        throw new GoalBoardV1Error(
+          "goal_tree_proposal.whole_confirmation_conflict",
+          `整份提案中的条目「${item.item_id}」暂时不能采用：${detail}。本次整份确认没有写入任何变更；${recovery}`,
+          {
+            item_id: item.item_id,
+            original_code: conflict.code ?? null,
+            conflict,
+            next_action: "check_and_revise",
+          },
+        );
+      };
 
       let decisions = normalizeGoalTreeProposalDecisions(input.decisions, input.reason);
-      if (input.confirm_all_pending === true) {
+      if (wholeConfirmation) {
         if (decisions.length > 0) {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.whole_confirmation_mixed",
             "整份确认不能同时携带逐项决定；请二选一",
+          );
+        }
+        if (proposal.state !== "pending") {
+          throw new GoalBoardV1Error(
+            "goal_tree_proposal.whole_confirmation_requires_pristine_proposal",
+            "这份提案已经有条目落地，不能再作为一份完整变更原子确认；请基于当前 Goal Tree 生成只包含未落地内容的修订提案",
+            {
+              proposal_id: proposal.proposal_id,
+              state: proposal.state,
+              next_action: "create_revision_from_current_tree",
+            },
           );
         }
         const activeProposals = this.store
@@ -3750,14 +3929,20 @@ export class GoalBoardCoordinator {
           );
         if (
           authority.whole_confirmation_prompted !== true ||
-          activeProposals.length !== 1 ||
-          activeProposals[0]?.proposal_id !== proposal.proposal_id ||
-          proposal.items.some((item) => item.state === "conflict")
+          (authority.authority_source === "runtime_dialogue" &&
+            (activeProposals.length !== 1 || activeProposals[0]?.proposal_id !== proposal.proposal_id))
         ) {
           throw new GoalBoardV1Error(
             "goal_tree_proposal.whole_confirmation_ambiguous",
             "简短确认只有在上一问明确请求确认唯一整份提案时才能生效；请说明要确认哪些条目",
           );
+        }
+        const existingConflict = proposal.items.find((item) => item.state === "conflict");
+        if (existingConflict) {
+          abortWholeConfirmation(existingConflict, existingConflict.conflict ?? {
+            code: "goal_tree_proposal.item_conflict",
+            message: "条目与当前 GoalBoard 事实不一致",
+          });
         }
         const sharedReason = requiredDialogueText(
           input.reason ?? "",
@@ -3895,6 +4080,15 @@ export class GoalBoardCoordinator {
         if (decision.decision === "revise") continue;
         const planningConflict = planningConflicts.get(item.item_id);
         if (planningConflict) {
+          if (wholeConfirmation) {
+            abortWholeConfirmation(item, {
+              code: planningConflict.code,
+              message: planningConflict.message,
+              goal_ids: planningConflict.goal_ids,
+              relation_ids: planningConflict.relation_ids,
+              path: planningConflict.path,
+            });
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -3920,6 +4114,13 @@ export class GoalBoardCoordinator {
         }
         const conflicts = this.goalTreeProposalItemConflicts(input.board_id, item);
         if (conflicts.length > 0) {
+          if (wholeConfirmation) {
+            abortWholeConfirmation(item, {
+              code: "goal_tree_proposal.baseline_changed",
+              message: "条目依赖的 GoalBoard 事实已经变化",
+              objects: conflicts,
+            });
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -3949,6 +4150,7 @@ export class GoalBoardCoordinator {
         for (const entry of confirmed.filter((candidate) => kinds.includes(candidate.item.kind))) {
           const conflict = this.goalTreeProposalMaterializationConflict(input.board_id, entry.item);
           if (conflict) {
+            if (wholeConfirmation) abortWholeConfirmation(entry.item, conflict);
             this.recordGoalTreeProposalItemDecision({
               board_id: input.board_id,
               proposal_id: proposal.proposal_id,
@@ -3966,13 +4168,25 @@ export class GoalBoardCoordinator {
             conflictItemIds.push(entry.item.item_id);
             continue;
           }
-          const materializedObjects = this.materializeGoalTreeProposalItem(
-            input.board_id,
-            entry.item,
-            authority.actor_id,
-            entry.decision.reason,
-            now,
-          );
+          let materializedObjects: ProposalAffectedObject[];
+          try {
+            materializedObjects = this.materializeGoalTreeProposalItem(
+              input.board_id,
+              entry.item,
+              authority.actor_id,
+              entry.decision.reason,
+              now,
+            );
+          } catch (error) {
+            if (wholeConfirmation && error instanceof GoalBoardV1Error) {
+              abortWholeConfirmation(entry.item, {
+                code: error.code,
+                message: error.message,
+                ...(error.details ?? {}),
+              });
+            }
+            throw error;
+          }
           this.recordGoalTreeProposalItemDecision({
             board_id: input.board_id,
             proposal_id: proposal.proposal_id,
@@ -4179,7 +4393,13 @@ export class GoalBoardCoordinator {
           now,
           expiresAt,
         );
-      if (role === "executor" || role === "revalidator") {
+      if (
+        role === "executor" ||
+        role === "revalidator" ||
+        role === "self_verifier" ||
+        role === "cross_reviewer" ||
+        role === "adversarial_reviewer"
+      ) {
         this.ensureReviewObligations(request.board_id, request.goal_id, evaluation.policy, now);
       }
       this.store.appendEvent({
@@ -4217,6 +4437,110 @@ export class GoalBoardCoordinator {
         now,
       );
       return decision;
+    });
+  }
+
+  renewClaim(input: ClaimRenewRequest): ClaimRenewResult {
+    const hash = requestHash({
+      board_id: input.board_id,
+      claim_id: input.claim_id,
+      actor_id: input.actor_id,
+      lease_seconds: input.lease_seconds ?? null,
+    });
+    return this.store.immediate(() => {
+      const replay = this.replay<Omit<ClaimRenewResult, "replayed">>(
+        input.board_id,
+        input.actor_id,
+        "renew_claim",
+        input.idempotency_key,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+
+      this.requireBoard(input.board_id);
+      const row = this.store.db
+        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
+        .get(input.claim_id, input.board_id) as Row | undefined;
+      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
+      const claim = mapSqliteClaim(row);
+      if (claim.actor_id !== input.actor_id) {
+        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以续租 Claim");
+      }
+      if (claim.state !== "active") {
+        throw new GoalBoardV1Error("claim.not_active", "只有 active Claim 可以续租");
+      }
+
+      const now = this.clock().toISOString();
+      if (claim.expires_at <= now) {
+        throw new GoalBoardV1Error(
+          "claim.lease_expired",
+          "Claim 租约已过期，不能续租；请重新领取 Goal",
+          {
+            claim_id: claim.claim_id,
+            goal_id: claim.goal_id,
+            next_action: "select_goal",
+            requires_user_confirmation: false,
+          },
+        );
+      }
+      const maxLeaseSeconds = claim.resolved_policy.max_lease_seconds;
+      const requestedLease = input.lease_seconds ?? maxLeaseSeconds;
+      if (!Number.isInteger(requestedLease) || requestedLease <= 0) {
+        throw new GoalBoardV1Error(
+          "lease.duration_invalid",
+          "续租时长必须是正整数秒",
+          { requested_lease_seconds: requestedLease },
+        );
+      }
+      if (requestedLease > maxLeaseSeconds) {
+        throw new GoalBoardV1Error(
+          "lease.duration_exceeds_policy",
+          `续租时长不能超过领取时确认的 ${maxLeaseSeconds} 秒`,
+          {
+            requested_lease_seconds: requestedLease,
+            max_lease_seconds: maxLeaseSeconds,
+          },
+        );
+      }
+
+      const requestedExpiry = addSeconds(now, requestedLease);
+      const expiresAt = requestedExpiry > claim.expires_at ? requestedExpiry : claim.expires_at;
+      this.store.db
+        .prepare("UPDATE claims SET expires_at = ?, renewed_at = ? WHERE claim_id = ?")
+        .run(expiresAt, now, input.claim_id);
+      const cursor = this.store.appendEvent({
+        eventId: randomUUID(),
+        boardId: input.board_id,
+        actorId: input.actor_id,
+        type: "claim.renewed",
+        objectType: "claim",
+        objectId: input.claim_id,
+        reason: "领取者确认工作仍在继续并续租 Claim",
+        payload: {
+          goal_id: claim.goal_id,
+          previous_expires_at: claim.expires_at,
+          expires_at: expiresAt,
+          lease_seconds: requestedLease,
+        },
+        at: now,
+      });
+      const updated = this.store.db
+        .prepare("SELECT * FROM claims WHERE claim_id = ?")
+        .get(input.claim_id) as Row;
+      const outcome = {
+        claim: mapSqliteClaim(updated),
+        observed_event_cursor: cursor,
+      };
+      this.remember(
+        input.board_id,
+        input.actor_id,
+        "renew_claim",
+        input.idempotency_key,
+        hash,
+        outcome,
+        now,
+      );
+      return { ...outcome, replayed: false };
     });
   }
 
@@ -4261,7 +4585,8 @@ export class GoalBoardCoordinator {
           );
           if (
             workState.work_state === "completion_pending" ||
-            workState.work_state === "completion_blocked"
+            workState.work_state === "completion_blocked" ||
+            workState.work_state === "waiting_for_human"
           ) {
             const reasons = this.executorHandoffReasons(workState);
             const outcome: ClaimRunDecision = {
@@ -5967,6 +6292,7 @@ export class GoalBoardCoordinator {
             title = ?, outcome = ?, why = ?, business_logic = ?,
             in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
             required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_review_json = NULL,
             definition_state = 'accepted', decomposition_state = 'closed_leaf',
             validity_state = 'valid', fulfillment_state = 'unmet', priority = ?,
             accepted_by = ?, accepted_at = ?, updated_at = ?
@@ -6882,39 +7208,83 @@ export class GoalBoardCoordinator {
     policy: GoalPolicy,
     at: string,
   ): void {
+    const criteria = this.store.getGoal(goalId)?.acceptance_criteria ?? [];
+    const runtimeCriterionIds = criteria
+      .filter((criterion) => criterion.decision_method !== "human_decision")
+      .map((criterion) => criterion.criterion_id);
+    const humanCriterionIds = criteria
+      .filter((criterion) => criterion.decision_method === "human_decision")
+      .map((criterion) => criterion.criterion_id);
+    const allCriterionIds = criteria.map((criterion) => criterion.criterion_id);
     const obligations: Array<{
       role: "self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver";
       count: number;
       independence: string;
+      criterionIds: string[];
     }> = [];
-    if (policy.self_verification) {
-      obligations.push({ role: "self_verifier", count: 1, independence: "executor_allowed" });
+    if (policy.self_verification && runtimeCriterionIds.length > 0) {
+      obligations.push({
+        role: "self_verifier",
+        count: 1,
+        independence: "executor_allowed",
+        criterionIds: runtimeCriterionIds,
+      });
     }
-    if (policy.cross_reviewers > 0) {
+    if (policy.cross_reviewers > 0 && runtimeCriterionIds.length > 0) {
       obligations.push({
         role: "cross_reviewer",
         count: policy.cross_reviewers,
         independence: "actor_must_differ_from_executor",
+        criterionIds: runtimeCriterionIds,
       });
     }
-    if (policy.adversarial_reviewers > 0) {
+    if (policy.adversarial_reviewers > 0 && runtimeCriterionIds.length > 0) {
       obligations.push({
         role: "adversarial_reviewer",
         count: policy.adversarial_reviewers,
         independence: "actor_must_differ_from_executor",
+        criterionIds: runtimeCriterionIds,
       });
     }
-    if (policy.human_approval) {
-      obligations.push({ role: "human_approver", count: 1, independence: "user_authority" });
+    if (policy.human_approval || humanCriterionIds.length > 0) {
+      obligations.push({
+        role: "human_approver",
+        count: 1,
+        independence: "user_authority",
+        criterionIds: policy.human_approval ? allCriterionIds : humanCriterionIds,
+      });
     }
-    const criterionIds = this.store
-      .getGoal(goalId)
-      ?.acceptance_criteria.map((criterion) => criterion.criterion_id) ?? [];
+
+    const desiredRoles = new Set(obligations.map((obligation) => obligation.role));
+    const existingRuntimeObligations = this.store.db
+      .prepare(`
+        SELECT obligation_id, role, state
+        FROM review_obligations
+        WHERE goal_id = ?
+          AND role IN ('self_verifier', 'cross_reviewer', 'adversarial_reviewer')
+      `)
+      .all(goalId) as Row[];
+    for (const existing of existingRuntimeObligations) {
+      if (desiredRoles.has(asText(existing.role) as typeof obligations[number]["role"])) continue;
+      if (asText(existing.state) !== "pending") continue;
+      this.store.db
+        .prepare("UPDATE review_obligations SET criterion_scope_json = '[]', state = 'waived' WHERE obligation_id = ?")
+        .run(asText(existing.obligation_id));
+    }
+
     for (const obligation of obligations) {
       const existing = this.store.db
-        .prepare("SELECT obligation_id FROM review_obligations WHERE goal_id = ? AND role = ?")
-        .get(goalId, obligation.role);
-      if (existing) continue;
+        .prepare("SELECT obligation_id, criterion_scope_json FROM review_obligations WHERE goal_id = ? AND role = ?")
+        .get(goalId, obligation.role) as Row | undefined;
+      if (existing) {
+        const currentScope = parseJson<string[]>(existing.criterion_scope_json, []);
+        if (JSON.stringify(currentScope) !== JSON.stringify(obligation.criterionIds)) {
+          this.store.db
+            .prepare("UPDATE review_obligations SET criterion_scope_json = ? WHERE obligation_id = ?")
+            .run(sqliteJson(obligation.criterionIds), asText(existing.obligation_id));
+        }
+        continue;
+      }
       this.store.db
         .prepare(`
           INSERT INTO review_obligations (
@@ -6929,7 +7299,7 @@ export class GoalBoardCoordinator {
           obligation.role,
           obligation.count,
           obligation.independence,
-          sqliteJson(criterionIds),
+          sqliteJson(obligation.criterionIds),
           at,
         );
     }
@@ -7101,7 +7471,11 @@ export class GoalBoardCoordinator {
     return proposal;
   }
 
-  private proposalObjectVersion(boardId: string, object: ProposalAffectedObject): ProposalObjectVersion {
+  private proposalObjectVersion(
+    boardId: string,
+    object: ProposalAffectedObject,
+    item?: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): ProposalObjectVersion {
     const snapshot = this.store.snapshot(boardId);
     let current: unknown = null;
     switch (object.object_type) {
@@ -7130,8 +7504,76 @@ export class GoalBoardCoordinator {
       object_type: object.object_type,
       object_id: object.object_id,
       exists: current != null,
-      version: current == null ? "absent" : requestHash(current),
+      version: current == null
+        ? "absent"
+        : item
+          ? `semantic-v1:${requestHash(this.proposalSemanticObject(current, object, item))}`
+          : requestHash(current),
     };
+  }
+
+  private proposalObjectVersionForBaseline(
+    boardId: string,
+    baseline: ProposalObjectVersion,
+    item: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): ProposalObjectVersion {
+    return this.proposalObjectVersion(
+      boardId,
+      baseline,
+      baseline.version === "absent" || baseline.version.startsWith("semantic-v1:") ? item : undefined,
+    );
+  }
+
+  private proposalSemanticObject(
+    current: unknown,
+    object: ProposalAffectedObject,
+    item: Pick<GoalTreeProposalItemRecord, "kind" | "operation">,
+  ): unknown {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return current;
+    const record = current as Record<string, unknown>;
+    if (object.object_type === "goal" && (item.kind === "goal" || item.kind === "contract")) {
+      const fields = [
+        "goal_id",
+        "board_id",
+        "title",
+        "outcome",
+        "why",
+        "business_logic",
+        "in_scope",
+        "out_of_scope",
+        "constraints",
+        "required_inputs",
+        "promised_outputs",
+        "decomposition_review",
+        "definition_state",
+        "decomposition_state",
+        "trashed_at",
+        "trashed_by",
+        "archived_at",
+        "archived_by",
+        "priority",
+        "acceptance_criteria",
+      ];
+      return Object.fromEntries(fields.map((field) => [field, record[field]]));
+    }
+    if (object.object_type === "goal") {
+      return {
+        goal_id: record.goal_id,
+        board_id: record.board_id,
+        definition_state: record.definition_state,
+        decomposition_state: record.decomposition_state,
+        trashed_at: record.trashed_at,
+        archived_at: record.archived_at,
+      };
+    }
+    return Object.fromEntries(
+      Object.entries(record).filter(([field]) => ![
+        "created_at",
+        "updated_at",
+        "decided_at",
+        "deactivated_at",
+      ].includes(field)),
+    );
   }
 
   private goalTreeProposalItemConflicts(
@@ -7139,7 +7581,7 @@ export class GoalBoardCoordinator {
     item: GoalTreeProposalItemRecord,
   ): Array<Record<string, unknown>> {
     return item.baseline_versions.flatMap((baseline) => {
-      const current = this.proposalObjectVersion(boardId, baseline);
+      const current = this.proposalObjectVersionForBaseline(boardId, baseline, item);
       return baseline.exists === current.exists && baseline.version === current.version
         ? []
         : [{
@@ -7377,7 +7819,7 @@ export class GoalBoardCoordinator {
     `);
     for (const [index, revision] of revisions.entries()) {
       const item = revision.revised_item;
-      const baselineVersions = item.affected_objects.map((object) => this.proposalObjectVersion(boardId, object));
+      const baselineVersions = item.affected_objects.map((object) => this.proposalObjectVersion(boardId, object, item));
       insertItem.run(
         item.item_id,
         proposalId,
@@ -8120,6 +8562,62 @@ export class GoalBoardCoordinator {
     return null;
   }
 
+  private preflightGoalTreeProposalMaterialization(
+    boardId: string,
+    items: GoalTreeProposalItemRecord[],
+    actorId: string,
+    at: string,
+  ): Map<string, Record<string, unknown>> {
+    const conflicts = new Map<string, Record<string, unknown>>();
+    const materializationOrder: GoalTreeProposalItemRecord["kind"][][] = [
+      ["goal", "contract", "candidate"],
+      ["policy", "risk"],
+      ["relation", "dependency", "rewire"],
+    ];
+    this.store.db.exec("SAVEPOINT goal_tree_materialization_preflight");
+    try {
+      for (const kinds of materializationOrder) {
+        for (const item of items.filter((candidate) => kinds.includes(candidate.kind))) {
+          this.store.db.exec("SAVEPOINT goal_tree_item_preflight");
+          try {
+            const conflict = this.goalTreeProposalMaterializationConflict(boardId, item);
+            if (conflict) {
+              conflicts.set(item.item_id, {
+                ...conflict,
+                recovery: this.goalTreeProposalConflictRecovery(conflict),
+              });
+              this.store.db.exec("ROLLBACK TO goal_tree_item_preflight");
+              this.store.db.exec("RELEASE goal_tree_item_preflight");
+              continue;
+            }
+            this.materializeGoalTreeProposalItem(boardId, item, actorId, "Goal Tree 提案只读预检", at);
+            this.store.db.exec("RELEASE goal_tree_item_preflight");
+          } catch (error) {
+            this.store.db.exec("ROLLBACK TO goal_tree_item_preflight");
+            this.store.db.exec("RELEASE goal_tree_item_preflight");
+            if (!(error instanceof GoalBoardV1Error)) throw error;
+            conflicts.set(item.item_id, {
+              code: error.code,
+              message: error.message,
+              ...(error.details ?? {}),
+              recovery: this.goalTreeProposalConflictRecovery({ code: error.code }),
+            });
+          }
+        }
+      }
+    } finally {
+      this.store.db.exec("ROLLBACK TO goal_tree_materialization_preflight");
+      this.store.db.exec("RELEASE goal_tree_materialization_preflight");
+    }
+    return conflicts;
+  }
+
+  private goalTreeProposalConflictRecovery(conflict: Record<string, unknown>): string {
+    return String(conflict.code ?? "").startsWith("goal.accepted_")
+      ? "已接受 Goal 的业务 Contract 不能原地重写；若需求已经变化，请创建 successor / replacement Goal，或只提交允许的 closed_compound 收口，再让用户确认。当前 Goal Tree 尚未改变。"
+      : "请先运行 goal_tree_check 并修订这个条目，再让用户决定整份提案。当前 Goal Tree 尚未改变。";
+  }
+
   private materializeGoalTreeProposalItem(
     boardId: string,
     item: GoalTreeProposalItemRecord,
@@ -8164,10 +8662,10 @@ export class GoalBoardCoordinator {
           INSERT INTO goals (
             goal_id, board_id, title, outcome, why, business_logic,
             in_scope_json, out_of_scope_json, constraints_json,
-            required_inputs_json, promised_outputs_json,
+            required_inputs_json, promised_outputs_json, decomposition_review_json,
             definition_state, decomposition_state, validity_state, fulfillment_state,
             priority, accepted_by, accepted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
         `)
         .run(
           goalId,
@@ -8181,6 +8679,7 @@ export class GoalBoardCoordinator {
           sqliteJson(goal.constraints ?? []),
           sqliteJson(goal.required_inputs ?? []),
           sqliteJson(goal.promised_outputs ?? []),
+          goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review),
           definitionState,
           decompositionState,
           goal.priority ?? 0,
@@ -8213,10 +8712,10 @@ export class GoalBoardCoordinator {
       this.store.db
         .prepare(`
           UPDATE goals
-          SET decomposition_state = 'closed_compound', fulfillment_state = 'unmet', updated_at = ?
+          SET decomposition_state = 'closed_compound', decomposition_review_json = ?, fulfillment_state = 'unmet', updated_at = ?
           WHERE board_id = ? AND goal_id = ?
         `)
-        .run(at, boardId, goalId);
+        .run(goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review), at, boardId, goalId);
       this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
@@ -8257,6 +8756,7 @@ export class GoalBoardCoordinator {
           title = ?, outcome = ?, why = ?, business_logic = ?,
           in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
           required_inputs_json = ?, promised_outputs_json = ?,
+          decomposition_review_json = ?,
           definition_state = ?, decomposition_state = ?, priority = ?,
           accepted_by = ?, accepted_at = ?, updated_at = ?
         WHERE board_id = ? AND goal_id = ?
@@ -8271,6 +8771,7 @@ export class GoalBoardCoordinator {
         sqliteJson(normalized.constraints ?? []),
         sqliteJson(normalized.required_inputs ?? []),
         sqliteJson(normalized.promised_outputs ?? []),
+        normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
         definitionState,
         decompositionState,
         normalized.priority ?? existing.priority,
@@ -8605,6 +9106,33 @@ export class GoalBoardCoordinator {
     }
     const previousState = previous ? asText(previous.state) as RiskRecord["state"] : null;
     const state = (requestedState || previousState || "open") as RiskRecord["state"];
+    const rawResolutionBasis = payload.resolution_basis && typeof payload.resolution_basis === "object" && !Array.isArray(payload.resolution_basis)
+      ? payload.resolution_basis as Record<string, unknown>
+      : null;
+    const previousResolutionBasis = previous
+      ? parseJson<RiskRecord["resolution_basis"]>(previous.resolution_basis_json, null)
+      : null;
+    const resolutionBasis = state !== "resolved"
+      ? null
+      : rawResolutionBasis
+        ? {
+            summary: String(rawResolutionBasis.summary ?? "").trim(),
+            evidence_refs: this.goalTreeStringArray(rawResolutionBasis.evidence_refs),
+            residual_gaps: this.goalTreeStringArray(rawResolutionBasis.residual_gaps),
+          }
+        : requestedState
+          ? null
+          : previousResolutionBasis;
+    if (requestedState === "resolved" && (
+      !resolutionBasis?.summary ||
+      resolutionBasis.evidence_refs.length === 0 ||
+      !Array.isArray(rawResolutionBasis?.residual_gaps)
+    )) {
+      throw new GoalBoardV1Error(
+        "goal_tree_proposal.risk_resolution_basis_required",
+        "Risk 标记为已解决时，必须记录解决摘要、至少一条证据引用和 residual_gaps",
+      );
+    }
     const previousGoalIds = previous
       ? (this.store.db
           .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
@@ -8616,8 +9144,8 @@ export class GoalBoardCoordinator {
           INSERT INTO risks (
             risk_id, board_id, description, probability, impact,
             affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
-            revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            revisit_condition, owner, state, resolution_basis_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           riskId,
@@ -8633,6 +9161,7 @@ export class GoalBoardCoordinator {
           facts.revisit_condition,
           facts.owner,
           state,
+          resolutionBasis == null ? null : sqliteJson(resolutionBasis),
           at,
           at,
         );
@@ -8640,7 +9169,7 @@ export class GoalBoardCoordinator {
       const result = this.store.db
         .prepare(`
           UPDATE risks SET description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, state = ?, updated_at = ?
+            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, state = ?, resolution_basis_json = ?, updated_at = ?
           WHERE board_id = ? AND risk_id = ?
         `)
         .run(
@@ -8655,6 +9184,7 @@ export class GoalBoardCoordinator {
           facts.revisit_condition,
           facts.owner,
           state,
+          resolutionBasis == null ? null : sqliteJson(resolutionBasis),
           at,
           boardId,
           riskId,
@@ -8699,6 +9229,7 @@ export class GoalBoardCoordinator {
         blocking_mode: facts.blocking_mode,
         previous_state: previousState,
         state,
+        resolution_basis: resolutionBasis,
       },
       at,
     });
@@ -9350,9 +9881,36 @@ export class GoalBoardCoordinator {
     );
     const pendingReviewRoles = pendingReviewObligations.map((obligation) => obligation.role);
     const reviewReady = this.latestWorkRunState(snapshot, goal.goal_id) === "completed";
+    const activeClaimLease = activeClaim
+      ? (() => {
+          const remainingSeconds = Math.max(
+            0,
+            Math.ceil((new Date(activeClaim.expires_at).getTime() - new Date(now).getTime()) / 1000),
+          );
+          const leaseStartedAt = activeClaim.renewed_at ?? activeClaim.claimed_at;
+          const currentLeaseSeconds = Math.max(
+            1,
+            Math.ceil(
+              (new Date(activeClaim.expires_at).getTime() - new Date(leaseStartedAt).getTime()) / 1000,
+            ),
+          );
+          const renewalWindowSeconds = Math.max(
+            1,
+            Math.min(300, Math.ceil(currentLeaseSeconds / 3)),
+          );
+          const renewRecommended = remainingSeconds <= renewalWindowSeconds;
+          return {
+            remaining_seconds: remainingSeconds,
+            renewal_window_seconds: renewalWindowSeconds,
+            renew_recommended: renewRecommended,
+            next_action: renewRecommended ? "renew_claim" as const : null,
+          };
+        })()
+      : null;
     const base = {
       goal_id: goal.goal_id,
       active_claim: activeClaim,
+      active_claim_lease: activeClaimLease,
       active_run: activeRun,
       pending_review_roles: pendingReviewRoles,
       child_goal_ids: childGoalIds,
@@ -9370,6 +9928,29 @@ export class GoalBoardCoordinator {
         work_state: "invalidated",
         next_action: null,
         reasons: [reason("goal.invalidated", "goal", goal.goal_id, "Goal 已失效，需要重新澄清或替换")],
+      };
+    }
+    if (
+      goal.decomposition_state === "closed_compound" &&
+      recordedContractCoverageBlocksClosure(goal, {
+        goals: snapshot.goals,
+        relations: snapshot.relations,
+      })
+    ) {
+      return {
+        ...base,
+        work_state: "clarification_blocked",
+        next_action: "clarify",
+        reasons: [
+          reason(
+            "goal.contract_coverage_incomplete",
+            "goal",
+            goal.goal_id,
+            "父 Goal 记录的承诺结果或完成条件尚未被子 Contract 完整覆盖",
+            undefined,
+            "继续澄清父子 Contract 映射；部分覆盖、尚未覆盖或仍需父级集成时不能关闭父 Goal",
+          ),
+        ],
       };
     }
     if (
@@ -9470,25 +10051,64 @@ export class GoalBoardCoordinator {
     }
 
     const reworkRequested = this.hasPostExecutionNeedsChanges(boardId, goal.goal_id);
-    if (pendingReviewObligations.length > 0 && reviewReady && !reworkRequested) {
-      const action = pendingReviewObligations
+    const pendingRuntimeReviewObligations = pendingReviewObligations.filter(
+      (obligation) => obligation.role !== "human_approver",
+    );
+    const pendingHumanReviewObligations = pendingReviewObligations.filter(
+      (obligation) => obligation.role === "human_approver",
+    );
+    if (pendingRuntimeReviewObligations.length > 0 && reviewReady && !reworkRequested) {
+      const action = pendingRuntimeReviewObligations
         .map((obligation) => this.reviewActionFor(obligation))
         .find((candidate): candidate is AvailableAction => candidate !== null);
       const reasons = action?.role
         ? this.workStatePhaseReasons(boardId, goal.goal_id, action.role, now, snapshot)
-        : [
-            reason(
-              "review.user_approval_required",
-              "review",
-              pendingReviewObligations[0]!.obligation_id,
-              "当前只剩用户确认的 Review，Runtime 不能代替用户决定",
-            ),
-          ];
+        : [];
       return {
         ...base,
         work_state: reasons.length > 0 ? "review_blocked" : "review_pending",
         next_action: "review",
         reasons: phaseReasons(reasons),
+      };
+    }
+
+    const uncoveredHumanCriterionIds = goal.acceptance_criteria
+      .filter((criterion) => criterion.decision_method === "human_decision")
+      .filter((criterion) => !snapshot.evidence.some(
+        (evidence) =>
+          evidence.goal_id === goal.goal_id &&
+          evidence.lifecycle_state === "effective" &&
+          evidence.result === "passed" &&
+          evidence.criterion_ids.includes(criterion.criterion_id),
+      ))
+      .map((criterion) => criterion.criterion_id);
+    if (
+      reviewReady &&
+      !reworkRequested &&
+      (pendingHumanReviewObligations.length > 0 || uncoveredHumanCriterionIds.length > 0)
+    ) {
+      const criterionIds = unique([
+        ...pendingHumanReviewObligations.flatMap((obligation) => obligation.criterion_scope),
+        ...uncoveredHumanCriterionIds,
+      ]).sort();
+      return {
+        ...base,
+        work_state: "waiting_for_human",
+        next_action: null,
+        reasons: [
+          reason(
+            "review.user_approval_required",
+            "goal",
+            goal.goal_id,
+            "Runtime 可承担的检查已经结束，当前只剩用户本人验收与决定",
+            {
+              criterion_ids: criterionIds,
+              obligation_ids: pendingHumanReviewObligations.map((item) => item.obligation_id),
+              next_action: "open_goalboard",
+            },
+            "请用户在 GoalBoard 中完成真实操作、提交决定及相应验收依据；Runtime 不要重复领取 Review。",
+          ),
+        ],
       };
     }
 
@@ -9691,7 +10311,10 @@ export class GoalBoardCoordinator {
   }
 
   private executorHandoffReasons(workState: GoalWorkStateView): DecisionReason[] {
-    if (workState.work_state === "completion_blocked") return workState.reasons;
+    if (
+      workState.work_state === "completion_blocked" ||
+      workState.work_state === "waiting_for_human"
+    ) return workState.reasons;
     if (workState.work_state !== "completion_pending") return [];
     return [
       reason(
@@ -9916,6 +10539,13 @@ export class GoalBoardCoordinator {
       goal.validity_state !== "valid" ||
       goal.fulfillment_state === "satisfied"
     ) {
+      return false;
+    }
+    const snapshot = this.store.snapshot(boardId);
+    if (recordedContractCoverageBlocksClosure(goal, {
+      goals: snapshot.goals,
+      relations: snapshot.relations,
+    })) {
       return false;
     }
     const children = this.activePartOfChildren(boardId, goalId);
