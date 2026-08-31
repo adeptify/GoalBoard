@@ -21,6 +21,7 @@
 - Session 内容密文存储：TUI/GoalBoard 管理内容以 AES-256-GCM 加密文件保存，SQLite 只保存引用与无敏感正文的结构元数据。
 - PTY 输出与退出状态采集：panel spawn 明确携带 `session_id`；写入以 session 为边界，重启后仍可读取。
 - Codex app-server stdio transport：初始化、请求关联、事件订阅、超时、退出与关闭；不会把请求正文或凭据写入日志。
+- macOS 常驻 Web 的受管 PATH 必须包含用户级工具目录 `~/.local/bin`，使通过官方用户级入口安装的 Codex CLI 在 LaunchAgent 中也可被原生内容 transport 找到；只扩展 GoalBoard 自己生成的 plist，不读取或改写 Session 数据。
 - 内容服务：按 GoalBoard `session_id` 查 owning Runtime/native ID，调用 Adapter read，标准化结构化历史并与 GoalBoard 事件合并。
 - Goal 生命周期回写：Runtime 成功选择、推进或完成 Goal 时，把当前 Goal 与最小状态事件写回 owning Session；不复制 MCP 请求正文。
 - 同 Runtime resume：只向拥有该 Session 的 Adapter 发送其原生 ID；unsupported/failed 返回结构化恢复动作。
@@ -82,6 +83,7 @@ Codex 映射：
 - `src/sessions/registry.ts`：schema v1→v2 迁移和 Session event 索引事务。
 - `src/sessions/content.ts`：Runtime 响应标准化、合并、当前内容搜索和 resume 结果。
 - `src/sessions/codex-transport.ts`：Codex app-server 子进程协议边界。
+- `src/install/web-service.ts`：为 GoalBoard 自己的 LaunchAgent 提供可复现且最小的 Runtime CLI 查找 PATH。
 - `src/web/pty-host.ts` / `pty-socket.ts` / `pty-client.ts`：显式传递 session identity 并采集输出/退出。
 - `src/web/server.ts`：项目隔离的 Session content/resume API，服务生命周期与 transport 注入。
 - `src/web/project-session-workspaces.ts`：现有高密度详情使用真实记录和 API；不新增另一套导航或容器层级。
@@ -95,6 +97,7 @@ Codex 映射：
 5. 详情 API 按 project/session 双重隔离；搜索只作用于已经加载的当前 Session 内容。
 6. Session 详情移除静态“演示完成”行为，真实展示 native/fallback/unavailable/failed 与重试/恢复入口。
 7. Runtime 选择或推进 Goal 后，对应 Session 的 `current_goal_id`、Goal 历史和 GoalBoard 状态事件可被项目详情读取；同一个幂等调用不会生成重复事件。
+8. Codex CLI 只位于 `~/.local/bin` 时，确认修复受管 LaunchAgent 后，Web 仍能启动 `codex app-server` 并读取原生 Session 内容；旧 plist 被识别为 `needs_repair`，未知 plist 仍不接管。
 
 ## 验证命令
 
@@ -103,6 +106,7 @@ pnpm typecheck
 node --import tsx --test tests/session-content.test.ts tests/session-resume.test.ts tests/session-tui-capture.test.ts tests/session-content-privacy.test.ts
 node --import tsx --test tests/session-registry.test.ts tests/session-migration.test.ts tests/session-adapters.test.ts
 node --import tsx --test tests/web.test.ts tests/desktop-tui.test.ts
+node --import tsx --test tests/service.test.ts
 pnpm build
 git diff --check
 ```

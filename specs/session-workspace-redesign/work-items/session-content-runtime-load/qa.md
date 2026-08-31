@@ -45,6 +45,15 @@
 - `tests/web.test.ts tests/desktop-tui.test.ts`：81/82 通过。唯一失败是既有 Feed 窄屏 CSS 字符串断言 `tests/web.test.ts:1884`，检查的是 `.feed-detail` padding，与本 Work Item 的 Session 代码、API 和页面无关；没有修改该旧断言或 Feed 样式来制造通过。
 - `git diff --check`：通过。
 
+## 0.1.13 安装回归（2026-08-31）
+
+- 先安装 0.1.12 后，真实 Registry 仍保留当前 Codex Session、Project 与 `session-content-runtime-load` Goal 关系，但原生内容返回 `content_mode=failed`；这证明不是 Session 数据丢失，而是 Runtime transport 不可用。
+- 根因是受管 macOS LaunchAgent 的 `PATH` 没有包含 `~/.local/bin`，而本机 Codex CLI 位于该用户级目录。0.1.13 将该目录加入 GoalBoard 自己生成的 plist，并保留旧 plist 的 `needs_repair → 确认 install` 安全升级流程；未知 plist 仍不会被覆盖。
+- 本机安装 0.1.13 并确认修复服务后，`service status` 为 `running/owned=true`，`/health` 保持 10 个项目；当前 Session 的同一 `session_id`、原生 Runtime Session ID 和 Goal 关系均未变化。
+- 同一条当前 Session 再次读取为 `content_mode=native`、`native_error=null`，共返回 6,042 个事件：60 条用户消息、318 条 Runtime 消息、2,425 条工具记录、343 个 Artifact，其余为状态与一条 GoalBoard 关系事件。没有修改或重建 Session 数据。
+- Codex、Claude Code 与 Grok Build 的受管 Skill/MCP 接入均事务式对齐到 0.1.13 并返回 `connected`；当前已运行的 Codex Session 没有被重启，新的 Runtime Session 才会加载新 Skill/MCP 清单。
+- 第一次完整 TypeScript 门禁中，既有 300 Goal 性能断言在全套并行负载下耗时 106.1ms，超过 100ms 阈值；单独复跑为 8.7ms。系统负载恢复后再次完整运行，最终 **401/401** 通过，Session Web 同样通过。Desktop Rust 12/12、Rust format、版本一致性和 `git diff --check` 通过。
+
 ## 验收结论
 
 1. Goal TUI 内容可持久恢复并准确关联 project / Goal / Session：通过。
