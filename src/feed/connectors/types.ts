@@ -7,10 +7,17 @@ export interface ConnectorIngestItem {
   summary: string;
   body?: string;
   url?: string;
+  /** Provider-owned event time; service falls back to the completed sync time. */
+  occurredAt?: string;
   kind?: ItemKind;
   priority?: Priority;
   tags?: string[];
   author?: string;
+  /** Attention is opt-in. Provider records without an explicit rule stay in Feed only. */
+  attention?: false | {
+    reason: "source_rule";
+    detail?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -24,6 +31,7 @@ export type ConnectorSyncFailureKind =
   | "configuration"
   | "network"
   | "provider"
+  | "rate_limited"
   | "stale_history";
 
 /**
@@ -57,6 +65,8 @@ export type ConnectorSyncFailure = {
   action?: string;
   /** HTTP status when known — never a response body. */
   httpStatus?: number;
+  /** Safe retry boundary derived from Provider response headers. */
+  retryAfterAt?: string;
 };
 
 /**

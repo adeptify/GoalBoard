@@ -13,6 +13,8 @@
  * - History.messages duplicates specific change arrays; use named fields only
  */
 
+import { parseGmailScope, type GmailScope } from "./gmail-scope.js";
+
 /** Live cursor schema version. Bump only with an explicit migration story. */
 export const GMAIL_LIVE_CURSOR_VERSION = 1 as const;
 
@@ -64,6 +66,10 @@ export type GmailLiveCursor = {
   /** ISO-8601 UTC time of the successful complete sync that produced this cursor. */
   at: string;
   provenance: GmailLiveCursorProvenance;
+  /** Non-secret source scope used to produce this cursor. */
+  scope?: GmailScope;
+  /** Profile identity used for direct-recipient attention matching. */
+  account_email?: string;
 };
 
 export type GmailFixtureCursor = typeof GMAIL_FIXTURE_CURSOR;
@@ -72,7 +78,8 @@ export type GmailFullSyncReason =
   | "missing"
   | "legacy_placeholder"
   | "fixture"
-  | "stale_history";
+  | "stale_history"
+  | "scope_changed";
 
 export type GmailCursorInvalidReason =
   | "malformed"
@@ -232,6 +239,21 @@ function isValidProvenance(value: unknown): value is GmailLiveCursorProvenance {
   return value === "history" || value === "full_sync";
 }
 
+function normalizeAccountEmail(value: unknown): string | undefined | null {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (
+    !normalized
+    || normalized.length > 254
+    || /\s/.test(normalized)
+    || !/^[^@]+@[^@]+$/.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
 /**
  * Build a versioned live cursor only from already-validated progress facts.
  * Callers must only invoke this after complete pagination or a complete full sync.
@@ -240,6 +262,8 @@ export function buildGmailLiveCursor(input: {
   historyId: string;
   at: string;
   provenance: GmailLiveCursorProvenance;
+  scope?: GmailScope;
+  accountEmail?: string;
 }): { ok: true; cursor: GmailLiveCursor } | { ok: false; message: string } {
   if (!isValidGmailHistoryId(input.historyId)) {
     return {
@@ -259,6 +283,13 @@ export function buildGmailLiveCursor(input: {
       message: "Gmail live cursor provenance must be history or full_sync",
     };
   }
+  const accountEmail = normalizeAccountEmail(input.accountEmail);
+  if (accountEmail === null) {
+    return {
+      ok: false,
+      message: "Gmail live cursor account identity is invalid",
+    };
+  }
   return {
     ok: true,
     cursor: {
@@ -267,6 +298,8 @@ export function buildGmailLiveCursor(input: {
       mode: "live",
       at: input.at,
       provenance: input.provenance,
+      ...(input.scope ? { scope: input.scope } : {}),
+      ...(accountEmail ? { account_email: accountEmail } : {}),
     },
   };
 }
@@ -343,10 +376,22 @@ export function decideGmailSyncFromCursor(raw: unknown): GmailSyncEntryDecision 
     return invalid("malformed", "Gmail live cursor provenance is missing or invalid");
   }
 
+  const parsedScope = raw.scope == null ? undefined : parseGmailScope(raw.scope);
+  if (parsedScope === null) {
+    return invalid("malformed", "Gmail live cursor scope is not supported");
+  }
+  const scope = parsedScope ?? undefined;
+  const accountEmail = normalizeAccountEmail(raw.account_email);
+  if (accountEmail === null) {
+    return invalid("malformed", "Gmail live cursor account identity is invalid");
+  }
+
   const built = buildGmailLiveCursor({
     historyId,
     at: raw.at,
     provenance: raw.provenance,
+    scope,
+    accountEmail,
   });
   if (!built.ok) {
     return invalid("unsafe", built.message);
@@ -366,6 +411,11 @@ export function decideGmailSyncFromCursor(raw: unknown): GmailSyncEntryDecision 
  */
 export function decideGmailStaleHistoryRecovery(): GmailSyncEntryDecision {
   return fullSync("stale_history");
+}
+
+/** A source range change requires one bounded snapshot before history resumes. */
+export function decideGmailScopeChangeRecovery(): GmailSyncEntryDecision {
+  return fullSync("scope_changed");
 }
 
 type HistoryChangeMessage = { message?: { id?: unknown } };
@@ -445,7 +495,7 @@ function mergeUniqueIdsBounded(
 export function reduceGmailHistoryPage(
   state: GmailHistoryReduceState,
   page: GmailHistoryPageFacts,
-  opts: { at: string },
+  opts: { at: string; scope?: GmailScope; accountEmail?: string },
 ): GmailHistoryPageDecision {
   const pagesSeen = state.pagesSeen + 1;
   if (pagesSeen > GMAIL_HISTORY_PAGE_LIMIT) {
@@ -510,6 +560,8 @@ export function reduceGmailHistoryPage(
     historyId: responseHistoryId,
     at: opts.at,
     provenance: "history",
+    scope: opts.scope,
+    accountEmail: opts.accountEmail,
   });
   if (!built.ok) {
     return {

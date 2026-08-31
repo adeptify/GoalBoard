@@ -17,6 +17,7 @@ type PanelRecord = {
     args: string[];
     cwd: string | null;
     env: Record<string, string>;
+    sessionId?: string | null;
   };
 };
 
@@ -578,6 +579,7 @@ if (pane) {
           await sendPty({
             type: "spawn",
             panelId: panel.panel_id,
+            sessionId: spawn?.sessionId,
             command: spawn?.command ?? panel.launch_command,
             args: spawn?.args ?? panel.launch_args,
             cwd: spawn?.cwd ?? panel.cwd,

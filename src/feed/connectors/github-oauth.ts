@@ -28,6 +28,14 @@ export interface DeviceCodePollResult {
   message?: string;
 }
 
+/**
+ * GitHub's notifications endpoint requires the classic `notifications` or
+ * `repo` OAuth scope and does not accept fine-grained PATs or GitHub App
+ * tokens. GoalBoard requests the narrower notifications scope and only calls
+ * GET endpoints even though GitHub's scope also grants notification writes.
+ */
+export const GITHUB_DEVICE_DEFAULT_SCOPE = "notifications read:user";
+
 function resolveClientId(override?: string): string | null {
   if (override?.trim()) return override.trim();
   try {
@@ -62,7 +70,7 @@ export async function startGithubDeviceFlow(opts?: {
 
   const body = new URLSearchParams({
     client_id: clientId,
-    scope: opts?.scope || "repo read:user",
+    scope: opts?.scope || GITHUB_DEVICE_DEFAULT_SCOPE,
   });
   const res = await fetchImpl("https://github.com/login/device/code", {
     method: "POST",

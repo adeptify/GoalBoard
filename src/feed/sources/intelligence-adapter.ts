@@ -46,7 +46,10 @@ import {
 } from "./search-storage.js";
 
 const APP_ID = "goalboard";
-const KEY_NAMESPACE = "feed-intent-v1";
+// v2 intentionally leaves the old opaque v1 ledger untouched. Some migrated
+// project databases contain v1 control state without the matching local
+// SecretStore key, which must not make public Feed sync permanently unusable.
+const KEY_NAMESPACE = "feed-intent-v2";
 const TENANT_ID = "solo";
 const PRINCIPAL_REF = "goalboard:local";
 const ROUTE_MAX_DEADLINE_MS = 60_000;

@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { migrateFeedTables } from "../feed/store.js";
+import { migrateFeedTables, migrateInfoflowContractV2 } from "../feed/store.js";
 import { randomUUID } from "node:crypto";
 import type { PlanningMethodPack } from "../planning/method-packs.js";
 import type {
@@ -698,8 +698,12 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
         .run(new Date().toISOString());
+      migrateInfoflowContractV2(this.db);
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (28, ?)")
+        .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (29, ?)")
         .run(new Date().toISOString());
       });
       return;
@@ -863,6 +867,18 @@ export class SqliteGoalBoardStore {
       !goalTreeLegacySupersessionApplied ||
       !refreshedProposalColumns.some((column) => column.name === "supersedes_legacy_proposal_id")
     ) this.migrateGoalTreeLegacySupersession();
+    const infoflowContractApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 29")
+      .get();
+    const inboxEntriesTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbox_entries'")
+      .get();
+    const sourceColumns = this.db.pragma("table_info(feed_sources)") as Array<{ name: string }>;
+    if (
+      !infoflowContractApplied
+      || !inboxEntriesTable
+      || !sourceColumns.some((column) => column.name === "schedule_json")
+    ) this.migrateInfoflowContract();
   }
 
   private migrateClarifierRoles(): void {
@@ -1732,6 +1748,15 @@ export class SqliteGoalBoardStore {
       `);
       this.db
         .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (28, ?)")
+        .run(new Date().toISOString());
+    });
+  }
+
+  private migrateInfoflowContract(): void {
+    this.immediate(() => {
+      migrateInfoflowContractV2(this.db);
+      this.db
+        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (29, ?)")
         .run(new Date().toISOString());
     });
   }

@@ -82,6 +82,27 @@ export interface GoalBoardWorkspaceMembership {
   updated_at: string;
 }
 
+export interface GoalBoardWorkspaceDirectoryRecord {
+  workspace_id: string;
+  canonical_path: string;
+  realpath_verified: boolean;
+  display_name: string;
+  project_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AddWorkspaceProjectInput {
+  canonical_path: string;
+  project_id: string;
+  actor_id: string;
+  user_confirmed: boolean;
+}
+
+export interface RepairWorkspaceProjectInput extends AddWorkspaceProjectInput {
+  workspace_id: string;
+}
+
 export interface ChangeWorkspaceProjectInput {
   workspace_id: string;
   project_id: string;
@@ -206,7 +227,7 @@ export interface BindRuntimeWorkContextInput {
   user_confirmed: boolean;
   /** Required only when a previously bound entry switches to another project. */
   rebind_confirmed?: boolean;
-  /** Omit for safe default: first workspace choice becomes default; later choices stay in this Session. */
+  /** Omit to record a workspace candidate; `session` only affects the current native Session. */
   binding_scope?: GoalBoardProjectBindingScope;
 }
 
@@ -334,6 +355,7 @@ export class GoalBoardProjectCatalogError extends Error {
       | "context.identity_required"
       | "context.workspace_required"
       | "context.workspace_membership_not_found"
+      | "context.workspace_default_unsupported"
       | "context.user_confirmation_required"
       | "context.rebind_confirmation_required"
       | "context.suggestion_not_available"
@@ -478,10 +500,7 @@ export class GoalBoardProjectCatalog {
     return mapProject(row);
   }
 
-  /**
-   * Resolve without mutating state: Session override first, then workspace
-   * default, then confirmed workspace members as choices.
-   */
+  /** Resolve without mutating state: Session binding first, then workspace members as choices. */
   resolveRuntimeContext(
     context: RuntimeWorkContext,
     suggestionClues: readonly RuntimeProjectSuggestionClue[] = [],
@@ -494,10 +513,6 @@ export class GoalBoardProjectCatalog {
     const binding = this.findRuntimeContextBinding(normalized);
     if (binding) {
       return boundResolution(normalized, this.getProject(binding.project_id));
-    }
-    const workspaceDefault = this.findWorkspaceDefault(normalized.workspace);
-    if (workspaceDefault) {
-      return boundResolution(normalized, this.getProject(workspaceDefault.project_id));
     }
     const workspaceSuggestions = this.workspaceMemberSuggestions(normalized.workspace);
     if (workspaceSuggestions.length > 0) {
@@ -589,6 +604,12 @@ export class GoalBoardProjectCatalog {
       throw new GoalBoardProjectCatalogError(
         "context.user_confirmation_required",
         "只有用户在当前对话明确选择项目后才能建立绑定",
+      );
+    }
+    if (input.binding_scope === "workspace_default") {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_default_unsupported",
+        "工作目录不再保存默认项目；请为当前 Session 选择项目",
       );
     }
 
@@ -684,6 +705,12 @@ export class GoalBoardProjectCatalog {
         "只有用户在当前对话明确要求新建项目后才能创建并绑定",
       );
     }
+    if (input.binding_scope === "workspace_default") {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_default_unsupported",
+        "工作目录不再保存默认项目；请为当前 Session 选择项目",
+      );
+    }
     const idempotencyKey = requiredContextIdempotencyKey(input.idempotency_key);
     const requestFingerprint = JSON.stringify({
       display_name: displayName,
@@ -719,7 +746,7 @@ export class GoalBoardProjectCatalog {
     const current = this.resolveRuntimeContext(input.context);
     if (
       current.status === "bound"
-      && (input.binding_scope === "workspace_default" || normalized.stable_work_context_id !== null)
+      && normalized.stable_work_context_id !== null
       && input.rebind_confirmed !== true
     ) {
       throw new GoalBoardProjectCatalogError(
@@ -775,28 +802,10 @@ export class GoalBoardProjectCatalog {
   }): GoalBoardRuntimeContextResolution {
     const project = this.getProject(input.projectId);
     if (input.bindingScope === "workspace_default") {
-      const workspace = input.normalized.workspace;
-      if (!workspace) {
-        throw new GoalBoardProjectCatalogError(
-          "context.workspace_required",
-          "把项目设为目录默认项时，Runtime 必须提供当前项目目录",
-        );
-      }
-      const currentDefault = this.findWorkspaceDefault(workspace);
-      const currentSession = this.findRuntimeContextBinding(input.normalized);
-      if (
-        ((currentDefault && currentDefault.project_id !== project.project_id)
-          || (currentSession && currentSession.project_id !== project.project_id))
-        && !input.rebindConfirmed
-      ) {
-        throw new GoalBoardProjectCatalogError(
-          "context.rebind_confirmation_required",
-          "当前目录或 Session 已在使用其他项目；请明确确认后再更改默认项目",
-        );
-      }
-      this.upsertWorkspaceMembership(workspace, project.project_id, input.actorId, true);
-      if (currentSession) this.removeSessionBinding(currentSession, input.actorId);
-      return boundResolution(input.normalized, project);
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_default_unsupported",
+        "工作目录不再保存默认项目；请为当前 Session 选择项目",
+      );
     }
 
     if (input.bindingScope === "workspace_member") {
@@ -806,7 +815,7 @@ export class GoalBoardProjectCatalog {
           "当前 Runtime 没有 Session 标识时，必须提供项目目录才能记录本次选择",
         );
       }
-      this.upsertWorkspaceMembership(input.normalized.workspace, project.project_id, input.actorId, false);
+      this.upsertWorkspaceMembership(input.normalized.workspace, project.project_id, input.actorId);
       return boundResolution(input.normalized, project);
     }
 
@@ -817,7 +826,7 @@ export class GoalBoardProjectCatalog {
       );
     }
     if (input.normalized.workspace) {
-      this.upsertWorkspaceMembership(input.normalized.workspace, project.project_id, input.actorId, false);
+      this.upsertWorkspaceMembership(input.normalized.workspace, project.project_id, input.actorId);
     }
     const current = this.findRuntimeContextBinding(input.normalized);
     if (!current) {
@@ -1234,38 +1243,119 @@ export class GoalBoardProjectCatalog {
     return rows.map(mapWorkspaceMembership);
   }
 
-  setWorkspaceDefault(input: ChangeWorkspaceProjectInput): GoalBoardWorkspaceMembership[] {
+  /** Project-scoped management view. The canonical path never enters global settings. */
+  listWorkspaceDirectory(projectId?: string): GoalBoardWorkspaceDirectoryRecord[] {
+    const normalizedProjectId = projectId ? requiredProjectId(projectId) : null;
+    const rows = this.db.prepare(`
+      SELECT workspace.workspace_id, workspace.canonical_path,
+        workspace.realpath_verified, workspace.display_name,
+        workspace.created_at, workspace.updated_at
+      FROM workspaces AS workspace
+      ${normalizedProjectId ? "INNER JOIN workspace_project_memberships AS selected_membership ON selected_membership.workspace_id = workspace.workspace_id" : ""}
+      ${normalizedProjectId ? "WHERE selected_membership.project_id = ?" : ""}
+      ORDER BY workspace.display_name COLLATE NOCASE, workspace.canonical_path
+    `).all(...(normalizedProjectId ? [normalizedProjectId] : [])) as Array<Record<string, unknown>>;
+    const memberships = this.listWorkspaceMemberships();
+    return rows.map((row) => ({
+      workspace_id: String(row.workspace_id),
+      canonical_path: String(row.canonical_path),
+      realpath_verified: Number(row.realpath_verified) === 1,
+      display_name: String(row.display_name),
+      project_ids: memberships
+        .filter((membership) => membership.workspace_id === String(row.workspace_id))
+        .map((membership) => membership.project_id),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }));
+  }
+
+  addWorkspaceProject(input: AddWorkspaceProjectInput): GoalBoardWorkspaceDirectoryRecord {
+    const projectId = requiredProjectId(input.project_id);
+    const actorId = requiredActorId(input.actor_id);
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardProjectCatalogError(
+        "context.user_confirmation_required",
+        "只有用户明确确认后才能关联工作目录",
+      );
+    }
+    const workspace = normalizeRuntimeWorkspaceContext({
+      canonical_path: input.canonical_path,
+      realpath_verified: false,
+    });
+    if (!workspace) {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_required",
+        "工作目录必须是绝对路径",
+      );
+    }
+    this.db.transaction(() => {
+      this.upsertWorkspaceMembership(workspace, projectId, actorId);
+    })();
+    return this.requireWorkspaceDirectoryRecord(workspace.workspace_id);
+  }
+
+  repairWorkspaceProject(input: RepairWorkspaceProjectInput): GoalBoardWorkspaceDirectoryRecord {
     const workspaceId = requiredWorkspaceId(input.workspace_id);
     const projectId = requiredProjectId(input.project_id);
     const actorId = requiredActorId(input.actor_id);
     if (input.user_confirmed !== true) {
       throw new GoalBoardProjectCatalogError(
         "context.user_confirmation_required",
-        "只有用户明确确认后才能更改目录的默认项目",
+        "只有用户明确确认后才能修复工作目录路径",
+      );
+    }
+    const current = this.requireWorkspaceDirectoryRecord(workspaceId);
+    if (!current.project_ids.includes(projectId)) {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_membership_not_found",
+        "这个目录尚未关联当前项目",
+      );
+    }
+    const next = normalizeRuntimeWorkspaceContext({
+      canonical_path: input.canonical_path,
+      realpath_verified: false,
+    });
+    if (!next) {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_required",
+        "新的工作目录必须是绝对路径",
       );
     }
     this.db.transaction(() => {
-      const membership = this.findWorkspaceMembershipByIds(workspaceId, projectId);
-      if (!membership) {
-        throw new GoalBoardProjectCatalogError(
-          "context.workspace_membership_not_found",
-          "这个目录尚未关联所选项目",
-        );
+      this.upsertWorkspaceMembership(next, projectId, actorId);
+      if (next.workspace_id !== workspaceId) {
+        this.db.prepare(`
+          DELETE FROM workspace_project_memberships
+          WHERE workspace_id = ? AND project_id = ?
+        `).run(workspaceId, projectId);
+        this.db.prepare(`
+          DELETE FROM workspaces
+          WHERE workspace_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM workspace_project_memberships
+              WHERE workspace_project_memberships.workspace_id = workspaces.workspace_id
+            )
+        `).run(workspaceId);
       }
-      const now = new Date().toISOString();
-      this.db.prepare(`
-        UPDATE workspace_project_memberships
-        SET is_default = 0, updated_at = ?
-        WHERE workspace_id = ? AND is_default = 1 AND project_id <> ?
-      `).run(now, workspaceId, projectId);
-      this.db.prepare(`
-        UPDATE workspace_project_memberships
-        SET is_default = 1, bound_by = ?, updated_at = ?
-        WHERE workspace_id = ? AND project_id = ?
-      `).run(actorId, now, workspaceId, projectId);
-      this.appendEvent(projectId, "project.workspace_default_set", actorId, { workspace_id: workspaceId });
+      this.appendEvent(projectId, "project.workspace_path_repaired", actorId, {
+        previous_workspace_id: workspaceId,
+        workspace_id: next.workspace_id,
+      });
     })();
-    return this.listWorkspaceMemberships();
+    return this.requireWorkspaceDirectoryRecord(next.workspace_id);
+  }
+
+  setWorkspaceDefault(input: ChangeWorkspaceProjectInput): GoalBoardWorkspaceMembership[] {
+    if (input.user_confirmed !== true) {
+      throw new GoalBoardProjectCatalogError(
+        "context.user_confirmation_required",
+        "只有用户明确确认后才能更改目录的默认项目",
+      );
+    }
+    throw new GoalBoardProjectCatalogError(
+      "context.workspace_default_unsupported",
+      "工作目录不再保存默认项目；请为当前 Session 选择项目",
+    );
   }
 
   removeWorkspaceMembership(input: ChangeWorkspaceProjectInput): GoalBoardWorkspaceMembership[] {
@@ -1278,13 +1368,34 @@ export class GoalBoardProjectCatalog {
         "只有用户明确确认后才能解除目录与项目的关联",
       );
     }
-    const result = this.db.prepare(`
-      DELETE FROM workspace_project_memberships WHERE workspace_id = ? AND project_id = ?
-    `).run(workspaceId, projectId);
-    if (result.changes > 0) {
-      this.appendEvent(projectId, "project.workspace_unlinked", actorId, { workspace_id: workspaceId });
-    }
+    this.db.transaction(() => {
+      const result = this.db.prepare(`
+        DELETE FROM workspace_project_memberships WHERE workspace_id = ? AND project_id = ?
+      `).run(workspaceId, projectId);
+      if (result.changes > 0) {
+        this.db.prepare(`
+          DELETE FROM workspaces
+          WHERE workspace_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM workspace_project_memberships
+              WHERE workspace_project_memberships.workspace_id = workspaces.workspace_id
+            )
+        `).run(workspaceId);
+        this.appendEvent(projectId, "project.workspace_unlinked", actorId, { workspace_id: workspaceId });
+      }
+    })();
     return this.listWorkspaceMemberships();
+  }
+
+  private requireWorkspaceDirectoryRecord(workspaceId: string): GoalBoardWorkspaceDirectoryRecord {
+    const record = this.listWorkspaceDirectory().find((workspace) => workspace.workspace_id === workspaceId);
+    if (!record) {
+      throw new GoalBoardProjectCatalogError(
+        "context.workspace_membership_not_found",
+        "找不到这条工作目录记录",
+      );
+    }
+    return record;
   }
 
   private projectSelections(): GoalBoardProjectSelection[] {
@@ -1292,20 +1403,6 @@ export class GoalBoardProjectCatalog {
       project_id: project.project_id,
       display_name: project.display_name,
     }));
-  }
-
-  private findWorkspaceDefault(
-    workspace: NormalizedRuntimeWorkspaceContext | undefined,
-  ): { project_id: string } | null {
-    if (!workspace) return null;
-    const row = this.db.prepare(`
-      SELECT membership.project_id
-      FROM workspace_project_memberships AS membership
-      INNER JOIN projects AS project ON project.project_id = membership.project_id
-      WHERE membership.workspace_id = ? AND membership.is_default = 1
-      LIMIT 1
-    `).get(workspace.workspace_id) as { project_id?: unknown } | undefined;
-    return row?.project_id == null ? null : { project_id: String(row.project_id) };
   }
 
   private workspaceMemberSuggestions(
@@ -1322,7 +1419,7 @@ export class GoalBoardProjectCatalog {
     return rows.map((row) => ({
       project_id: String(row.project_id),
       display_name: String(row.display_name),
-      reasons: ["这个项目已经与当前目录关联，但目录还没有默认项目"],
+      reasons: ["这个项目已经与当前目录关联；新 Session 仍需明确选择"],
     }));
   }
 
@@ -1339,7 +1436,6 @@ export class GoalBoardProjectCatalog {
     workspace: NormalizedRuntimeWorkspaceContext,
     projectId: string,
     actorId: string,
-    makeDefault: boolean,
   ): void {
     const now = new Date().toISOString();
     this.db.prepare(`
@@ -1359,34 +1455,24 @@ export class GoalBoardProjectCatalog {
       now,
       now,
     );
-    if (makeDefault) {
-      this.db.prepare(`
-        UPDATE workspace_project_memberships
-        SET is_default = 0, updated_at = ?
-        WHERE workspace_id = ? AND is_default = 1 AND project_id <> ?
-      `).run(now, workspace.workspace_id, projectId);
-    }
     this.db.prepare(`
       INSERT INTO workspace_project_memberships (
         membership_id, workspace_id, project_id, is_default, bound_by, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, project_id) DO UPDATE SET
-        is_default = CASE
-          WHEN excluded.is_default = 1 THEN 1
-          ELSE workspace_project_memberships.is_default
-        END,
+        is_default = 0,
         bound_by = excluded.bound_by,
         updated_at = excluded.updated_at
     `).run(
       `workspace-membership-${randomUUID()}`,
       workspace.workspace_id,
       projectId,
-      makeDefault ? 1 : 0,
+      0,
       actorId,
       now,
       now,
     );
-    this.appendEvent(projectId, makeDefault ? "project.workspace_default_bound" : "project.workspace_member_bound", actorId, {
+    this.appendEvent(projectId, "project.workspace_member_bound", actorId, {
       workspace_id: workspace.workspace_id,
     });
   }

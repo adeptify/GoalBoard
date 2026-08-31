@@ -1,5 +1,58 @@
 # 信息流工作台内部完整验收
 
+## 最终集成复验（2026-08-30 20:00）
+
+本节是当前最终结果；下方早期验收记录保留当时的样本数量和历史路径，不再代表最新计数。
+
+### Migration and cutover
+
+- Relay 已通过用户明确确认的一次性入口迁入 GoalBoard；迁移器只读 Relay，并以稳定 ID 与 receipt 对账。
+- 重复迁移不会覆盖 disposition、linked Goal 或正文引用，也不会制造重复 Source、Item 或 Material。
+- migration 29 把历史 Inbox 消息事务化拆为 FeedItem 事实与 InboxEntry 引用；失败演练会把 schema、数据和 migration ledger 一起回滚。
+- GoalBoard 的 Source、Connector、Run、Cursor、Item、Material、SecretStore 与正文读取均来自当前项目数据库；Relay 不参与日常拉取或阅读。
+- 真实项目当前显示 14 个 Source、299 个 Feed Item，以及独立的 Inbox / Goal 决定入口；旧 Gmail 兼容 Source 已暂停，新的账号级 Gmail Source 独立运行，避免双轨重复同步。
+
+### Real Provider paths
+
+- GitHub：真实账号 @yijunw0212 首次新增 50 条、第二次新增 0 条；真实通知保留仓库、主题、reason、Provider 时间和原链接，明确的 ci_activity 规则可创建 Inbox 引用。
+- Gmail：真实账号 yijunw0212@gmail.com 完成 Google OAuth；首次新增 25 条、第二次新增 0 条；真实邮件保留 From、Subject、时间、snippet、system labels 和账号专属 Gmail 链接。此次 25 条均为自动 GitHub 通知，因此正确保持 Feed-only，按该账号过滤 Inbox 为 0。
+- RSS / Atom：Ars Technica 首次新增 20 条，The Verge 首次新增 9 条并去重 1 条；两者第二次都收到 304 且没有重复写入。真实正文、发布时间、canonical 原链接和加密内容读取均已点验。
+- 来源详情当前同时可见 Gmail 账号、GitHub 账号、The Verge 与 Ars Technica，均展示最近一次拉取、连接状态、范围和手动拉取入口。
+- 从 Source Messages 进入 Feed 会清除旧搜索、重置类型/时间/状态/排序，并按当前账号 Source 过滤；真实 Gmail 路径实测显示 25 条而不是上一次 The Verge 搜索结果。
+
+### Failure and recovery matrix
+
+- 重启 / 休眠错过计划：调度器只补拉一个错过槽位，并阻止同 Source 并发拉取。
+- 断网 / 暂时失败：可信 cursor 与旧消息不变；短暂错误只留在 Run，不制造 Inbox 噪声。
+- GitHub 限流：保留 cursor，记录 Provider 重试时间，恢复后继续，不伪造成功。
+- Gmail Token 失效：保留 42 条历史与可信 cursor，产生一条可操作 source_fault；重新 OAuth 后恢复为独立账号 Source 并继续同步。
+- 坏 RSS / parse fault：立即显示配置恢复入口；连续三次暂时失败才升格为可操作 Source fault，成功后关闭故障。
+- RSS 304、Gmail 第二次同步和 GitHub 第二次同步均证明恢复或重复执行不会重复写入。
+
+### Security and privacy
+
+- Gmail 只请求 gmail.readonly、openid、email；应用不存在发送、回复、改标签或服务端删除调用。
+- GitHub Notifications API 的 Provider scope 边界已在界面披露；GoalBoard 实现只调用 GET，且不把 Token 写入 HTML、API response、数据库事件或测试日志。
+- Secret 与 retained content 继续用 AES-256-GCM 密封；Cursor、SyncRun、Inbox detail 与错误信息只保存非秘密元数据。
+- 断开账号立即停止拉取并删除本地 secret；删除 Source 继续要求用户在“保留本地历史 / 连同历史删除”之间明确选择。
+- Relay 缺席、旧内容 key 缺失和重新密封路径均保留原密文，不用不可读旧状态覆盖可信新状态。
+
+### Final automated regression
+
+- pnpm build：通过。
+- Gmail / Source / contract 定向测试：27/27 通过。
+- 新 Source → Feed 导航与 OAuth 回归：1/1 通过。
+- 国际化静态检查：7/7 通过；Source、Feed、Inbox 新增的 254 条英文映射已补齐。
+- 项目目录与 TUI 页面契约：2/2 通过。
+- pnpm test：347/347 通过，包含构建、迁移、Provider、Feed、Inbox、Goal 主路径、Web/Desktop、安装与 E2E。
+- git diff --check：通过。
+
+### Human gate
+
+- 自动证据已经覆盖迁移、回归、故障恢复与安全边界。
+- GoalBoard Contract 仍要求一骏本人判断两项体验标准：桌面 / 窄屏是否顺畅，以及三条真实 Provider 的 Source → Feed → Inbox 处理体验是否可以作为内部完整接受。
+- 本轮没有为凑验收数字擅自把真实 Gmail / RSS Item 加入 Inbox 或标记完成；这些是用户数据处置动作，应由一骏实际体验后确认。
+
 验收日期：2026-08-30
 完成等级：4 · 内部完整
 验收项目：GoalBoard 信息流工作台重设计

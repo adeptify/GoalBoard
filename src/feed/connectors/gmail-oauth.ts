@@ -45,7 +45,6 @@ export const GMAIL_OAUTH_CALLBACK_PATH =
  */
 export const GMAIL_OAUTH_DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
   "openid",
   "email",
 ] as const;

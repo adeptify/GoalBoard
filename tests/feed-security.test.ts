@@ -77,6 +77,34 @@ test("GoalBoard Feed secrets and retained content are AES-GCM sealed", () => {
   }
 });
 
+test("retained content recovery re-seals a migrated hash without overwriting unreadable ciphertext", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-feed-content-recovery-"));
+  try {
+    withFeedHome(directory, () => {
+      const secrets = createFileSecretStore();
+      const content = createFeedEvidenceContentStore({ secretStore: secrets });
+      const markdown = "# Migrated feed body\n\nThe original ciphertext must remain untouched.";
+      const written = content.write(markdown);
+      const digest = written.contentRef.split("/").at(-1)!;
+      const originalPath = join(directory, "goalboard-home", "feed", "evidence", "blobs", digest.slice(0, 2), `${digest}.blob`);
+      const originalCiphertext = readFileSync(originalPath, "utf8");
+
+      secrets.deleteIfPresent("system:feed:evidence-content-key:v1");
+      const migrated = createFeedEvidenceContentStore({ secretStore: secrets });
+      assert.throws(() => migrated.read(written.contentRef), /key unavailable/u);
+      assert.deepEqual(migrated.write(markdown), written);
+      assert.equal(migrated.read(written.contentRef), markdown);
+      const fresh = migrated.write("# A new body after migration");
+      assert.equal(migrated.read(fresh.contentRef), "# A new body after migration");
+      assert.equal(readFileSync(originalPath, "utf8"), originalCiphertext, "v1 ciphertext is retained byte-for-byte");
+      const recoveryPath = join(directory, "goalboard-home", "feed", "evidence-recovered-v2", "blobs", digest.slice(0, 2), `${digest}.blob`);
+      assert.equal(readFileSync(recoveryPath, "utf8").includes("Migrated feed body"), false);
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("SecretStore preserves its populated backend and refuses silent key rotation", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-feed-secret-backend-"));
   const oldEncryptionKey = process.env.GOALBOARD_ENCRYPTION_KEY;

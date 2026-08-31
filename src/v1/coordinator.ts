@@ -3989,11 +3989,12 @@ export class GoalBoardCoordinator {
         );
       }
       const rootGoal = this.requireGoalOnBoard(input.board_id, effectiveRootGoalId);
-      if (proposalRun.role === "executor") {
+      if (proposalRun.role === "executor" || proposalRun.role === "revalidator") {
         if (!items.every((item) => this.isRiskLifecycleChange(input.board_id, item))) {
+          const roleLabel = proposalRun.role === "executor" ? "executor" : "revalidator";
           throw new GoalBoardV1Error(
-            "goal_tree_proposal.executor_scope_invalid",
-            "executor Run 只能为自己正在执行的 Goal 提交 Risk 生命周期条目；Goal、Contract、关系和普通 Risk 事实仍由 clarifier 规划",
+            `goal_tree_proposal.${roleLabel}_scope_invalid`,
+            `${roleLabel} Run 只能为自己的同一 Goal 提交 Risk 生命周期条目；Goal、Contract、关系和普通 Risk 事实仍由 clarifier 规划`,
           );
         }
         if (
@@ -8437,7 +8438,7 @@ export class GoalBoardCoordinator {
     runId: string,
     actorId: string,
     goalId: string | null = null,
-  ): { goal_id: string; role: "clarifier" | "executor" } {
+  ): { goal_id: string; role: "clarifier" | "executor" | "revalidator" } {
     const recovery = {
       next_action: "draft_dialogue_resume",
       tool: "goalboard_v1_draft_dialogue_resume",
@@ -8469,10 +8470,10 @@ export class GoalBoardCoordinator {
       );
     }
     const role = asText(row.run_role);
-    if ((role !== "clarifier" && role !== "executor") || asText(row.run_state) !== "started") {
+    if ((role !== "clarifier" && role !== "executor" && role !== "revalidator") || asText(row.run_state) !== "started") {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.active_run_required",
-        "Goal Tree 提案必须来自正在进行中的 clarifier Run，或来自同一 Goal 上只提交 Risk 生命周期结果的 executor Run",
+        "Goal Tree 提案必须来自正在进行中的 clarifier Run，或来自同一 Goal 上只提交 Risk 生命周期结果的 executor / revalidator Run",
         recovery,
       );
     }

@@ -12,9 +12,19 @@ import type { GoalPolicy, GoalRelationRecord, GoalTreeProposalItemInput, RiskRec
 import {
   GoalBoardProjectCatalog,
   GoalBoardProjectCatalogError,
+  normalizeRuntimeWorkContext,
   readPersonalPlanningMethodPacks,
 } from "../projects/catalog.js";
 import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
+import { CodexRuntimeSessionAdapter, RuntimeSessionAdapterRouter } from "../sessions/adapters.js";
+import { reconcileLegacySessionCatalog } from "../sessions/compatibility.js";
+import { SessionContentService } from "../sessions/content.js";
+import { CodexAppServerTransport } from "../sessions/codex-transport.js";
+import { SessionDirectoryService } from "../sessions/directory.js";
+import { SessionHandoffService } from "../sessions/handoff.js";
+import { GoalBoardSessionRegistry } from "../sessions/registry.js";
+import { SessionTuiRecorder } from "../sessions/tui-recorder.js";
+import { GoalBoardSessionError, type RuntimeSessionTransport } from "../sessions/types.js";
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { isDesktopShellRequest } from "./desktop-shell.js";
@@ -25,11 +35,11 @@ import { attachGoalBoardPtySocket } from "./pty-socket.js";
 import { resolveWebControlToken } from "./control-token.js";
 import type {
   GoalBoardProjectRecord,
-  GoalBoardRuntimeContextBinding,
-  RuntimeWorkContext,
+  GoalBoardWorkspaceDirectoryRecord,
 } from "../projects/catalog.js";
 import {
   RuntimeIntegrationService,
+  SUPPORTED_RUNTIME_IDS,
   isSupportedRuntimeId,
   type SupportedRuntimeId,
 } from "../install/runtime-integration.js";
@@ -51,7 +61,7 @@ import {
   renderGoalBoardProjectIndex,
   renderGoalBoardProjectGuidanceSettings,
   renderGoalBoardProjectSettings,
-  renderGoalBoardGraphFragment,
+  renderGoalBoardMomentumFragment,
   renderGoalBoardRefreshFragment,
   renderGoalBoardPlanningLibrary,
   renderGoalBoardPlanningMethodPage,
@@ -69,10 +79,8 @@ import {
   type WebPolicyBinding,
   type WebProjectNavigation,
   type WebRiskRecord,
-  type WebSettingsConnection,
   type WebSettingsProject,
   type WebSettingsSection,
-  type WebSettingsWorkspaceMembership,
 } from "./render.js";
 import {
   normalizePlanningMethodPack,
@@ -95,15 +103,28 @@ import {
 } from "../evidence/locator.js";
 import { FeedStore, FeedStoreError } from "../feed/store.js";
 import { detectRelayImport, importRelayData } from "../feed/relay-import.js";
-import { feedItemContext, type FeedSnapshot } from "../feed/types.js";
+import { feedItemContext, type FeedSnapshot, type SourceHistoryDecision } from "../feed/types.js";
 import {
   FeedSourceService,
   listFeedSourceCatalog,
+  type ConfigureFeedSourceScheduleInput,
   type RegisterFeedSourceInput,
+  type UpdateFeedSourceInput,
 } from "../feed/sources/service.js";
+import { FeedSourceScheduler } from "../feed/sources/scheduler.js";
 import { FeedConnectorService } from "../feed/connectors/service.js";
 import { FeedDomainError } from "../feed/errors.js";
 import { hydrateFeedItemContent, hydrateFeedSnapshotContent } from "../feed/content.js";
+import type {
+  ProjectOperationsData,
+  ProjectSessionRecord,
+  ProjectWorkspaceRecord,
+} from "./project-session-workspaces.js";
+import {
+  GoalBoardWorkspaceActionError,
+  repairProjectWorkspace,
+  unlinkProjectWorkspace,
+} from "./workspace-project-actions.js";
 
 export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
 
@@ -128,6 +149,18 @@ export interface WebServerOptions {
   webServiceManager?: GoalBoardWebServiceManager;
   /** Test-only deterministic local Web control token. Production persists one per GoalBoard home. */
   controlToken?: string;
+  /** Test/host injection. Production starts a private Codex app-server lazily on first read/resume. */
+  runtimeSessionTransport?: RuntimeSessionTransport;
+}
+
+interface SessionRuntimeResources {
+  registry: GoalBoardSessionRegistry;
+  router: RuntimeSessionAdapterRouter;
+  directory: SessionDirectoryService;
+  content: SessionContentService;
+  handoff: SessionHandoffService;
+  recorder: SessionTuiRecorder;
+  ownedCodexTransport: CodexAppServerTransport | null;
 }
 
 interface ResolvedWebBoardOptions {
@@ -152,6 +185,11 @@ interface GoalBoardWebViewCacheEntry {
 }
 
 type GoalBoardWebViewCache = Map<string, GoalBoardWebViewCacheEntry>;
+
+interface FeedSchedulerRuntime {
+  store: SqliteGoalBoardStore;
+  scheduler: FeedSourceScheduler;
+}
 
 type ResolvedWebRequest =
   | { kind: "catalog_index"; projects: WebProjectNavigation[] }
@@ -792,18 +830,262 @@ function servePtyClient(request: IncomingMessage, response: ServerResponse): boo
   return true;
 }
 
+async function desktopPanelSessionIds(
+  catalog: GoalBoardProjectCatalog,
+  panelIds: readonly string[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (panelIds.length === 0) return result;
+  const registry = await GoalBoardSessionRegistry.open({ homeDirectory: catalog.homeDirectory });
+  try {
+    reconcileLegacySessionCatalog(catalog, registry);
+    for (const panelId of panelIds) {
+      const sessionId = registry.findBySurface(panelId)?.session_id;
+      if (sessionId) result.set(panelId, sessionId);
+    }
+    return result;
+  } finally {
+    registry.close();
+  }
+}
+
+async function openSessionRuntimeResources(options: WebServerOptions): Promise<SessionRuntimeResources> {
+  const registry = await GoalBoardSessionRegistry.open({ homeDirectory: options.homeDirectory });
+  const router = new RuntimeSessionAdapterRouter(registry);
+  const ownedCodexTransport = options.runtimeSessionTransport ? null : new CodexAppServerTransport();
+  router.register(new CodexRuntimeSessionAdapter(options.runtimeSessionTransport ?? ownedCodexTransport!));
+  const directory = new SessionDirectoryService(registry, router);
+  const content = new SessionContentService(registry, router);
+  return {
+    registry,
+    router,
+    directory,
+    content,
+    handoff: new SessionHandoffService(registry, router, directory, content),
+    recorder: new SessionTuiRecorder(registry),
+    ownedCodexTransport,
+  };
+}
+
+function sessionProjectOperationsData(
+  resources: SessionRuntimeResources,
+  projectId: string,
+  view: GoalBoardWebView,
+  projects: readonly WebProjectNavigation[] = [],
+  catalogWorkspaces: readonly GoalBoardWorkspaceDirectoryRecord[] = [],
+): ProjectOperationsData {
+  const goalTitles = new Map(
+    [...view.goals, ...view.archived_goals, ...view.trashed_goals]
+      .map((item) => [item.goal.goal_id, item.goal.title] as const),
+  );
+  const records = resources.registry.list({ project_id: projectId });
+  const sessions: ProjectSessionRecord[] = records.map((session) => {
+    const history = resources.registry.goalHistory(session.session_id);
+    const capabilities = resources.router.capabilities(session.runtime_id);
+    const mode = session.native_runtime_session_id
+      && capabilities.read === "native"
+      ? "native"
+      : resources.registry.eventCount(session.session_id) > 0
+        ? "fallback"
+        : "unavailable";
+    return {
+      id: session.session_id,
+      title: session.title || goalTitles.get(session.current_goal_id ?? "") || `${sessionRuntimeDisplayName(session.runtime_id)} Session`,
+      runtime: sessionRuntimeDisplayName(session.runtime_id),
+      runtimeId: session.runtime_id,
+      contentMode: mode,
+      resumeMode: session.native_runtime_session_id ? capabilities.resume : "unsupported",
+      state: session.status === "closed" ? "archived" : "idle",
+      currentGoalId: session.current_goal_id,
+      currentGoal: session.current_goal_id ? goalTitles.get(session.current_goal_id) ?? session.current_goal_id : null,
+      goalHistory: history
+        .filter((link) => link.relation === "history")
+        .map((link) => goalTitles.get(link.goal_id) ?? link.goal_id),
+      workspace: session.workspace_path || "未关联工作目录",
+      workspacePath: session.workspace_path,
+      updated: formatSessionTimestamp(session.updated_at),
+      updatedAt: session.updated_at,
+      summary: mode === "native"
+        ? "可按需读取原 Runtime 的结构化执行历史，并合并 GoalBoard TUI 记录。"
+        : mode === "fallback"
+          ? "当前显示 GoalBoard 已持久化的 TUI 与执行事实。"
+          : "这条 Session 的 Runtime 暂不提供内容读取能力。",
+    };
+  });
+
+  const byPath = new Map<string, {
+    catalog: GoalBoardWorkspaceDirectoryRecord | null;
+    sessions: typeof records;
+    canonicalPath: string;
+  }>();
+  for (const workspace of catalogWorkspaces) {
+    byPath.set(workspace.canonical_path, {
+      catalog: workspace,
+      sessions: [],
+      canonicalPath: workspace.canonical_path,
+    });
+  }
+  for (const record of records) {
+    if (!record.workspace_path) continue;
+    const normalized = normalizeRuntimeWorkContext({
+      runtime_id: "goalboard-web",
+      stable_work_context_id: null,
+      host_declares_stable: false,
+      workspace: { canonical_path: record.workspace_path, realpath_verified: false },
+    }).workspace;
+    if (!normalized) continue;
+    const grouped = byPath.get(normalized.canonical_path) ?? {
+      catalog: null,
+      sessions: [],
+      canonicalPath: normalized.canonical_path,
+    };
+    grouped.sessions.push(record);
+    byPath.set(normalized.canonical_path, grouped);
+  }
+  const workspaces: ProjectWorkspaceRecord[] = [...byPath.values()].map(({ catalog, sessions: linked, canonicalPath }) => {
+    const workspacePath = canonicalPath;
+    const workspaceIds = new Set(
+      [catalog?.workspace_id, ...linked.map((item) => item.workspace_id)].filter((value): value is string => Boolean(value)),
+    );
+    const state: ProjectWorkspaceRecord["state"] = !fs.existsSync(workspacePath)
+      ? "missing"
+      : workspaceIds.size > 1
+        ? "conflict"
+        : "healthy";
+    const lastUpdated = [catalog?.updated_at, ...linked.map((item) => item.updated_at)]
+      .filter((value): value is string => Boolean(value))
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? "";
+    return {
+      id: catalog?.workspace_id
+        ?? normalizeRuntimeWorkContext({
+          runtime_id: "goalboard-web",
+          stable_work_context_id: null,
+          host_declares_stable: false,
+          workspace: { canonical_path: workspacePath, realpath_verified: false },
+        }).workspace?.workspace_id
+        ?? `workspace-path-${createHash("sha256").update(workspacePath).digest("hex").slice(0, 16)}`,
+      name: catalog?.display_name ?? (path.basename(workspacePath) || workspacePath),
+      path: workspacePath,
+      state,
+      sessionCount: linked.length,
+      runtimes: [...new Set(linked.map((item) => sessionRuntimeDisplayName(item.runtime_id)))].join("、") || "尚未启动",
+      updated: formatSessionTimestamp(lastUpdated),
+      updatedAt: lastUpdated,
+      projectLinked: Boolean(catalog?.project_ids.includes(projectId)),
+      projectCount: catalog?.project_ids.length ?? 0,
+      sessions: linked.map((session) => ({
+        id: session.session_id,
+        title: session.title || goalTitles.get(session.current_goal_id ?? "") || `${sessionRuntimeDisplayName(session.runtime_id)} Session`,
+        runtime: sessionRuntimeDisplayName(session.runtime_id),
+        state: session.status === "closed" ? "已归档" : "可查看",
+        updated: formatSessionTimestamp(session.updated_at),
+      })),
+      summary: state === "healthy"
+        ? catalog
+          ? "路径可访问，项目关系与已知 Session 均可追溯。"
+          : "路径正被当前项目的 Session 使用；尚未建立独立项目关系。"
+        : state === "missing"
+          ? "原路径当前不可访问；修复只会更新 GoalBoard 记录。"
+          : "同一路径存在多个 workspace identity，需要确认关联。",
+    };
+  });
+  const runtimeIds = [...new Set([...SUPPORTED_RUNTIME_IDS, ...records.map((item) => item.runtime_id)])];
+  return {
+    sessions,
+    workspaces,
+    goals: view.goals.map((item) => ({ goal_id: item.goal.goal_id, title: item.goal.title })),
+    projects: projects.map((project) => ({ project_id: project.project_id, display_name: project.display_name })),
+    runtimes: runtimeIds.map((runtimeId) => ({
+      runtime_id: runtimeId,
+      display_name: sessionRuntimeDisplayName(runtimeId),
+      capabilities: resources.router.capabilities(runtimeId),
+    })),
+  };
+}
+
+function sessionRuntimeDisplayName(runtimeId: string): string {
+  return desktopRuntimeTitle(runtimeId);
+}
+
+function formatSessionTimestamp(value: string): string {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(time));
+}
+
+function publicSessionRecord(session: ReturnType<GoalBoardSessionRegistry["get"]>): Record<string, unknown> {
+  return {
+    session_id: session.session_id,
+    runtime_id: session.runtime_id,
+    native_runtime_session_id: session.native_runtime_session_id,
+    project_id: session.project_id,
+    current_goal_id: session.current_goal_id,
+    workspace_id: session.workspace_id,
+    workspace_path: session.workspace_path,
+    title: session.title,
+    status: session.status,
+    provenance: session.provenance,
+    runtime_workspace_hint: typeof session.metadata.runtime_cwd === "string" ? session.metadata.runtime_cwd : null,
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  };
+}
+
+function publicSessionHandoff(
+  handoff: ReturnType<GoalBoardSessionRegistry["getHandoff"]>,
+  includeContent = false,
+): Record<string, unknown> {
+  return {
+    package_id: handoff.package_id,
+    source_session_id: handoff.source_session_id,
+    source_project_id: handoff.source_project_id,
+    source_goal_id: handoff.source_goal_id,
+    target_runtime_id: handoff.target_runtime_id,
+    target_project_id: handoff.target_project_id,
+    target_workspace_id: handoff.target_workspace_id,
+    target_workspace_path: handoff.target_workspace_path,
+    destination_session_id: handoff.destination_session_id,
+    state: handoff.state,
+    delivery_mode: handoff.delivery_mode,
+    content_available: handoff.content_available,
+    content_digest: handoff.content_digest,
+    ...(includeContent ? { content: handoff.content } : {}),
+    attempt_count: handoff.attempt_count,
+    error_code: handoff.error_code,
+    error_message: handoff.error_message,
+    retryable: handoff.retryable,
+    created_at: handoff.created_at,
+    updated_at: handoff.updated_at,
+    sent_at: handoff.sent_at,
+  };
+}
+
 function desktopPanelSpawn(
   catalog: GoalBoardProjectCatalog,
   panel: { panel_id: string; runtime_kind: string; launch_command: string; launch_args: string[]; cwd: string | null; work_context_id: string; goal_id: string },
   webUrl: string,
-) {
+  sessionId: string | null,
+): {
+  command: string;
+  args: string[];
+  cwd: string | null;
+  env: Record<string, string>;
+  sessionId: string | null;
+} {
   return {
     command: panel.launch_command,
     args: panel.launch_args,
     cwd: panel.cwd,
+    sessionId,
     env: desktopPanelEnv({
       homeDirectory: catalog.homeDirectory,
       runtimeId: panel.runtime_kind,
+      sessionId,
       panelId: panel.panel_id,
       workContextId: panel.work_context_id,
       goalId: panel.goal_id,
@@ -920,10 +1202,12 @@ async function handleDesktopPanelApi(
       if (request.method === "GET" && panelsMatch) {
         const goalId = decodeURIComponent(panelsMatch[1]);
         const contract = coordinator.readGoalContract(boardId, goalId);
+        const panels = catalog.listDesktopPanels(projectId, goalId);
+        const sessionIds = await desktopPanelSessionIds(catalog, panels.map((panel) => panel.panel_id));
         sendJson(response, 200, {
-          panels: catalog.listDesktopPanels(projectId, goalId).map((panel) => ({
+          panels: panels.map((panel) => ({
             ...panel,
-            spawn: desktopPanelSpawn(catalog, panel, webUrl),
+            spawn: desktopPanelSpawn(catalog, panel, webUrl, sessionIds.get(panel.panel_id) ?? null),
           })),
           read_only: contract.goal.decomposition_state === "closed_compound",
         });
@@ -970,9 +1254,10 @@ async function handleDesktopPanelApi(
           actor_id: "desktop-user",
           user_confirmed: true,
         });
+        const sessionIds = await desktopPanelSessionIds(catalog, [panel.panel_id]);
         sendJson(response, 200, {
           panel,
-          spawn: desktopPanelSpawn(catalog, panel, webUrl),
+          spawn: desktopPanelSpawn(catalog, panel, webUrl, sessionIds.get(panel.panel_id) ?? null),
         });
         return true;
       }
@@ -1013,7 +1298,11 @@ async function handleDesktopPanelApi(
           return true;
         }
         const opened = catalog.markDesktopPanelOpen(panelId);
-        sendJson(response, 200, { panel: opened, spawn: desktopPanelSpawn(catalog, opened, webUrl) });
+        const sessionIds = await desktopPanelSessionIds(catalog, [opened.panel_id]);
+        sendJson(response, 200, {
+          panel: opened,
+          spawn: desktopPanelSpawn(catalog, opened, webUrl, sessionIds.get(opened.panel_id) ?? null),
+        });
         return true;
       }
       return false;
@@ -1073,7 +1362,9 @@ function authorizeLocalWebRequest(
     return false;
   }
   if (!request.method || ["GET", "HEAD"].includes(request.method)) return true;
-  if (!url.pathname.startsWith("/api/")) return true;
+  const isApiMutation = url.pathname.startsWith("/api/")
+    || /^\/projects\/[^/]+\/api(?:\/|$)/.test(url.pathname);
+  if (!isApiMutation) return true;
   const originValue = request.headers.origin;
   let origin: URL;
   try {
@@ -1158,76 +1449,8 @@ function settingsProject(project: GoalBoardProjectRecord): WebSettingsProject {
   };
 }
 
-function runtimeDisplayName(runtimeId: string): string {
-  return desktopRuntimeTitle(runtimeId);
-}
-
-function settingsConnection(
-  binding: GoalBoardRuntimeContextBinding,
-  projects: Map<string, WebSettingsProject>,
-): WebSettingsConnection | null {
-  const project = projects.get(binding.project_id);
-  if (!project) return null;
-  const fingerprint = createHash("sha256")
-    .update(`${binding.runtime_id}\0${binding.stable_work_context_id}`)
-    .digest("hex")
-    .slice(0, 6)
-    .toUpperCase();
-  const runtimeName = runtimeDisplayName(binding.runtime_id);
-  return {
-    binding_id: binding.binding_id,
-    runtime_id: binding.runtime_id,
-    runtime_name: runtimeName,
-    context_label: `${runtimeName} Session · ${fingerprint}`,
-    project_id: project.project_id,
-    project_name: project.display_name,
-    created_at: binding.created_at,
-    updated_at: binding.updated_at,
-  };
-}
-
-async function settingsCatalogSnapshot(homeDirectory: string | undefined): Promise<{
-  projects: WebSettingsProject[];
-  connections: WebSettingsConnection[];
-  workspace_memberships: WebSettingsWorkspaceMembership[];
-}> {
-  return withGoalBoardProjectCatalog({ homeDirectory }, (catalog) => {
-    const projects = catalog.listProjects().map(settingsProject);
-    const projectMap = new Map(projects.map((project) => [project.project_id, project]));
-    return {
-      projects,
-      connections: catalog.listRuntimeContextBindings()
-        .map((binding) => settingsConnection(binding, projectMap))
-        .filter((connection): connection is WebSettingsConnection => connection !== null),
-      workspace_memberships: catalog.listWorkspaceMemberships()
-        .map((membership) => {
-          const project = projectMap.get(membership.project_id);
-          return project ? {
-            membership_id: membership.membership_id,
-            workspace_id: membership.workspace_id,
-            workspace_name: membership.workspace_name,
-            realpath_verified: membership.realpath_verified,
-            project_id: project.project_id,
-            project_name: project.display_name,
-            is_default: membership.is_default,
-            updated_at: membership.updated_at,
-          } : null;
-        })
-        .filter((membership): membership is WebSettingsWorkspaceMembership => membership !== null),
-    };
-  });
-}
-
 async function settingsProjects(homeDirectory: string | undefined): Promise<WebSettingsProject[]> {
-  return (await settingsCatalogSnapshot(homeDirectory)).projects;
-}
-
-function bindingRuntimeContext(binding: GoalBoardRuntimeContextBinding): RuntimeWorkContext {
-  return {
-    runtime_id: binding.runtime_id,
-    stable_work_context_id: binding.stable_work_context_id,
-    host_declares_stable: true,
-  };
+  return withGoalBoardProjectCatalog({ homeDirectory }, (catalog) => catalog.listProjects().map(settingsProject));
 }
 
 function installationDiagnostics(
@@ -1336,6 +1559,8 @@ async function resolveWebRequest(
       || pathname.startsWith("/api/")
       || pathname === "/settings"
       || pathname.startsWith("/settings/")
+      || pathname === "/sessions"
+      || pathname === "/workspaces"
       || pathname.startsWith("/desktop/")
     ) {
       return { kind: "catalog_index", projects };
@@ -1382,7 +1607,9 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
   const controlToken = resolveWebControlToken(serverOptions);
   const mutationKeys = new Map<string, LocalMutationState>();
   const webViewCache: GoalBoardWebViewCache = new Map();
-  const initializedFeedDatabases = new Set<string>();
+  const feedSchedulers = new Map<string, FeedSchedulerRuntime>();
+  const sessionResources = openSessionRuntimeResources(serverOptions);
+  void sessionResources.catch(() => undefined);
   if (fixture?.demo && !fs.existsSync(fixture.databasePath)) seedDemoBoard(fixture.databasePath);
   const pty = { host: null as GoalBoardPtyHost | null };
   const server = http.createServer(async (request, response) => {
@@ -1423,16 +1650,50 @@ export function createGoalBoardWebServer(serverOptions: WebServerOptions = {}): 
           webService,
           controlToken,
           webViewCache,
-          initializedFeedDatabases,
+          feedSchedulers,
           pty.host,
           loopbackWebOrigin(server),
+          sessionResources,
         );
       });
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
-  pty.host = attachGoalBoardPtySocket(server, controlToken);
+  pty.host = attachGoalBoardPtySocket(server, controlToken, {
+    onData(panelId, sessionId, data) {
+      void sessionResources
+        .then((resources) => resources.recorder.recordOutput(panelId, sessionId, data))
+        .catch(() => undefined);
+    },
+    onExit(panelId, sessionId, exit) {
+      void sessionResources
+        .then((resources) => resources.recorder.recordExit(panelId, sessionId, exit))
+        .catch(() => undefined);
+    },
+  });
+  const schedulerTimer = setInterval(() => {
+    for (const [databasePath, runtime] of feedSchedulers) {
+      void runtime.scheduler.tick()
+        .then((result) => {
+          if (result.completed || result.failed) webViewCache.delete(databasePath);
+        })
+        .catch(() => undefined);
+    }
+  }, 30_000);
+  schedulerTimer.unref();
+  server.once("close", () => {
+    clearInterval(schedulerTimer);
+    for (const runtime of feedSchedulers.values()) runtime.store.close();
+    feedSchedulers.clear();
+    void sessionResources
+      .then((resources) => {
+        resources.recorder.close();
+        resources.ownedCodexTransport?.close();
+        resources.registry.close();
+      })
+      .catch(() => undefined);
+  });
   return server;
 }
 
@@ -1445,9 +1706,10 @@ async function handleGoalBoardWebRequest(
   webService: GoalBoardWebServiceManager,
   controlToken: string,
   webViewCache: GoalBoardWebViewCache,
-  initializedFeedDatabases: Set<string>,
+  feedSchedulers: Map<string, FeedSchedulerRuntime>,
   ptyHost: GoalBoardPtyHost,
   webUrl: string,
+  sessionResources: Promise<SessionRuntimeResources>,
 ): Promise<void> {
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
@@ -1530,8 +1792,7 @@ async function handleGoalBoardWebRequest(
         const settingsPageMatch = url.pathname.match(/^\/settings\/(appearance|runtimes|projects|diagnostics)$/);
         if (request.method === "GET" && settingsPageMatch) {
           const section = settingsPageMatch[1] as WebSettingsSection;
-          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
-          const projects = catalogSettings.projects;
+          const projects = await settingsProjects(serverOptions.homeDirectory);
           const contextProjectId = url.searchParams.get("project");
           const contextProject = contextProjectId
             ? projects.find((project) => project.project_id === contextProjectId) ?? null
@@ -1547,8 +1808,6 @@ async function handleGoalBoardWebRequest(
             context_project: contextProject,
             runtimes,
             projects,
-            connections: catalogSettings.connections,
-            workspace_memberships: catalogSettings.workspace_memberships,
             web_service: await webService.detect(),
             diagnostics: installationDiagnostics(serverOptions.homeDirectory, projects.length),
           }, controlToken, isDesktopShellRequest(request, url)));
@@ -1627,16 +1886,6 @@ async function handleGoalBoardWebRequest(
         }
         if (request.method === "GET" && url.pathname === "/api/settings/projects") {
           sendJson(response, 200, { projects: await settingsProjects(serverOptions.homeDirectory) });
-          return;
-        }
-        if (request.method === "GET" && url.pathname === "/api/settings/connections") {
-          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
-          sendJson(response, 200, { connections: catalogSettings.connections });
-          return;
-        }
-        if (request.method === "GET" && url.pathname === "/api/settings/workspaces") {
-          const catalogSettings = await settingsCatalogSnapshot(serverOptions.homeDirectory);
-          sendJson(response, 200, { workspace_memberships: catalogSettings.workspace_memberships });
           return;
         }
         if (request.method === "POST" && url.pathname === "/api/settings/projects") {
@@ -1724,113 +1973,6 @@ async function handleGoalBoardWebRequest(
           }
           return;
         }
-        const connectionActionMatch = url.pathname.match(
-          /^\/api\/settings\/connections\/([^/]+)\/(rebind|unbind)$/,
-        );
-        if (request.method === "POST" && connectionActionMatch) {
-          const body = await readBody(request);
-          if (body.user_confirmed !== true) {
-            sendJson(response, 400, { error: "请先明确确认这次 Session 关联变更" });
-            return;
-          }
-          const bindingId = decodeURIComponent(connectionActionMatch[1]);
-          const action = connectionActionMatch[2];
-          try {
-            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
-              const binding = catalog.listRuntimeContextBindings()
-                .find((candidate) => candidate.binding_id === bindingId);
-              if (!binding) {
-                sendJson(response, 404, { error: "这条 Session 关联已不存在，请刷新页面" });
-                return;
-              }
-              if (action === "rebind") {
-                const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
-                if (!projectId) {
-                  sendJson(response, 400, { error: "请选择要切换到的项目" });
-                  return;
-                }
-                catalog.bindRuntimeContext({
-                  context: bindingRuntimeContext(binding),
-                  project_id: projectId,
-                  actor_id: "web-user",
-                  user_confirmed: true,
-                  rebind_confirmed: true,
-                });
-                const rebound = catalog.listRuntimeContextBindings()
-                  .find((candidate) => candidate.binding_id === bindingId);
-                const projects = catalog.listProjects().map(settingsProject);
-                const safeConnection = rebound
-                  ? settingsConnection(rebound, new Map(projects.map((project) => [project.project_id, project])))
-                  : null;
-                if (!safeConnection) throw new Error("Session 切换后无法读取关联结果");
-                sendJson(response, 200, { connection: safeConnection });
-                return;
-              }
-              const result = catalog.unbindRuntimeContext({
-                context: bindingRuntimeContext(binding),
-                actor_id: "web-user",
-                user_confirmed: true,
-              });
-              sendJson(response, 200, {
-                binding_id: bindingId,
-                changed: result.changed,
-                unbound_project: result.unbound_project,
-              });
-            });
-          } catch (error) {
-            sendJson(response, error instanceof GoalBoardProjectCatalogError && error.code === "catalog.project_not_found" ? 404 : 400, {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          return;
-        }
-        const workspaceDefaultMatch = url.pathname.match(/^\/api\/settings\/workspaces\/([^/]+)\/default$/);
-        if (request.method === "POST" && workspaceDefaultMatch) {
-          const body = await readBody(request);
-          if (body.user_confirmed !== true || typeof body.project_id !== "string") {
-            sendJson(response, 400, { error: "请先明确确认目录默认项目" });
-            return;
-          }
-          const projectId = body.project_id;
-          try {
-            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
-              const memberships = catalog.setWorkspaceDefault({
-                workspace_id: decodeURIComponent(workspaceDefaultMatch[1]),
-                project_id: projectId,
-                actor_id: "web-user",
-                user_confirmed: true,
-              });
-              sendJson(response, 200, { changed: true, membership_count: memberships.length });
-            });
-          } catch (error) {
-            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          }
-          return;
-        }
-        const workspaceUnlinkMatch = url.pathname.match(
-          /^\/api\/settings\/workspaces\/([^/]+)\/projects\/([^/]+)\/unlink$/,
-        );
-        if (request.method === "POST" && workspaceUnlinkMatch) {
-          const body = await readBody(request);
-          if (body.user_confirmed !== true) {
-            sendJson(response, 400, { error: "请先明确确认解除目录关联" });
-            return;
-          }
-          try {
-            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, (catalog) => {
-              const memberships = catalog.removeWorkspaceMembership({
-                workspace_id: decodeURIComponent(workspaceUnlinkMatch[1]),
-                project_id: decodeURIComponent(workspaceUnlinkMatch[2]),
-                actor_id: "web-user",
-                user_confirmed: true,
-              });
-              sendJson(response, 200, { changed: true, membership_count: memberships.length });
-            });
-          } catch (error) {
-            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-          }
-          return;
-        }
         if (request.method === "GET" && url.pathname === "/api/settings/diagnostics") {
           sendJson(response, 200, installationDiagnostics(serverOptions.homeDirectory, resolved.projects.length));
           return;
@@ -1883,6 +2025,14 @@ async function handleGoalBoardWebRequest(
           response.end(renderGoalBoardProjectIndex(resolved.projects, controlToken, desktopShell));
           return;
         }
+        if (request.method === "GET" && (url.pathname === "/sessions" || url.pathname === "/workspaces")) {
+          response.writeHead(302, {
+            location: isDesktopShellRequest(request, url) ? "/?desktop=1" : "/",
+            "cache-control": "no-store",
+          });
+          response.end();
+          return;
+        }
         if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
           sendJson(response, 400, { error: L("请先选择一个 GoalBoard 项目") });
           return;
@@ -1906,11 +2056,16 @@ async function handleGoalBoardWebRequest(
         return;
       }
       const store = new SqliteGoalBoardStore(options.databasePath);
-      if (!initializedFeedDatabases.has(options.databasePath)) {
-        const feed = new FeedStore(store.db);
+      if (!feedSchedulers.has(options.databasePath)) {
+        const schedulerStore = new SqliteGoalBoardStore(options.databasePath);
+        const feed = new FeedStore(schedulerStore.db);
         feed.recoverInterruptedSourceRuns(options.boardId);
-        new FeedConnectorService(store.db, options.boardId).ensureSources();
-        initializedFeedDatabases.add(options.databasePath);
+        new FeedConnectorService(schedulerStore.db, options.boardId).ensureSources();
+        const scheduler = new FeedSourceScheduler(schedulerStore.db, options.boardId);
+        feedSchedulers.set(options.databasePath, { store: schedulerStore, scheduler });
+        void scheduler.tick().then((result) => {
+          if (result.completed || result.failed) webViewCache.delete(options.databasePath);
+        }).catch(() => undefined);
       }
       const coordinator = new GoalBoardCoordinator(
         store,
@@ -1920,6 +2075,537 @@ async function handleGoalBoardWebRequest(
       const readWebView = (): GoalBoardWebView =>
         cachedGoalBoardWebView(webViewCache, store, coordinator, options);
       try {
+        const projectSessionWorkspaceMatch = url.pathname.match(/^\/(sessions|workspaces)$/);
+        if (request.method === "GET" && projectSessionWorkspaceMatch) {
+          const desktopQuery = isDesktopShellRequest(request, url) ? "?desktop=1" : "";
+          response.writeHead(302, {
+            location: `${options.routePrefix}/${desktopQuery}#${projectSessionWorkspaceMatch[1]}`,
+            "cache-control": "no-store",
+          });
+          response.end();
+          return;
+        }
+        const readProjectWorkspaceRecord = async (workspaceId: string): Promise<ProjectWorkspaceRecord | null> => {
+          if (!options.project) return null;
+          const resources = await sessionResources;
+          const catalogWorkspaces = await withGoalBoardProjectCatalog(
+            { homeDirectory: serverOptions.homeDirectory },
+            (catalog) => catalog.listWorkspaceDirectory(options.project!.project_id),
+          );
+          return sessionProjectOperationsData(
+            resources,
+            options.project.project_id,
+            readWebView(),
+            options.projects,
+            catalogWorkspaces,
+          ).workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+        };
+        if (request.method === "POST" && url.pathname === "/api/workspaces") {
+          if (!options.project) {
+            sendJson(response, 400, { error: "请先选择 Project" });
+            return;
+          }
+          const body = await readBody(request);
+          const workspacePath = typeof body.workspace_path === "string" ? body.workspace_path.trim() : "";
+          if (body.user_confirmed !== true || !workspacePath) {
+            sendJson(response, 400, { error: "请输入绝对路径并确认关联当前 Project" });
+            return;
+          }
+          try {
+            const workspace = await withGoalBoardProjectCatalog(
+              { homeDirectory: serverOptions.homeDirectory },
+              (catalog) => catalog.addWorkspaceProject({
+                canonical_path: workspacePath,
+                project_id: options.project!.project_id,
+                actor_id: "web-user",
+                user_confirmed: true,
+              }),
+            );
+            sendJson(response, 201, { workspace });
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
+        const projectWorkspaceRepairMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/path$/);
+        if (request.method === "PATCH" && projectWorkspaceRepairMatch) {
+          if (!options.project) {
+            sendJson(response, 400, { error: "请先选择 Project" });
+            return;
+          }
+          const body = await readBody(request);
+          const workspaceId = decodeURIComponent(projectWorkspaceRepairMatch[1]);
+          const nextPath = typeof body.workspace_path === "string" ? body.workspace_path.trim() : "";
+          if (body.user_confirmed !== true || !nextPath) {
+            sendJson(response, 400, { error: "请输入新的绝对路径并确认修复" });
+            return;
+          }
+          const current = await readProjectWorkspaceRecord(workspaceId);
+          if (!current) {
+            sendJson(response, 404, { error: "找不到当前 Project 的这条工作目录" });
+            return;
+          }
+          try {
+            const normalized = normalizeRuntimeWorkContext({
+              runtime_id: "goalboard-web",
+              stable_work_context_id: null,
+              host_declares_stable: false,
+              workspace: { canonical_path: nextPath, realpath_verified: false },
+            }).workspace;
+            if (!normalized) throw new Error("新的工作目录必须是绝对路径");
+            const registry = (await sessionResources).registry;
+            const { workspace, sessions } = await withGoalBoardProjectCatalog(
+              { homeDirectory: serverOptions.homeDirectory },
+              (catalog) => repairProjectWorkspace({
+                catalog,
+                registry,
+                current,
+                canonicalPath: normalized.canonical_path,
+                projectId: options.project!.project_id,
+                actorId: "web-user",
+              }),
+            );
+            sendJson(response, 200, { workspace, updated_session_count: sessions.length });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError || error instanceof GoalBoardWorkspaceActionError ? 503 : 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const projectWorkspaceUnlinkMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/unlink$/);
+        if (request.method === "POST" && projectWorkspaceUnlinkMatch) {
+          if (!options.project) {
+            sendJson(response, 400, { error: "请先选择 Project" });
+            return;
+          }
+          const body = await readBody(request);
+          const workspaceId = decodeURIComponent(projectWorkspaceUnlinkMatch[1]);
+          if (body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请确认解除当前 Project 的工作目录关系" });
+            return;
+          }
+          const current = await readProjectWorkspaceRecord(workspaceId);
+          if (!current) {
+            sendJson(response, 404, { error: "找不到当前 Project 的这条工作目录" });
+            return;
+          }
+          try {
+            const registry = (await sessionResources).registry;
+            const result = await withGoalBoardProjectCatalog(
+              { homeDirectory: serverOptions.homeDirectory },
+              (catalog) => unlinkProjectWorkspace({
+                catalog,
+                registry,
+                current,
+                projectId: options.project!.project_id,
+                actorId: "web-user",
+              }),
+            );
+            sendJson(response, 200, { changed: result.changed, updated_session_count: result.sessions.length });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError || error instanceof GoalBoardWorkspaceActionError ? 503 : 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const projectWorkspaceLaunchMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/sessions$/);
+        if (request.method === "POST" && projectWorkspaceLaunchMatch) {
+          if (!options.project) {
+            sendJson(response, 400, { error: "请先选择 Project" });
+            return;
+          }
+          const body = await readBody(request);
+          const workspaceId = decodeURIComponent(projectWorkspaceLaunchMatch[1]);
+          if (body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请确认 Runtime、Project、Goal 和工作目录后再启动" });
+            return;
+          }
+          const current = await readProjectWorkspaceRecord(workspaceId);
+          if (!current) {
+            sendJson(response, 404, { error: "找不到当前 Project 的这条工作目录" });
+            return;
+          }
+          if (current.state !== "healthy" || !fs.existsSync(current.path)) {
+            sendJson(response, 409, { error: "工作目录当前不可用，请先修复路径或冲突" });
+            return;
+          }
+          const runtimeId = typeof body.runtime_id === "string" ? body.runtime_id.trim() : "";
+          const currentGoalId = typeof body.current_goal_id === "string" && body.current_goal_id.trim()
+            ? body.current_goal_id.trim()
+            : null;
+          const view = readWebView();
+          if (!runtimeId) {
+            sendJson(response, 400, { error: "请选择 Runtime" });
+            return;
+          }
+          if (currentGoalId && !view.goals.some((item) => item.goal.goal_id === currentGoalId)) {
+            sendJson(response, 400, { error: "当前 Goal 不属于这个 Project，或已经不在当前 Goal Tree" });
+            return;
+          }
+          try {
+            const session = await (await sessionResources).directory.create({
+              runtime_id: runtimeId,
+              actor_id: "web-user",
+              user_confirmed: true,
+              project_id: options.project.project_id,
+              current_goal_id: currentGoalId,
+              workspace_id: current.id,
+              workspace_path: current.path,
+              title: typeof body.title === "string" && body.title.trim() ? body.title.trim() : null,
+            });
+            sendJson(response, 201, { session: publicSessionRecord(session) });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/sessions/discover") {
+          const body = await readBody(request);
+          const runtimeId = typeof body.runtime_id === "string" ? body.runtime_id.trim() : "";
+          if (!runtimeId) {
+            sendJson(response, 400, { error: "请选择要同步的 Runtime" });
+            return;
+          }
+          const resources = await sessionResources;
+          const result = await resources.directory.discover(runtimeId);
+          sendJson(
+            response,
+            result.status === "ok" ? 200 : result.status === "unsupported" ? 409 : 503,
+            {
+              ...result,
+              records: result.records.map(publicSessionRecord),
+            },
+          );
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/sessions") {
+          try {
+            const body = await readBody(request);
+            if (body.user_confirmed !== true) {
+              sendJson(response, 400, { error: "请先确认这次 Session 写入" });
+              return;
+            }
+            const runtimeId = typeof body.runtime_id === "string" ? body.runtime_id.trim() : "";
+            const action = body.action === "create" ? "create" : body.action === "link" ? "link" : null;
+            const currentGoalId = typeof body.current_goal_id === "string" && body.current_goal_id.trim()
+              ? body.current_goal_id.trim()
+              : null;
+            const view = readWebView();
+            if (currentGoalId && !view.goals.some((item) => item.goal.goal_id === currentGoalId)) {
+              sendJson(response, 400, { error: "当前 Goal 不属于这个 Project，或已经不在当前 Goal Tree" });
+              return;
+            }
+            if (!runtimeId || !action) {
+              sendJson(response, 400, { error: "请选择 Runtime 和添加方式" });
+              return;
+            }
+            const resources = await sessionResources;
+            const workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
+              ? body.workspace_path.trim()
+              : null;
+            const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : null;
+            const session = action === "create"
+              ? await resources.directory.create({
+                  runtime_id: runtimeId,
+                  actor_id: "web-user",
+                  user_confirmed: true,
+                  project_id: options.project!.project_id,
+                  current_goal_id: currentGoalId,
+                  workspace_path: workspacePath,
+                  title,
+                })
+              : resources.registry.explicitlyLinkSession({
+                  runtime_id: runtimeId,
+                  native_runtime_session_id: typeof body.native_runtime_session_id === "string"
+                    ? body.native_runtime_session_id
+                    : "",
+                  actor_id: "web-user",
+                  user_confirmed: true,
+                  project_id: options.project!.project_id,
+                  current_goal_id: currentGoalId,
+                  workspace_path: workspacePath,
+                  title,
+                });
+            sendJson(response, 201, { session: publicSessionRecord(session) });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const projectSessionHandoffPrepareMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/handoffs$/);
+        if (request.method === "POST" && projectSessionHandoffPrepareMatch) {
+          try {
+            const sessionId = decodeURIComponent(projectSessionHandoffPrepareMatch[1]);
+            const resources = await sessionResources;
+            const source = resources.registry.get(sessionId);
+            if (source.project_id !== options.project?.project_id) {
+              sendJson(response, 404, { error: "找不到当前 Project 的这条来源 Session" });
+              return;
+            }
+            if (!source.current_goal_id) {
+              sendJson(response, 409, { error: "请先为来源 Session 选择当前 Goal，再创建 Handoff" });
+              return;
+            }
+            const body = await readBody(request);
+            const targetRuntimeId = typeof body.target_runtime_id === "string" ? body.target_runtime_id.trim() : "";
+            if (!targetRuntimeId) {
+              sendJson(response, 400, { error: "请选择目标 Runtime" });
+              return;
+            }
+            const contract = coordinator.readGoalContract(options.boardId, source.current_goal_id);
+            const result = await resources.handoff.prepare({
+              source_session_id: source.session_id,
+              project_id: options.project!.project_id,
+              project_name: options.project!.display_name,
+              target_runtime_id: targetRuntimeId,
+              target_workspace_id: typeof body.target_workspace_id === "string" ? body.target_workspace_id : null,
+              target_workspace_path: typeof body.target_workspace_path === "string"
+                ? body.target_workspace_path.trim() || null
+                : source.workspace_path,
+              actor_id: "web-user",
+              goal_contract: contract,
+            });
+            sendJson(response, 201, {
+              handoff: publicSessionHandoff(result.handoff, true),
+              reused: result.reused,
+              source: publicSessionRecord(source),
+              goal: {
+                goal_id: contract.goal.goal_id,
+                title: contract.goal.title,
+                outcome: contract.goal.outcome,
+                work_state: contract.work_state.work_state,
+              },
+            });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const sessionHandoffMutationMatch = url.pathname.match(
+          /^\/api\/session-handoffs\/([^/]+)(?:\/(send|cancel))?$/,
+        );
+        if (sessionHandoffMutationMatch) {
+          let packageId: string;
+          try {
+            packageId = decodeURIComponent(sessionHandoffMutationMatch[1]);
+          } catch {
+            sendJson(response, 400, { error: "Handoff package ID 无效" });
+            return;
+          }
+          const resources = await sessionResources;
+          let current;
+          try {
+            current = resources.registry.getHandoff(packageId);
+          } catch {
+            sendJson(response, 404, { error: "找不到这条 Handoff package" });
+            return;
+          }
+          if (current.source_project_id !== options.project?.project_id) {
+            sendJson(response, 404, { error: "找不到这条 Handoff package" });
+            return;
+          }
+          if (request.method === "PATCH" && !sessionHandoffMutationMatch[2]) {
+            try {
+              const body = await readBody(request);
+              const handoff = resources.handoff.update({
+                package_id: current.package_id,
+                target_runtime_id: typeof body.target_runtime_id === "string" ? body.target_runtime_id : "",
+                ...(typeof body.target_workspace_id === "string"
+                  ? { target_workspace_id: body.target_workspace_id }
+                  : {}),
+                target_workspace_path: typeof body.target_workspace_path === "string"
+                  ? body.target_workspace_path.trim() || null
+                  : null,
+                content: typeof body.content === "string" ? body.content : "",
+                actor_id: "web-user",
+                user_confirmed: false,
+              });
+              sendJson(response, 200, { handoff: publicSessionHandoff(handoff, true) });
+            } catch (error) {
+              sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            return;
+          }
+          if (request.method === "POST" && sessionHandoffMutationMatch[2] === "send") {
+            try {
+              const body = await readBody(request);
+              const result = await resources.handoff.send({
+                package_id: current.package_id,
+                target_runtime_id: typeof body.target_runtime_id === "string" ? body.target_runtime_id : "",
+                ...(typeof body.target_workspace_id === "string"
+                  ? { target_workspace_id: body.target_workspace_id }
+                  : {}),
+                target_workspace_path: typeof body.target_workspace_path === "string"
+                  ? body.target_workspace_path.trim() || null
+                  : null,
+                content: typeof body.content === "string" ? body.content : "",
+                actor_id: "web-user",
+                user_confirmed: body.user_confirmed === true,
+              });
+              const status = result.handoff.state === "sent" ? 201 : 502;
+              sendJson(response, status, {
+                handoff: publicSessionHandoff(result.handoff, true),
+                destination_session: result.destination_session
+                  ? publicSessionRecord(result.destination_session)
+                  : null,
+                ...(status === 502 ? { error: result.handoff.error_message } : {}),
+              });
+            } catch (error) {
+              sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            return;
+          }
+          if (request.method === "POST" && sessionHandoffMutationMatch[2] === "cancel") {
+            try {
+              const handoff = resources.handoff.cancel(current.package_id);
+              sendJson(response, 200, { handoff: publicSessionHandoff(handoff, false) });
+            } catch (error) {
+              sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            return;
+          }
+          sendJson(response, 405, { error: "Handoff 操作不支持这个请求方法" });
+          return;
+        }
+        const projectSessionAssociationMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/associations$/);
+        if (request.method === "PATCH" && projectSessionAssociationMatch) {
+          try {
+            const sessionId = decodeURIComponent(projectSessionAssociationMatch[1]);
+            const resources = await sessionResources;
+            const current = resources.registry.get(sessionId);
+            if (current.project_id !== options.project?.project_id) {
+              sendJson(response, 404, { error: "找不到这条 Session" });
+              return;
+            }
+            const body = await readBody(request);
+            if (body.user_confirmed !== true) {
+              sendJson(response, 400, { error: "请先确认这次关系变更" });
+              return;
+            }
+            const targetProjectId = body.project_id == null
+              ? null
+              : typeof body.project_id === "string" && body.project_id.trim()
+                ? body.project_id.trim()
+                : null;
+            if (targetProjectId && !options.projects.some((project) => project.project_id === targetProjectId)) {
+              sendJson(response, 400, { error: "目标 Project 不存在" });
+              return;
+            }
+            const requestedGoalId = typeof body.current_goal_id === "string" && body.current_goal_id.trim()
+              ? body.current_goal_id.trim()
+              : null;
+            const goalId = targetProjectId === options.project?.project_id ? requestedGoalId : null;
+            if (goalId && !readWebView().goals.some((item) => item.goal.goal_id === goalId)) {
+              sendJson(response, 400, { error: "当前 Goal 不属于这个 Project，或已经不在当前 Goal Tree" });
+              return;
+            }
+            const workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
+              ? body.workspace_path.trim()
+              : null;
+            const session = resources.registry.updateAssociations({
+              session_id: sessionId,
+              actor_id: "web-user",
+              user_confirmed: true,
+              project_id: targetProjectId,
+              current_goal_id: goalId,
+              workspace_id: workspacePath === current.workspace_path ? current.workspace_id : null,
+              workspace_path: workspacePath,
+            });
+            sendJson(response, 200, { session: publicSessionRecord(session) });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const projectSessionArchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
+        if (request.method === "POST" && projectSessionArchiveMatch) {
+          try {
+            const sessionId = decodeURIComponent(projectSessionArchiveMatch[1]);
+            const resources = await sessionResources;
+            const current = resources.registry.get(sessionId);
+            if (current.project_id !== options.project?.project_id) {
+              sendJson(response, 404, { error: "找不到这条 Session" });
+              return;
+            }
+            const body = await readBody(request);
+            if (body.user_confirmed !== true || typeof body.archived !== "boolean") {
+              sendJson(response, 400, { error: "请确认归档或恢复这条 Session 记录" });
+              return;
+            }
+            const session = resources.registry.setStatus({
+              session_id: sessionId,
+              actor_id: "web-user",
+              user_confirmed: true,
+              status: body.archived ? "closed" : "active",
+            });
+            sendJson(response, 200, { session: publicSessionRecord(session) });
+          } catch (error) {
+            sendJson(response, error instanceof GoalBoardSessionError ? 400 : 503, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
+        const projectSessionApiMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/(content|resume)$/);
+        if (projectSessionApiMatch) {
+          let sessionId: string;
+          try {
+            sessionId = decodeURIComponent(projectSessionApiMatch[1]);
+          } catch {
+            sendJson(response, 400, { error: "Session ID 无效" });
+            return;
+          }
+          const resources = await sessionResources;
+          let session;
+          try {
+            session = resources.registry.get(sessionId);
+          } catch {
+            sendJson(response, 404, { error: "找不到这条 Session" });
+            return;
+          }
+          if (session.project_id !== options.project?.project_id) {
+            sendJson(response, 404, { error: "找不到这条 Session" });
+            return;
+          }
+          if (request.method === "GET" && projectSessionApiMatch[2] === "content") {
+            const result = await resources.content.read(sessionId);
+            sendJson(response, 200, {
+              ...result,
+              session: publicSessionRecord(result.session),
+            });
+            return;
+          }
+          if (request.method === "POST" && projectSessionApiMatch[2] === "resume") {
+            const result = await resources.content.resume(sessionId);
+            sendJson(response, result.status === "ok" ? 200 : result.status === "unsupported" ? 409 : 503, result);
+            return;
+          }
+          sendJson(response, 405, { error: "Session 操作不支持这个请求方法" });
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/api/sessions") {
+          const resources = await sessionResources;
+          sendJson(response, 200, {
+            sessions: resources.registry.list({ project_id: options.project?.project_id }).map(publicSessionRecord),
+          });
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/settings/guidance") {
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
@@ -2120,16 +2806,16 @@ async function handleGoalBoardWebRequest(
           ));
           return;
         }
-        if (request.method === "GET" && url.pathname === "/api/board/graph") {
+        if (request.method === "GET" && url.pathname === "/api/board/momentum") {
           const collection = url.searchParams.get("view") ?? "current";
           if (collection !== "current" && collection !== "archive") {
-            sendJson(response, 400, { error: "Goal 关系图集合无效" });
+            sendJson(response, 400, { error: "Goal 推进态势集合无效" });
             return;
           }
           const goalId = url.searchParams.get("goal_id")?.trim() || "";
-          const fragment = renderGoalBoardGraphFragment(readWebView(), goalId, collection);
+          const fragment = renderGoalBoardMomentumFragment(readWebView(), goalId, collection);
           if (!fragment) {
-            sendJson(response, 404, { error: "Goal 关系图不存在" });
+            sendJson(response, 404, { error: "Goal 推进态势不存在" });
             return;
           }
           response.writeHead(200, {
@@ -2184,8 +2870,80 @@ async function handleGoalBoardWebRequest(
           }
           return;
         }
+        const feedSourceResourceMatch = url.pathname.match(/^\/api\/feed\/sources\/([^/]+)$/);
+        if ((request.method === "PATCH" || request.method === "DELETE") && feedSourceResourceMatch) {
+          let sourceId: string;
+          try {
+            sourceId = decodeURIComponent(feedSourceResourceMatch[1]);
+          } catch {
+            sendJson(response, 404, { error: "Feed 来源不存在" });
+            return;
+          }
+          const body = await readBody(request);
+          try {
+            const service = new FeedSourceService(store.db, options.boardId);
+            if (request.method === "PATCH") {
+              const input: UpdateFeedSourceInput = {
+                ...(typeof body.name === "string" ? { name: body.name } : {}),
+                ...(typeof body.description === "string" ? { description: body.description } : {}),
+                ...(typeof body.scope === "string" ? { scope: body.scope } : {}),
+                ...(typeof body.feed_url === "string" ? { feed_url: body.feed_url } : {}),
+              };
+              const source = service.update(sourceId, input);
+              webViewCache.delete(options.databasePath);
+              sendJson(response, 200, { source });
+              return;
+            }
+            const historyDecision = body.history_decision as SourceHistoryDecision;
+            if (historyDecision !== "retain_history" && historyDecision !== "delete_local_history") {
+              sendJson(response, 400, { error: "删除来源前必须选择保留或删除本地历史" });
+              return;
+            }
+            const source = new FeedStore(store.db).getSource(options.boardId, sourceId);
+            if (source.sync_kind === "github" || source.sync_kind === "gmail") {
+              new FeedConnectorService(store.db, options.boardId).unbind(source.sync_kind);
+            }
+            const deleted = service.delete(sourceId, historyDecision);
+            webViewCache.delete(options.databasePath);
+            sendJson(response, 200, { source: deleted, history_decision: historyDecision });
+          } catch (error) {
+            sendFeedError(response, error);
+          }
+          return;
+        }
+        const feedSourceScheduleMatch = url.pathname.match(
+          /^\/api\/feed\/sources\/([^/]+)\/schedule$/,
+        );
+        if (request.method === "PUT" && feedSourceScheduleMatch) {
+          let sourceId: string;
+          try {
+            sourceId = decodeURIComponent(feedSourceScheduleMatch[1]);
+          } catch {
+            sendJson(response, 404, { error: "Feed 来源不存在" });
+            return;
+          }
+          const body = await readBody(request);
+          const input: ConfigureFeedSourceScheduleInput | null = body.mode === "manual"
+            ? { mode: "manual" }
+            : body.mode === "interval" && typeof body.enabled === "boolean" && Number.isInteger(body.interval_minutes)
+              ? { mode: "interval", enabled: body.enabled, interval_minutes: Number(body.interval_minutes) }
+              : null;
+          if (!input) {
+            sendJson(response, 400, { error: "拉取计划参数无效" });
+            return;
+          }
+          try {
+            const source = new FeedSourceService(store.db, options.boardId)
+              .configureSchedule(sourceId, input);
+            webViewCache.delete(options.databasePath);
+            sendJson(response, 200, { source });
+          } catch (error) {
+            sendFeedError(response, error);
+          }
+          return;
+        }
         const feedSourceActionMatch = url.pathname.match(
-          /^\/api\/feed\/sources\/([^/]+)\/(pause|resume|sync)$/,
+          /^\/api\/feed\/sources\/([^/]+)\/(pause|resume|sync|disconnect)$/,
         );
         if (request.method === "POST" && feedSourceActionMatch) {
           let sourceId: string;
@@ -2203,6 +2961,16 @@ async function handleGoalBoardWebRequest(
             if (action === "pause" || action === "resume") {
               const changed = new FeedSourceService(store.db, options.boardId)
                 .setEnabled(sourceId, action === "resume");
+              webViewCache.delete(options.databasePath);
+              sendJson(response, 200, { source: changed });
+              return;
+            }
+            if (action === "disconnect") {
+              if (source.sync_kind !== "github" && source.sync_kind !== "gmail") {
+                throw new FeedDomainError("公开来源不需要断开账号；可以暂停或删除", "feed_source_invalid_state");
+              }
+              new FeedConnectorService(store.db, options.boardId).unbind(source.sync_kind);
+              const changed = new FeedSourceService(store.db, options.boardId).disconnect(sourceId);
               webViewCache.delete(options.databasePath);
               sendJson(response, 200, { source: changed });
               return;
@@ -2363,20 +3131,79 @@ async function handleGoalBoardWebRequest(
             return;
           }
           try {
-            const item = hydrateFeedItemContent(new FeedStore(store.db).getItem(options.boardId, itemId));
+            const feed = new FeedStore(store.db);
+            const preset = url.searchParams.get("preset") === "inbox_message" ? "inbox_message" : "feed";
+            const requestedInboxEntryId = url.searchParams.get("entry");
+            const inboxEntry = preset === "inbox_message" && requestedInboxEntryId
+              ? feed.getInboxEntry(options.boardId, requestedInboxEntryId)
+              : null;
+            if (inboxEntry && (inboxEntry.subject_type !== "feed_item" || inboxEntry.subject_id !== itemId)) {
+              sendJson(response, 404, { error: "Inbox 引用与原消息不匹配" });
+              return;
+            }
+            const projected = feed.getItem(options.boardId, itemId);
+            const item = hydrateFeedItemContent(preset === "feed"
+              ? feed.getFeedItem(options.boardId, itemId)
+              : { ...feed.getFeedItem(options.boardId, itemId), item_type: "inbox_message" });
+            const entryId = preset === "inbox_message"
+              ? inboxEntry ? `inbox:${inboxEntry.entry_id}` : `inbox:${itemId}`
+              : itemId;
             response.writeHead(200, {
               "content-type": "text/html; charset=utf-8",
               "cache-control": "no-store",
               "x-content-type-options": "nosniff",
             });
-            response.end(renderPersistedFeedItemDetail(item, options.routePrefix));
+            response.end(renderPersistedFeedItemDetail(
+              { ...item, item_type: preset },
+              options.routePrefix,
+              {
+                entryId,
+                inboxActive: inboxEntry
+                  ? inboxEntry.status === "open" || inboxEntry.status === "in_progress"
+                  : projected.item_type === "inbox_message",
+                inboxEntry,
+              },
+            ));
+          } catch (error) {
+            sendFeedError(response, error);
+          }
+          return;
+        }
+        const inboxEntryStatusMatch = url.pathname.match(/^\/api\/inbox\/entries\/([^/]+)\/status$/);
+        if (request.method === "POST" && inboxEntryStatusMatch) {
+          let entryId: string;
+          try {
+            entryId = decodeURIComponent(inboxEntryStatusMatch[1]);
+          } catch {
+            sendJson(response, 404, { error: "Inbox Entry 不存在" });
+            return;
+          }
+          const body = await readBody(request);
+          const status = body.status;
+          const revisionValue = body.expected_revision == null ? undefined : Number(body.expected_revision);
+          if (!["open", "in_progress", "done", "dismissed"].includes(String(status))) {
+            sendJson(response, 400, { error: "不支持的 Inbox 状态" });
+            return;
+          }
+          if (revisionValue == null || !Number.isInteger(revisionValue) || revisionValue < 1) {
+            sendJson(response, 400, { error: "请刷新 Inbox 后再操作" });
+            return;
+          }
+          try {
+            const entry = new FeedStore(store.db).setInboxEntryStatus(
+              options.boardId,
+              entryId,
+              status as "open" | "in_progress" | "done" | "dismissed",
+              revisionValue,
+            );
+            sendJson(response, 200, { entry });
           } catch (error) {
             sendFeedError(response, error);
           }
           return;
         }
         const feedItemActionMatch = url.pathname.match(
-          /^\/api\/feed\/items\/([^/]+)\/(read|save|archive|restore|promote|start)$/,
+          /^\/api\/feed\/items\/([^/]+)\/(read|inbox|save|archive|restore|promote|start)$/,
         );
         if (request.method === "POST" && feedItemActionMatch) {
           let itemId: string;
@@ -2408,8 +3235,18 @@ async function handleGoalBoardWebRequest(
             return;
           }
           try {
-            if (action === "save" || action === "archive" || action === "restore") {
-              const disposition = action === "save" ? "saved" : action === "archive" ? "archived" : "inbox";
+            if (action === "restore" && body.restore_target === "feed") {
+              sendJson(response, 200, {
+                item: feed.restoreToFeed(options.boardId, itemId, revisionValue),
+              });
+              return;
+            }
+            if (action === "inbox" || action === "save" || action === "archive" || action === "restore") {
+              const disposition = action === "save"
+                ? "saved"
+                : action === "archive"
+                  ? "archived"
+                  : "inbox";
               sendJson(response, 200, {
                 item: feed.setDisposition(options.boardId, itemId, disposition, revisionValue),
               });
@@ -3218,17 +4055,59 @@ async function handleGoalBoardWebRequest(
             ? [...new Set(body.evidence_refs.map(String).map((item) => item.trim()).filter(Boolean))]
             : [];
           try {
-            const result = coordinator.submitReview({
-              board_id: options.boardId,
-              goal_id: decodeURIComponent(humanReviewMatch[1]),
-              obligation_id: decodeURIComponent(humanReviewMatch[2]),
-              actor_id: "web-user",
-              actor_kind: "user",
-              verdict: verdict as "pass" | "fail" | "needs_changes" | "inconclusive",
-              evidence_refs: evidenceRefs,
-              reasoning: String(body.reasoning ?? "").trim(),
-              idempotency_key: String(body.idempotency_key ?? `web-human-review-${randomUUID()}`),
+            const goalId = decodeURIComponent(humanReviewMatch[1]);
+            const obligationId = decodeURIComponent(humanReviewMatch[2]);
+            const reasoning = String(body.reasoning ?? "").trim();
+            const headerIdempotencyKey = request.headers["x-goalboard-idempotency-key"];
+            const idempotencyKey = String(
+              body.idempotency_key ??
+              (typeof headerIdempotencyKey === "string" ? headerIdempotencyKey : `web-human-review-${randomUUID()}`),
+            );
+            const snapshot = store.snapshot(options.boardId);
+            const goal = snapshot.goals.find((item) => item.goal_id === goalId);
+            const obligation = snapshot.review_obligations.find(
+              (item) => item.goal_id === goalId && item.obligation_id === obligationId,
+            );
+            if (!goal || !obligation) throw new Error("找不到这项用户确认要求");
+            if (obligation.role !== "human_approver") throw new Error("这项 Review 不是用户确认事项");
+            const humanDecisionCriterionIds = obligation.criterion_scope.filter((criterionId) =>
+              goal.acceptance_criteria.some(
+                (criterion) => criterion.criterion_id === criterionId && criterion.decision_method === "human_decision",
+              ),
+            );
+            const result = store.immediate(() => {
+              const reviewResult = coordinator.submitReview({
+                board_id: options.boardId,
+                goal_id: goalId,
+                obligation_id: obligationId,
+                actor_id: "web-user",
+                actor_kind: "user",
+                verdict: verdict as "pass" | "fail" | "needs_changes" | "inconclusive",
+                evidence_refs: evidenceRefs,
+                reasoning,
+                idempotency_key: idempotencyKey,
+              });
+              const humanVerdictResult = verdict === "pass" && humanDecisionCriterionIds.length
+                ? coordinator.submitEvidence({
+                    board_id: options.boardId,
+                    goal_id: goalId,
+                    actor_id: "web-user",
+                    review_id: reviewResult.review.review_id,
+                    criterion_ids: humanDecisionCriterionIds,
+                    kind: "human_verdict",
+                    locator: `review://${reviewResult.review.review_id}`,
+                    digest: reasoning,
+                    result: "passed",
+                    idempotency_key: `${idempotencyKey}:human-verdict`,
+                  })
+                : null;
+              return {
+                ...reviewResult,
+                human_verdict_evidence: humanVerdictResult?.evidence ?? null,
+                observed_event_cursor: humanVerdictResult?.observed_event_cursor ?? reviewResult.observed_event_cursor,
+              };
             });
+            webViewCache.delete(options.databasePath);
             sendJson(response, 200, result);
           } catch (error) {
             sendJson(response, 400, {
@@ -3681,6 +4560,18 @@ async function handleGoalBoardWebRequest(
             return;
           }
           const desktopShell = isDesktopShellRequest(request, url);
+          const operations = options.project
+            ? sessionProjectOperationsData(
+                await sessionResources,
+                options.project.project_id,
+                view,
+                options.projects,
+                await withGoalBoardProjectCatalog(
+                  { homeDirectory: serverOptions.homeDirectory },
+                  (catalog) => catalog.listWorkspaceDirectory(options.project!.project_id),
+                ),
+              )
+            : { sessions: [], workspaces: [] };
           const html = renderGoalBoardWeb(
             view,
             requestedGoalId,
@@ -3690,6 +4581,7 @@ async function handleGoalBoardWebRequest(
             controlToken,
             desktopShell,
             {},
+            operations,
           );
           const headers: Record<string, string> = {
             "content-type": "text/html; charset=utf-8",

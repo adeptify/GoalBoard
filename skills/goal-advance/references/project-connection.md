@@ -45,7 +45,7 @@ GoalBoard owns the version diagnosis and the no-data-loss recovery instructions.
 - Do not ask the user to copy a fixed confirmation phrase. If the Runtime has already repeated the project name and explained the create-and-bind operation, and the user already clearly authorized the named create-and-bind operation in the current reply, do not ask again. If the name, whether to create, or whether to bind remains unclear, ask one short confirmation question.
 - Do not ask the user to repeat an existing-project selection made in the same message that invoked GoalBoard. A phrase such as “继续用 GoalBoard 推进 CGS” is selection authority only when `CGS` unambiguously denotes one returned existing project. A bare mention, an unclear shorthand, several possible matches, or “you decide” still requires one short question.
 - Switch: when the current work entry is already bound elsewhere, ask a separate switch question before `rebind_confirmed=true`.
-- Workspace default: ordinary selection records workspace history but never becomes a default. Use `binding_scope=workspace_default` only after the user separately asks and confirms that future Sessions in this directory should enter that project automatically.
+- Workspace history: ordinary selection records that the directory has used the project, but never becomes a default. Every new Session still requires an explicit Project choice. If the user asks for a directory default, explain that GoalBoard no longer stores one; do not call a legacy `workspace_default` write path.
 - Reject suggestion: after an explicit “not this candidate,” call `goalboard_v1_context_reject_suggestion` only when the resolved context contains a stable Session identity. Without one, acknowledge the answer without pretending it was persisted.
 
 Silence, timeout, “not now,” “you decide,” and other ambiguous language are not confirmation.
@@ -58,7 +58,7 @@ Useful user-facing questions:
 | Several suggestions | List names, then ask which one to connect. |
 | No suggestion | “当前会话还没有关联项目。要打开现有项目中的一个，还是新建一个？” |
 | User mentions an existing project without clearly selecting it | “你提到了「{项目名}」。要把当前会话关联到它吗？” |
-| User asks for a directory default | “把「{项目名}」设为这个目录的默认项目，以后新会话会自动进入，确认吗？” |
+| User asks for a directory default | “GoalBoard 不保存目录默认项目；这个目录只会把「{项目名}」列为候选，每个新 Session 都会再确认。” |
 | User asks to create the current project | Propose the working-directory name as a display name, repeat it, and ask for confirmation; do not treat the directory itself as identity. |
 
 ## Manage projects without conflating permissions

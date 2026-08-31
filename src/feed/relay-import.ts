@@ -280,6 +280,7 @@ export function importRelayData(
           item_count: Number(row.item_count ?? 0),
           origin: "relay",
           config,
+          schedule: { mode: "manual" },
           cursor: parsedJson(row.cursor_json, {}),
           credential_ref: null,
           account_label: null,
@@ -318,6 +319,7 @@ export function importRelayData(
           item_count: Number(meta?.item_count ?? 0),
           origin: "relay",
           config: {},
+          schedule: { mode: "manual" },
           cursor: parsedJson(cursor?.cursor_json, {}),
           credential_ref: `connector:${kind}:token`,
           account_label: optionalText(meta?.account_label),
@@ -358,6 +360,7 @@ export function importRelayData(
           item_count: installation.itemCount,
           origin: "relay",
           config: { installation_id: installation.id, token_refs: refs },
+          schedule: { mode: "manual" },
           cursor: parsedJson(cursor?.cursor_json, {}),
           credential_ref: refs.access,
           account_label: installation.email ?? null,
@@ -408,6 +411,7 @@ export function importRelayData(
             item_count: 0,
             origin: "relay",
             config: {},
+            schedule: { mode: "manual" },
             cursor: {},
             credential_ref: null,
             account_label: null,
@@ -452,6 +456,7 @@ export function importRelayData(
       for (const row of items) {
         const tags = parsedTags(row.tags_json);
         const sourceKind = text(row.source) || "manual";
+        const sourceId = sourceIdForItem(row, tags);
         const disposition = tags.includes("role:reference")
           ? "saved"
           : text(row.status) === "archived"
@@ -461,8 +466,8 @@ export function importRelayData(
         itemStatement.run(
           boardId,
           itemId,
-          sourceIdForItem(row, tags),
-          feedItemTypeForSource(sourceKind),
+          sourceId,
+          "feed",
           text(row.kind),
           text(row.title),
           text(row.summary),
@@ -481,6 +486,12 @@ export function importRelayData(
           now,
           now,
         );
+        if (feedItemTypeForSource(sourceKind) === "inbox_message") {
+          target.ensureInboxEntryForFeedItem(boardId, itemId, "source_rule", {
+            source_id: sourceId,
+            imported_from: "relay",
+          });
+        }
         if (existingItemIds.has(itemId)) result.items.updated += 1;
         else result.items.created += 1;
       }

@@ -244,20 +244,32 @@ test("visual foundation gives every Focus detail one responsive section deck", (
   assert.match(VISUAL_FOUNDATION_STYLES, /\.relation-goal-id, \.relation-path, \.relation-reason[\s\S]*background: transparent !important;/);
 });
 
-test("visual foundation gives Goal Graph a radial clustered workspace", () => {
+test("desktop Goal tabs preserve readable titles instead of shrinking to status dots", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tabs \{[\s\S]*overflow-x: auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab \{[\s\S]*flex: 0 0 clamp\(136px, 12vw, 190px\);/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.desktop-work-tab\.is-utility \{[\s\S]*flex-basis: auto;/);
+});
+
+test("visual foundation gives Goal momentum a left-to-right topology and action workbench", () => {
   assert.match(VISUAL_FOUNDATION_STYLES, /workspace\.is-desktop-tui\.is-graph-view/);
   assert.match(VISUAL_FOUNDATION_STYLES, /body\[data-desktop-shell="true"\] \.workspace\.is-desktop-tui\.is-graph-view/);
   assert.match(VISUAL_FOUNDATION_STYLES, /:has\(> \.tree-pane\[data-navigator-view="graph"\]\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.workspace\.is-desktop-tui\[data-navigator-view="graph"\]/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-graph/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-stage/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-orbit--inner/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /left: var\(--graph-x\)/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /top: var\(--graph-y\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-momentum/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-map\.graph-stage/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /grid-template-columns: repeat\(var\(--momentum-level-count\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /grid-column: var\(--momentum-column\)/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-group/);
   assert.match(VISUAL_FOUNDATION_STYLES, /tree-pane > \.tree-scroll \{ grid-row: 4; \}/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-zoom/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-edge--depends_on path/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-arrow--part_of path/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-arrow--depends_on path/);
-  assert.match(VISUAL_FOUNDATION_STYLES, /\.graph-node\.is-selected/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-edge\.is-selected-path path/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-node\.is-bottleneck/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-cadence-panel:not\(\[hidden\]\) \{ display: grid; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-cadence \{[\s\S]*container-type: inline-size;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /@container \(max-width: 780px\)[\s\S]*\.momentum-cadence-copy \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-group header button, \.momentum-group header > span \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-node\.is-group-first-row \{ align-self: start; margin-top: 26px; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-map-scroll::\-webkit-scrollbar \{ display: none; width: 0; height: 0; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-queue-panel/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.momentum-node\.is-selected/);
 });

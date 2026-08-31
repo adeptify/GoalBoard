@@ -3,6 +3,19 @@ export type FeedItemType = "inbox_message" | "feed";
 export type FeedSourceSyncKind = "public_source" | "github" | "gmail" | "manual";
 export type FeedSourceStatus = "active" | "paused" | "error" | "disconnected" | "imported";
 export type FeedSourceRunPhase = "running" | "terminal" | "interrupted";
+export type FeedSourceSchedule =
+  | { mode: "manual" }
+  | {
+      mode: "interval";
+      enabled: boolean;
+      interval_minutes: number;
+      next_pull_at: string | null;
+    };
+
+export type InboxEntrySubjectType = "feed_item" | "goal_decision" | "source_fault";
+export type InboxEntryReason = "manual" | "source_rule" | "goal_decision" | "source_fault";
+export type InboxEntryStatus = "open" | "in_progress" | "done" | "dismissed";
+export type SourceHistoryDecision = "retain_history" | "delete_local_history";
 
 export type FeedItemDisposition =
   | "inbox"
@@ -24,6 +37,7 @@ export interface FeedSourceRecord {
   item_count: number;
   origin: "relay" | "goalboard";
   config: Record<string, unknown>;
+  schedule: FeedSourceSchedule;
   cursor: unknown;
   credential_ref: string | null;
   account_label: string | null;
@@ -60,6 +74,29 @@ export interface FeedImportReceiptRecord {
   credentials_status: "migrated" | "unavailable" | "not_requested";
   content_status: "migrated" | "partial" | "unavailable" | "not_requested";
   completed_at: string;
+}
+
+export interface FeedContractMigrationReceiptRecord {
+  receipt_id: string;
+  schema_version: number;
+  preflight: Record<string, number>;
+  postflight: Record<string, number>;
+  rollback_strategy: "sqlite_immediate_transaction";
+  applied_at: string;
+}
+
+export interface InboxEntryRecord {
+  board_id: string;
+  entry_id: string;
+  subject_type: InboxEntrySubjectType;
+  subject_id: string;
+  reason: InboxEntryReason;
+  status: InboxEntryStatus;
+  detail: Record<string, unknown>;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
 }
 
 export interface FeedMaterialRecord {
@@ -115,9 +152,15 @@ export interface FeedItemRecord {
 
 export interface FeedSnapshot {
   sources: FeedSourceRecord[];
+  /** Canonical external facts. Every record is a FeedItem, including items with Inbox references. */
+  feed_items: FeedItemRecord[];
+  /** Canonical attention state; entries reference facts or internal objects and never copy message bodies. */
+  inbox_entries: InboxEntryRecord[];
+  /** Temporary compatibility projection for the current combined Inbox/Feed Web workbench. */
   items: FeedItemRecord[];
   runs: FeedSourceRunRecord[];
   import_receipts: FeedImportReceiptRecord[];
+  contract_migrations: FeedContractMigrationReceiptRecord[];
 }
 
 export interface RelayImportAvailability {

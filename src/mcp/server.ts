@@ -14,6 +14,13 @@ import {
 } from "../projects/catalog.js";
 import { withGoalBoardProjectCatalog } from "../projects/catalog-session.js";
 import {
+  findSessionForHostSignals,
+  reconcileLegacySessionCatalog,
+  runtimeSessionHostSignalsFromEnvironment,
+  type RuntimeSessionHostSignals,
+} from "../sessions/compatibility.js";
+import { GoalBoardSessionRegistry } from "../sessions/registry.js";
+import {
   GoalBoardCoordinator,
   GoalBoardV1Error,
   type AvailableQueryResult,
@@ -750,8 +757,9 @@ export interface GoalBoardRuntimeConnection {
 }
 
 export interface GoalBoardMcpToolCallContext {
-  sessionId: string | null;
-  sessionIdSource: "threadId" | "sessionId" | "goalboard/sessionId" | null;
+  /** Runtime-owned per-call identity from MCP _meta; never a GoalBoard Registry session_id. */
+  runtimeSessionId: string | null;
+  runtimeSessionIdSource: "threadId" | "sessionId" | "goalboard/sessionId" | null;
 }
 
 /**
@@ -763,6 +771,10 @@ export interface GoalBoardRuntimeContextHost {
   homeDirectory?: string;
   runtimeContext: RuntimeWorkContext;
   webBaseUrl?: string;
+  goalBoardSessionId?: string | null;
+  nativeRuntimeSessionId?: string | null;
+  legacyWorkContextId?: string | null;
+  goalId?: string | null;
   /**
    * Host-only non-authoritative hints for a fresh Session. They may rank
    * projects, but never establish a binding and are never supplied by a
@@ -1193,7 +1205,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_propose",
     description:
-      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor Run 也可以为同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本；该字段接受 native Proposal ID，也接受 goal_tree_read 返回的 legacy Contract Proposal raw/synthetic handle，并会让旧 Contract Proposal 原子退出待决定状态。Legacy Candidate 请使用 candidate item 晋升，Legacy Rewire 则在等价关系变更确认落地后自动关闭，不能把这两类 handle 当成普通修订。包含 5 项及以上变化时，必须提供 narrative，并为每项提供 explanation，让审批人直接看到原问题、变更后主链路、逐项效果、非目标和 change 依赖。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
+      "当前 clarifier Runtime 原子提交一份包含多个 Goal Tree 变更条目的待确认提案；已接受叶子 Goal 的 active executor 或 revalidator Run 也可以为自己的同一 Goal 提交仅含 Risk 生命周期变更的提案，不能借此修改 Contract、关系或其他 Goal。提交不会提前改写 canonical GoalBoard，可通过 supersedes_proposal_id 创建修订版本；该字段接受 native Proposal ID，也接受 goal_tree_read 返回的 legacy Contract Proposal raw/synthetic handle，并会让旧 Contract Proposal 原子退出待决定状态。Legacy Candidate 请使用 candidate item 晋升，Legacy Rewire 则在等价关系变更确认落地后自动关闭，不能把这两类 handle 当成普通修订。包含 5 项及以上变化时，必须提供 narrative，并为每项提供 explanation，让审批人直接看到原问题、变更后主链路、逐项效果、非目标和 change 依赖。改变已有 Risk 生命周期本身是一条正式 Goal：若 clarifier 的 Goal 仍是 Draft，必须在同一提案中用完整 Contract 把它接受为 closed_leaf，不能只改 Risk 后留下空 Draft。closed_compound 的 decomposition_review 必须用 contract_coverage 逐项映射父 promised_outputs / acceptance_criteria 到后代 Contract，部分覆盖或仍需集成时保持父 Goal 开放。Risk 的 treatment=mitigate 表示降低策略；措施完成后更新为 state=resolved 并提供 resolution_basis，不存在 state=mitigated。晋升已有 pending Candidate 时使用 kind=candidate、operation=update，payload 同时提供 candidate_id、最终 proposed_goal 与 proposed_relations，并把 Candidate 和目标 Goal 都列入 affected_objects；严格启动对账还需 formal_goal_id 与 materialized_by_proposal_id。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1766,7 +1778,7 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_context_bind",
     description:
-      "用户在当前 Runtime 对话明确选择项目后建立关联。普通选择会记录当前目录用过这个项目，但新 Session 仍需询问；有 Session ID 时同时只绑定当前 Session。只有用户另行明确要求设为目录默认时才能传 binding_scope=workspace_default；binding_scope=session 只影响当前 Session。",
+      "用户在当前 Runtime 对话明确选择项目后建立关联。普通选择会记录当前目录用过这个项目，但新 Session 仍需询问；有 Session ID 时同时只绑定当前 Session。不保存工作目录默认项目。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1776,8 +1788,8 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
         rebind_confirmed: { type: "boolean", description: "已有绑定改到其他项目时，用户已明确确认切换" },
         binding_scope: {
           type: "string",
-          enum: ["workspace_default", "session"],
-          description: "workspace_default 供同目录新 Session 自动恢复；session 只影响当前 Session",
+          enum: ["session"],
+          description: "session 只影响当前原生 Session；省略时工作目录关系仅作为候选",
         },
       },
       required: ["project_id", "actor_id", "user_confirmed"],
@@ -1811,8 +1823,8 @@ const CONTEXT_TOOLS: McpToolDefinition[] = [
         rebind_confirmed: { type: "boolean", description: "已有绑定改到新项目时，用户已明确确认切换" },
         binding_scope: {
           type: "string",
-          enum: ["workspace_default", "session"],
-          description: "新项目成为目录默认，或只在当前 Session 使用",
+          enum: ["session"],
+          description: "只在当前原生 Session 使用；省略时工作目录关系仅作为候选",
         },
         idempotency_key: V1_STRING,
       },
@@ -1939,60 +1951,24 @@ export function runtimeContextHostFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
   currentWorkingDirectory: string = process.cwd(),
 ): GoalBoardRuntimeContextHost | null {
-  const runtimeId = environment.GOALBOARD_RUNTIME_ID;
-  if (!runtimeId) return null;
-  const explicitContextId = environment.GOALBOARD_WORK_CONTEXT_ID?.trim() || null;
-  const runtimeContextId = explicitContextId ?? stableRuntimeSessionId(runtimeId, environment);
-  const projectSuggestionClues: RuntimeProjectSuggestionClue[] = [];
-  const workspace = environment.PWD?.trim() || currentWorkingDirectory.trim();
-  if (workspace && path.isAbsolute(workspace)) {
-    projectSuggestionClues.push({ kind: "workspace", value: workspace });
-  }
-  const sessionTitle = environment.CLAUDE_CODE_SESSION_NAME?.trim();
-  if (sessionTitle) projectSuggestionClues.push({ kind: "session_title", value: sessionTitle });
-  const workspaceContext = workspace && path.isAbsolute(workspace)
-    ? canonicalWorkspaceContext(workspace)
-    : null;
+  const signals = runtimeSessionHostSignalsFromEnvironment(environment, currentWorkingDirectory);
+  if (!signals) return null;
   return {
     homeDirectory: environment.GOALBOARD_HOME,
-    runtimeContext: {
-      runtime_id: runtimeId,
-      stable_work_context_id: runtimeContextId,
-      host_declares_stable: explicitContextId
-        ? environment.GOALBOARD_WORK_CONTEXT_STABLE === "true"
-        : runtimeContextId != null,
-      workspace: workspaceContext,
-    },
+    runtimeContext: signals.runtime_context,
     webBaseUrl: environment.GOALBOARD_WEB_URL ?? "http://127.0.0.1:4173",
-    panelId: environment.GOALBOARD_PANEL_ID?.trim() || null,
-    // The working directory and title are ranking hints only. They can make a
-    // fresh Session suggestion useful, but never become identity or a binding.
-    projectSuggestionClues,
+    goalBoardSessionId: signals.goalboard_session_id,
+    nativeRuntimeSessionId: signals.native_runtime_session_id,
+    legacyWorkContextId: signals.legacy_work_context_id,
+    goalId: signals.goal_id,
+    panelId: signals.surface_id,
+    projectSuggestionClues: signals.project_suggestion_clues,
   };
 }
 
-function canonicalWorkspaceContext(workspace: string): NonNullable<RuntimeWorkContext["workspace"]> {
-  const normalized = path.resolve(workspace);
-  try {
-    return { canonical_path: fs.realpathSync.native(normalized), realpath_verified: true };
-  } catch {
-    return { canonical_path: normalized, realpath_verified: false };
-  }
-}
-
-function stableRuntimeSessionId(runtimeId: string, environment: NodeJS.ProcessEnv): string | null {
-  if (runtimeId === "codex") return environment.CODEX_THREAD_ID?.trim() || null;
-  if (runtimeId === "claude-code") {
-    return environment.CLAUDE_CODE_SESSION_ID?.trim()
-      || environment.CLAUDE_SESSION_ID?.trim()
-      || null;
-  }
-  return null;
-}
-
 const EMPTY_TOOL_CALL_CONTEXT: GoalBoardMcpToolCallContext = {
-  sessionId: null,
-  sessionIdSource: null,
+  runtimeSessionId: null,
+  runtimeSessionIdSource: null,
 };
 
 function toolCallContextFromParams(params: Record<string, unknown>): GoalBoardMcpToolCallContext {
@@ -2002,8 +1978,8 @@ function toolCallContextFromParams(params: Record<string, unknown>): GoalBoardMc
   for (const key of ["goalboard/sessionId", "threadId", "sessionId"] as const) {
     const value = metadata[key];
     if (typeof value !== "string") continue;
-    const sessionId = value.trim();
-    if (sessionId) return { sessionId, sessionIdSource: key };
+    const runtimeSessionId = value.trim();
+    if (runtimeSessionId) return { runtimeSessionId, runtimeSessionIdSource: key };
   }
   return EMPTY_TOOL_CALL_CONTEXT;
 }
@@ -2014,12 +1990,129 @@ function runtimeContextKey(host: GoalBoardRuntimeContextHost): string {
   return `${context.runtime_id}:${context.stable_work_context_id ?? "no-session"}:${workspace}`;
 }
 
+function sessionSignalsForHost(host: GoalBoardRuntimeContextHost): RuntimeSessionHostSignals {
+  const stableId = host.runtimeContext.stable_work_context_id?.trim() || null;
+  const legacyWorkContextId = host.legacyWorkContextId?.trim()
+    || (host.panelId && stableId === host.panelId ? stableId : null);
+  return {
+    runtime_id: host.runtimeContext.runtime_id,
+    goalboard_session_id: host.goalBoardSessionId?.trim() || null,
+    native_runtime_session_id: host.nativeRuntimeSessionId?.trim()
+      || (legacyWorkContextId ? null : stableId),
+    legacy_work_context_id: legacyWorkContextId,
+    surface_id: host.panelId?.trim() || null,
+    goal_id: host.goalId?.trim() || null,
+    runtime_context: host.runtimeContext,
+    project_suggestion_clues: [...(host.projectSuggestionClues ?? [])],
+  };
+}
+
+type RuntimeSessionLifecycle = {
+  actorId: string;
+  kind: "status" | "artifact" | "approval";
+  label: string;
+};
+
+function runtimeSessionLifecycleEvent(name: string): RuntimeSessionLifecycle | null {
+  switch (name) {
+    case "goalboard_v1_select_goal":
+      return { actorId: "goalboard:select-goal", kind: "status", label: "选择 Goal" };
+    case "goalboard_v1_run_start":
+      return { actorId: "goalboard:run-start", kind: "status", label: "开始执行" };
+    case "goalboard_v1_run_report":
+      return { actorId: "goalboard:run-report", kind: "status", label: "更新执行状态" };
+    case "goalboard_v1_evidence_submit":
+      return { actorId: "goalboard:evidence", kind: "artifact", label: "提交 Evidence" };
+    case "goalboard_v1_review_submit":
+      return { actorId: "goalboard:review", kind: "approval", label: "提交 Review" };
+    case "goalboard_v1_complete":
+      return { actorId: "goalboard:complete", kind: "status", label: "评估 Goal 完成状态" };
+    case "goalboard_v1_revalidate":
+      return { actorId: "goalboard:revalidate", kind: "status", label: "重新验证 Goal" };
+    case "goalboard_v1_rework_request":
+      return { actorId: "goalboard:rework", kind: "status", label: "请求返工" };
+    case "goalboard_v1_release":
+      return { actorId: "goalboard:claim-release", kind: "status", label: "释放 Goal" };
+    default:
+      return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function optionalRecordText(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function lifecycleNestedText(
+  record: Record<string, unknown>,
+  parent: string,
+  key: string,
+): string | null {
+  return optionalRecordText(asRecord(record[parent]), key);
+}
+
+function findLifecycleText(value: unknown, key: string, depth: number = 0): string | null {
+  if (depth > 4 || !value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findLifecycleText(entry, key, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const direct = optionalRecordText(record, key);
+  if (direct) return direct;
+  for (const nested of Object.values(record)) {
+    const found = findLifecycleText(nested, key, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function lifecycleGoalId(
+  arguments_: Record<string, unknown>,
+  result: Record<string, unknown>,
+): string | null {
+  return optionalRecordText(arguments_, "goal_id")
+    ?? optionalRecordText(asRecord(arguments_.payload), "goal_id")
+    ?? findLifecycleText(result, "goal_id");
+}
+
+function lifecycleResultId(result: Record<string, unknown>): string | null {
+  for (const key of ["run_id", "claim_id", "evidence_id", "review_id"]) {
+    const value = findLifecycleText(result, key);
+    if (value) return value;
+  }
+  return null;
+}
+
+function lifecycleState(
+  arguments_: Record<string, unknown>,
+  result: Record<string, unknown>,
+): string {
+  const payload = asRecord(arguments_.payload);
+  const state = optionalRecordText(payload, "state")
+    ?? lifecycleNestedText(result, "run", "state")
+    ?? lifecycleNestedText(result, "goal", "state")
+    ?? optionalRecordText(result, "status");
+  return state ? ` · ${state}` : "";
+}
+
 export class GoalBoardServer {
   audience: GoalBoardMcpAudience;
   runtimeConnection: GoalBoardRuntimeConnection | null;
   runtimeContextHost: GoalBoardRuntimeContextHost | null;
   private runtimeConnectionContextKey: string | null;
   private runtimeConnectionRefreshContextKey: string | null;
+  private readonly sessionFoundationReady: Promise<void>;
+  private sessionFoundationError: string | null;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
@@ -2035,6 +2128,15 @@ export class GoalBoardServer {
     this.runtimeConnectionRefreshContextKey = null;
     this.runtimeContextHost =
       runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
+    this.sessionFoundationError = null;
+    // An explicitly injected Board connection is already fully scoped. Tests
+    // and embedders that omit homeDirectory must not accidentally migrate the
+    // user's global catalog just because they also provide audit metadata.
+    this.sessionFoundationReady = this.runtimeContextHost?.homeDirectory
+      ? this.reconcileSessionFoundation(this.runtimeContextHost).catch((error: unknown) => {
+          this.sessionFoundationError = error instanceof Error ? error.message : String(error);
+        })
+      : Promise.resolve();
   }
 
   async callTool(
@@ -2042,6 +2144,7 @@ export class GoalBoardServer {
     arguments_: Record<string, unknown>,
     callContext: GoalBoardMcpToolCallContext = EMPTY_TOOL_CALL_CONTEXT,
   ): Promise<string> {
+    await this.sessionFoundationReady;
     this.assertToolAllowed(name, arguments_, callContext);
     await this.linkDesktopPanelHostSession(callContext);
     if (name === "goalboard_v1_context_resolve") return this.resolveRuntimeContext(callContext);
@@ -2051,12 +2154,79 @@ export class GoalBoardServer {
     if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_, callContext);
     if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_, callContext);
     if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_, callContext);
-    return this.callV1Tool(
+    const response = this.callV1Tool(
       name,
       arguments_,
       this.audience === "runtime" ? this.runtimeConnection : null,
       callContext,
     );
+    await this.recordRuntimeSessionActivity(name, arguments_, response, callContext);
+    return response;
+  }
+
+  private async recordRuntimeSessionActivity(
+    name: string,
+    arguments_: Record<string, unknown>,
+    response: string,
+    callContext: GoalBoardMcpToolCallContext,
+  ): Promise<void> {
+    const lifecycle = runtimeSessionLifecycleEvent(name);
+    const host = this.runtimeContextHost;
+    if (this.audience !== "runtime" || !lifecycle || !host?.homeDirectory || !this.runtimeConnection) return;
+
+    let result: Record<string, unknown>;
+    try {
+      result = JSON.parse(response) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (name === "goalboard_v1_select_goal" && result.allowed !== true) return;
+
+    const goalId = lifecycleGoalId(arguments_, result);
+    if (!goalId) return;
+    const activeHost = this.requireRuntimeContextHost(callContext);
+    try {
+      const registry = await GoalBoardSessionRegistry.open({ homeDirectory: activeHost.homeDirectory });
+      try {
+        const session = findSessionForHostSignals(registry, sessionSignalsForHost(activeHost));
+        if (!session || session.project_id !== this.runtimeConnection.projectId) return;
+        if (session.current_goal_id !== goalId) {
+          registry.updateAssociations({
+            session_id: session.session_id,
+            current_goal_id: goalId,
+            actor_id: lifecycle.actorId,
+            // A successful Goal lifecycle call is the authoritative operation
+            // that selects or continues this Session's focus. It is not an
+            // inferred workspace-default association.
+            user_confirmed: true,
+          });
+        }
+        const payload = asRecord(arguments_.payload);
+        const idempotencyKey = optionalRecordText(payload, "idempotency_key")
+          ?? optionalRecordText(arguments_, "idempotency_key")
+          ?? lifecycleResultId(result)
+          ?? `${goalId}:${lifecycle.label}`;
+        registry.appendEvent({
+          session_id: session.session_id,
+          source: "goalboard",
+          kind: lifecycle.kind,
+          source_id: `${name}:${idempotencyKey}`,
+          content: `${lifecycle.label}：${goalId}${lifecycleState(arguments_, result)}`,
+          metadata: {
+            tool: name,
+            goal_id: goalId,
+            run_id: optionalRecordText(payload, "run_id") ?? lifecycleNestedText(result, "run", "run_id"),
+            state: optionalRecordText(payload, "state") ?? lifecycleNestedText(result, "run", "state"),
+          },
+        });
+      } finally {
+        registry.close();
+      }
+    } catch (error) {
+      // The Goal mutation has already committed. Preserve that result and make
+      // the secondary Session-index failure visible on the next context read.
+      this.sessionFoundationError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   private assertToolAllowed(
@@ -2134,15 +2304,31 @@ export class GoalBoardServer {
   ): Promise<void> {
     const host = this.runtimeContextHost;
     const panelId = host?.panelId?.trim() || "";
-    const sessionId = callContext.sessionId?.trim() || "";
-    if (!host || !panelId || !sessionId) return;
-    await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
-      catalog.aliasDesktopPanelSession({
+    const runtimeSessionId = callContext.runtimeSessionId?.trim() || "";
+    if (!host || !panelId || !runtimeSessionId) return;
+    await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, async (catalog) => {
+      const panel = catalog.aliasDesktopPanelSession({
         panel_id: panelId,
         runtime_id: host.runtimeContext.runtime_id,
-        host_session_id: sessionId,
+        host_session_id: runtimeSessionId,
         actor_id: `desktop-panel:${panelId}`,
       });
+      const registry = await GoalBoardSessionRegistry.open({ homeDirectory: host.homeDirectory });
+      try {
+        reconcileLegacySessionCatalog(catalog, registry);
+        const unified = registry.findBySurface(panel.panel_id);
+        if (unified && unified.native_runtime_session_id !== runtimeSessionId) {
+          registry.linkNativeRuntimeSession({
+            session_id: unified.session_id,
+            runtime_id: panel.runtime_kind,
+            native_runtime_session_id: runtimeSessionId,
+            actor_id: `desktop-panel:${panelId}`,
+            surface_id: panel.panel_id,
+          });
+        }
+      } finally {
+        registry.close();
+      }
     }).catch((error: unknown) => {
       if (error instanceof GoalBoardProjectCatalogError && error.code === "catalog.panel_not_found") {
         return;
@@ -2160,12 +2346,13 @@ export class GoalBoardServer {
         "MCP 宿主没有提供 Runtime 标识；无法解析 Session 或项目目录关联",
       );
     }
-    if (!callContext.sessionId) return this.runtimeContextHost;
+    if (!callContext.runtimeSessionId) return this.runtimeContextHost;
     return {
       ...this.runtimeContextHost,
+      nativeRuntimeSessionId: callContext.runtimeSessionId,
       runtimeContext: {
         ...this.runtimeContextHost.runtimeContext,
-        stable_work_context_id: callContext.sessionId,
+        stable_work_context_id: callContext.runtimeSessionId,
         host_declares_stable: true,
       },
     };
@@ -2252,7 +2439,7 @@ export class GoalBoardServer {
           ? arguments_.binding_scope
           : undefined,
       });
-      return this.contextResolutionResponse(resolution, host);
+      return this.contextResolutionResponse(resolution, host, true);
     });
   }
 
@@ -2293,7 +2480,7 @@ export class GoalBoardServer {
           : undefined,
         idempotency_key: typeof arguments_.idempotency_key === "string" ? arguments_.idempotency_key : "",
       });
-      return this.contextResolutionResponse(resolution, host);
+      return this.contextResolutionResponse(resolution, host, true);
     });
   }
 
@@ -2318,10 +2505,11 @@ export class GoalBoardServer {
     });
   }
 
-  private contextResolutionResponse(
+  private async contextResolutionResponse(
     resolution: GoalBoardRuntimeContextResolution,
     host: GoalBoardRuntimeContextHost,
-  ): string {
+    reconcileLegacy: boolean = false,
+  ): Promise<string> {
     const webBaseUrl = host.webBaseUrl ?? "http://127.0.0.1:4173";
     let projectUrl: string | null = null;
     if (resolution.connection) {
@@ -2363,12 +2551,64 @@ export class GoalBoardServer {
       this.runtimeConnection = null;
       this.runtimeConnectionContextKey = null;
     }
+    let sessionRegistry: Record<string, unknown>;
+    if (this.sessionFoundationError) {
+      sessionRegistry = { status: "unavailable", message: this.sessionFoundationError, session: null };
+    } else {
+      try {
+        const registry = await GoalBoardSessionRegistry.open({ homeDirectory: host.homeDirectory });
+        try {
+          if (reconcileLegacy) {
+            await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
+              reconcileLegacySessionCatalog(catalog, registry);
+            });
+          }
+          const session = findSessionForHostSignals(registry, sessionSignalsForHost(host));
+          sessionRegistry = {
+            status: "ready",
+            session: session
+              ? {
+                  session_id: session.session_id,
+                  runtime_id: session.runtime_id,
+                  native_runtime_session_id: session.native_runtime_session_id,
+                  surface_id: session.surface_id,
+                  project_id: session.project_id,
+                  current_goal_id: session.current_goal_id,
+                  workspace_id: session.workspace_id,
+                  status: session.status,
+                  provenance: session.provenance,
+                }
+              : null,
+          };
+        } finally {
+          registry.close();
+        }
+      } catch (error) {
+        sessionRegistry = {
+          status: "unavailable",
+          message: error instanceof Error ? error.message : String(error),
+          session: null,
+        };
+      }
+    }
     return JSON.stringify({
       ...resolution,
       connection,
+      session_registry: sessionRegistry,
       project_guidance: projectGuidance,
       runtime_prompt_prefix: projectGuidance?.runtime_prompt_prefix ?? null,
     }, null, 2);
+  }
+
+  private async reconcileSessionFoundation(host: GoalBoardRuntimeContextHost): Promise<void> {
+    const registry = await GoalBoardSessionRegistry.open({ homeDirectory: host.homeDirectory });
+    try {
+      await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, (catalog) => {
+        reconcileLegacySessionCatalog(catalog, registry);
+      });
+    } finally {
+      registry.close();
+    }
   }
 
   private callV1Tool(
@@ -2617,7 +2857,7 @@ export class GoalBoardServer {
               ? this.requireRuntimeContextHost(callContext)
               : null;
             const runtimeId = host?.runtimeContext.runtime_id ?? "embedded-runtime";
-            const workContextId = callContext.sessionId
+            const workContextId = callContext.runtimeSessionId
               ?? host?.runtimeContext.stable_work_context_id
               ?? "session-unavailable";
             const conversationRef = `runtime-dialogue:${runtimeId}:${workContextId}`;
@@ -2626,7 +2866,7 @@ export class GoalBoardServer {
                 runtime_id: runtimeId,
                 runtime_actor_id: runtimeActorId,
                 work_context_id: workContextId,
-                session_id_source: callContext.sessionIdSource,
+                session_id_source: callContext.runtimeSessionIdSource,
                 confirmation_summary: confirmationSummary,
                 proposal_id: String(arguments_.proposal_id),
                 whole_confirmation_prompted: arguments_.whole_confirmation_prompted === true,

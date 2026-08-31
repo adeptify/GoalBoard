@@ -104,6 +104,8 @@ GoalBoard 已完成第一版 Feed Workbench：Inbox/Feed 下钻后，左侧是 I
 ### 当前 Work Item：信息流工作台内部完整验收
 
 - 以真实项目数据复核 Goal、Inbox、Feed、来源与连接四类目录；验收 1440×900 深色、1180×760 浅色和 720×820 窄宽，检查列表行基线、筛选、详情层级、键盘焦点、动作换行、Modal 滚动和横向溢出。
+- Inbox 与 Feed 共用同一套紧凑筛选栏：搜索框和筛选图标只占一行；来源、状态与排序在点击后出现的目录内浮层中选择，不再把三个原生下拉框常驻铺开。浮层沿用 Goal Tree 的筛选交互，可点击外部或按 Escape 关闭，显示非默认筛选数量，并分别保留 Inbox / Feed 的筛选状态。
+- Goal Tree 的紧凑模式状态只显示一层标签，不得因外层目录状态容器与内层状态标签的级联规则同时绘制边框而出现重影；目录收起后，展开按钮必须位于 macOS traffic lights 安全区右侧，工作标签不得与左侧原生窗口控件或展开按钮重叠。
 - 对 Inbox 与 Feed 分别复现“Item → 保存/开始处理 → Draft Goal + input binding”；Web 进程重启后再次处理必须复用同一 Goal、同一 binding 和原 Material，不新增孤立 Goal。
 - 真实项目只执行只读来源同步和视觉检查，不向 GitHub、Gmail 或内容提供方写回；同步失败必须保留旧 Item，并显示可安全重试的反馈。
 - Relay 独立性以删除隔离测试中的 Relay DB、SecretStore 和 evidence 目录后仍能读取迁入凭据、Source、Item、Material 正文为准；生产代码与 lockfile 不得包含 Relay 仓库绝对路径。
@@ -142,7 +144,7 @@ GoalBoard 已完成第一版 Feed Workbench：Inbox/Feed 下钻后，左侧是 I
 
 ## 验收标准
 
-1. 原 Feed Workbench 的 Inbox/Feed 下钻、筛选排序、详情、保存、Promote、Start/TUI 和 Goal 决定表单回归通过；两个入口严格按 Item 类型隔离，Feed 已读状态在列表/详情一致且刷新、来源同步后仍保留。
+1. 原 Feed Workbench 的 Inbox/Feed 下钻、筛选排序、详情、保存、Promote、Start/TUI 和 Goal 决定表单回归通过；两个入口严格按 Item 类型隔离，Feed 已读状态在列表/详情一致且刷新、来源同步后仍保留。Inbox / Feed 的搜索与筛选入口在一行内完成，来源、状态、排序仍全部可达，非默认筛选可见且能一键清除。
 2. GoalBoard 可本地注册、暂停、恢复目录 RSS、web query、YouTube channel、自定义 RSS；注册 0 网络，规范化去重。
 3. 公开 Source 同步走 GoalBoard vendored exact runtime；完整/部分/空/失败/中断状态诚实，重复 idempotency key 不再访问 Provider。
 4. GitHub live adapter 支持 Token 与 Device Flow；Gmail 支持 OAuth PKCE、refresh、正常增量同步和显式 stale-cursor rebuild；失败不推进 cursor。
@@ -151,7 +153,7 @@ GoalBoard 已完成第一版 Feed Workbench：Inbox/Feed 下钻后，左侧是 I
 7. Evidence 正文写入 GoalBoard-owned 加密内容寻址 blob，Item detail/TUI 能读取；缺失时降级 preview。
 8. Relay 迁移导入 Source/Run/Cursor/Item/Material；可用时迁移凭据和被引用正文；重复迁移不覆盖 GoalBoard disposition/linked Goal，不产生重复。
 9. 将 Relay 路径临时改名/设为不存在后，GoalBoard 的列表、正文、来源管理、已迁凭据状态和 mocked-provider contract sync 仍工作，代码与 lockfile 中没有绝对 Relay 路径。
-10. 1440×900、1180×760、720×820 下来源管理与 Feed 列表/详情可用，无横向溢出；Light/Dark 可读。
+10. 1440×900、1180×760、720×820 下来源管理与 Feed 列表/详情可用，无横向溢出；Light/Dark 可读。紧凑 Goal Tree 状态标签无双层边框，macOS 原生窗口在目录收起后仍保留 traffic-light 安全区。
 11. migration、schema downgrade、revision conflict、paused sync、network/auth/provider/stale cursor、interrupted recovery、secret/content corruption 有定向测试。
 12. `pnpm typecheck`、定向测试、`pnpm build`、`pnpm test` 通过；真实账号/OAuth/网络同步若未运行，必须列为人工门禁，不能宣称已验证。
 

@@ -8607,12 +8607,12 @@ test("a native Goal Tree proposal supersedes a pending legacy Contract Proposal 
   }
 });
 
-test("migration 28 adds persisted legacy Proposal supersession handles", () => {
+test("migrations 28 and 29 recover the pre-0.1.12 marker collision without losing either schema", () => {
   const { store } = fixture();
   store.db.exec(`
     DROP INDEX goal_tree_proposals_supersedes_legacy_idx;
     ALTER TABLE goal_tree_proposals DROP COLUMN supersedes_legacy_proposal_id;
-    DELETE FROM schema_migrations WHERE migration_id = 28;
+    DELETE FROM schema_migrations WHERE migration_id = 29;
   `);
   const databasePath = store.path;
   store.close();
@@ -8621,6 +8621,10 @@ test("migration 28 adds persisted legacy Proposal supersession handles", () => {
   const columns = migrated.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
   assert.ok(columns.some((column) => column.name === "supersedes_legacy_proposal_id"));
   assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 28").get());
+  assert.ok(migrated.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 29").get());
+  assert.ok((migrated.db.pragma("table_info(feed_sources)") as Array<{ name: string }>).some(
+    (column) => column.name === "schedule_json",
+  ));
   migrated.close();
 });
 
@@ -9867,20 +9871,23 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     },
     { actor_id: "user-1", idempotency_key: "revalidation-add-dependency" },
   );
+  const revalidationRisk = {
+    risk_id: "revalidation-risk",
+    goal_ids: ["revalidation-target"],
+    description: "迁移证据仍不完整",
+    probability: "medium" as const,
+    impact: "恢复 valid 后执行依据可能错误",
+    affected_surfaces: ["migration"],
+    trigger: "迁移检查缺少记录",
+    treatment: "mitigate" as const,
+    treatment_plan: "补齐迁移证据并重新核对",
+    blocking_mode: "completion" as const,
+    revisit_condition: "补齐迁移检查并关闭风险",
+    owner: "runtime-revalidator",
+  };
   coordinator.addRisk(
     "board-1",
-    {
-      risk_id: "revalidation-risk",
-      goal_ids: ["revalidation-target"],
-      description: "迁移证据仍不完整",
-      probability: "medium",
-      impact: "恢复 valid 后执行依据可能错误",
-      trigger: "迁移检查缺少记录",
-      treatment: "mitigate",
-      blocking_mode: "completion",
-      revisit_condition: "补齐迁移检查并关闭风险",
-      owner: "runtime-revalidator",
-    },
+    revalidationRisk,
     { actor_id: "user-1", idempotency_key: "revalidation-add-risk" },
   );
 
@@ -9928,20 +9935,72 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   store.db
     .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
     .run("revalidation-dependency");
-  coordinator.setRiskState(
-    "board-1",
-    {
-      risk_id: "revalidation-risk",
-      state: "resolved",
-      reason: "迁移证据已经补齐",
-      resolution_basis: {
-        summary: "迁移证据已补齐并通过复核。",
-        evidence_refs: ["evidence://migration-complete"],
-        residual_gaps: [],
+  const riskProposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-revalidator",
+    discovered_in_run_id: run.run_id,
+    summary: "重新验证已补齐迁移证据，提交同一 Goal 的 Risk 解除结果等待用户确认。",
+    items: [goalTreeProposalItem({
+      item_id: "revalidation-risk-resolve",
+      kind: "risk",
+      operation: "update",
+      payload: {
+        ...revalidationRisk,
+        state: "resolved",
+        resolution_basis: {
+          summary: "迁移证据已补齐并通过复核。",
+          evidence_refs: ["evidence://migration-complete"],
+          residual_gaps: [],
+        },
       },
-    },
-    { actor_id: "user-1", idempotency_key: "revalidation-resolve-risk" },
+      object_type: "risk",
+      object_id: "revalidation-risk",
+      source_refs: ["evidence://migration-complete"],
+    })],
+    idempotency_key: "revalidation-risk-proposal",
+  }).proposal;
+  assert.throws(
+    () => coordinator.submitGoalTreeProposal({
+      board_id: "board-1",
+      actor_id: "runtime-revalidator",
+      discovered_in_run_id: run.run_id,
+      summary: "revalidator 不得借机创建其他 Goal。",
+      items: [goalTreeProposalItem({
+        item_id: "revalidation-illegal-goal",
+        kind: "goal",
+        operation: "create",
+        payload: treeGoalPayload({
+          goal_id: "revalidation-illegal-goal",
+          title: "不应由 revalidator 创建的 Goal",
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+        }),
+        object_type: "goal",
+        object_id: "revalidation-illegal-goal",
+      })],
+      idempotency_key: "revalidation-illegal-goal-proposal",
+    }),
+    (error: unknown) =>
+      error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.revalidator_scope_invalid",
   );
+  coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: riskProposal.proposal_id,
+    runtime_actor_id: "runtime-revalidator",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://revalidation-risk",
+      message_ref: "message://revalidation-risk-confirm",
+    },
+    decisions: [{
+      item_id: "revalidation-risk-resolve",
+      decision: "confirm",
+      reason: "确认迁移证据已通过，Risk 可以解除。",
+    }],
+    idempotency_key: "revalidation-risk-decide",
+  });
 
   const server = new GoalBoardServer("runtime", {
     databasePath: store.path,

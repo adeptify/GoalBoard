@@ -94,6 +94,7 @@ export function desktopLaunchSpec(input: {
 export function desktopPanelEnv(input: {
   homeDirectory: string;
   runtimeId: string;
+  sessionId?: string | null;
   panelId: string;
   workContextId: string;
   goalId: string;
@@ -104,6 +105,10 @@ export function desktopPanelEnv(input: {
     GOALBOARD_HOME: input.homeDirectory,
     GOALBOARD_MCP_AUDIENCE: "runtime",
     GOALBOARD_RUNTIME_ID: input.runtimeId,
+    ...(input.sessionId?.trim() ? { GOALBOARD_SESSION_ID: input.sessionId.trim() } : {}),
+    // Compatibility-only identities remain available until every Runtime has
+    // moved to GOALBOARD_SESSION_ID. Consumers must parse them through the
+    // Session compatibility adapter.
     GOALBOARD_WORK_CONTEXT_ID: input.workContextId,
     GOALBOARD_WORK_CONTEXT_STABLE: "true",
     GOALBOARD_PANEL_ID: input.panelId,
