@@ -22,9 +22,14 @@ import { createIntelligenceCollectAdapter, type IntelligenceCollectAdapter } fro
 import { listFeedUrls } from "./catalog.js";
 import { isYouTubePublicFeedUrl } from "./youtube.js";
 import { isCustomRssFeedUrl, isDisallowedResolvedAddress } from "./custom-rss.js";
+import {
+  extractRssDocumentMetadata,
+  readRssHttpState,
+  type RssFetchReceipt,
+} from "./rss-http.js";
 
 const APP_ID = "goalboard";
-const APP_VERSION = "0.1.6";
+const APP_VERSION = "0.1.12";
 const MAX_FEED_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 2;
 
@@ -33,6 +38,7 @@ type FetchPort = (input: string | URL, init?: RequestInit) => Promise<Response>;
 export interface FeedSourceRuntime {
   intelligenceCollect: IntelligenceCollectAdapter;
   content: FeedEvidenceContentStore;
+  publicFeedReceipt?(): RssFetchReceipt | null;
   shutdown(): Promise<void>;
 }
 
@@ -56,16 +62,24 @@ export function createFeedSourceRuntime(options: {
   fetch?: FetchPort;
   secretStore?: SecretStore;
   content?: FeedEvidenceContentStore;
+  sourceCursor?: unknown;
 }): FeedSourceRuntime {
   const secretStore = options.secretStore ?? createFileSecretStore();
   const content = options.content ?? createFeedEvidenceContentStore({ secretStore });
   const hostContent = createEncryptedContentPort(content);
+  const httpState = readRssHttpState(options.sourceCursor);
+  let publicFeedReceipt: RssFetchReceipt | null = null;
   const rssHost = createPortBackedNodeSearchHost({
     appId: APP_ID,
     transport: createAllowlistedRssTransport(
       listFeedUrls(),
       options.fetch ?? globalThis.fetch,
-      { allowYouTubePublicFeeds: true, allowCustomPublicFeeds: true },
+      {
+        allowYouTubePublicFeeds: true,
+        allowCustomPublicFeeds: true,
+        conditional: { etag: httpState.etag, lastModified: httpState.last_modified },
+        onReceipt(receipt) { publicFeedReceipt = receipt; },
+      },
     ),
     content: hostContent,
   });
@@ -85,6 +99,7 @@ export function createFeedSourceRuntime(options: {
   return {
     intelligenceCollect,
     content,
+    publicFeedReceipt() { return publicFeedReceipt; },
     async shutdown() {
       const results = await Promise.allSettled([
         intelligenceCollect.shutdown(),
@@ -136,6 +151,8 @@ export function createAllowlistedRssTransport(
     allowYouTubePublicFeeds?: boolean;
     allowCustomPublicFeeds?: boolean;
     lookup?: (hostname: string) => Promise<readonly string[]>;
+    conditional?: { etag?: string; lastModified?: string };
+    onReceipt?: (receipt: RssFetchReceipt) => void;
   } = {},
 ): SearchHostTransportPort {
   const allowedUrls = new Set(feedUrls.map(normalizeFeedUrl));
@@ -165,14 +182,17 @@ export function createAllowlistedRssTransport(
       if (customPublicFeed) await assertResolvedHostIsPublic(initialHost, lookupHost);
 
       for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
+        const headers: Record<string, string> = {
+          Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9",
+          "User-Agent": `GoalBoard/${APP_VERSION} (+local feed ingest)`,
+        };
+        if (options.conditional?.etag) headers["If-None-Match"] = options.conditional.etag;
+        if (options.conditional?.lastModified) headers["If-Modified-Since"] = options.conditional.lastModified;
         const response = await fetchPort(current, {
           method: "GET",
           redirect: "manual",
           signal: call.signal,
-          headers: {
-            Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9",
-            "User-Agent": `GoalBoard/${APP_VERSION} (+local feed ingest)`,
-          },
+          headers,
         });
         if (isRedirect(response.status)) {
           const location = response.headers.get("location");
@@ -188,6 +208,19 @@ export function createAllowlistedRssTransport(
           current = next;
           continue;
         }
+        if (response.status === 304) {
+          options.onReceipt?.({
+            status: 304,
+            not_modified: true,
+            final_url: current,
+            ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : {}),
+            ...(response.headers.get("last-modified") ? { last_modified: response.headers.get("last-modified")! } : {}),
+          });
+          return {
+            status: 200,
+            body: { body: "<rss version=\"2.0\"><channel><title>Not modified</title><link>https://example.invalid/</link></channel></rss>" },
+          };
+        }
         if (!response.ok) return { status: response.status, body: "" };
         const bodyText = await readBoundedResponse(response, MAX_FEED_BYTES);
         const classification = classifyFeedBody(bodyText, response.headers.get("content-type"));
@@ -200,6 +233,14 @@ export function createAllowlistedRssTransport(
             safeContext: { providerId: "rss" },
           });
         }
+        options.onReceipt?.({
+          status: response.status,
+          not_modified: false,
+          final_url: current,
+          ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : {}),
+          ...(response.headers.get("last-modified") ? { last_modified: response.headers.get("last-modified")! } : {}),
+          ...extractRssDocumentMetadata(bodyText, current),
+        });
         return { status: response.status, body: { body: bodyText } };
       }
       return { status: 508, body: "" };

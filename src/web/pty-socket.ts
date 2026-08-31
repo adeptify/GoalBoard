@@ -12,6 +12,11 @@ type ClientMessage =
   | { type: "resize"; panelId: string; cols: number; rows: number }
   | { type: "kill"; panelId: string };
 
+export interface GoalBoardPtySocketHandlers {
+  onData?: (panelId: string, sessionId: string, data: string) => void;
+  onExit?: (panelId: string, sessionId: string, exit: { exitCode: number; signal: number }) => void;
+}
+
 function localHostname(hostname: string): boolean {
   return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
 }
@@ -58,13 +63,22 @@ function rejectUpgrade(socket: Duplex): void {
   socket.destroy();
 }
 
-export function attachGoalBoardPtySocket(server: http.Server, controlToken: string): GoalBoardPtyHost {
+export function attachGoalBoardPtySocket(
+  server: http.Server,
+  controlToken: string,
+  handlers: GoalBoardPtySocketHandlers = {},
+): GoalBoardPtyHost {
   const sockets = new Set<WebSocket>();
+  const panelSessionIds = new Map<string, string>();
   const host = new GoalBoardPtyHost({
     onData: (panelId, data) => {
+      const sessionId = panelSessionIds.get(panelId);
+      if (sessionId) handlers.onData?.(panelId, sessionId, data);
       for (const socket of sockets) send(socket, { type: "data", panelId, data });
     },
     onExit: (panelId, exit) => {
+      const sessionId = panelSessionIds.get(panelId);
+      if (sessionId) handlers.onExit?.(panelId, sessionId, exit);
       for (const socket of sockets) {
         send(socket, { type: "exit", panelId, exitCode: exit.exitCode, signal: exit.signal });
       }
@@ -125,6 +139,8 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
           if (!message.panelId) throw new Error("缺少面板标识");
           if (!message.attachOnly && !message.command?.trim()) throw new Error("缺少启动命令");
           try {
+            const sessionId = typeof message.sessionId === "string" ? message.sessionId.trim() : "";
+            if (sessionId) panelSessionIds.set(message.panelId, sessionId);
             const result = host.spawn(message);
             send(ws, {
               type: "spawned",
@@ -160,6 +176,7 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
         }
         if (message.type === "kill") {
           host.kill(message.panelId);
+          panelSessionIds.delete(message.panelId);
         }
       } catch (error) {
         send(ws, {
@@ -173,6 +190,9 @@ export function attachGoalBoardPtySocket(server: http.Server, controlToken: stri
     });
   });
 
-  server.on("close", () => host.killAll());
+  server.on("close", () => {
+    host.killAll();
+    panelSessionIds.clear();
+  });
   return host;
 }

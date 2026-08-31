@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { GoalBoardCoordinator, SqliteGoalBoardStore } from "../src/index.js";
 import { GoalBoardServer, runtimeContextHostFromEnvironment } from "../src/mcp/server.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
+import { GoalBoardSessionRegistry } from "../src/sessions/registry.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,7 +87,7 @@ describe("mcp server", () => {
     assert.match(goalTreeProposeTool?.description ?? "", /不存在 state=mitigated/);
     assert.match(goalTreeProposeTool?.description ?? "", /改变已有 Risk 生命周期本身是一条正式 Goal/);
     assert.match(goalTreeProposeTool?.description ?? "", /不能只改 Risk 后留下空 Draft/);
-    assert.match(goalTreeProposeTool?.description ?? "", /active executor Run.*仅含 Risk 生命周期变更/s);
+    assert.match(goalTreeProposeTool?.description ?? "", /active executor 或 revalidator Run.*仅含 Risk 生命周期变更/s);
     assert.match(goalTreeProposeTool?.description ?? "", /包含 5 项及以上变化时/);
     const proposalNarrativeSchema = goalTreeProposeTool?.inputSchema.properties?.narrative as {
       required?: string[];
@@ -465,6 +466,26 @@ describe("mcp server", () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  it("keeps GoalBoard Session, native Runtime Session, surface, Goal and legacy work context separate", () => {
+    const host = runtimeContextHostFromEnvironment({
+      GOALBOARD_RUNTIME_ID: "codex",
+      GOALBOARD_SESSION_ID: "session-goalboard",
+      CODEX_THREAD_ID: "thread-native",
+      GOALBOARD_PANEL_ID: "panel-surface",
+      GOALBOARD_GOAL_ID: "goal-current",
+      GOALBOARD_WORK_CONTEXT_ID: "legacy-work-context",
+      GOALBOARD_WORK_CONTEXT_STABLE: "true",
+      PWD: "/tmp/goalboard-session-identities",
+    }, "/tmp/goalboard-session-identities");
+    assert.ok(host);
+    assert.equal(host.goalBoardSessionId, "session-goalboard");
+    assert.equal(host.nativeRuntimeSessionId, "thread-native");
+    assert.equal(host.panelId, "panel-surface");
+    assert.equal(host.goalId, "goal-current");
+    assert.equal(host.legacyWorkContextId, "legacy-work-context");
+    assert.equal(host.runtimeContext.stable_work_context_id, "legacy-work-context");
   });
 
   it("exposes one dynamic optional lease contract on every Runtime claim entry", async () => {
@@ -2441,6 +2462,15 @@ describe("mcp server", () => {
         };
         project_guidance: { entries: unknown[]; runtime_prompt_prefix: string };
         runtime_prompt_prefix: string;
+        session_registry: {
+          status: string;
+          session: {
+            session_id: string;
+            runtime_id: string;
+            native_runtime_session_id: string | null;
+            project_id: string | null;
+          } | null;
+        };
       };
       assert.equal(bound.status, "bound");
       assert.equal(bound.connection.project_id, first.project_id);
@@ -2454,6 +2484,12 @@ describe("mcp server", () => {
       assert.equal(runtime.runtimeConnection?.projectId, first.project_id);
       assert.deepEqual(bound.project_guidance.entries, []);
       assert.equal(bound.runtime_prompt_prefix, bound.project_guidance.runtime_prompt_prefix);
+      assert.equal(bound.session_registry.status, "ready");
+      assert.ok(bound.session_registry.session);
+      assert.match(bound.session_registry.session.session_id, /^session-/);
+      assert.equal(bound.session_registry.session.runtime_id, "codex");
+      assert.equal(bound.session_registry.session.native_runtime_session_id, "host-work-entry-42");
+      assert.equal(bound.session_registry.session.project_id, first.project_id);
 
       const unconfirmedGuidance = await call(runtime, "goalboard_v1_project_guidance_add", {
         board_id: first.board_id,
@@ -2523,6 +2559,40 @@ describe("mcp server", () => {
         contract.goal_url,
         `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}/goals/project%20scoped%20goal`,
       );
+
+      const selectedResponse = await call(runtime, "goalboard_v1_select_goal", {
+        board_id: first.board_id,
+        goal_id: "project scoped goal",
+        actor_id: "runtime-codex",
+        goal_mode_attestation: true,
+        idempotency_key: "context-select-project-goal",
+      });
+      assert.equal(selectedResponse.result.isError, false, selectedResponse.result.content[0]?.text);
+      const replayedSelection = await call(runtime, "goalboard_v1_select_goal", {
+        board_id: first.board_id,
+        goal_id: "project scoped goal",
+        actor_id: "runtime-codex",
+        goal_mode_attestation: true,
+        idempotency_key: "context-select-project-goal",
+      });
+      assert.equal(replayedSelection.result.isError, false, replayedSelection.result.content[0]?.text);
+      const sessionRegistry = await GoalBoardSessionRegistry.open({ homeDirectory: home });
+      try {
+        const session = sessionRegistry.findByNativeRuntimeSession("codex", "host-work-entry-42");
+        assert.ok(session);
+        assert.equal(session.current_goal_id, "project scoped goal");
+        assert.deepEqual(
+          sessionRegistry.goalHistory(session.session_id).map((link) => [link.goal_id, link.relation]),
+          [["project scoped goal", "current"]],
+        );
+        const lifecycleEvents = sessionRegistry.events(session.session_id);
+        assert.equal(lifecycleEvents.length, 1);
+        assert.equal(lifecycleEvents[0]?.source, "goalboard");
+        assert.equal(lifecycleEvents[0]?.kind, "status");
+        assert.match(lifecycleEvents[0]?.content ?? "", /选择 Goal：project scoped goal/);
+      } finally {
+        sessionRegistry.close();
+      }
 
       const firstSnapshot = await call(runtime, "goalboard_v1_snapshot", { board_id: first.board_id });
       assert.equal(firstSnapshot.result.isError, false, firstSnapshot.result.content[0]?.text);
@@ -2613,7 +2683,7 @@ describe("mcp server", () => {
     }
   });
 
-  it("asks again for workspace history until default is explicit, then keeps Session overrides local", async () => {
+  it("always asks again from workspace history and keeps Session overrides local", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-workspace-routing-"));
     const home = path.join(directory, "home", ".goalboard");
     const workspace = path.join(directory, "ordinary-workspace");
@@ -2664,10 +2734,16 @@ describe("mcp server", () => {
         user_confirmed: true,
         binding_scope: "workspace_default",
       });
-      assert.equal(explicitDefault.result.isError, false, explicitDefault.result.content[0]?.text);
+      assert.equal(explicitDefault.result.isError, true);
+      assert.match(explicitDefault.result.content[0]?.text ?? "", /不再保存默认项目/);
       const afterDefaultRestart = new GoalBoardServer("runtime", null, host);
       const restored = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {});
-      assert.match(restored.result.content[0]?.text ?? "", new RegExp(first.project_id));
+      const restoredPayload = JSON.parse(restored.result.content[0]?.text ?? "{}") as {
+        status: string;
+        suggested_projects: Array<{ project_id: string }>;
+      };
+      assert.equal(restoredPayload.status, "suggested");
+      assert.deepEqual(restoredPayload.suggested_projects.map((project) => project.project_id), [first.project_id]);
 
       const sessionA = { threadId: "codex-thread-a" };
       const sessionB = { threadId: "codex-thread-b" };
@@ -2681,7 +2757,12 @@ describe("mcp server", () => {
       assert.match(override.result.content[0]?.text ?? "", new RegExp(second.project_id));
 
       const otherSession = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {}, sessionB);
-      assert.match(otherSession.result.content[0]?.text ?? "", new RegExp(first.project_id));
+      const otherPayload = JSON.parse(otherSession.result.content[0]?.text ?? "{}") as {
+        status: string;
+        suggested_projects: Array<{ project_id: string }>;
+      };
+      assert.equal(otherPayload.status, "suggested");
+      assert.deepEqual(otherPayload.suggested_projects.map((project) => project.project_id), [second.project_id, first.project_id]);
       const restoredOverride = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {}, sessionA);
       assert.match(restoredOverride.result.content[0]?.text ?? "", new RegExp(second.project_id));
     } finally {
@@ -3662,9 +3743,11 @@ describe("mcp server", () => {
       const payload = JSON.parse(resolved.result.content[0]?.text ?? "{}") as {
         status: string;
         connection?: { project_id: string };
+        session_registry: { session: { session_id: string } | null };
       };
       assert.equal(payload.status, "bound");
       assert.equal(payload.connection?.project_id, project.project_id);
+      assert.ok(payload.session_registry.session);
       catalog.close();
       const reopened = await GoalBoardProjectCatalog.open({ homeDirectory: home });
       try {
@@ -3682,6 +3765,16 @@ describe("mcp server", () => {
         );
       } finally {
         reopened.close();
+      }
+      const registry = await GoalBoardSessionRegistry.open({ homeDirectory: home });
+      try {
+        const unified = registry.findBySurface(panel.panel_id);
+        assert.ok(unified);
+        assert.equal(unified.session_id, payload.session_registry.session?.session_id);
+        assert.equal(unified.native_runtime_session_id, "live-codex-thread");
+        assert.equal(unified.project_id, project.project_id);
+      } finally {
+        registry.close();
       }
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

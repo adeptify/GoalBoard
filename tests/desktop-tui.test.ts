@@ -7,6 +7,7 @@ import test from "node:test";
 import { WebSocket, type RawData } from "ws";
 import { desktopAdvancePrompt } from "../src/desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv } from "../src/desktop/launch.js";
+import { FeedStore } from "../src/feed/store.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
@@ -213,6 +214,14 @@ function addProjectFeedItem(
       external_id: inbox ? "external-inbox-test" : "external-test",
       now,
     });
+    if (inbox) {
+      new FeedStore(store.db).ensureInboxEntryForFeedItem(
+        project.board_id,
+        itemId,
+        "source_rule",
+        { rule_id: "desktop-tui-fixture" },
+      );
+    }
     store.db.prepare(`
       INSERT INTO feed_materials (
         board_id, material_id, item_id, canonical_url, title, source_name,
@@ -311,7 +320,7 @@ async function catalogFixture() {
       project_id: created.project_id,
       actor_id: "test-user",
       user_confirmed: true,
-      binding_scope: "workspace_default",
+      binding_scope: "session",
     });
     const project = catalog.getProject(created.project_id);
     return { homeDirectory, project };
@@ -398,6 +407,7 @@ test("launch recipes resume Codex, Claude, OpenCode, Pi Agent, and Grok Build", 
   const env = desktopPanelEnv({
     homeDirectory: "/tmp/goalboard-home",
     runtimeId: "opencode",
+    sessionId: "session-1",
     panelId: "panel-1",
     workContextId: "panel-1",
     goalId: "LEAF-1",
@@ -406,6 +416,7 @@ test("launch recipes resume Codex, Claude, OpenCode, Pi Agent, and Grok Build", 
   assert.equal(env.GOALBOARD_PANEL_ID, "panel-1");
   assert.equal(env.GOALBOARD_WORK_CONTEXT_ID, "panel-1");
   assert.equal(env.GOALBOARD_RUNTIME_ID, "opencode");
+  assert.equal(env.GOALBOARD_SESSION_ID, "session-1");
   assert.equal(env.GOALBOARD_WEB_URL, "http://127.0.0.1:4173");
   assert.equal(
     desktopPanelEnv({
@@ -533,7 +544,11 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.match(desktopDecisions, /class="desktop-module-item desktop-module-item--inbox is-current"[^>]*data-directory-open="feed"[^>]*data-feed-preset="inbox_message"/);
     assert.match(desktopDecisions, /class="desktop-directory-panel feed-directory"[^>]*data-directory-panel="feed"/);
     assert.match(desktopDecisions, /class="desktop-work-surface feed-workbench"[^>]*data-work-surface="feed"/);
-    assert.match(desktopDecisions, /data-feed-type-filter|data-feed-source-filter|data-feed-status-filter|data-feed-sort/);
+    assert.match(desktopDecisions, /class="feed-directory-toolbar"/);
+    assert.match(desktopDecisions, /data-feed-filter-trigger[^>]*aria-controls="feed-filter-panel"/);
+    assert.match(desktopDecisions, /data-feed-filter-option="source"[^>]*data-feed-filter-value="all"/);
+    assert.match(desktopDecisions, /data-feed-filter-option="status"[^>]*data-feed-filter-value="active"/);
+    assert.match(desktopDecisions, /data-feed-filter-option="sort"[^>]*data-feed-filter-value="newest"/);
     assert.match(desktopDecisions, /Inbox Message · Goal 决定/);
     assert.match(browser, /data-mobile-target="tui"/);
     assert.match(browser, /aria-controls="goal-tui-pane"/);
@@ -591,13 +606,16 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.doesNotMatch(desktop, /data-directory-panel="inbox"/);
     assert.match(desktop, /data-directory-panel="goals" hidden/);
     assert.match(desktop, /data-directory-panel="feed"[^>]*hidden/);
+    assert.match(desktop, /data-directory-panel="sources"[^>]*data-source-directory hidden/);
     assert.match(desktop, /data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"[\s\S]*<strong>Inbox<\/strong>/);
     assert.match(desktop, /data-directory-open="goals" data-work-surface-open="goal"[\s\S]*<strong>Goals<\/strong>/);
     assert.match(desktop, /data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed"[\s\S]*<strong>Feed<\/strong>/);
+    assert.match(desktop, /data-directory-open="sources" data-work-surface-open="sources"[\s\S]*<strong>来源<\/strong>/);
     assert.match(desktop, /data-work-surface-open="promotion"[\s\S]*<strong>Promotion<\/strong>/);
     assert.match(desktop, /data-work-surface-open="visual"[\s\S]*可视化工作区/);
     assert.match(desktop, /data-work-surface="goal" data-work-surface-label="Goal Tree"/);
     assert.match(desktop, /data-work-surface="feed" data-work-surface-label="Inbox"[^>]*hidden/);
+    assert.match(desktop, /data-work-surface="sources" data-work-surface-label="来源"[^>]*data-source-workbench hidden/);
     assert.match(desktop, /data-work-surface="promotion" data-work-surface-label="Promotion" hidden/);
     assert.match(desktop, /data-work-surface="visual" data-work-surface-label="可视化工作区" hidden/);
     assert.doesNotMatch(desktop, /data-directory-panel="promotion"|data-directory-panel="visual"/);
@@ -663,14 +681,14 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
 
     const index = await webFetch(`${origin}/`);
     const indexHtml = await index.text();
-    assert.match(indexHtml, /打开项目后，Goal 详情右侧会出现终端栏/);
+    assert.match(indexHtml, /每个项目管理自己的 Goals、Sessions 和工作目录/);
     assert.match(indexHtml, new RegExp(`href="${prefix}"`));
     assert.doesNotMatch(indexHtml, /class="tui-pane"|pty-client\.js/);
 
     const desktopIndex = await webFetch(`${origin}/?desktop=1`);
     assert.equal(desktopIndex.headers.get("set-cookie"), null);
     const desktopIndexHtml = await desktopIndex.text();
-    assert.match(desktopIndexHtml, /打开项目后，Goal 详情右侧会出现终端栏/);
+    assert.match(desktopIndexHtml, /每个项目管理自己的 Goals、Sessions 和工作目录/);
     assert.match(desktopIndexHtml, new RegExp(`href="${prefix}\\?desktop=1"`));
 
     const cookieResponse = await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
@@ -718,6 +736,7 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.equal(payload.spawn.env.GOALBOARD_GOAL_ID, "TUI-GOAL");
     assert.equal(payload.spawn.env.GOALBOARD_PANEL_ID, payload.panel.panel_id);
     assert.equal(payload.spawn.env.GOALBOARD_WORK_CONTEXT_ID, payload.panel.work_context_id);
+    assert.match(payload.spawn.env.GOALBOARD_SESSION_ID ?? "", /^session-/);
     assert.equal(payload.spawn.env.GOALBOARD_WEB_URL, origin);
     assert.equal(payload.spawn.cwd, realpathSync.native(fixture.homeDirectory));
 
@@ -937,11 +956,14 @@ test("Feed Item actions create one bound Goal and expose its source context to T
     assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.text();
     assert.match(detail, /Relay 来源资料/);
-    assert.match(detail, /data-feed-action="start"[^>]*data-feed-revision="1"/);
+    assert.match(detail, /data-feed-action="inbox"[^>]*data-feed-revision="1"/);
     assert.match(detail, /data-feed-action="promote"[^>]*data-feed-revision="1"/);
     assert.match(detail, /data-feed-action="save"/);
+    assert.match(detail, /data-feed-action="archive"/);
+    assert.doesNotMatch(detail, /data-feed-action="start"/);
     assert.match(page, /data-feed-entry-id="feed-item-test"[^>]*data-feed-entry-read="unread"/);
-    assert.doesNotMatch(page, /data-feed-type-filter/);
+    assert.match(page, /data-feed-type-filter/);
+    assert.match(page, /data-feed-time-filter/);
 
     const read = await webFetch(`${origin}${prefix}/api/feed/items/feed-item-test/read`, {
       method: "POST",
@@ -952,6 +974,19 @@ test("Feed Item actions create one bound Goal and expose its source context to T
     const readBody = await read.json() as { item: { read_at: string | null; revision: number } };
     assert.ok(readBody.item.read_at);
     assert.equal(readBody.item.revision, 1);
+
+    const addInbox = async () => webFetch(`${origin}${prefix}/api/feed/items/feed-item-test/inbox`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_revision: 1 }),
+    });
+    const added = await addInbox();
+    assert.equal(added.status, 200);
+    const addedAgain = await addInbox();
+    assert.equal(addedAgain.status, 200);
+    const pageAfterInbox = await (await webFetch(`${origin}${prefix}`)).text();
+    assert.match(pageAfterInbox, /data-feed-entry-id="feed-item-test"[^>]*data-feed-entry-type="feed"/);
+    assert.match(pageAfterInbox, /data-feed-entry-id="inbox:[^"]+"[^>]*data-feed-item-id="feed-item-test"[^>]*data-inbox-entry-id="[^"]+"[^>]*data-feed-entry-type="inbox_message"/);
 
     const missingRevision = await webFetch(`${origin}${prefix}/api/feed/items/feed-item-test/start`, {
       method: "POST",
@@ -1160,7 +1195,38 @@ test("Inbox Message save and start survives a Web restart without duplicating it
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
     const page = await (await webFetch(`${origin}${prefix}`)).text();
-    assert.match(page, new RegExp(`data-feed-entry-id="${itemId}"[^>]*data-feed-entry-type="inbox_message"`));
+    assert.match(page, new RegExp(`data-feed-entry-id="inbox:[^"]+"[^>]*data-feed-item-id="${itemId}"[^>]*data-inbox-entry-id="[^"]+"[^>]*data-feed-entry-type="inbox_message"`));
+    const inboxEntryId = page.match(new RegExp(`data-feed-item-id="${itemId}"[^>]*data-inbox-entry-id="([^"]+)"`))?.[1];
+    assert.ok(inboxEntryId);
+
+    const completed = await webFetch(`${origin}${prefix}/api/inbox/entries/${inboxEntryId}/status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "done", expected_revision: 1 }),
+    });
+    assert.equal(completed.status, 200);
+    const completedBody = await completed.json() as { entry: { status: string; revision: number } };
+    assert.equal(completedBody.entry.status, "done");
+    assert.equal(completedBody.entry.revision, 2);
+
+    const completedAgain = await webFetch(`${origin}${prefix}/api/inbox/entries/${inboxEntryId}/status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "done", expected_revision: 2 }),
+    });
+    assert.equal(completedAgain.status, 200);
+    const completedAgainBody = await completedAgain.json() as { entry: { status: string; revision: number } };
+    assert.equal(completedAgainBody.entry.revision, 2, "repeating the same Inbox result stays idempotent");
+
+    const reopened = await webFetch(`${origin}${prefix}/api/inbox/entries/${inboxEntryId}/status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "open", expected_revision: 2 }),
+    });
+    assert.equal(reopened.status, 200);
+    const reopenedBody = await reopened.json() as { entry: { status: string; revision: number } };
+    assert.equal(reopenedBody.entry.status, "open");
+    assert.equal(reopenedBody.entry.revision, 3);
 
     const saved = await webFetch(`${origin}${prefix}/api/feed/items/${itemId}/save`, {
       method: "POST",

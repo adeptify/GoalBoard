@@ -45,7 +45,12 @@ import {
   NATIVE_DESKTOP_BOOTSTRAP_SCRIPT,
   withDesktopQuery,
 } from "./desktop-shell.js";
-import { buildGoalGraphLayout } from "./goal-graph.js";
+import {
+  buildGoalMomentumView,
+  type GoalMomentumAction,
+  type GoalMomentumCadence,
+  type GoalMomentumNode,
+} from "./goal-momentum.js";
 import {
   THEME_BOOTSTRAP_SCRIPT as BASE_THEME_BOOTSTRAP_SCRIPT,
   VISUAL_FOUNDATION_CLIENT_SCRIPT,
@@ -74,10 +79,24 @@ import type {
   FeedItemRecord,
   FeedItemType,
   FeedSnapshot,
+  FeedSourceRecord,
+  FeedSourceRunRecord,
+  InboxEntryRecord,
   RelayImportAvailability,
 } from "../feed/types.js";
 import type { FeedSourceCatalogView } from "../feed/sources/service.js";
 import type { ConnectorAuthStatus } from "../feed/connectors/service.js";
+import {
+  GMAIL_SCOPE_PRESETS,
+  parseGmailScope,
+} from "../feed/connectors/gmail-scope.js";
+import { readRssHttpState } from "../feed/sources/rss-http.js";
+import {
+  PROJECT_OPERATIONS_CLIENT_SCRIPT,
+  PROJECT_OPERATIONS_STYLES,
+  renderProjectOperations,
+  type ProjectOperationsData,
+} from "./project-session-workspaces.js";
 
 const THEME_BOOTSTRAP_SCRIPT = `${BASE_THEME_BOOTSTRAP_SCRIPT}${NATIVE_DESKTOP_BOOTSTRAP_SCRIPT}`;
 
@@ -203,28 +222,6 @@ export interface WebSettingsProject extends WebProjectNavigation {
   created_at: string;
 }
 
-export interface WebSettingsConnection {
-  binding_id: string;
-  runtime_id: string;
-  runtime_name: string;
-  context_label: string;
-  project_id: string;
-  project_name: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WebSettingsWorkspaceMembership {
-  membership_id: string;
-  workspace_id: string;
-  workspace_name: string;
-  realpath_verified: boolean;
-  project_id: string;
-  project_name: string;
-  is_default: boolean;
-  updated_at: string;
-}
-
 export interface WebInstallationDiagnostics {
   home_directory: string;
   installation_state: "ready" | "missing" | "invalid";
@@ -243,8 +240,6 @@ export interface GoalBoardSettingsView {
   context_project?: WebProjectNavigation | null;
   runtimes: RuntimeIntegrationDetection[];
   projects: WebSettingsProject[];
-  connections: WebSettingsConnection[];
-  workspace_memberships: WebSettingsWorkspaceMembership[];
   web_service: GoalBoardWebServiceDetection;
   diagnostics: WebInstallationDiagnostics;
 }
@@ -794,7 +789,7 @@ function renderTreeChrome(
   return `<header class="tree-chrome" data-tree-chrome>
     ${!archiveView && !trashView ? `<div class="navigator-view-switch" role="tablist" aria-label="${L("Goal 视图")}">
       <button class="is-active" type="button" role="tab" aria-selected="true" data-navigator-view="list">${icon("list")}<span>${L("列表")}</span></button>
-      <button type="button" role="tab" aria-selected="false" data-navigator-view="graph">${icon("workflow")}<span>${L("关系图")}</span></button>
+      <button type="button" role="tab" aria-selected="false" data-navigator-view="graph">${icon("workflow")}<span>${L("推进态势")}</span></button>
     </div>` : ""}
     <label class="tree-search">${icon("search")}<input type="search" data-global-search placeholder="${searchPlaceholder}" aria-label="${searchLabel}"><kbd>⌘F</kbd></label>
     <div class="tree-tools">
@@ -810,73 +805,192 @@ function renderTreeChrome(
   </header>`;
 }
 
-function renderGoalGraph(
+function momentumHeadline(cadence: GoalMomentumCadence, bottleneck?: GoalMomentumNode): string {
+  const subject = bottleneck
+    ? L("{title} 仍影响 {count} 个未完成下游。", { title: bottleneck.title, count: bottleneck.downstream_open_count })
+    : L("当前没有形成明显下游瓶颈的 Goal。");
+  if (cadence.stalled > cadence.completed) {
+    return `${L("停滞多于最近完成，推进节奏正在变慢。")} ${subject}`;
+  }
+  if (cadence.completed > cadence.started) {
+    return `${L("最近完成多于启动，项目正在收口。")} ${subject}`;
+  }
+  return `${L("推进保持流动，下一步优先处理高影响节点。")} ${subject}`;
+}
+
+function renderMomentumCadence(cadence: GoalMomentumCadence, bottleneck?: GoalMomentumNode): string {
+  const maxValue = Math.max(
+    1,
+    ...cadence.buckets.map((bucket) => bucket.started + bucket.completed + bucket.blockers),
+  );
+  const buckets = cadence.buckets.map((bucket, index) => {
+    const showLabel = cadence.days === 7 || index === 0 || index === cadence.buckets.length - 1 || index % 5 === 0;
+    const startedHeight = Math.max(bucket.started ? 5 : 1, Math.round(bucket.started / maxValue * 54));
+    const completedHeight = Math.max(bucket.completed ? 5 : 1, Math.round(bucket.completed / maxValue * 54));
+    const blockerHeight = Math.max(bucket.blockers ? 5 : 1, Math.round(bucket.blockers / maxValue * 54));
+    return `<span class="momentum-rail-day" data-momentum-day="${escapeHtml(bucket.date)}" title="${escapeHtml(`${bucket.date} · ${L("启动")} ${bucket.started} · ${L("完成")} ${bucket.completed} · ${L("新阻塞")} ${bucket.blockers}`)}"><i data-tone="started" style="--momentum-bar:${startedHeight}px"></i><i data-tone="completed" style="--momentum-bar:${completedHeight}px"></i><i data-tone="blocked" style="--momentum-bar:${blockerHeight}px"></i>${showLabel ? `<time datetime="${escapeHtml(bucket.date)}">${escapeHtml(bucket.date.slice(5))}</time>` : ""}</span>`;
+  }).join("");
+  return `<div class="momentum-cadence-panel" data-momentum-period-panel="${cadence.days}"${cadence.days === 7 ? "" : " hidden"}>
+    <div class="momentum-cadence-copy">
+      <p class="momentum-section-label">${L("推进节奏")}</p>
+      <strong>${escapeHtml(momentumHeadline(cadence, bottleneck))}</strong>
+      <p class="momentum-metrics"><span><b>${cadence.started}</b>${L("启动")}</span><span data-tone="good"><b>${cadence.completed}</b>${L("完成")}</span><span data-tone="bad"><b>${cadence.new_blockers}</b>${L("新阻塞")}</span><span data-tone="warn"><b>${cadence.stalled}</b>${L("停滞")}</span></p>
+    </div>
+    <div class="momentum-rail-wrap">
+      <div class="momentum-rail-legend"><span data-tone="started"><i></i>${L("启动")}</span><span data-tone="completed"><i></i>${L("完成")}</span><span data-tone="blocked"><i></i>${L("新阻塞")}</span></div>
+      <div class="momentum-rail" aria-label="${L("近 {days} 天 Goal 推进事件", { days: cadence.days })}">${buckets}</div>
+      <p class="momentum-data-honesty">${icon("info")}<span>${cadence.history_incomplete > 0 ? L("{count} 个 Goal 历史不足，未计入停滞；所有数字均来自当前项目事件事实。", { count: cadence.history_incomplete }) : L("所有数字均来自当前项目事件事实；停滞只统计历史足够的 Goal。")}</span></p>
+    </div>
+  </div>`;
+}
+
+function momentumActionReason(
+  action: GoalMomentumAction,
+  byId: ReadonlyMap<string, WebGoalView>,
+): string {
+  const impact = action.downstream_open_count
+    ? L("影响 {count} 个未完成下游", { count: action.downstream_open_count })
+    : L("没有未完成下游");
+  if (action.kind === "decide") return `${L("等待你的决定")} · ${impact}`;
+  if (action.kind === "finish") return `${L("已进入执行或验收后段")} · ${impact}`;
+  if (action.kind === "start_high_impact") return `${L("没有未满足前置")} · ${impact}`;
+  if (action.kind === "start") return `${L("当前可以开始")} · ${impact}`;
+  if (action.kind === "revive") return `${L("近 7 天没有推进活动")} · ${impact}`;
+  const providers = action.unsatisfied_provider_goal_ids
+    .map((goalId) => byId.get(goalId)?.goal.title ?? goalId)
+    .join(currentLocale() === "en" ? ", " : "、");
+  return providers ? L("仍在等待：{providers}", { providers }) : L("当前还不能直接开始");
+}
+
+function renderGoalMomentum(
   view: GoalBoardWebView,
   selectedGoalId: string,
   items: readonly WebGoalView[],
 ): string {
   const byId = new Map(items.map((item) => [item.goal.goal_id, item]));
-  const layout = buildGoalGraphLayout(
+  const momentum = buildGoalMomentumView(
     items.map((item) => ({
       goal_id: item.goal.goal_id,
       title: item.goal.title,
       status: item.status,
+      work_state: item.work_state,
+      priority: item.goal.priority,
+      created_at: item.goal.created_at,
+      updated_at: item.goal.updated_at,
+      completed: item.goal.fulfillment_state === "satisfied" || item.work_state === "archived",
+      acceptance_criteria_count: item.goal.acceptance_criteria.length,
+      passed_criteria_count: item.passed_criteria.length,
+      reasons: item.reasons.map((reason) => ({ code: reason.code })),
+      runs: item.runs.map((run) => ({
+        role: run.role,
+        state: run.state,
+        started_at: run.started_at,
+        ended_at: run.ended_at,
+      })),
+      evidence: item.evidence.map((evidence) => ({ captured_at: evidence.captured_at })),
+      reviews: item.reviews.map((review) => ({ submitted_at: review.submitted_at })),
+      risks: item.risks.map((risk) => ({
+        risk_id: risk.risk_id,
+        state: risk.state,
+        blocking_mode: risk.blocking_mode,
+        created_at: risk.created_at,
+        updated_at: risk.updated_at,
+      })),
+      events: item.events.map((event) => ({ type: event.type, at: event.at })),
     })),
     view.snapshot.relations,
     selectedGoalId,
   );
-  const edges = layout.edges.map((edge, edgeIndex) => {
-    const label = L(RELATION_LABELS[edge.type]?.out ?? edge.type);
-    return `<g class="graph-edge graph-edge--${edge.type}" data-graph-edge data-edge-index="${edgeIndex}" data-edge-id="${escapeHtml(edge.relation_id)}" data-edge-from="${escapeHtml(edge.from_goal_id)}" data-edge-to="${escapeHtml(edge.to_goal_id)}" data-edge-type="${escapeHtml(edge.type)}">
-      <path marker-start="url(#goal-graph-start-${edge.type})" marker-end="url(#goal-graph-arrow-${edge.type})"></path>
-      <title>${escapeHtml(`${byId.get(edge.from_goal_id)?.goal.title ?? edge.from_goal_id} → ${label} → ${byId.get(edge.to_goal_id)?.goal.title ?? edge.to_goal_id}`)}</title>
+  const bottleneck = [...momentum.nodes]
+    .filter((node) => !node.completed && node.downstream_open_count > 0 && (node.blocked || node.stale))
+    .sort((left, right) => right.downstream_open_count - left.downstream_open_count || left.title.localeCompare(right.title))[0];
+  const edges = momentum.edges.map((edge, edgeIndex) => {
+    const provider = byId.get(edge.provider_goal_id)?.goal.title ?? edge.provider_goal_id;
+    const consumer = byId.get(edge.consumer_goal_id)?.goal.title ?? edge.consumer_goal_id;
+    return `<g class="momentum-edge" data-graph-edge data-edge-index="${edgeIndex}" data-edge-id="${escapeHtml(edge.relation_id)}" data-edge-from="${escapeHtml(edge.provider_goal_id)}" data-edge-to="${escapeHtml(edge.consumer_goal_id)}" data-edge-type="depends_on">
+      <path marker-end="url(#momentum-arrow)"></path>
+      <title>${escapeHtml(`${provider} → ${consumer} · ${edge.reason}`)}</title>
     </g>`;
   }).join("");
-  const nodes = layout.nodes.map((node) => {
+  const groupFirstRowById = new Map(
+    momentum.groups.map((group) => [group.group_id, group.row_start]),
+  );
+  const nodes = momentum.nodes.map((node) => {
     const item = byId.get(node.goal_id)!;
-    const selected = node.goal_id === layout.selected_goal_id;
+    const selected = node.goal_id === momentum.selected_goal_id;
     const searchValue = `${node.goal_id} ${node.title} ${treeDependencySearchText(item, view)}`.toLowerCase();
-    return `<button class="graph-node graph-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}" type="button" data-graph-node data-graph-role="${escapeHtml(node.role)}" data-graph-ring="${node.ring}" data-graph-angle="${node.angle}" data-graph-cluster="${escapeHtml(node.cluster)}" data-graph-side="${node.side}" data-select-goal="${escapeHtml(node.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}" data-connected-to-selected="${node.connected_to_selected}" aria-pressed="${selected}" style="--graph-x:${node.x}%;--graph-y:${node.y}%">
-      <span class="graph-node-mark" aria-hidden="true"></span>
-      <span class="graph-node-copy"><strong>${escapeHtml(node.title)}</strong><small title="Goal ID: ${escapeHtml(node.goal_id)}">${escapeHtml(node.goal_id)}</small></span>
-      ${renderStatus(item.status)}
+    const flags = [
+      node.blocked ? L("阻塞") : node.startable ? L("可开始") : "",
+      node.downstream_open_count > 1 ? L("影响 {count} 个下游", { count: node.downstream_open_count }) : "",
+      !node.history_sufficient ? L("历史不足") : node.stale ? L("近 7 天停滞") : "",
+      node.work_state === "waiting_children" ? L("由子 Goal 推进") : "",
+    ].filter(Boolean).join(" · ");
+    const bottleneck = !node.completed && node.downstream_open_count > 0 && (node.blocked || node.stale);
+    const startsGroup = groupFirstRowById.get(node.group_id) === node.row;
+    return `<button class="momentum-node momentum-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}${node.completed ? " is-complete" : ""}${bottleneck ? " is-bottleneck" : ""}${startsGroup ? " is-group-first-row" : ""}" type="button" data-graph-node data-momentum-node data-goal-id="${escapeHtml(node.goal_id)}" data-momentum-group-id="${escapeHtml(node.group_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}" data-goal-completed="${node.completed}" aria-pressed="${selected}" style="--momentum-column:${node.level + 1};--momentum-row:${node.row + 1}">
+      <span class="momentum-node-kicker"><b>L${node.level}</b>${renderStatus(item.status)}</span>
+      <strong>${escapeHtml(node.title)}</strong>
+      <small>${escapeHtml(flags || node.goal_id)}</small>
     </button>`;
   }).join("");
-  return `<section class="goal-graph" id="goal-graph-pane" data-goal-graph hidden aria-label="${L("Goal Graph 关系视图")}">
-    <header class="graph-toolbar">
-      <div class="graph-toolbar-copy"><strong>${L("目标关系图")}</strong><small>${L("同一份 Goal 与关系事实")}</small></div>
-      <div class="graph-relation-toggles" role="group" aria-label="${L("显示关系类型")}">
-        <button class="is-active" type="button" aria-pressed="true" data-graph-relation="part_of"><span class="graph-key graph-key--parent"></span>${L("父子")}</button>
-        <button class="is-active" type="button" aria-pressed="true" data-graph-relation="depends_on"><span class="graph-key graph-key--dependency"></span>${L("依赖")}</button>
-      </div>
-      <button class="graph-focus-toggle" type="button" aria-pressed="false" data-graph-focus>${icon("target")}<span>${L("完整网络")}</span></button>
-      <div class="graph-zoom" role="group" aria-label="${L("Graph 缩放")}">
-        <button type="button" data-graph-zoom="out" aria-label="${L("缩小 Graph")}" title="${L("缩小 Graph")}">−</button>
-        <output data-graph-zoom-value>100%</output>
-        <button type="button" data-graph-zoom="in" aria-label="${L("放大 Graph")}" title="${L("放大 Graph")}">+</button>
-        <button type="button" data-graph-zoom="fit" aria-label="${L("适应窗口")}" title="${L("适应窗口")}">${icon("maximize")}</button>
-      </div>
+  const levelHeaders = Array.from({ length: momentum.level_count }, (_, level) =>
+    `<span class="momentum-level" style="--momentum-column:${level + 1}"><b>L${level}</b>${level === 0 ? L("无前置 / 基础输入") : L("第 {level} 层消费", { level })}</span>`
+  ).join("");
+  const groups = momentum.groups.map((group) => {
+    const title = group.root_goal_id
+      ? `<button type="button" data-momentum-select="${escapeHtml(group.root_goal_id)}">${escapeHtml(group.title)}</button>`
+      : `<span>${escapeHtml(group.title)}</span>`;
+    return `<div class="momentum-group" data-momentum-group="${escapeHtml(group.group_id)}" style="--momentum-column-start:${group.level_start + 1};--momentum-column-end:${group.level_end + 2};--momentum-row-start:${group.row_start + 1};--momentum-row-end:${group.row_end + 2}"><header>${title}<small>${L("{count} 个 Goal", { count: group.goal_count })}</small></header></div>`;
+  }).join("");
+  const queue = momentum.actions.map((action, index) => {
+    const item = byId.get(action.goal_id)!;
+    const selected = action.goal_id === momentum.selected_goal_id;
+    return `<li><button type="button" class="momentum-queue-item${selected ? " is-selected" : ""}" data-momentum-select="${escapeHtml(action.goal_id)}" data-momentum-action-kind="${action.kind}" aria-pressed="${selected}"><b>${String(index + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(momentumActionReason(action, byId))}</small></span>${renderStatus(item.status)}</button></li>`;
+  }).join("");
+  const details = momentum.nodes.map((node) => {
+    const item = byId.get(node.goal_id)!;
+    const providers = node.unsatisfied_provider_goal_ids.map((goalId) => byId.get(goalId)?.goal.title ?? goalId);
+    const currentReasons = item.reasons.filter((reason) => reason.severity === "blocker").map((reason) => reason.message);
+    const facts = [
+      providers.length ? L("仍在等待：{providers}", { providers: providers.join(currentLocale() === "en" ? ", " : "、") }) : L("没有未满足前置"),
+      L("可触达 {count} 个未完成下游", { count: node.downstream_open_count }),
+      node.history_sufficient ? node.stale ? L("近 7 天没有可追溯推进活动") : L("近 7 天有可追溯推进活动") : L("历史不足，不能判断是否停滞"),
+      ...currentReasons,
+    ];
+    return `<article class="momentum-selection" data-momentum-detail="${escapeHtml(node.goal_id)}"${node.goal_id === momentum.selected_goal_id ? "" : " hidden"}>
+      <p class="momentum-section-label">${L("当前选择")}</p>
+      <div class="momentum-selection-title"><div><h3>${escapeHtml(item.goal.title)}</h3><small>${escapeHtml(item.goal.goal_id)}</small></div>${renderStatus(item.status)}</div>
+      <dl><div><dt>${L("拓扑层级")}</dt><dd>L${node.level}</dd></div><div><dt>${L("完成标准")}</dt><dd>${node.passed_criteria_count}/${node.acceptance_criteria_count}</dd></div><div><dt>${L("下游影响")}</dt><dd>${node.downstream_open_count}</dd></div></dl>
+      <ul>${facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>
+      <a class="button-primary" href="/goals/${encodeURIComponent(node.goal_id)}">${L("打开 Goal")}${icon("arrow")}</a>
+    </article>`;
+  }).join("");
+  const integrityCount = Object.values(momentum.integrity).reduce((count, values) => count + values.length, 0);
+  const integrity = integrityCount
+    ? `<p class="momentum-integrity">${icon("risk")}<span>${L("发现 {count} 处关系完整性问题；相关节点已保留并使用确定性降级布局。", { count: integrityCount })}</span></p>`
+    : "";
+  const empty = momentum.nodes.length === 0
+    ? `<div class="momentum-empty">${icon("workflow")}<h2>${L("还没有可分析的 Goal")}</h2><p>${L("创建 Goal 并建立 depends_on 后，这里会显示完整推进拓扑和行动顺序。")}</p></div>`
+    : "";
+  return `<section class="goal-momentum" id="goal-momentum-pane" data-goal-momentum hidden aria-label="${L("Goal 推进态势")}">
+    <header class="momentum-head">
+      <div><h1>${L("先看推进是否流动，再决定现在做什么")}</h1><p>${L("时间变化、完整依赖拓扑和行动顺序共用同一份 GoalBoard 事实。")}</p></div>
+      <div class="momentum-period-switch" role="group" aria-label="${L("时间窗口")}"><button class="is-active" type="button" data-momentum-period="7" aria-pressed="true">${L("近 7 天")}</button><button type="button" data-momentum-period="30" aria-pressed="false">${L("近 30 天")}</button></div>
     </header>
-    <div class="graph-direction-note">${icon("arrow")}<span>${L("箭头按 GoalBoard 中保存的关系方向显示")}</span></div>
-    <div class="graph-viewport" data-graph-viewport>
-      <div class="graph-stage" data-graph-stage data-graph-scale="1" data-graph-rings="${layout.ring_count}">
-        <div class="graph-orbit graph-orbit--outer" aria-hidden="true"></div>
-        <div class="graph-orbit graph-orbit--middle" aria-hidden="true"></div>
-        <div class="graph-orbit graph-orbit--inner" aria-hidden="true"></div>
-        <svg class="graph-edges" data-graph-edges aria-hidden="true"><defs>
-          <marker id="goal-graph-start-part_of" class="graph-start graph-start--part_of" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><circle cx="5" cy="5" r="3.1"></circle></marker>
-          <marker id="goal-graph-start-depends_on" class="graph-start graph-start--depends_on" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><circle cx="5" cy="5" r="3.1"></circle></marker>
-          <marker id="goal-graph-arrow-part_of" class="graph-arrow graph-arrow--part_of" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker>
-          <marker id="goal-graph-arrow-depends_on" class="graph-arrow graph-arrow--depends_on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker>
-        </defs>${edges}</svg>
-        ${nodes}
-      </div>
-    </div>
-    <footer class="graph-legend"><span><i class="graph-key graph-key--parent"></i>${L("属于")}</span><span><i class="graph-key graph-key--dependency"></i>${L("依赖于")}</span><span class="graph-direction-key"><i></i>${L("起点")}<b>→</b>${L("终点")}</span><small>${L("选择节点，在右侧继续查看和推进")}</small></footer>
+    <section class="momentum-cadence">${renderMomentumCadence(momentum.cadence[7], bottleneck)}${renderMomentumCadence(momentum.cadence[30], bottleneck)}</section>
+    ${integrity}
+    ${empty || `<div class="momentum-workbench">
+      <section class="momentum-map-panel">
+        <header class="momentum-panel-head"><div><h2>${L("完整 Goal 依赖拓扑")}</h2><p>${L("{goals} 个 Goal · {edges} 条 depends_on · 从提供者向消费者展开", { goals: momentum.nodes.length, edges: momentum.edges.length })}</p></div><div class="momentum-map-actions"><div class="momentum-map-filter" role="group" aria-label="${L("拓扑显示范围")}"><button class="is-active" type="button" data-momentum-filter="all" aria-pressed="true">${L("全部 {count}", { count: momentum.nodes.length })}</button><button type="button" data-momentum-filter="open" aria-pressed="false">${L("未完成 {count}", { count: momentum.nodes.filter((node) => !node.completed).length })}</button></div><div class="graph-zoom" role="group" aria-label="${L("拓扑缩放")}"><button type="button" data-graph-zoom="out" aria-label="${L("缩小")}">−</button><output data-graph-zoom-value>100%</output><button type="button" data-graph-zoom="in" aria-label="${L("放大")}">+</button><button type="button" data-graph-zoom="fit" aria-label="${L("适应宽度")}">${icon("maximize")}</button></div></div></header>
+        <div class="graph-viewport momentum-map-scroll" data-graph-viewport tabindex="0" aria-label="${L("可缩放、拖动或使用键盘浏览的完整 Goal 依赖拓扑")}"><div class="graph-stage momentum-map" data-graph-stage data-graph-scale="1" style="--momentum-level-count:${Math.max(1, momentum.level_count)};--momentum-grid-rows:${Math.max(1, momentum.grid_rows + 1)}">${levelHeaders}${groups}<svg class="graph-edges momentum-edges" data-graph-edges aria-hidden="true"><defs><marker id="momentum-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>${edges}</svg>${nodes}</div></div>
+        <footer class="momentum-legend"><span><i data-kind="dependency"></i>${L("depends_on：前置提供者 → 消费者")}</span><span><i data-kind="selected"></i>${L("当前选择的一阶依赖")}</span><span><i data-kind="group"></i>${L("分组带表达 part_of")}</span><small>${L("完成节点保留并弱化；瓶颈只是一种状态")}</small></footer>
+      </section>
+      <section class="momentum-queue-panel"><div class="momentum-queue-column"><header class="momentum-panel-head"><div><h2>${L("行动队列")}</h2><p>${L("排序只使用阻塞、推进阶段、前置与下游影响")}</p></div></header><ol class="momentum-queue-list">${queue}</ol></div><div class="momentum-selection-column">${details}</div></section>
+    </div>`}
   </section>`;
 }
 
-export function renderGoalBoardGraphFragment(
+export function renderGoalBoardMomentumFragment(
   view: GoalBoardWebView,
   selectedGoalId: string,
   collection: GoalDocumentCollection = "current",
@@ -887,7 +1001,7 @@ export function renderGoalBoardGraphFragment(
       ? view.archived_goals
       : view.goals;
   if (collection === "trash") return null;
-  return prefixLocalLinks(renderGoalGraph(view, selectedGoalId, items), view.route_prefix);
+  return prefixLocalLinks(renderGoalMomentum(view, selectedGoalId, items), view.route_prefix);
 }
 
 function relationRow(
@@ -1707,15 +1821,29 @@ function riskDecisionCreatedAt(risk: RiskRecord, view: GoalBoardWebView): string
 
 function renderHumanReviewScenario(item: WebGoalView): string {
   const criteria = item.goal.acceptance_criteria;
-  const criterion = criteria.find((entry) => !item.passed_criteria.includes(entry.criterion_id)) ?? criteria[0];
+  const pendingHumanCriterionIds = new Set(
+    item.review_obligations
+      .filter((obligation) => obligation.role === "human_approver" && obligation.state === "pending")
+      .flatMap((obligation) => obligation.criterion_scope),
+  );
+  const criterion = criteria.find(
+    (entry) =>
+      entry.decision_method === "human_decision" &&
+      pendingHumanCriterionIds.has(entry.criterion_id) &&
+      !item.passed_criteria.includes(entry.criterion_id),
+  ) ?? criteria.find((entry) => !item.passed_criteria.includes(entry.criterion_id)) ?? criteria[0];
   const linkedEvidence = criterion
     ? item.evidence.filter((evidence) => evidence.lifecycle_state === "effective" && evidence.criterion_ids.includes(criterion.criterion_id)).slice().reverse()
     : [];
   const evidence = linkedEvidence.find((entry) => entry.result === "passed") ?? linkedEvidence[0];
-  const criterionPassed = Boolean(criterion && item.passed_criteria.includes(criterion.criterion_id));
   let contextLabel = L("目前还缺");
   let contextEffect = L("这条 Goal 还没有完成标准，暂时无法判断结果是否完成。");
-  if (criterion && evidence?.result === "passed") {
+  if (criterion?.decision_method === "human_decision") {
+    contextLabel = L("需要你判断");
+    contextEffect = L("完成标准「{criterion}」只能由你根据实际体验判断。选择“通过”并说明理由后，GoalBoard 会把这次确认同时记录为该标准的人工结论依据。", {
+      criterion: criterion.statement,
+    });
+  } else if (criterion && evidence?.result === "passed") {
     const evidenceSummary = evidence.digest?.trim() || evidence.locator;
     contextLabel = L("当前依据");
     contextEffect = L("完成标准「{criterion}」已有一条通过依据「{evidence}」。这份记录支持该标准，但不等于你已经确认通过。", {
@@ -1733,7 +1861,12 @@ function renderHumanReviewScenario(item: WebGoalView): string {
       criterion: criterion.statement,
     });
   }
-  const unpassedCriterionCount = Math.max(0, criteria.length - item.passed_criteria.length);
+  const unpassedNonHumanCriterionCount = criteria.filter(
+    (entry) => entry.decision_method !== "human_decision" && !item.passed_criteria.includes(entry.criterion_id),
+  ).length;
+  const hasHumanDecisionCriterion = criteria.some(
+    (entry) => entry.decision_method === "human_decision" && pendingHumanCriterionIds.has(entry.criterion_id),
+  );
   const otherPendingReviewCount = item.review_obligations.filter(
     (obligation) => obligation.state === "pending" && obligation.role !== "human_approver",
   ).length;
@@ -1741,17 +1874,19 @@ function renderHumanReviewScenario(item: WebGoalView): string {
     (risk) => (risk.state === "open" || risk.state === "triggered") && risk.blocking_mode !== "none",
   ).length;
   const remainingGateCount = otherPendingReviewCount + blockingRiskCount;
-  const confirmEffect = !criterionPassed || unpassedCriterionCount > 0
-    ? L("即使选择“通过”，Goal「{title}」仍有 {count} 条完成标准缺少通过依据，不会完成。请先补齐依据。", {
+  const confirmEffect = unpassedNonHumanCriterionCount > 0
+    ? L("即使选择“通过”，Goal「{title}」仍有 {count} 条由测试或检查判断的完成标准缺少通过依据，不会完成。请先补齐依据。", {
         title: item.goal.title,
-        count: unpassedCriterionCount || criteria.length,
+        count: unpassedNonHumanCriterionCount,
       })
     : remainingGateCount > 0
-      ? L("选择“通过”只会完成这次用户检查；Goal「{title}」还会等待 {count} 项其他检查或风险处理，不会马上完成。", {
+      ? L("选择“通过”会记录这次用户检查{humanEvidence}；Goal「{title}」还会等待 {count} 项其他检查或风险处理，不会马上完成。", {
+          humanEvidence: hasHumanDecisionCriterion ? L("和对应的人工结论依据") : "",
           title: item.goal.title,
           count: remainingGateCount,
         })
-      : L("选择“通过”会完成这次用户检查；GoalBoard 会再核对全部门槛，都满足后 Goal「{title}」才会完成。", {
+      : L("选择“通过”会记录这次用户检查{humanEvidence}；GoalBoard 会立即再核对全部门槛，都满足后 Goal「{title}」才会完成。", {
+          humanEvidence: hasHumanDecisionCriterion ? L("和对应的人工结论依据") : "",
           title: item.goal.title,
         });
   return renderDecisionScenario({
@@ -1800,7 +1935,12 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
   if (!pending.length) return "";
   const copy = explainDecision("review");
   const allCriteriaPassed = item.goal.acceptance_criteria.length > 0 && item.passed_criteria.length === item.goal.acceptance_criteria.length;
-  const hasReliableRecommendation = allCriteriaPassed && item.goal.acceptance_criteria.every((criterion) =>
+  const hasPendingHumanDecision = pending.some((obligation) => obligation.criterion_scope.some((criterionId) =>
+    item.goal.acceptance_criteria.some(
+      (criterion) => criterion.criterion_id === criterionId && criterion.decision_method === "human_decision",
+    ),
+  ));
+  const hasReliableRecommendation = !hasPendingHumanDecision && allCriteriaPassed && item.goal.acceptance_criteria.every((criterion) =>
     item.evidence.some((evidence) => evidence.lifecycle_state === "effective" && evidence.result === "passed" && evidence.criterion_ids.includes(criterion.criterion_id)),
   );
   const effectiveEvidence = item.evidence.filter((evidence) => evidence.lifecycle_state === "effective");
@@ -1815,7 +1955,7 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
         .join("")
     : `<p class="empty-row">${L("当前还没有已提交的完成依据。你可以在下方补充外部引用。")}</p>`;
   const evidenceChoices = renderEvidenceChoices();
-  return `<div class="decision-record human-review-list"><header class="decision-record-heading"><span class="decision-kind">${icon("user")} ${L("确认工作结果")}${renderNewDecisionBadge(pending[0]!.created_at, view, "review", pending[0]!.obligation_id)}</span></header><div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p>${renderDecisionGuidance({
+  return `<div class="decision-record human-review-list"><header class="decision-record-heading"><span class="decision-kind">${icon("user")} ${L("确认工作结果")}${renderNewDecisionBadge(pending[0]!.created_at, view, "review", pending[0]!.obligation_id)}</span></header><div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p><button class="human-review-jump" type="button" data-human-review-jump><span><strong>${L("填写确认结论")}</strong><small>${L("选择结论并写明判断理由")}</small></span>${icon("chevron-right")}</button>${renderDecisionGuidance({
     whyNow: L("工作结果已经提交，其他必要检查也已走到需要你确认的阶段。"),
     recommendation: hasReliableRecommendation ? L("建议确认通过") : null,
     recommendationBasis: L("{passed}/{total} 条完成标准已有通过依据，共 {evidence} 条当前有效记录。", { passed: item.passed_criteria.length, total: item.goal.acceptance_criteria.length, evidence: effectiveEvidence.length }),
@@ -3473,6 +3613,11 @@ export function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = fals
 
 interface FeedDirectoryEntry {
   id: string;
+  canonicalItemId?: string | null;
+  inboxActive?: boolean;
+  inboxEntry?: InboxEntryRecord | null;
+  source?: FeedSourceRecord | null;
+  goalId?: string | null;
   itemType: FeedItemType;
   kindLabel: string;
   sourceLabel: string;
@@ -3484,6 +3629,210 @@ interface FeedDirectoryEntry {
   item: FeedItemRecord | null;
   decisionGroup: DecisionGoalGroup | null;
   recentResult: RecentDecisionResult | null;
+  prototype: {
+    reason: string;
+    nextAction: string;
+    relation: string;
+  } | null;
+}
+
+function inboxEntryDisposition(status: InboxEntryRecord["status"]): string {
+  return ({
+    open: "inbox",
+    in_progress: "processing",
+    done: "saved",
+    dismissed: "archived",
+  } as const)[status];
+}
+
+function inboxEntryReasonLabel(reason: InboxEntryRecord["reason"]): string {
+  return ({
+    manual: L("你手工加入"),
+    source_rule: L("来源规则命中"),
+    goal_decision: L("GoalBoard 等待决定"),
+    source_fault: L("来源需要人工恢复"),
+  } as const)[reason];
+}
+
+function inboxEntryStatusLabel(status: InboxEntryRecord["status"]): string {
+  return ({
+    open: L("待处理"),
+    in_progress: L("处理中"),
+    done: L("已完成"),
+    dismissed: L("已忽略"),
+  } as const)[status];
+}
+
+function feedDirectoryAttentionRank(entry: FeedDirectoryEntry): number {
+  if (entry.itemType !== "inbox_message") return 0;
+  if (entry.decisionGroup) return 3;
+  if (entry.disposition === "inbox" || entry.disposition === "processing") return 2;
+  return 1;
+}
+
+function prototypeFeedEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
+  const boardId = view.snapshot.board.board_id;
+  const goalPath = `${view.route_prefix}/goals/draft-8f160677-f8f8-4f2b-935d-0881edb3aba3`;
+  const createItem = (
+    id: string,
+    itemType: FeedItemType,
+    kind: string,
+    sourceId: string,
+    sourceLabel: string,
+    title: string,
+    summary: string,
+    body: string,
+    updatedAt: string,
+    tags: string[],
+  ): FeedItemRecord => ({
+    board_id: boardId,
+    item_id: id,
+    source_id: sourceId,
+    item_type: itemType,
+    kind,
+    title,
+    summary,
+    body,
+    source_kind: sourceId.includes("github") ? "github" : sourceId.includes("gmail") ? "gmail" : sourceId.includes("rss") ? "rss" : "goalboard",
+    source_label: sourceLabel,
+    external_id: id,
+    url: null,
+    origin_status: "prototype",
+    priority: "normal",
+    tags,
+    author: sourceId.includes("gmail") ? "Mina · Product Partner" : sourceId.includes("github") ? "adeptify/goalboard" : "Latent Space",
+    disposition: "inbox",
+    linked_goal_id: null,
+    read_at: null,
+    revision: 1,
+    source_created_at: updatedAt,
+    source_updated_at: updatedAt,
+    imported_at: updatedAt,
+    updated_at: updatedAt,
+    materials: [],
+  });
+  const items = [
+    {
+      item: createItem(
+        "prototype-feed-github",
+        "feed",
+        "github_notification",
+        "prototype-source-github",
+        "GitHub · adeptify",
+        "PR #418 请求你确认 FeedItem 与 InboxEntry 的边界",
+        "新的 review request，涉及来源消息如何进入待处理引用。",
+        "PR 更新了信息流对象关系：来源负责接入与拉取，Feed 保存完整消息，Inbox 只保留需要人工介入的引用。请重点检查重复入箱与处理完成后的追溯行为。",
+        "2026-08-30T14:18:00+08:00",
+        ["GitHub", "Review request", "演示数据"],
+      ),
+      reason: "这是一条来源消息，默认只属于 Feed；只有你明确加入后才进入 Inbox。",
+      nextAction: "阅读后决定加入 Inbox、保存为资料、升格 Goal 或忽略。",
+      relation: "来源 GitHub · adeptify → Feed Item",
+    },
+    {
+      item: createItem(
+        "prototype-feed-gmail",
+        "feed",
+        "gmail_message",
+        "prototype-source-gmail",
+        "Gmail · product@adeptify.ai",
+        "设计伙伴反馈：Inbox 不应成为第二个 Feed",
+        "邮件建议先解释进入原因，再给出下一步，不要重复完整正文。",
+        "Mina 走完当前版本后认为 Feed 和 Inbox 的视觉很像。她建议 Inbox 只展示需要决定、回复或修复的事项，并保留回到原消息的路径。",
+        "2026-08-30T13:42:00+08:00",
+        ["Gmail", "用户反馈", "演示数据"],
+      ),
+      reason: "这封邮件只是新消息，目前还没有明确要求你介入。",
+      nextAction: "先阅读；若需要跟进，再加入 Inbox。",
+      relation: "来源 Gmail · product@adeptify.ai → Feed Item",
+    },
+    {
+      item: createItem(
+        "prototype-feed-rss",
+        "feed",
+        "rss_entry",
+        "prototype-source-rss",
+        "RSS · Latent Space",
+        "Designing calm inboxes for agentic products",
+        "一篇讨论 agent 产品如何区分事件流与注意力队列的文章。",
+        "文章提出：事件流应该完整、可追溯，注意力队列则必须有进入理由、负责人和退出条件。这个模式与 GoalBoard 当前的信息流重构高度相关。",
+        "2026-08-30T12:25:00+08:00",
+        ["RSS", "产品设计", "演示数据"],
+      ),
+      reason: "公开来源内容进入完整事实流，不自动占用你的注意力。",
+      nextAction: "保存为资料，或在确认要行动时升格为 Goal。",
+      relation: "来源 RSS · Latent Space → Feed Item",
+    },
+    {
+      item: createItem(
+        "prototype-inbox-feed",
+        "inbox_message",
+        "feed_attention_reference",
+        "prototype-source-github",
+        "GitHub · adeptify",
+        "确认 PR #418 的对象边界",
+        "由 Feed Item 手工加入；需要在合并前给出产品判断。",
+        "这条 Inbox Entry 引用 GitHub 的原始 Feed Item，不复制和篡改原消息。完成后会退出默认 Inbox，原消息仍保留在 Feed。",
+        "2026-08-30T14:20:00+08:00",
+        ["Feed 引用", "需判断", "演示数据"],
+      ),
+      reason: "你在 Feed 中手工标记为需要处理。",
+      nextAction: "检查对象关系并给出 review 结论。",
+      relation: "Inbox Entry → 原始 Feed Item · PR #418",
+    },
+    {
+      item: createItem(
+        "prototype-inbox-source",
+        "inbox_message",
+        "source_fault",
+        "prototype-source-gmail",
+        "Gmail · product@adeptify.ai",
+        "Gmail 授权已失效，3 封新邮件尚未拉取",
+        "来源故障需要人工重新授权；旧消息和游标仍然保留。",
+        "GoalBoard 在 13:06 收到 401。系统没有把失败伪装成空结果，也没有推进 Gmail 游标。重新授权后可以安全补拉。",
+        "2026-08-30T13:06:00+08:00",
+        ["来源故障", "需重新授权", "演示数据"],
+      ),
+      reason: "来源无法自行恢复，需要你重新连接账号。",
+      nextAction: "打开来源配置并完成重新授权。",
+      relation: "Inbox Entry → 来源 Gmail · product@adeptify.ai",
+    },
+    {
+      item: {
+        ...createItem(
+          "prototype-inbox-goal",
+          "inbox_message",
+          "goal_decision",
+          "prototype-goalboard",
+          "GoalBoard",
+          "确认高保真是否真正分清来源、Feed 与 Inbox",
+          "这是当前 Goal 的人工判断门禁；代码检查不能替代你的产品判断。",
+          "请依次进入来源、Feed 和 Inbox，走完模拟同步、加入 Inbox 与完成处理，然后判断三者是否还会被理解成同一种收件箱。",
+          "2026-08-30T12:02:00+08:00",
+          ["Goal 决定", "人工判断", "演示数据"],
+        ),
+        url: goalPath,
+      },
+      reason: "当前 Goal 的验收标准要求一骏亲自判断对象边界。",
+      nextAction: "走完原型主路径后，确认或指出仍然混淆的地方。",
+      relation: "Inbox Entry → Goal 高保真原型",
+    },
+  ];
+  return items.map(({ item, reason, nextAction, relation }) => ({
+    id: item.item_id,
+    itemType: item.item_type,
+    kindLabel: item.item_type === "feed" ? "Feed Item · 演示" : "Inbox Entry · 演示",
+    sourceLabel: item.source_label,
+    disposition: item.disposition,
+    title: item.title,
+    summary: item.summary,
+    updatedAt: item.source_updated_at,
+    icon: item.kind === "source_fault" ? "risk" : item.kind === "goal_decision" ? "target" : item.item_type === "feed" ? "activity" : "input",
+    item,
+    decisionGroup: null,
+    recentResult: null,
+    prototype: { reason, nextAction, relation },
+  }));
 }
 
 function decisionGroupCount(group: DecisionGoalGroup): number {
@@ -3502,25 +3851,159 @@ function decisionGroupKinds(group: DecisionGoalGroup): string[] {
 }
 
 function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
-  const persisted = view.feed.items.map((item): FeedDirectoryEntry => ({
+  const activeInboxSubjects = new Set(view.feed.inbox_entries
+    .filter((entry) =>
+      entry.subject_type === "feed_item" &&
+      (entry.status === "open" || entry.status === "in_progress"),
+    )
+    .map((entry) => entry.subject_id));
+  const legacyInboxSubjects = new Set(view.feed.items
+    .filter((item) => item.item_type === "inbox_message")
+    .map((item) => item.item_id));
+  const feedItemsById = new Map(view.feed.feed_items.map((item) => [item.item_id, item]));
+  const sourcesById = new Map(view.feed.sources.map((source) => [source.source_id, source]));
+  const goalsById = new Map([
+    ...view.goals,
+    ...view.archived_goals,
+    ...view.trashed_goals,
+  ].map((goal) => [goal.goal.goal_id, goal]));
+  const decisionGroups = buildDecisionGroups(view);
+  const liveDecisionGoalIds = new Set(decisionGroups
+    .map((group) => group.item?.goal.goal_id ?? group.ownerGoalId)
+    .filter((goalId): goalId is string => Boolean(goalId)));
+  const persistedFeed = view.feed.feed_items.map((record): FeedDirectoryEntry => {
+    const item = { ...record, item_type: "feed" as const };
+    const inboxActive = activeInboxSubjects.has(item.item_id) || legacyInboxSubjects.has(item.item_id);
+    return {
     id: item.item_id,
-    itemType: item.item_type,
-    kindLabel: item.item_type === "feed" ? "Feed" : "Inbox Message",
+    canonicalItemId: item.item_id,
+    inboxActive,
+    itemType: "feed",
+    kindLabel: "Feed",
     sourceLabel: item.source_label || item.source_kind,
-    disposition: item.disposition,
+    disposition: item.disposition === "inbox" && !inboxActive ? "feed" : item.disposition,
     title: item.title,
     summary: item.summary || item.body || L("没有附加摘要"),
     updatedAt: item.source_updated_at || item.updated_at,
-    icon: item.item_type === "feed" ? "activity" : "input",
+    icon: "activity",
     item,
     decisionGroup: null,
     recentResult: null,
-  }));
-  const decisions = buildDecisionGroups(view).map((group): FeedDirectoryEntry => {
+    prototype: null,
+  };
+  });
+  const persistedInbox = view.feed.inbox_entries
+    .filter((entry) => entry.subject_type !== "goal_decision" || !liveDecisionGoalIds.has(entry.subject_id))
+    .map((entry): FeedDirectoryEntry => {
+      const disposition = inboxEntryDisposition(entry.status);
+      if (entry.subject_type === "feed_item") {
+        const record = feedItemsById.get(entry.subject_id) ?? null;
+        const item = record ? { ...record, item_type: "inbox_message" as const } : null;
+        return {
+          id: `inbox:${entry.entry_id}`,
+          canonicalItemId: entry.subject_id,
+          inboxActive: entry.status === "open" || entry.status === "in_progress",
+          inboxEntry: entry,
+          itemType: "inbox_message",
+          kindLabel: entry.reason === "manual" ? L("Inbox · 手工加入") : L("Inbox · 来源规则"),
+          sourceLabel: item?.source_label || item?.source_kind || "Feed",
+          disposition,
+          title: item?.title || L("原 Feed Item 已不可用"),
+          summary: item?.summary || item?.body || L("引用仍保留，但原消息已被删除。"),
+          updatedAt: entry.updated_at,
+          icon: item ? "input" : "alert",
+          item,
+          decisionGroup: null,
+          recentResult: null,
+          prototype: null,
+        };
+      }
+      if (entry.subject_type === "source_fault") {
+        const source = sourcesById.get(entry.subject_id) ?? null;
+        return {
+          id: `inbox:${entry.entry_id}`,
+          inboxEntry: entry,
+          source,
+          itemType: "inbox_message",
+          kindLabel: L("Inbox · 来源故障"),
+          sourceLabel: source?.name || L("其他来源"),
+          disposition,
+          title: source ? L("来源「{source}」需要处理", { source: source.name }) : L("原来源已不可用"),
+          summary: source
+            ? L("来源停止自动拉取；完成修复前不会推进可信游标。")
+            : L("来源或本地历史已删除；Inbox 只保留这条故障记录。"),
+          updatedAt: entry.updated_at,
+          icon: "alert",
+          item: null,
+          decisionGroup: null,
+          recentResult: null,
+          prototype: null,
+          canonicalItemId: null,
+          inboxActive: entry.status === "open" || entry.status === "in_progress",
+          goalId: null,
+        };
+      }
+      const goal = goalsById.get(entry.subject_id) ?? null;
+      return {
+        id: `inbox:${entry.entry_id}`,
+        inboxEntry: entry,
+        goalId: entry.subject_id,
+        itemType: "inbox_message",
+        kindLabel: L("Inbox · Goal 决定"),
+        sourceLabel: "GoalBoard",
+        disposition,
+        title: goal?.goal.title || L("原 Goal 已不可用"),
+        summary: goal
+          ? L("GoalBoard 正在等待你完成与这个 Goal 相关的判断。")
+          : L("Goal 已归档、删除或当前无法读取；决定引用仍保留。"),
+        updatedAt: entry.updated_at,
+        icon: "clipboard",
+        item: null,
+        decisionGroup: null,
+        recentResult: null,
+        prototype: null,
+        inboxActive: entry.status === "open" || entry.status === "in_progress",
+      };
+    });
+  const persistedInboxSubjects = new Set(view.feed.inbox_entries
+    .filter((entry) => entry.subject_type === "feed_item")
+    .map((entry) => entry.subject_id));
+  const legacyInbox = view.feed.items
+    .filter((record) => record.item_type === "inbox_message" && !persistedInboxSubjects.has(record.item_id))
+    .map((record): FeedDirectoryEntry => {
+      const item = { ...record, item_type: "inbox_message" as const };
+      return {
+        id: `inbox:legacy:${item.item_id}`,
+        canonicalItemId: item.item_id,
+        inboxActive: true,
+        itemType: "inbox_message",
+        kindLabel: L("Inbox · 兼容引用"),
+        sourceLabel: item.source_label || item.source_kind,
+        disposition: "inbox",
+        title: item.title,
+        summary: item.summary || item.body || L("没有附加摘要"),
+        updatedAt: item.source_updated_at || item.updated_at,
+        icon: "input",
+        item,
+        decisionGroup: null,
+        recentResult: null,
+        prototype: null,
+      };
+    });
+  const decisions = decisionGroups.map((group): FeedDirectoryEntry => {
     const count = decisionGroupCount(group);
     const title = group.item?.goal.title ?? L("整个项目的事项");
+    const goalId = group.item?.goal.goal_id ?? group.ownerGoalId ?? null;
+    const inboxEntry = goalId
+      ? view.feed.inbox_entries.find((entry) =>
+          entry.subject_type === "goal_decision" && entry.subject_id === goalId &&
+          (entry.status === "open" || entry.status === "in_progress"),
+        ) ?? null
+      : null;
     return {
-      id: `decision:${group.item?.goal.goal_id ?? group.ownerGoalId ?? "board"}`,
+      id: `decision:${goalId ?? "board"}`,
+      inboxEntry,
+      goalId,
       itemType: "inbox_message",
       kindLabel: L("Inbox Message · Goal 决定"),
       sourceLabel: "GoalBoard",
@@ -3535,6 +4018,7 @@ function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
       item: null,
       decisionGroup: group,
       recentResult: null,
+      prototype: null,
     };
   });
   const results = recentDecisionResults(view).map((result): FeedDirectoryEntry => ({
@@ -3550,18 +4034,32 @@ function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
     item: null,
     decisionGroup: null,
     recentResult: result,
+    prototype: null,
   }));
-  return [...persisted, ...decisions, ...results].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return [...persistedFeed, ...persistedInbox, ...legacyInbox, ...(view.demo ? prototypeFeedEntries(view) : []), ...decisions, ...results]
+    .sort((left, right) =>
+      feedDirectoryAttentionRank(right) - feedDirectoryAttentionRank(left) ||
+      right.updatedAt.localeCompare(left.updatedAt),
+    );
 }
 
 function feedDispositionLabel(value: string, itemType?: FeedItemType): string {
   return ({
+    feed: L("仅 Feed"),
     inbox: L("待处理"),
     saved: L("已保存为资料"),
     promoted: L("已升格为 Goal"),
     processing: L("处理中"),
     archived: itemType === "inbox_message" ? L("已归档") : L("已忽略"),
   } as Record<string, string>)[value] ?? value;
+}
+
+function feedEntryProviderKey(entry: FeedDirectoryEntry): "github" | "gmail" | "rss" | "other" {
+  const value = `${entry.item?.source_kind ?? ""} ${entry.item?.kind ?? ""} ${entry.sourceLabel}`.toLowerCase();
+  if (value.includes("github")) return "github";
+  if (value.includes("gmail") || value.includes("mail")) return "gmail";
+  if (value.includes("rss") || value.includes("atom") || value.includes("feed")) return "rss";
+  return "other";
 }
 
 function renderFeedDirectory(view: GoalBoardWebView, defaultPreset: FeedItemType): string {
@@ -3571,25 +4069,82 @@ function renderFeedDirectory(view: GoalBoardWebView, defaultPreset: FeedItemType
   const initiallyVisible = entries.filter((entry) => entry.itemType === defaultPreset);
   const initial = initiallyVisible[0] ?? null;
   const relay = view.relay_import;
+  const sourceOptions: readonly (readonly [string, string])[] = [
+    ["all", L("全部来源")],
+    ...sourceLabels.map((label) => [label, label] as const),
+  ];
+  const statusOptions = [
+    ["active", defaultPreset === "inbox_message" ? L("待处理") : L("未忽略"), "active"],
+    ["all", L("全部状态"), ""],
+    ["feed", L("仅 Feed"), ""],
+    ["inbox", defaultPreset === "inbox_message" ? L("未开始") : L("待处理"), ""],
+    ["saved", defaultPreset === "inbox_message" ? L("已完成") : L("已保存"), ""],
+    ["promoted", L("已升格"), ""],
+    ["processing", L("处理中"), ""],
+    ["archived", L("已忽略"), "archived"],
+  ] as const;
+  const typeOptions = [
+    ["all", L("全部类型")],
+    ["github", "GitHub"],
+    ["gmail", "Gmail"],
+    ["rss", "RSS / Atom"],
+    ["other", L("其他类型")],
+  ] as const;
+  const timeOptions = [
+    ["all", L("全部时间")],
+    ["day", L("最近 24 小时")],
+    ["week", L("最近 7 天")],
+    ["month", L("最近 30 天")],
+  ] as const;
+  const sortOptions = [
+    ["newest", L("最新在前")],
+    ["oldest", L("最早在前")],
+    ["source", L("按来源")],
+    ["title", L("按标题")],
+  ] as const;
+  const filterOptions = (
+    kind: "source" | "type" | "time" | "status" | "sort",
+    options: readonly (readonly [string, string, string?])[],
+    selected: string,
+  ) => options.map(([value, label, semanticLabel]) => `<button class="feed-filter-option" type="button" role="radio" aria-checked="${value === selected}" data-feed-filter-option="${kind}" data-feed-filter-value="${escapeHtml(value)}"><span${semanticLabel ? ` data-feed-status-${semanticLabel}-label` : ""}>${escapeHtml(label)}</span>${icon("check")}</button>`).join("");
   return `<section class="desktop-directory-panel feed-directory" data-directory-panel="feed" data-feed-directory data-feed-preset="${defaultPreset}" hidden>
-    <header class="desktop-directory-heading feed-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong data-feed-directory-title>${defaultPreset === "feed" ? "Feed" : "Inbox"}</strong><small>${L("来源、消息与待判断事项")}</small></span><button class="feed-import-trigger" type="button" data-feed-sources-open aria-label="${L("管理来源")}" title="${L("管理来源")}">${icon("settings")}</button></header>
+    <header class="desktop-directory-heading feed-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("back")}</button><span><strong data-feed-directory-title>${defaultPreset === "feed" ? "Feed" : "Inbox"}</strong><small data-feed-directory-copy>${defaultPreset === "feed" ? L("所有来源消息，完整保留") : L("只保留需要你介入的事情")}</small></span><button class="feed-import-trigger" type="button" data-work-surface-open="sources" aria-label="${L("打开来源")}" title="${L("打开来源")}">${icon("settings")}</button></header>
     <div class="feed-directory-tools">
-      <label class="feed-directory-search">${icon("search")}<input type="search" data-feed-search aria-label="${L("搜索 Item")}" placeholder="${L("搜索标题、摘要或来源")}" autocomplete="off"></label>
-      <div class="feed-filter-grid">
-        <label><span>${L("来源")}</span><select data-feed-source-filter><option value="all">${L("全部来源")}</option>${sourceLabels.map((label) => `<option value="${escapeHtml(label)}">${escapeHtml(label)}</option>`).join("")}</select></label>
-        <label><span>${L("状态")}</span><select data-feed-status-filter><option value="active" data-feed-status-active>${defaultPreset === "inbox_message" ? L("未归档") : L("未忽略")}</option><option value="all">${L("全部状态")}</option><option value="inbox">${L("待处理")}</option><option value="saved">${L("已保存")}</option><option value="promoted">${L("已升格")}</option><option value="processing">${L("处理中")}</option><option value="archived" data-feed-status-archived>${defaultPreset === "inbox_message" ? L("已归档") : L("已忽略")}</option></select></label>
-        <label class="feed-sort-filter"><span>${L("排序")}</span><select data-feed-sort><option value="newest">${L("最新在前")}</option><option value="oldest">${L("最早在前")}</option><option value="source">${L("按来源")}</option><option value="title">${L("按标题")}</option></select></label>
+      <div class="feed-directory-toolbar">
+        <label class="feed-directory-search">${icon("search")}<input type="search" data-feed-search aria-label="${L("搜索 Item")}" placeholder="${L("搜索标题、摘要或来源")}" autocomplete="off"></label>
+        <div class="feed-filter-control">
+          <button class="feed-filter-trigger" type="button" data-feed-filter-trigger aria-expanded="false" aria-haspopup="true" aria-controls="feed-filter-panel" aria-label="${L("筛选与排序")}" title="${L("筛选与排序")}">${icon("filter")}<span data-feed-filter-badge hidden>0</span></button>
+          <section class="feed-filter-panel" id="feed-filter-panel" data-feed-filter-panel hidden aria-label="${L("筛选与排序")}">
+            <header><strong>${L("筛选与排序")}</strong><button type="button" data-feed-filter-reset>${L("清除筛选")}</button></header>
+            <div class="feed-filter-section"><span>${L("来源")}</span><div class="feed-filter-options" role="radiogroup" aria-label="${L("来源")}">${filterOptions("source", sourceOptions, "all")}</div></div>
+            <div class="feed-filter-section"><span>${L("类型")}</span><div class="feed-filter-options" role="radiogroup" aria-label="${L("类型")}">${filterOptions("type", typeOptions, "all")}</div></div>
+            <div class="feed-filter-section"><span>${L("时间")}</span><div class="feed-filter-options" role="radiogroup" aria-label="${L("时间")}">${filterOptions("time", timeOptions, "all")}</div></div>
+            <div class="feed-filter-section"><span>${L("状态")}</span><div class="feed-filter-options" role="radiogroup" aria-label="${L("状态")}">${filterOptions("status", statusOptions, "active")}</div></div>
+            <div class="feed-filter-section"><span>${L("排序")}</span><div class="feed-filter-options" role="radiogroup" aria-label="${L("排序")}">${filterOptions("sort", sortOptions, "newest")}</div></div>
+            <p class="feed-filter-summary" data-feed-filter-summary aria-live="polite">${escapeHtml([sourceOptions[0][1], typeOptions[0][1], timeOptions[0][1], statusOptions[0][1], sortOptions[0][1]].join(" · "))}</p>
+          </section>
+        </div>
       </div>
+      <select data-feed-source-filter hidden tabindex="-1" aria-hidden="true">${sourceOptions.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("")}</select>
+      <select data-feed-type-filter hidden tabindex="-1" aria-hidden="true">${typeOptions.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+      <select data-feed-time-filter hidden tabindex="-1" aria-hidden="true">${timeOptions.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+      <select data-feed-status-filter hidden tabindex="-1" aria-hidden="true">${statusOptions.map(([value, label, semanticLabel]) => `<option value="${value}"${semanticLabel ? ` data-feed-status-${semanticLabel}` : ""}>${escapeHtml(label)}</option>`).join("")}</select>
+      <select data-feed-sort hidden tabindex="-1" aria-hidden="true">${sortOptions.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
     </div>
     <div class="feed-item-scroll" data-feed-list role="listbox" aria-label="${L("Item 列表")}">
       ${entries.map((entry) => {
         const selected = entry.id === initial?.id;
         const visible = entry.itemType === defaultPreset;
-        return `<button class="feed-list-item directory-list-row${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" data-feed-entry-id="${escapeHtml(entry.id)}" data-feed-entry-type="${entry.itemType}" data-feed-entry-persisted="${entry.item ? "true" : "false"}" data-feed-entry-read="${entry.item?.read_at ? "read" : "unread"}" data-feed-entry-source="${escapeHtml(entry.sourceLabel)}" data-feed-entry-status="${escapeHtml(entry.disposition)}" data-feed-entry-time="${escapeHtml(entry.updatedAt)}" data-feed-entry-title="${escapeHtml(entry.title)}" data-feed-entry-search="${escapeHtml(`${entry.title} ${entry.summary} ${entry.sourceLabel}`.toLocaleLowerCase())}"${visible ? "" : " hidden"}><span class="feed-list-icon">${icon(entry.icon)}</span><span class="feed-list-copy"><span class="feed-list-meta"><em>${escapeHtml(entry.kindLabel)}</em><small>${escapeHtml(entry.sourceLabel)}</small>${entry.itemType === "feed" && entry.item ? `<small class="feed-list-read" data-feed-read-state>${entry.item.read_at ? L("已读") : L("未读")}</small>` : ""}</span><strong title="${escapeHtml(entry.title)}">${escapeHtml(entry.title)}</strong><p>${escapeHtml(entry.summary)}</p><time datetime="${escapeHtml(entry.updatedAt)}">${formatDate(entry.updatedAt)}</time></span><span class="feed-list-state directory-row-state" data-feed-disposition="${escapeHtml(entry.disposition)}">${escapeHtml(feedDispositionLabel(entry.disposition, entry.itemType))}</span></button>`;
+        const stateLabel = entry.prototype
+          ? entry.itemType === "feed" ? L("未安排") : L("需介入")
+          : entry.inboxEntry
+            ? inboxEntryStatusLabel(entry.inboxEntry.status)
+          : feedDispositionLabel(entry.disposition, entry.itemType);
+        return `<button class="feed-list-item directory-list-row${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" data-feed-entry-id="${escapeHtml(entry.id)}" data-feed-item-id="${escapeHtml(entry.canonicalItemId ?? entry.item?.item_id ?? entry.id)}"${entry.inboxEntry ? ` data-inbox-entry-id="${escapeHtml(entry.inboxEntry.entry_id)}" data-inbox-entry-revision="${entry.inboxEntry.revision}" data-inbox-subject-type="${entry.inboxEntry.subject_type}" data-inbox-reason="${entry.inboxEntry.reason}"` : ""} data-feed-entry-type="${entry.itemType}" data-feed-entry-provider="${feedEntryProviderKey(entry)}" data-feed-entry-attention-rank="${feedDirectoryAttentionRank(entry)}" data-feed-entry-persisted="${entry.item && !entry.prototype ? "true" : "false"}"${entry.prototype ? ' data-feed-entry-prototype="true"' : ""} data-feed-entry-read="${entry.item?.read_at ? "read" : "unread"}" data-feed-entry-source="${escapeHtml(entry.sourceLabel)}" data-feed-entry-status="${escapeHtml(entry.disposition)}" data-feed-entry-time="${escapeHtml(entry.updatedAt)}" data-feed-entry-title="${escapeHtml(entry.title)}" data-feed-entry-search="${escapeHtml(`${entry.title} ${entry.summary} ${entry.sourceLabel} ${entry.item?.kind ?? ""} ${entry.inboxEntry ? inboxEntryReasonLabel(entry.inboxEntry.reason) : ""}`.toLocaleLowerCase())}"${visible ? "" : " hidden"}><span class="feed-list-icon">${icon(entry.icon)}</span><span class="feed-list-copy"><span class="feed-list-meta"><em>${escapeHtml(entry.kindLabel)}</em><small>${escapeHtml(entry.sourceLabel)}</small>${entry.itemType === "feed" && entry.item ? `<small class="feed-list-read" data-feed-read-state>${entry.item.read_at ? L("已读") : L("未读")}</small>` : ""}</span><strong title="${escapeHtml(entry.title)}">${escapeHtml(entry.title)}</strong><p>${escapeHtml(entry.summary)}</p><time datetime="${escapeHtml(entry.updatedAt)}">${formatDate(entry.updatedAt)}</time></span><span class="feed-list-state directory-row-state" data-feed-disposition="${escapeHtml(entry.disposition)}">${escapeHtml(stateLabel)}</span></button>`;
       }).join("")}
-      <div class="feed-list-empty" data-feed-empty${entries.length ? " hidden" : ""}>${icon("input")}<strong data-feed-empty-title>${L("这里还没有 Item")}</strong><p data-feed-empty-copy>${relay.available ? L("可以接入来源，或把 Relay 数据完整迁入。") : L("接入来源后，消息和 Feed 会出现在这里。")}</p><button type="button" data-feed-clear-filters hidden>${L("清除筛选")}</button><button type="button" data-feed-empty-sources data-feed-sources-open>${L("管理来源")}</button></div>
+      <div class="feed-list-empty" data-feed-empty${entries.length ? " hidden" : ""}>${icon("input")}<strong data-feed-empty-title>${L("这里还没有 Item")}</strong><p data-feed-empty-copy>${relay.available ? L("可以接入来源，或把 Relay 数据完整迁入。") : L("接入来源后，消息和 Feed 会出现在这里。")}</p><button type="button" data-feed-clear-filters hidden>${L("清除筛选")}</button>${view.demo ? `<button type="button" data-prototype-feed-restore hidden>${L("恢复列表")}</button>` : ""}<button type="button" data-feed-empty-sources data-work-surface-open="sources">${L("打开来源")}</button></div>
     </div>
-    <footer class="feed-directory-footer"><span data-feed-result-count>${L("{count} 个 Item", { count: initiallyVisible.length })}</span><small>${L("选择一项查看详情")}</small></footer>
+    <footer class="feed-directory-footer"><span data-feed-result-count>${L("{count} 个 Item", { count: initiallyVisible.length })}</span><small>${L("选择一项查看详情")}${view.demo ? `<button type="button" data-prototype-feed-empty-state>${L("预览空状态")}</button>` : ""}</small></footer>
   </section>`;
 }
 
@@ -3614,6 +4169,9 @@ function feedSourceErrorLabel(errorCode: string | null): string | null {
   if (["connector_needs_auth", "auth_required", "unauthorized"].includes(errorCode)) {
     return L("授权已失效，请重新连接账号");
   }
+  if (errorCode === "connector_rate_limited") {
+    return L("GitHub 已限制轮询频率，将在允许后重试");
+  }
   if (["credential_unreadable", "credential_store_unavailable"].includes(errorCode)) {
     return L("本机凭据暂时不可读取，请恢复 SecretStore 后重试");
   }
@@ -3624,6 +4182,296 @@ function feedSourceErrorLabel(errorCode: string | null): string | null {
     return L("当前不是实时连接，请完成账号授权");
   }
   return L("上次同步失败，可再次同步");
+}
+
+interface SourceWorkbenchEntry {
+  id: string;
+  name: string;
+  description: string;
+  kind: "github" | "gmail" | "rss" | "other";
+  typeLabel: string;
+  accountLabel: string;
+  status: "active" | "attention" | "syncing" | "paused";
+  statusLabel: string;
+  lastFetch: string;
+  nextFetch: string;
+  schedule: string;
+  itemCount: number;
+  scope: string;
+  endpoint: string;
+  configuredEndpoint: string;
+  protocolStatus: string | null;
+  homeUrl: string | null;
+  editableEndpoint: boolean;
+  prototype: boolean;
+  realSourceId: string | null;
+  syncKind: FeedSourceRecord["sync_kind"] | "prototype";
+  sourceState: FeedSourceRecord["status"] | "prototype";
+  enabled: boolean;
+  scheduleMode: "manual" | "interval";
+  scheduleEnabled: boolean;
+  intervalMinutes: number;
+  messages: string[];
+  runs: FeedSourceRunRecord[];
+}
+
+function sourceKindForRecord(source: FeedSourceRecord): SourceWorkbenchEntry["kind"] {
+  if (source.sync_kind === "github") return "github";
+  if (source.sync_kind === "gmail") return "gmail";
+  if (["rss", "custom_rss"].includes(source.kind) || source.sync_kind === "public_source") return "rss";
+  return "other";
+}
+
+function sourceWorkbenchEntries(view: GoalBoardWebView): SourceWorkbenchEntry[] {
+  const real = view.feed.sources.map((source): SourceWorkbenchEntry => {
+    const kind = sourceKindForRecord(source);
+    const rssHttp = kind === "rss" ? readRssHttpState(source.cursor) : null;
+    const catalogFeedUrl = source.kind === "rss"
+      ? view.feed_source_catalog?.find((entry) => entry.id === source.definition_id)?.feed_url
+      : undefined;
+    const sourceItems = view.feed.feed_items.filter((item) => item.source_id === source.source_id).slice(0, 3);
+    const runs = view.feed.runs.filter((run) => run.source_id === source.source_id).slice(0, 8);
+    const retryAfterAt = runs.find((run) => run.error_code === "connector_rate_limited")?.receipt?.retry_after_at;
+    const running = runs.some((run) => run.phase === "running");
+    const attention = source.status === "error" || source.status === "disconnected";
+    const schedule = source.schedule;
+    const scheduleLabel = schedule.mode === "manual"
+      ? L("仅手动拉取")
+      : schedule.enabled
+        ? L("每 {count} 分钟", { count: schedule.interval_minutes })
+        : L("定时拉取已关闭");
+    return {
+      id: source.source_id,
+      name: source.name,
+      description: source.description,
+      kind,
+      typeLabel: kind === "github" ? "GitHub" : kind === "gmail" ? "Gmail" : kind === "rss" ? "RSS / Atom" : L("其他来源"),
+      accountLabel: source.account_label ?? rssHttp?.feed_title ?? (kind === "github" || kind === "gmail"
+        ? source.status === "disconnected" ? L("未连接账号") : L("已连接账号")
+        : L("公开来源")),
+      status: running ? "syncing" : attention ? "attention" : source.status === "paused" ? "paused" : "active",
+      statusLabel: running ? L("正在拉取") : feedSourceStatusLabel(source.status),
+      lastFetch: source.last_sync_at ? formatDate(source.last_sync_at) : L("尚未拉取"),
+      nextFetch: !source.enabled || source.status === "paused"
+        ? L("已暂停")
+        : typeof retryAfterAt === "string" && Number.isFinite(Date.parse(retryAfterAt))
+          ? L("限流后 {time} 可重试", { time: formatDate(retryAfterAt) })
+        : schedule.mode === "interval" && schedule.enabled && schedule.next_pull_at
+          ? formatDate(schedule.next_pull_at)
+          : L("等待手动拉取"),
+      schedule: scheduleLabel,
+      itemCount: source.item_count,
+      scope: typeof source.config.scope === "string" && source.config.scope
+        ? source.config.scope
+        : kind === "github" ? L("通知、PR 与 Review 请求") : kind === "gmail" ? L("指定标签与未读邮件") : L("公开 Feed 更新"),
+      endpoint: kind === "gmail"
+        ? "gmail.googleapis.com · gmail.readonly"
+        : kind === "github"
+          ? "api.github.com · notifications"
+          : String(rssHttp?.final_url ?? source.config.url ?? source.config.feed_url ?? catalogFeedUrl ?? source.config.query ?? source.account_label ?? source.kind),
+      configuredEndpoint: kind === "gmail"
+        ? "gmail.googleapis.com · gmail.readonly"
+        : kind === "github"
+          ? "api.github.com · notifications"
+          : String(source.config.url ?? source.config.feed_url ?? catalogFeedUrl ?? source.config.query ?? source.account_label ?? source.kind),
+      protocolStatus: rssHttp
+        ? rssHttp.etag
+          ? L("ETag 条件请求已启用")
+          : rssHttp.last_modified
+            ? L("Last-Modified 条件请求已启用")
+            : rssHttp.last_success_at
+              ? L("源站未提供条件校验；使用 Item 身份去重")
+              : L("首次拉取后验证 Feed 并记录条件请求")
+        : null,
+      homeUrl: rssHttp?.home_url ?? null,
+      editableEndpoint: source.kind === "custom_rss",
+      prototype: false,
+      realSourceId: source.source_id,
+      syncKind: source.sync_kind,
+      sourceState: source.status,
+      enabled: source.enabled,
+      scheduleMode: schedule.mode,
+      scheduleEnabled: schedule.mode === "interval" && schedule.enabled,
+      intervalMinutes: schedule.mode === "interval" ? schedule.interval_minutes : 60,
+      messages: sourceItems.map((item) => item.title),
+      runs,
+    };
+  });
+  const prototype: SourceWorkbenchEntry[] = [
+    {
+      id: "prototype-source-github",
+      name: "GitHub · adeptify",
+      description: L("读取分配给你的 PR、Issue 与 Review 请求。"),
+      kind: "github",
+      typeLabel: "GitHub",
+      accountLabel: "yijunwang · adeptify",
+      status: "active",
+      statusLabel: L("运行正常"),
+      lastFetch: L("今天 14:18"),
+      nextFetch: L("今天 14:48"),
+      schedule: L("每 30 分钟"),
+      itemCount: 24,
+      scope: L("Notifications · PR · Review requests"),
+      endpoint: "github.com/adeptify/*",
+      configuredEndpoint: "github.com/adeptify/*",
+      protocolStatus: null,
+      homeUrl: null,
+      editableEndpoint: false,
+      prototype: true,
+      realSourceId: null,
+      syncKind: "prototype",
+      sourceState: "prototype",
+      enabled: true,
+      scheduleMode: "interval",
+      scheduleEnabled: true,
+      intervalMinutes: 30,
+      messages: ["PR #418 请求你确认 FeedItem 与 InboxEntry 的边界", "Issue #412：Gmail 授权恢复说明"],
+      runs: [],
+    },
+    {
+      id: "prototype-source-gmail",
+      name: "Gmail · product@adeptify.ai",
+      description: L("只读取需要关注的产品反馈与合作邮件。"),
+      kind: "gmail",
+      typeLabel: "Gmail",
+      accountLabel: "product@adeptify.ai",
+      status: "attention",
+      statusLabel: L("需重新授权"),
+      lastFetch: L("今天 13:06 · 失败"),
+      nextFetch: L("授权恢复后补拉"),
+      schedule: L("每小时 · 工作时段"),
+      itemCount: 18,
+      scope: "label:product OR label:partner",
+      endpoint: "gmail.googleapis.com · 只读",
+      configuredEndpoint: "gmail.googleapis.com · 只读",
+      protocolStatus: null,
+      homeUrl: null,
+      editableEndpoint: false,
+      prototype: true,
+      realSourceId: null,
+      syncKind: "prototype",
+      sourceState: "prototype",
+      enabled: true,
+      scheduleMode: "interval",
+      scheduleEnabled: true,
+      intervalMinutes: 60,
+      messages: ["设计伙伴反馈：Inbox 不应成为第二个 Feed", "合作方：下周试用安排"],
+      runs: [],
+    },
+    {
+      id: "prototype-source-rss",
+      name: "RSS · Latent Space",
+      description: L("跟踪 agent 产品、模型与工具设计的新文章。"),
+      kind: "rss",
+      typeLabel: "RSS / Atom",
+      accountLabel: L("公开来源"),
+      status: "syncing",
+      statusLabel: L("正在拉取"),
+      lastFetch: L("今天 12:25"),
+      nextFetch: L("本次完成后 6 小时"),
+      schedule: L("每 6 小时"),
+      itemCount: 61,
+      scope: L("新文章与更新"),
+      endpoint: "latent.space/feed",
+      configuredEndpoint: "latent.space/feed",
+      protocolStatus: L("ETag 条件请求已启用"),
+      homeUrl: "https://www.latent.space/",
+      editableEndpoint: false,
+      prototype: true,
+      realSourceId: null,
+      syncKind: "prototype",
+      sourceState: "prototype",
+      enabled: true,
+      scheduleMode: "interval",
+      scheduleEnabled: true,
+      intervalMinutes: 360,
+      messages: ["Designing calm inboxes for agentic products", "Runtime UX beyond chat"],
+      runs: [],
+    },
+  ];
+  const realKinds = new Set(real.map((entry) => entry.kind));
+  return view.demo ? [...real, ...prototype.filter((entry) => !realKinds.has(entry.kind))] : real;
+}
+
+function sourceIconName(kind: SourceWorkbenchEntry["kind"]): GoalBoardIcon {
+  return kind === "github" ? "tree" : kind === "gmail" ? "input" : kind === "rss" ? "activity" : "link";
+}
+
+function renderSourceDirectory(view: GoalBoardWebView): string {
+  const entries = sourceWorkbenchEntries(view);
+  return `<section class="desktop-directory-panel source-directory" data-directory-panel="sources" data-source-directory hidden>
+    <header class="desktop-directory-heading source-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("back")}</button><span><strong>${L("来源")}</strong><small>${L("账号、接入源与拉取计划")}</small></span><button class="source-add-trigger" type="button" data-feed-sources-open aria-label="${L("添加来源")}" title="${L("添加来源")}">${icon("plus")}</button></header>
+    <div class="source-directory-tools">
+      <button class="source-mobile-add" type="button" data-feed-sources-open>${icon("plus")}${L("添加来源")}</button>
+      <label class="feed-directory-search">${icon("search")}<input type="search" data-source-search aria-label="${L("搜索来源")}" placeholder="${L("搜索账号或来源")}" autocomplete="off"></label>
+      <div class="source-filter-row" role="group" aria-label="${L("来源筛选")}"><button class="is-active" type="button" data-source-filter="all">${L("全部")}</button><button type="button" data-source-filter="account">${L("账号")}</button><button type="button" data-source-filter="public">${L("公开 Feed")}</button><button type="button" data-source-filter="attention">${L("需处理")}</button></div>
+    </div>
+    <div class="source-list" data-source-list role="listbox" aria-label="${L("来源列表")}">${entries.map((entry, index) => `<button class="source-list-item directory-list-row${index === 0 ? " is-selected" : ""}" type="button" role="option" aria-selected="${index === 0}" tabindex="${index === 0 ? "0" : "-1"}" data-source-entry-id="${escapeHtml(entry.id)}" data-source-kind="${escapeHtml(entry.kind)}" data-source-status="${escapeHtml(entry.status)}" data-source-search-value="${escapeHtml(`${entry.name} ${entry.typeLabel} ${entry.accountLabel}`.toLocaleLowerCase())}"><span class="source-list-icon">${icon(sourceIconName(entry.kind))}</span><span class="source-list-copy"><span><em>${escapeHtml(entry.typeLabel)}</em>${entry.prototype ? `<small>${L("演示")}</small>` : ""}</span><strong>${escapeHtml(entry.name)}</strong><p>${escapeHtml(entry.accountLabel)}</p><small>${escapeHtml(`${L("上次")} ${entry.lastFetch} · ${L("下次")} ${entry.nextFetch}`)}</small></span><span class="source-list-state directory-row-state" data-source-status="${escapeHtml(entry.status)}">${escapeHtml(entry.statusLabel)}</span></button>`).join("")}<div class="feed-list-empty source-list-empty" data-source-empty hidden>${icon("search")}<strong>${L("没有符合条件的来源")}</strong><p>${L("换一个关键词或清除筛选，来源仍然保留。")}</p><button type="button" data-source-filter-reset>${L("清除筛选")}</button></div></div>
+    <footer class="feed-directory-footer"><span data-source-result-count>${L("{count} 个来源", { count: entries.length })}</span><small>${L("选择来源查看详情与拉取计划")}</small></footer>
+  </section>`;
+}
+
+function renderSourceRunLedger(entry: SourceWorkbenchEntry): string {
+  if (entry.prototype) {
+    return `<ol class="source-run-ledger"><li data-run-state="complete"><span>${icon("check")}</span><div><strong>${L("最近一次拉取")}</strong><p>${escapeHtml(entry.status === "attention" ? L("失败 · 授权已失效，游标未推进") : L("完成 · 新增 3，去重 8"))}</p></div><time>${escapeHtml(entry.lastFetch)}</time></li><li data-run-state="scheduled"><span>${icon("waiting")}</span><div><strong>${L("下一次计划")}</strong><p>${escapeHtml(entry.schedule)}</p></div><time>${escapeHtml(entry.nextFetch)}</time></li></ol>`;
+  }
+  if (!entry.runs.length) {
+    return `<div class="source-panel-empty">${icon("waiting")}<strong>${L("还没有运行记录")}</strong><p>${L("手动拉取或计划第一次执行后，会在这里留下可诊断记录。")}</p></div>`;
+  }
+  return `<ol class="source-run-ledger">${entry.runs.map((run) => {
+    const state = run.phase === "running" ? "running" : run.phase === "interrupted" || run.error_code ? "error" : "complete";
+    const title = run.phase === "running" ? L("正在拉取") : run.phase === "interrupted" ? L("拉取已中断") : run.error_code ? L("拉取失败") : L("拉取完成");
+    const result = run.phase === "running"
+      ? L("已开始，等待 Provider 返回")
+      : run.error_code
+        ? L("错误：{code} · 可安全重试", { code: run.error_code })
+        : run.receipt?.rss_http && typeof run.receipt.rss_http === "object" && run.receipt.rss_http !== null && (run.receipt.rss_http as Record<string, unknown>).not_modified === true
+          ? L("源站未修改 · 没有重复下载或新增 Item")
+        : L("新增 {created} · 去重 {deduped}", { created: run.created_count, deduped: run.deduped_count });
+    return `<li data-run-state="${state}"><span>${icon(state === "complete" ? "check" : state === "running" ? "refresh" : "alert")}</span><div><strong>${title}</strong><p>${escapeHtml(result)}</p></div><time>${escapeHtml(formatDate(run.completed_at ?? run.started_at))}</time></li>`;
+  }).join("")}</ol>`;
+}
+
+function sourceScopeDisplay(entry: SourceWorkbenchEntry): string {
+  if (entry.kind !== "gmail") return entry.scope;
+  const scope = parseGmailScope(entry.scope);
+  const preset = GMAIL_SCOPE_PRESETS.find((candidate) => candidate.value === scope);
+  return preset ? `${L(preset.label)} · ${preset.value}` : entry.scope;
+}
+
+function renderSourceScopeField(entry: SourceWorkbenchEntry): string {
+  if (!entry.prototype && entry.kind === "gmail") {
+    const selectedScope = parseGmailScope(entry.scope) ?? GMAIL_SCOPE_PRESETS[0].value;
+    return `<label><span>${L("拉取范围")}</span><select data-source-config-field="scope">${GMAIL_SCOPE_PRESETS.map((preset) => `<option value="${escapeHtml(preset.value)}"${selectedScope === preset.value ? " selected" : ""}>${escapeHtml(L(preset.label))} · ${escapeHtml(preset.value)}</option>`).join("")}</select><small class="source-config-help">${L("首次同步和增量同步都会执行同一范围；不做完整邮箱回填。")}</small></label>`;
+  }
+  if (!entry.prototype && entry.kind === "rss") {
+    return `<label><span>${L("拉取范围")}</span><input value="${escapeHtml(L("Feed 中公开发布的最近更新"))}" data-source-config-field="scope" readonly aria-readonly="true"><small class="source-config-help">${L("RSS / Atom 默认全部进入 Feed，不会自动占用 Inbox。")}</small></label>`;
+  }
+  return `<label><span>${L("拉取范围")}</span><textarea rows="3" ${entry.prototype ? "data-prototype-config-input" : "data-source-config-field=\"scope\""}>${escapeHtml(entry.scope)}</textarea></label>`;
+}
+
+function renderSourceWorkbench(view: GoalBoardWebView): string {
+  const entries = sourceWorkbenchEntries(view);
+  const initial = entries[0] ?? null;
+  return `<section class="desktop-work-surface source-workbench" data-work-surface="sources" data-work-surface-label="${L("来源")}" data-source-workbench hidden>
+    ${entries.map((entry) => {
+      const sourceId = entry.realSourceId ? escapeHtml(entry.realSourceId) : "";
+      const canSync = entry.prototype || (entry.enabled && entry.sourceState !== "paused" && entry.sourceState !== "disconnected");
+      const connector = entry.syncKind === "github" || entry.syncKind === "gmail";
+      return `<article class="source-detail" data-source-detail="${escapeHtml(entry.id)}"${entry.realSourceId ? ` data-real-source-id="${sourceId}"` : ""}${entry.id === initial?.id ? "" : " hidden"}>
+      <header class="source-detail-header"><div class="source-detail-identity"><span class="source-detail-mark">${icon(sourceIconName(entry.kind))}</span><div><div class="source-detail-labels"><span>${escapeHtml(entry.typeLabel)}</span>${entry.prototype ? `<em>${L("高保真演示 · 不连接外部服务")}</em>` : `<em>${L("真实本地来源")}</em>`}</div><h1>${escapeHtml(entry.name)}</h1><p>${escapeHtml(entry.description)}</p></div></div><div class="source-detail-health" data-source-status="${escapeHtml(entry.status)}"><strong data-source-health-label>${escapeHtml(entry.statusLabel)}</strong><small>${escapeHtml(entry.prototype ? L("模拟状态") : L("来自数据库与运行记录"))}</small></div></header>
+      <nav class="source-detail-tabs" role="tablist" aria-label="${L("来源详情")}"><button class="is-active" type="button" role="tab" aria-selected="true" data-source-detail-tab="overview">${L("概览")}</button><button type="button" role="tab" aria-selected="false" data-source-detail-tab="config">${L("配置")}</button><button type="button" role="tab" aria-selected="false" data-source-detail-tab="schedule">${L("拉取计划")}</button><button type="button" role="tab" aria-selected="false" data-source-detail-tab="messages">${L("来源消息")}</button><button type="button" role="tab" aria-selected="false" data-source-detail-tab="runs">${L("运行状态")}</button></nav>
+      <div class="source-detail-panels">
+        <section class="source-detail-panel source-detail-panel--overview" data-source-detail-panel="overview"><section class="source-now"><div><h2>${entry.status === "attention" ? L("需要你的处理") : entry.status === "syncing" ? L("正在拉取新消息") : entry.status === "paused" ? L("来源已暂停") : L("来源运行正常")}</h2><p>${entry.status === "attention" ? L("授权或运行状态需要处理；最后可信游标不会被失败结果覆盖。") : entry.status === "syncing" ? L("正在读取新条目；相同计划槽不会重复写入。") : entry.status === "paused" ? L("消息与运行历史仍保留；恢复后按当前计划继续。") : L("手动拉取与后台计划共用同一幂等运行记录。")}</p></div>${entry.prototype ? `<button type="button" data-prototype-source-sync="${escapeHtml(entry.id)}">${icon("refresh")}${L("模拟立即拉取")}</button><p data-prototype-action-status role="status" hidden></p>` : `<button type="button" data-source-runtime-action="sync" data-source-id="${sourceId}"${canSync ? "" : " disabled"}>${icon("refresh")}${L("立即拉取")}</button><p data-source-action-status role="status" hidden></p>`}</section><section class="source-overview-section"><header class="source-panel-heading"><h2>${L("概览")}</h2><p>${L("账号、接入源与拉取计划")}</p></header><dl class="source-overview-ledger"><div><dt>${L("账号 / 接入源")}</dt><dd>${escapeHtml(entry.accountLabel)}</dd></div><div><dt>${L("连接状态")}</dt><dd>${escapeHtml(entry.statusLabel)}</dd></div><div><dt>${L("上次拉取")}</dt><dd>${escapeHtml(entry.lastFetch)}</dd></div><div><dt>${L("下次拉取")}</dt><dd>${escapeHtml(entry.nextFetch)}</dd></div><div><dt>${L("已拉取消息")}</dt><dd>${entry.itemCount}</dd></div><div><dt>${L("范围")}</dt><dd title="${escapeHtml(sourceScopeDisplay(entry))}">${escapeHtml(sourceScopeDisplay(entry))}</dd></div>${entry.kind === "gmail" && !entry.prototype ? `<div><dt>${L("授权")}</dt><dd>gmail.readonly · GET only</dd></div>` : ""}${entry.protocolStatus ? `<div><dt>${L("条件请求")}</dt><dd>${escapeHtml(entry.protocolStatus)}</dd></div>` : ""}${entry.homeUrl ? `<div><dt>${L("订阅站点")}</dt><dd title="${escapeHtml(entry.homeUrl)}">${escapeHtml(entry.homeUrl)}</dd></div>` : ""}</dl></section>${entry.prototype ? "" : `<div class="source-runtime-actions"><button type="button" data-source-runtime-action="${entry.enabled ? "pause" : "resume"}" data-source-id="${sourceId}">${entry.enabled ? L("暂停来源") : L("恢复来源")}</button>${connector ? `<button type="button" data-source-runtime-action="disconnect" data-source-id="${sourceId}">${L("断开账号")}</button>` : ""}<details><summary>${L("删除来源")}</summary><p>${L("请选择历史处理方式。两种操作都会停止后续拉取。")}</p><div><button type="button" data-source-delete="retain_history" data-source-id="${sourceId}">${L("删除来源，保留历史")}</button><button class="is-danger" type="button" data-source-delete="delete_local_history" data-source-id="${sourceId}">${L("连同本地历史删除")}</button></div></details></div>`}</section>
+        <section class="source-detail-panel" data-source-detail-panel="config" hidden><header class="source-panel-heading"><h2>${L("配置")}</h2><p>${entry.prototype ? L("不会写入数据库或外部账号") : L("地址与账号身份由 Provider 管理；这里只保存非秘密配置")}</p></header><div class="source-config-sheet"><label><span>${L("来源名称")}</span><input value="${escapeHtml(entry.name)}" ${entry.prototype ? "data-prototype-config-input" : "data-source-config-field=\"name\""}></label><label><span>${L("账号 / 地址")}</span><input value="${escapeHtml(entry.configuredEndpoint)}"${entry.editableEndpoint ? ` data-source-config-field="feed_url"` : " readonly aria-readonly=\"true\""}>${entry.editableEndpoint ? `<small class="source-config-help">${L("修改地址后会清空旧 Feed 的条件请求游标；已有 Item 保留。")}</small>` : ""}</label><label><span>${L("说明")}</span><textarea rows="2" ${entry.prototype ? "data-prototype-config-input" : "data-source-config-field=\"description\""}>${escapeHtml(entry.description)}</textarea></label>${renderSourceScopeField(entry)}<div class="source-config-actions"><button type="button" ${entry.prototype ? "data-prototype-config-save" : `data-source-config-save data-source-id="${sourceId}"`}>${entry.prototype ? L("保存演示配置") : L("保存配置")}</button><small>${entry.prototype ? L("不会写入数据库或外部账号") : entry.editableEndpoint ? L("只接受公开 HTTPS RSS / Atom；保存后请立即拉取验证。") : L("地址与账号身份由 Provider 管理；这里只保存非秘密配置")}</small></div><p ${entry.prototype ? "data-prototype-config-status" : "data-source-action-status"} role="status" hidden></p></div></section>
+        <section class="source-detail-panel" data-source-detail-panel="schedule" hidden><div class="source-schedule-sheet"><div class="source-schedule-heading"><div><h2>${L("定时拉取")}</h2><p>${entry.prototype ? L("仅演示计划配置；浏览器关闭后不会继续运行。") : L("计划由本地服务执行；重启或休眠错过时只补拉一次。")}</p></div><label class="source-schedule-toggle"><input type="checkbox" ${entry.scheduleEnabled ? "checked " : ""}${entry.prototype ? "data-prototype-schedule-enabled" : "data-source-schedule-enabled"}><span>${entry.scheduleEnabled ? L("已开启") : L("已暂停")}</span></label></div><label><span>${L("模式")}</span><select ${entry.prototype ? "data-prototype-schedule-frequency" : "data-source-schedule-mode"}><option value="manual"${entry.scheduleMode === "manual" ? " selected" : ""}>${L("仅手动拉取")}</option><option value="interval"${entry.scheduleMode === "interval" ? " selected" : ""}>${L("按固定间隔")}</option></select></label><label><span>${L("频率")}</span><select ${entry.prototype ? "data-prototype-schedule-frequency" : "data-source-schedule-interval"}>${[15, 30, 60, 360, 720, 1440].map((minutes) => `<option value="${minutes}"${entry.intervalMinutes === minutes ? " selected" : ""}>${minutes < 60 ? L("每 {count} 分钟", { count: minutes }) : minutes === 60 ? L("每小时") : minutes === 720 ? L("每天两次") : minutes === 1440 ? L("每天一次") : L("每 {count} 小时", { count: minutes / 60 })}</option>`).join("")}</select></label><div class="source-schedule-actions"><button class="button-primary" type="button" ${entry.prototype ? "data-prototype-schedule-save" : `data-source-schedule-save data-source-id="${sourceId}"`}>${L("保存拉取计划")}</button><small>${L("下一次：{time}", { time: entry.nextFetch })}</small></div><p ${entry.prototype ? "data-prototype-schedule-status" : "data-source-action-status"} role="status" hidden></p></div></section>
+        <section class="source-detail-panel" data-source-detail-panel="messages" hidden><div class="source-message-list"><header><div><h2>${L("最近来自此来源")}</h2><p>${L("完整消息仍保存在 Feed，这里只用于来源核对。")}</p></div><button type="button" data-work-surface-open="feed" data-feed-preset="feed" data-feed-source="${escapeHtml(entry.name)}">${L("在 Feed 中查看")}${icon("chevron-right")}</button></header>${entry.messages.length ? `<ul>${entry.messages.map((message) => `<li>${icon("activity")}<span><strong>${escapeHtml(message)}</strong><small>${escapeHtml(entry.name)}</small></span></li>`).join("")}</ul>` : `<div class="source-panel-empty">${icon("archive")}<strong>${L("还没有来源消息")}</strong><p>${L("完成一次拉取后，新消息会先进入 Feed。")}</p></div>`}</div></section>
+        <section class="source-detail-panel" data-source-detail-panel="runs" hidden><header class="source-panel-heading"><h2>${L("运行状态")}</h2><p>${L("手动拉取或计划第一次执行后，会在这里留下可诊断记录。")}</p></header>${renderSourceRunLedger(entry)}</section>
+      </div>${entry.prototype ? `<p class="prototype-honesty-note source-honesty-note">${icon("alert")}${L("此来源用于验证高保真路径；同步、授权与调度均为页面内模拟。")}</p>` : ""}
+    </article>`;
+    }).join("")}
+    <div class="feed-detail-empty" data-source-detail-empty${initial ? " hidden" : ""}>${icon("settings")}<h1>${entries.length ? L("选择一个来源") : L("还没有可管理的来源")}</h1><p>${entries.length ? L("查看配置、拉取计划、来源消息和运行状态。") : L("从左侧添加 RSS，或连接 GitHub / Gmail 账号。")}</p>${entries.length ? "" : `<button type="button" data-feed-sources-open>${icon("plus")}${L("添加来源")}</button>`}</div>
+  </section>`;
 }
 
 function renderFeedSourceManager(view: GoalBoardWebView): string {
@@ -3658,8 +4506,8 @@ function renderFeedSourceManager(view: GoalBoardWebView): string {
       <div class="feed-source-form"><label><span>${L("自定义 HTTPS RSS / Atom")}</span><input data-feed-source-value="custom_rss" placeholder="https://example.com/feed.xml"></label><button type="button" data-feed-source-register="custom_rss">${L("添加")}</button></div>
     </div></section>
     <section class="feed-source-section"><div class="feed-source-section-title"><h3>${L("连接 Inbox 消息来源")}</h3></div><div class="feed-connector-grid">
-      <article class="feed-connector-card"><div><strong>GitHub</strong><em>${connectorStatus("github")}</em></div><p>${L("读取分配给你的 Issue、PR 与 Review 请求；只在手动同步时访问 GitHub。")}</p><label><span>Personal access token</span><input type="password" autocomplete="off" data-feed-connector-token="github" placeholder="github_pat_…"></label><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="github">${L("保存 Token")}</button>${auth?.github.bound ? `<button type="button" data-feed-connector-unbind="github">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Device Flow")}</summary><label><span>OAuth App Client ID</span><input autocomplete="off" data-feed-github-client-id></label><div class="feed-connector-actions"><button type="button" data-feed-github-device-start>${L("开始授权")}</button><button type="button" data-feed-github-device-poll hidden>${L("我已授权，检查状态")}</button></div><p data-feed-github-device-status hidden></p></details></article>
-      <article class="feed-connector-card"><div><strong>Gmail</strong><em>${connectorStatus("gmail")}</em></div><p>${L("读取未读邮件；OAuth 会为每个 Gmail 账号建立独立来源和游标。")}</p><label><span>Access token</span><input type="password" autocomplete="off" data-feed-connector-token="gmail" placeholder="ya29.…"></label><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="gmail">${L("保存 Token")}</button>${auth?.gmail.bound ? `<button type="button" data-feed-connector-unbind="gmail">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Google OAuth")}</summary><label><span>OAuth Client ID</span><input autocomplete="off" data-feed-gmail-client-id></label><label><span>Client secret（可选）</span><input type="password" autocomplete="off" data-feed-gmail-client-secret></label><button type="button" data-feed-gmail-oauth-start>${L("打开授权页面")}</button></details></article>
+      <article class="feed-connector-card"><div><strong>GitHub</strong><em>${connectorStatus("github")}</em></div><p>${L("读取 GitHub 未读通知；直接点名、分配、Review、CI 与安全提醒才进入 Inbox。")}</p><label><span>${L("Classic PAT（notifications scope）")}</span><input type="password" autocomplete="off" data-feed-connector-token="github" placeholder="ghp_…"></label><p class="feed-connector-note">${L("GitHub 的 notifications scope 同时包含通知写权限，但 GoalBoard 只调用 GET；该端点不支持 fine-grained PAT 或 GitHub App token。")}</p><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="github">${L("保存 Token")}</button>${auth?.github.bound ? `<button type="button" data-feed-connector-unbind="github">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Device Flow（notifications + read:user）")}</summary><label><span>OAuth App Client ID</span><input autocomplete="off" data-feed-github-client-id></label><div class="feed-connector-actions"><button type="button" data-feed-github-device-start>${L("开始授权")}</button><button type="button" data-feed-github-device-poll hidden>${L("我已授权，检查状态")}</button></div><p data-feed-github-device-status hidden></p></details></article>
+      <article class="feed-connector-card"><div><strong>Gmail</strong><em>${connectorStatus("gmail")}</em></div><p>${L("只读访问必要的邮件元数据与预览；每个 Gmail 账号建立独立来源、范围和游标。")}</p><label><span>Access token</span><input type="password" autocomplete="off" data-feed-connector-token="gmail" placeholder="ya29.…"></label><div class="feed-connector-actions"><button type="button" data-feed-connector-bind="gmail">${L("保存 Token")}</button>${auth?.gmail.bound ? `<button type="button" data-feed-connector-unbind="gmail">${L("断开")}</button>` : ""}</div><details><summary>${L("使用 Google OAuth")}</summary><p>${L("授权范围：gmail.readonly、openid、email；GoalBoard 不发送、删除或修改 Gmail 邮件。")}</p><label><span>OAuth Client ID</span><input autocomplete="off" data-feed-gmail-client-id></label><label><span>Client secret（可选）</span><input type="password" autocomplete="off" data-feed-gmail-client-secret></label><button type="button" data-feed-gmail-oauth-start>${L("打开授权页面")}</button></details></article>
     </div></section>
     <section class="feed-source-section feed-relay-migration"><div><h3>${L("把 Relay 的 Feed 所有权搬到 GoalBoard")}</h3><p>${relay.available ? L("会迁入来源、Item、正文、游标与可解密的 GitHub/Gmail 凭据；Relay 数据库保持只读。") : escapeHtml(relay.error ?? L("没有找到 Relay 数据库"))}</p></div><button type="button" data-relay-import-open${relay.available ? "" : " disabled"}>${icon("refresh")}${L("迁移 Relay")}</button></section>
     <p class="form-error" data-feed-source-error role="alert" hidden></p><p class="feed-source-progress" data-feed-source-progress role="status" hidden></p>
@@ -3682,36 +4530,116 @@ function renderDecisionFeedDetail(entry: FeedDirectoryEntry, view: GoalBoardWebV
   </article>`;
 }
 
+function renderInboxReferenceDetail(entry: FeedDirectoryEntry, selected: boolean, routePrefix: string): string {
+  const inboxEntry = entry.inboxEntry!;
+  const historical = inboxEntry.status === "done" || inboxEntry.status === "dismissed";
+  const subjectLabel = inboxEntry.subject_type === "source_fault"
+    ? entry.source ? L("来源「{source}」", { source: entry.source.name }) : L("已删除的来源")
+    : inboxEntry.subject_type === "goal_decision"
+      ? entry.goalId ? L("Goal「{goal}」", { goal: entry.title }) : L("已删除的 Goal")
+      : L("已删除的 Feed Item");
+  const openSubject = inboxEntry.subject_type === "source_fault" && entry.source
+    ? `<button class="button-primary" type="button" data-open-source-record="${escapeHtml(entry.source.source_id)}">${icon("settings")}${L("查看来源")}</button>`
+    : inboxEntry.subject_type === "goal_decision" && entry.goalId
+      ? `<a class="button-primary" href="${escapeHtml(`${routePrefix}/goals/${encodeURIComponent(entry.goalId)}`)}">${icon("target")}${L("查看 Goal")}</a>`
+      : `<button type="button" disabled aria-disabled="true">${L("原对象不可用")}</button>`;
+  const stateActions = historical
+    ? `<button type="button" data-inbox-action="open" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${icon("refresh")}${L("重新打开")}</button>`
+    : `<button type="button" data-inbox-action="done" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${icon("check")}${L("完成")}</button><button class="feed-action-subtle" type="button" data-inbox-action="dismissed" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${L("忽略")}</button>`;
+  const errorCode = typeof inboxEntry.detail.error_code === "string" ? inboxEntry.detail.error_code : "";
+  const userAction = typeof inboxEntry.detail.user_action === "string"
+    ? inboxEntry.detail.user_action
+    : inboxEntry.subject_type === "source_fault"
+      ? L("检查来源配置、授权或拉取范围后重新同步。")
+      : L("进入原对象完成判断或处理。")
+  return `<article class="feed-detail feed-detail--attention inbox-reference-detail" data-feed-detail="${escapeHtml(entry.id)}" data-inbox-reference-detail data-inbox-subject-type="${inboxEntry.subject_type}"${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span><span>${escapeHtml(inboxEntryStatusLabel(inboxEntry.status))}</span></div><h1>${escapeHtml(entry.title)}</h1><p>${escapeHtml(entry.summary)}</p><div class="feed-detail-meta"><span>${icon("link")}${escapeHtml(subjectLabel)}</span><time datetime="${escapeHtml(inboxEntry.updated_at)}">${formatDate(inboxEntry.updated_at)}</time>${errorCode ? `<span>${escapeHtml(errorCode)}</span>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${openSubject}${stateActions}</div><p class="feed-action-status" data-inbox-action-status role="status" hidden></p></header>
+    <section class="inbox-attention-context" aria-label="${L("处理上下文")}"><dl><div><dt>${L("为什么进入 Inbox")}</dt><dd>${escapeHtml(inboxEntryReasonLabel(inboxEntry.reason))}</dd></div><div><dt>${L("关联对象")}</dt><dd>${escapeHtml(subjectLabel)}</dd></div><div><dt>${L("当前状态")}</dt><dd>${escapeHtml(inboxEntryStatusLabel(inboxEntry.status))}</dd></div><div><dt>${L("下一步")}</dt><dd>${escapeHtml(userAction)}</dd></div></dl></section>
+    <p class="prototype-honesty-note">${icon("link")}${L("Inbox 只保存这条引用和进入原因；原对象内容没有复制到这里。")}</p>
+  </article>`;
+}
+
 function renderPersistedFeedDetail(entry: FeedDirectoryEntry, selected: boolean, routePrefix: string): string {
   const item = entry.item!;
   const itemUrl = safeExternalHref(item.url);
+  const isInboxMessage = item.item_type === "inbox_message";
+  const inboxEntry = entry.inboxEntry ?? null;
+  const effectiveDisposition = item.disposition === "inbox" && !entry.inboxActive
+    ? "feed"
+    : item.disposition;
+  const destinationCopy = ({
+    feed: [L("仅保留在 Feed"), L("没有占用 Inbox；原消息和来源保持可追溯")],
+    inbox: [L("已加入 Inbox"), L("Inbox 只保存需处理引用；原消息仍在 Feed")],
+    saved: [L("已保存为资料"), L("完整消息、来源和已有资料保持关联")],
+    promoted: [L("已升格为 Goal"), L("Goal 使用这条消息作为可追溯输入")],
+    processing: [L("正在处理"), L("关联 Goal 已打开，原消息仍保留")],
+    archived: [isInboxMessage ? L("已归档") : L("已忽略"), L("默认列表不再显示，仍可从状态筛选恢复")],
+  } as Record<string, [string, string]>)[effectiveDisposition] ?? [effectiveDisposition, L("原消息仍然保留")];
   const linkedGoal = item.linked_goal_id
     ? `<a class="feed-linked-goal" href="${escapeHtml(`${routePrefix}/goals/${encodeURIComponent(item.linked_goal_id)}`)}">${icon("target")}${L("打开关联 Goal")}${icon("chevron-right")}</a>`
     : "";
   const materialRows = item.materials.length
     ? item.materials.map((material) => {
         const materialUrl = safeExternalHref(material.canonical_url);
-        return `<li><span>${icon("link")}</span><div><strong>${escapeHtml(material.title || material.source_name)}</strong><small>${escapeHtml([material.source_name, material.published_at ? formatDate(material.published_at) : ""].filter(Boolean).join(" · "))}</small>${material.preview ? `<p>${escapeHtml(material.preview)}</p>` : ""}${material.content ? `<details class="feed-material-content"><summary>${L("查看保存的正文")}</summary><div>${escapeHtml(material.content)}</div></details>` : material.content_ref && !material.content_available ? `<small class="feed-material-unavailable">${L("正文暂时不可读取")}</small>` : ""}</div>${materialUrl ? `<a href="${escapeHtml(materialUrl)}" target="_blank" rel="noreferrer" aria-label="${L("打开原资料")}">${icon("arrow")}</a>` : ""}</li>`;
+        return `<li><span>${icon("link")}</span><div><strong>${escapeHtml(material.title || material.source_name)}</strong><small>${escapeHtml([material.source_name, material.published_at ? formatDate(material.published_at) : ""].filter(Boolean).join(" · "))}</small>${material.preview ? `<p>${escapeHtml(material.preview)}</p>` : ""}${material.content ? `<details class="feed-material-content"><summary>${L("查看保存的正文")}</summary><div>${escapeHtml(material.content)}</div></details>` : material.content_ref && !material.content_available ? `<small class="feed-material-unavailable">${L("正文暂时不可读取")}</small>` : ""}</div>${materialUrl ? `<a href="${escapeHtml(materialUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${L("打开原资料")}">${icon("arrow")}</a>` : ""}</li>`;
       }).join("")
     : `<li class="feed-material-empty">${icon("archive")}<p>${L("这条 Item 没有附带资料；正文和来源信息仍会进入处理上下文。")}</p></li>`;
-  const isInboxMessage = item.item_type === "inbox_message";
-  const activeActions = item.disposition === "archived"
-    ? `<button type="button" data-feed-action="restore" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${isInboxMessage ? L("恢复到 Inbox") : L("恢复到 Feed")}</button>`
-    : `<button class="button-primary" type="button" data-feed-action="start" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("play")}${item.disposition === "processing" ? L("继续处理") : L("开始处理")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${isInboxMessage ? L("归档") : L("忽略")}</button>`;
-  return `<article class="feed-detail" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-feed-detail-read="${item.read_at ? "read" : "unread"}"${selected ? "" : " hidden"}>
-    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span>${item.item_type === "feed" ? `<span data-feed-read-state>${item.read_at ? L("已读") : L("未读")}</span>` : ""}<span>${escapeHtml(feedDispositionLabel(item.disposition, item.item_type))}</span></div><h1>${escapeHtml(item.title)}</h1>${item.summary ? `<p>${escapeHtml(item.summary)}</p>` : ""}<div class="feed-detail-meta">${item.author ? `<span>${icon("user")}${escapeHtml(item.author)}</span>` : ""}<time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time>${itemUrl ? `<a href="${escapeHtml(itemUrl)}" target="_blank" rel="noreferrer">${L("打开原文")}${icon("arrow")}</a>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${activeActions}${linkedGoal}</div><p class="feed-action-status" data-feed-action-status role="status" hidden></p></header>
-    ${item.body ? `<section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body)}</div></section>` : ""}
+  const inboxReferenceActions = inboxEntry
+    ? inboxEntry.status === "done" || inboxEntry.status === "dismissed"
+      ? `<button class="button-primary" type="button" data-inbox-action="open" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${icon("refresh")}${L("重新打开")}</button><button type="button" data-inbox-open-feed="${escapeHtml(item.item_id)}">${icon("activity")}${L("查看原消息")}</button>`
+      : `<button class="button-primary" type="button" data-inbox-open-feed="${escapeHtml(item.item_id)}">${icon("activity")}${L("查看原消息")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button type="button" data-inbox-action="done" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${icon("check")}${L("完成")}</button><button class="feed-action-subtle" type="button" data-inbox-action="dismissed" data-inbox-entry-id="${escapeHtml(inboxEntry.entry_id)}" data-inbox-entry-revision="${inboxEntry.revision}">${L("忽略")}</button>`
+    : "";
+  const activeActions = isInboxMessage && inboxEntry
+    ? inboxReferenceActions
+    : item.disposition === "archived"
+    ? `<button type="button" data-feed-action="restore" data-feed-restore-target="${isInboxMessage ? "inbox" : "feed"}" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${isInboxMessage ? L("恢复到 Inbox") : L("恢复到 Feed")}</button>`
+    : isInboxMessage
+      ? `<button class="button-primary" type="button" data-feed-action="start" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("play")}${item.disposition === "processing" ? L("继续处理") : L("开始处理")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${L("归档")}</button>`
+      : `<button class="button-primary" type="button" data-feed-action="inbox" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${entry.inboxActive ? " disabled" : ""}>${icon("input")}${entry.inboxActive ? L("已加入 Inbox") : L("加入 Inbox")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${L("忽略")}</button>`;
+  return `<article class="feed-detail${inboxEntry ? " feed-detail--attention" : ""}" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-feed-detail-read="${item.read_at ? "read" : "unread"}"${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span>${item.item_type === "feed" ? `<span data-feed-read-state>${item.read_at ? L("已读") : L("未读")}</span>` : ""}<span>${escapeHtml(feedDispositionLabel(effectiveDisposition, item.item_type))}</span></div><h1>${escapeHtml(item.title || L("未命名消息"))}</h1>${item.summary ? `<p>${escapeHtml(item.summary)}</p>` : ""}<div class="feed-detail-meta">${item.author ? `<span>${icon("user")}${escapeHtml(item.author)}</span>` : ""}<time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time>${item.source_id ? `<button type="button" data-open-source-record="${escapeHtml(item.source_id)}">${icon("settings")}${L("查看来源")}</button>` : ""}${itemUrl ? `<a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer">${L("打开原文")}${icon("arrow")}</a>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${activeActions}${linkedGoal}</div><p class="feed-action-status" data-feed-action-status role="status" hidden></p></header>
+    ${inboxEntry ? `<section class="inbox-attention-context" aria-label="${L("处理上下文")}"><dl><div><dt>${L("为什么进入 Inbox")}</dt><dd>${escapeHtml(inboxEntryReasonLabel(inboxEntry.reason))}</dd></div><div><dt>${L("关联对象")}</dt><dd>${escapeHtml(`${item.source_label || item.source_kind} · ${item.title}`)}</dd></div><div><dt>${L("当前状态")}</dt><dd>${escapeHtml(inboxEntryStatusLabel(inboxEntry.status))}</dd></div><div><dt>${L("下一步")}</dt><dd>${escapeHtml(inboxEntry.status === "done" || inboxEntry.status === "dismissed" ? L("可以重新打开，原消息仍保留在 Feed。") : L("查看原消息并处理，或直接完成 / 忽略这条注意力引用。"))}</dd></div></dl><p class="prototype-honesty-note">${icon("link")}${L("Inbox 只保存这条引用和进入原因；这里展示的是原 Feed Item，内容没有复制进 Inbox。")}</p></section>` : !isInboxMessage ? `<section class="feed-destination-strip" data-destination-state="${escapeHtml(effectiveDisposition)}"><span>${icon("activity")}${L("当前去向")}</span><strong>${escapeHtml(destinationCopy[0])}</strong><small>${escapeHtml(destinationCopy[1])}</small></section>` : ""}
+    <section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body || item.summary || L("这条消息没有可显示的正文。"))}</div></section>
     ${item.tags.length ? `<section class="feed-detail-tags" aria-label="${L("标签")}">${item.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</section>` : ""}
     <section class="feed-materials"><header><div><span>${L("资料")}</span><h2>${L("随 Item 一起保存的来源")}</h2></div><small>${L("{count} 项", { count: item.materials.length })}</small></header><ul>${materialRows}</ul></section>
+  </article>`;
+}
+
+function renderPrototypeFeedDetail(entry: FeedDirectoryEntry, selected: boolean): string {
+  const item = entry.item!;
+  const prototype = entry.prototype!;
+  const isInbox = item.item_type === "inbox_message";
+  const isSourceFault = item.kind === "source_fault";
+  const isGoalDecision = item.kind === "goal_decision";
+  const primaryAction = isInbox
+    ? `<button class="button-primary" type="button" data-prototype-inbox-complete data-prototype-item-id="${escapeHtml(item.item_id)}">${icon("check")}${isSourceFault ? L("重新连接并完成（模拟）") : isGoalDecision ? L("完成判断（模拟）") : L("标记为已处理")}</button>`
+    : `<button class="button-primary" type="button" data-prototype-feed-action="inbox" data-prototype-item-id="${escapeHtml(item.item_id)}">${icon("input")}${L("加入 Inbox")}</button>`;
+  const secondaryActions = isInbox
+    ? isSourceFault
+      ? `<button type="button" data-open-prototype-source="prototype-source-gmail" data-open-source-kind="gmail">${icon("settings")}${L("查看来源配置")}</button>`
+      : isGoalDecision
+        ? `<a class="feed-linked-goal" href="${escapeHtml(item.url ?? "#")}">${icon("target")}${L("打开关联 Goal")}</a>`
+        : `<button type="button" data-prototype-inbox-defer>${L("稍后处理")}</button>`
+    : `<button type="button" data-prototype-feed-action="save">${L("保存为资料")}</button><button type="button" data-prototype-feed-action="promote">${icon("target")}${L("升格为 Goal")}</button><button class="feed-action-subtle" type="button" data-prototype-feed-action="ignore">${L("忽略")}</button>`;
+  return `<article class="feed-detail feed-detail--prototype${isInbox ? " feed-detail--attention" : ""}" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-prototype-feed-detail${selected ? "" : " hidden"}>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span><span>${L("仅本页演示")}</span></div><h1>${escapeHtml(item.title)}</h1><p>${escapeHtml(item.summary)}</p><div class="feed-detail-meta"><span>${icon("link")}${escapeHtml(prototype.relation)}</span><time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time></div><div class="feed-detail-actions" data-feed-actions>${primaryAction}${secondaryActions}</div><p class="feed-action-status" data-prototype-action-status role="status" hidden></p></header>
+    ${isInbox ? `<section class="inbox-attention-context" aria-label="${L("处理上下文")}"><dl><div><dt>${L("为什么进入 Inbox")}</dt><dd>${escapeHtml(prototype.reason)}</dd></div><div><dt>${L("关联对象")}</dt><dd>${escapeHtml(prototype.relation)}</dd></div><div><dt>${L("下一步")}</dt><dd>${escapeHtml(prototype.nextAction)}</dd></div></dl></section>` : `<section class="feed-destination-strip" data-prototype-destination><span>${icon("activity")}${L("当前去向")}</span><strong>${L("仅保留在 Feed")}</strong><small>${L("尚未占用你的 Inbox")}</small></section>`}
+    <section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body ?? "")}</div></section>
+    <section class="feed-detail-tags" aria-label="${L("标签")}">${item.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</section>
+    <p class="prototype-honesty-note">${icon("alert")}${L("演示动作只改变当前页面状态，不会连接账号、写入数据库或启动后台任务。")}</p>
   </article>`;
 }
 
 export function renderPersistedFeedItemDetail(
   item: FeedItemRecord,
   routePrefix = "",
+  options: { entryId?: string; inboxActive?: boolean; inboxEntry?: InboxEntryRecord | null } = {},
 ): string {
   return renderPersistedFeedDetail({
-    id: item.item_id,
+    id: options.entryId ?? item.item_id,
+    canonicalItemId: item.item_id,
+    inboxActive: options.inboxActive ?? item.item_type === "inbox_message",
+    inboxEntry: options.inboxEntry ?? null,
     itemType: item.item_type,
     kindLabel: item.item_type === "feed" ? "Feed" : "Inbox Message",
     sourceLabel: item.source_label || item.source_kind,
@@ -3723,6 +4651,7 @@ export function renderPersistedFeedItemDetail(
     item,
     decisionGroup: null,
     recentResult: null,
+    prototype: null,
   }, true, routePrefix);
 }
 
@@ -3740,11 +4669,15 @@ function renderFeedWorkbenchDetailFragments(
 ): { html: string; initial: FeedDirectoryEntry | null; initialIsInline: boolean } {
   const entries = feedDirectoryEntries(view).filter((entry) => entry.itemType === defaultPreset);
   const initial = entries[0] ?? null;
-  const initialIsInline = Boolean(initial && !initial.item);
+  const initialIsInline = Boolean(initial && (!initial.item || initial.prototype));
   const html = entries.map((entry) => entry.decisionGroup
       ? renderDecisionFeedDetail(entry, view, entry.id === initial?.id)
       : entry.recentResult
         ? renderRecentResultFeedDetail(entry, entry.id === initial?.id)
+        : entry.inboxEntry && !entry.item
+          ? renderInboxReferenceDetail(entry, entry.id === initial?.id, view.route_prefix)
+        : entry.prototype
+          ? renderPrototypeFeedDetail(entry, entry.id === initial?.id)
         : "").join("");
   return { html, initial, initialIsInline };
 }
@@ -4425,22 +5358,26 @@ function renderTrashGoalDocument(item: WebGoalView, selected: boolean): string {
   const trashEvent = item.events.find((event) => event.type === "goal.trashed");
   const owner = goal.trashed_by ?? trashEvent?.actor_id ?? L("未记录");
   return `<article class="goal-document trash-goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
-    <header class="goal-header">
-      <div class="goal-title-row"><div class="goal-title-copy"><small>${escapeHtml(goal.goal_id)}</small><h1>${escapeHtml(goal.title)}</h1></div><div class="goal-title-actions">${renderStatus("trashed")}<button class="document-action" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>${L("恢复")}</span></button></div></div>
-      <dl class="goal-meta"><div>${icon("archive")}<dt>${L("移入于")}</dt><dd>${formatDate(goal.trashed_at)}</dd></div><div>${icon("user")}<dt>${L("操作人")}</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("history")}<dt>${L("最近更新")}</dt><dd>${formatDate(goal.updated_at)}</dd></div></dl>
-    </header>
-    <section class="document-section">
+    <section class="goal-hero trash-goal-hero" aria-labelledby="trash-goal-title-${escapeHtml(goal.goal_id)}">
+      <header class="goal-header">
+        <div class="goal-title-kicker">${renderStatus("trashed")}<dl class="trash-goal-facts"><div>${icon("archive")}<dt>${L("移入于")}</dt><dd>${formatDate(goal.trashed_at)}</dd></div><div>${icon("user")}<dt>${L("操作人")}</dt><dd>${escapeHtml(owner)}</dd></div><div>${icon("history")}<dt>${L("最近更新")}</dt><dd>${formatDate(goal.updated_at)}</dd></div></dl></div>
+        <div class="goal-title-row"><div class="goal-title-copy"><h1 id="trash-goal-title-${escapeHtml(goal.goal_id)}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${L("这条 Goal 已从日常列表移除，但内容和历史仍然保留。")}</p></div><div class="goal-title-actions"><button class="document-action" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>${L("恢复")}</span></button></div></div>
+      </header>
+    </section>
+    <div class="goal-workspace-panels trash-goal-workspace">
+    <section class="trash-goal-panel trash-goal-panel--state">
       ${sectionHeading("archive", "回收站状态", "这不是永久删除；恢复后仍是同一个 Goal")}
       <div class="trash-summary"><p><strong>${L("Goal 的 Contract、Run、Evidence 与事件历史都已保留。")}</strong>${L("移入时仍生效的关联关系会临时停止；恢复时，只有两端都不在回收站的关系才会安全恢复。")}</p>${trashEvent ? `<p><strong>移入原因：</strong>${escapeHtml(trashEvent.reason)}</p>` : ""}</div>
     </section>
-    <section class="document-section">
+    <section class="trash-goal-panel">
       ${sectionHeading("book", "原始目标")}
       <div class="business-copy"><p class="outcome"><strong>${L("要得到的结果：")}</strong>${escapeHtml(goal.outcome || L("待澄清"))}</p><p><strong>${L("为什么做：")}</strong>${escapeHtml(goal.why || L("待澄清"))}</p><p><strong>${L("事情如何运转：")}</strong>${escapeHtml(goal.business_logic || L("待澄清"))}</p></div>
     </section>
-    <section class="document-section">
+    <section class="trash-goal-panel trash-goal-panel--restore">
       ${sectionHeading("refresh", "恢复到 Goal Tree", "恢复不会创建新 Goal，也不会自动启动 Runtime")}
       <div class="trash-restore-row"><p>${L("确认恢复后，这条 Goal 会回到原来的日常列表；如果有关联仍不能安全恢复，系统会保留它们为待处理事实。")}</p><button class="button-primary" type="button" data-open-goal-restore data-goal-id="${escapeHtml(goal.goal_id)}" data-goal-title="${escapeHtml(goal.title)}">${icon("refresh")}<span>${L("恢复这个 Goal")}</span></button></div>
     </section>
+    </div>
   </article>`;
 }
 
@@ -5091,6 +6028,13 @@ const MORE_STYLES = `
   .human-review-list { margin-top: 12px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
   .human-review-list > header { padding: 11px 0; display: flex; align-items: baseline; gap: 12px; }
   .human-review-list > header p { margin: 0; color: var(--muted); font-size: 12px; }
+  .human-review-jump { width: min(100%, 360px); min-height: 44px; margin: 12px 0 2px; padding: 7px 10px 7px 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
+  .human-review-jump:hover { background: var(--blue-dark); }
+  .human-review-jump:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), #fff 36%); outline-offset: 2px; }
+  .human-review-jump span { min-width: 0; display: grid; gap: 1px; }
+  .human-review-jump strong { font-size: 13px; }
+  .human-review-jump small { color: color-mix(in srgb, #fff, var(--blue) 18%); font-size: 11px; font-weight: 500; }
+  .human-review-jump svg { flex: 0 0 auto; }
   .human-review-form { padding: 14px 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
   .human-verdict-prefill { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
   .human-verdict-prefill > span { color: var(--accent); }
@@ -6167,27 +7111,37 @@ const RESPONSIVE_STYLES = `
 const PROJECT_INDEX_STYLES = `
   body.project-index-page { overflow: auto; background: var(--page); }
   .project-index-page > .topbar { height: 58px; }
+  .project-index-page > .project-directory-topbar { display: flex !important; }
+  .project-index-page > .project-directory-topbar > .top-action { display: inline-flex !important; }
   .project-index-page .brand { color: inherit; text-decoration: none; }
-  .project-index { min-height: calc(100dvh - 58px); padding: clamp(42px, 7vh, 78px) clamp(22px, 5vw, 72px) 72px; display: grid; place-items: start center; }
-  .project-index-panel { width: min(100%, 1120px); background: transparent; }
-  .project-index-heading { padding: 0 0 28px; }
+  .project-directory-topbar { gap: 8px; }
+  .project-primary-directories { height: 34px; padding: 3px; border-radius: 9px; background: var(--rail); display: flex; align-items: center; gap: 2px; }
+  .project-primary-directories a { height: 28px; padding: 0 10px; border-radius: 7px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-decoration: none; }
+  .project-primary-directories a[aria-current=page] { color: var(--ink); background: var(--paper); box-shadow: 0 2px 9px rgba(34, 48, 64, .08); }
+  .project-index { min-height: calc(100dvh - 58px); padding: clamp(28px, 5vh, 52px) clamp(22px, 5vw, 72px) 64px; display: grid; place-items: start center; }
+  .project-index-panel { width: min(100%, 920px); background: transparent; }
+  .project-index-heading { padding: 0 0 18px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
   .project-index-heading h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -.04em; }
   .project-index-heading p { max-width: 64ch; margin: 9px 0 0; color: var(--muted); }
-  .project-index-desktop-note { max-width: 66ch; margin-top: 13px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 520; }
-  .project-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 18px; }
-  .project-card { min-width: 0; min-height: 196px; padding: 24px; border: 1px solid var(--line); border-radius: 16px; color: inherit; background: var(--paper); box-shadow: var(--shadow-soft); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 24px; text-decoration: none; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
-  .project-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-raised); transform: translateY(-1px); }
-  .project-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 56%, transparent); outline-offset: 3px; }
-  .project-card > header, .project-card > footer { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .project-card > div { min-width: 0; }
-  .project-card-icon { width: 30px; height: 30px; border-radius: 9px; color: var(--ink-soft); background: var(--rail); display: grid; place-items: center; }
-  .project-card-icon svg { width: 16px; height: 16px; }
-  .project-card-kind { min-width: 0; overflow: hidden; color: var(--faint); font-size: 10px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
-  .project-card h2 { margin: 0; overflow: hidden; font-size: 17px; letter-spacing: -.018em; text-overflow: ellipsis; white-space: nowrap; }
-  .project-card p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .project-card footer { color: var(--ink-soft); font-size: 11px; font-weight: 650; }
-  .project-card footer svg { width: 14px; height: 14px; transform: rotate(180deg); transition: transform .16s ease; }
-  .project-card:hover footer svg { transform: rotate(180deg) translateX(-2px); }
+  .project-index-actions { display: flex; align-items: center; gap: 8px; }
+  .project-index-search { position: relative; display: flex; align-items: center; }
+  .project-index-search svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+  .project-index-search input { width: 190px; min-height: 34px; padding: 0 10px 0 31px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--paper); }
+  .project-index-search-empty { margin: 0; padding: 30px 10px; border-bottom: 1px solid var(--line-strong); color: var(--muted); text-align: center; }
+  .project-index-create { min-height: 34px; padding: 0 12px; border-radius: 7px; color: #fff; background: var(--ink); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+  .project-directory-list { border-block: 1px solid var(--line-strong); }
+  .project-directory-row { min-height: 72px; padding: 10px 8px; color: inherit; display: grid; grid-template-columns: 36px minmax(0, 1fr) 110px 74px; align-items: center; gap: 12px; text-decoration: none; }
+  .project-directory-row + .project-directory-row { border-top: 1px solid var(--line); }
+  .project-directory-row:hover { background: color-mix(in srgb, var(--blue-soft) 42%, transparent); }
+  .project-directory-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 56%, transparent); outline-offset: 2px; }
+  .project-directory-icon { width: 34px; height: 34px; border-radius: 9px; color: var(--ink-soft); background: var(--paper); display: grid; place-items: center; box-shadow: 0 4px 14px rgba(34, 48, 64, .06); }
+  .project-directory-copy { min-width: 0; display: grid; gap: 2px; }
+  .project-directory-copy strong, .project-directory-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-directory-copy strong { font-size: 14px; }
+  .project-directory-copy small, .project-directory-kind { color: var(--muted); font-size: 10px; }
+  .project-directory-kind { justify-self: start; padding: 3px 6px; border-radius: 5px; background: var(--rail); }
+  .project-directory-open { color: var(--ink-soft); display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 10px; font-weight: 700; }
+  .project-directory-open svg { width: 13px; height: 13px; transform: rotate(180deg); }
   .project-index-empty { padding: 42px 30px 46px; color: var(--muted); }
   .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
   .project-index-empty p { max-width: 48ch; margin: 0; }
@@ -6230,9 +7184,14 @@ const PROJECT_INDEX_STYLES = `
   @media (max-width: 620px) {
     .project-index { padding: 28px 14px; place-items: start stretch; }
     .project-index-panel { width: 100%; }
+    .project-index-heading { align-items: stretch; flex-direction: column; }
     .project-index-heading, .project-index-empty { padding-inline: 0; }
-    .project-card-grid { grid-template-columns: 1fr; }
-    .project-card { min-height: 184px; padding: 22px 20px; gap: 22px; }
+    .project-index-actions { align-items: stretch; }
+    .project-index-search { flex: 1; }
+    .project-index-search input { width: 100%; min-height: 44px; }
+    .project-index-create { min-height: 44px; align-self: stretch; }
+    .project-directory-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
+    .project-directory-kind { display: none; }
     .project-index-migration { padding-inline: 20px; align-items: stretch; flex-direction: column; }
     .project-index-migrate { align-self: flex-start; }
     .project-index-note { padding-inline: 20px; }
@@ -6254,6 +7213,18 @@ const CONTROL_CLIENT_SCRIPT = `
 
 const PROJECT_INDEX_CLIENT_SCRIPT = `
   (() => {
+    const projectSearch = document.querySelector("[data-project-search]");
+    const projectSearchEmpty = document.querySelector("[data-project-search-empty]");
+    projectSearch?.addEventListener("input", () => {
+      const query = projectSearch.value.trim().toLocaleLowerCase();
+      const rows = [...document.querySelectorAll("[data-project-search-row]")];
+      let visible = 0;
+      rows.forEach((row) => {
+        row.hidden = Boolean(query) && !String(row.dataset.projectSearchRow || "").includes(query);
+        if (!row.hidden) visible += 1;
+      });
+      if (projectSearchEmpty) projectSearchEmpty.hidden = visible > 0;
+    });
     const dialog = document.querySelector("[data-project-migration-dialog]");
     const form = document.querySelector("[data-project-migration-form]");
     const errorBox = document.querySelector("[data-project-migration-error]");
@@ -6820,110 +7791,6 @@ const SETTINGS_CLIENT_SCRIPT = `
         }
       });
     });
-    document.querySelectorAll("[data-connection-rebind]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const values = new FormData(form);
-        const error = form.querySelector(".settings-form-error");
-        const submit = form.querySelector("button[type=submit]");
-        if (values.get("user_confirmed") !== "on") {
-          error.textContent = L("请先确认要切换这个 Session 的项目关联。");
-          error.hidden = false;
-          return;
-        }
-        submit.disabled = true;
-        error.hidden = true;
-        try {
-          const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionRebind) + "/rebind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || L("Session 项目切换失败"));
-          showToast(L("Session 已切换到“") + result.connection.project_name + "”");
-          setTimeout(() => location.reload(), 450);
-        } catch (caught) {
-          error.textContent = caught.message || L("Session 项目切换失败");
-          error.hidden = false;
-          submit.disabled = false;
-        }
-      });
-    });
-    document.querySelectorAll("[data-connection-unbind]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const values = new FormData(form);
-        const error = form.querySelector(".settings-form-error");
-        const submit = form.querySelector("button[type=submit]");
-        if (values.get("user_confirmed") !== "on") {
-          error.textContent = L("请先确认只解绑这个 Session。");
-          error.hidden = false;
-          return;
-        }
-        submit.disabled = true;
-        error.hidden = true;
-        try {
-          const response = await fetch("/api/settings/connections/" + encodeURIComponent(form.dataset.connectionUnbind) + "/unbind", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || L("Session 解绑失败"));
-          showToast(L("Session 已解绑；项目和其他关联保持不变"));
-          setTimeout(() => location.reload(), 450);
-        } catch (caught) {
-          error.textContent = caught.message || L("Session 解绑失败");
-          error.hidden = false;
-          submit.disabled = false;
-        }
-      });
-    });
-    document.querySelectorAll("[data-workspace-default]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const values = new FormData(form);
-        const error = form.querySelector(".settings-form-error");
-        const submit = form.querySelector("button[type=submit]");
-        if (values.get("user_confirmed") !== "on") {
-          error.textContent = L("请先确认更改这个目录的默认项目。");
-          error.hidden = false;
-          return;
-        }
-        submit.disabled = true;
-        error.hidden = true;
-        try {
-          const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceDefault) + "/default", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ project_id: String(values.get("project_id") || ""), user_confirmed: true }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || L("目录默认项目更新失败"));
-          showToast(L("目录默认项目已更新"));
-          setTimeout(() => location.reload(), 450);
-        } catch (caught) {
-          error.textContent = caught.message || L("目录默认项目更新失败");
-          error.hidden = false;
-          submit.disabled = false;
-        }
-      });
-    });
-    document.querySelectorAll("[data-workspace-unlink]").forEach((form) => {
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const values = new FormData(form);
-        const error = form.querySelector(".settings-form-error");
-        const submit = form.querySelector("button[type=submit]");
-        if (values.get("user_confirmed") !== "on") {
-          error.textContent = L("请先确认解除这个目录关联。");
-          error.hidden = false;
-          return;
-        }
-        submit.disabled = true;
-        error.hidden = true;
-        try {
-          const response = await fetch("/api/settings/workspaces/" + encodeURIComponent(form.dataset.workspaceUnlink) + "/projects/" + encodeURIComponent(form.dataset.workspaceProject) + "/unlink", { method: "POST", headers: goalboardControlHeaders(), body: JSON.stringify({ user_confirmed: true }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || L("目录关联解除失败"));
-          showToast(L("目录关联已解除；GoalBoard 项目仍然保留"));
-          setTimeout(() => location.reload(), 450);
-        } catch (caught) {
-          error.textContent = caught.message || L("目录关联解除失败");
-          error.hidden = false;
-          submit.disabled = false;
-        }
-      });
-    });
     document.querySelectorAll("[data-demo-action]").forEach((button) => {
       button.addEventListener("click", async () => {
         const action = button.dataset.demoAction;
@@ -7288,14 +8155,25 @@ const CLIENT_SCRIPT = `
     const feedWorkbench = document.querySelector("[data-feed-workbench]");
     const feedList = document.querySelector("[data-feed-list]");
     const feedSearch = document.querySelector("[data-feed-search]");
+    const feedFilterTrigger = document.querySelector("[data-feed-filter-trigger]");
+    const feedFilterPanel = document.querySelector("[data-feed-filter-panel]");
+    const feedFilterBadge = document.querySelector("[data-feed-filter-badge]");
+    const feedFilterSummary = document.querySelector("[data-feed-filter-summary]");
+    const feedFilterReset = document.querySelector("[data-feed-filter-reset]");
     const feedSourceFilter = document.querySelector("[data-feed-source-filter]");
+    const feedTypeFilter = document.querySelector("[data-feed-type-filter]");
+    const feedTimeFilter = document.querySelector("[data-feed-time-filter]");
     const feedStatusFilter = document.querySelector("[data-feed-status-filter]");
-    const feedStatusActiveOption = feedStatusFilter?.querySelector("[data-feed-status-active]");
-    const feedStatusArchivedOption = feedStatusFilter?.querySelector("[data-feed-status-archived]");
     const feedSort = document.querySelector("[data-feed-sort]");
     const feedResultCount = document.querySelector("[data-feed-result-count]");
     const feedEmpty = document.querySelector("[data-feed-empty]");
     const feedDetailEmpty = document.querySelector("[data-feed-detail-empty]");
+    const sourceDirectory = document.querySelector("[data-source-directory]");
+    const sourceWorkbench = document.querySelector("[data-source-workbench]");
+    const sourceList = document.querySelector("[data-source-list]");
+    const sourceSearch = document.querySelector("[data-source-search]");
+    const sourceResultCount = document.querySelector("[data-source-result-count]");
+    const sourceEmpty = document.querySelector("[data-source-empty]");
     const feedSourcesDialog = document.querySelector("[data-feed-sources-dialog]");
     const feedSourceError = feedSourcesDialog?.querySelector("[data-feed-source-error]");
     const feedSourceProgress = feedSourcesDialog?.querySelector("[data-feed-source-progress]");
@@ -7330,15 +8208,16 @@ const CLIENT_SCRIPT = `
       if (!response.ok) throw new Error(result.error || L("来源操作失败"));
       return result;
     };
-    const markFeedItemRead = async (row, itemId) => {
+    const markFeedItemRead = async (row, entryId) => {
       if (
         !row || row.dataset.feedEntryType !== "feed" ||
         row.dataset.feedEntryPersisted !== "true" ||
         row.dataset.feedEntryRead === "read" ||
         row.dataset.feedReadPending === "true"
       ) return;
+      const itemId = row.dataset.feedItemId || entryId;
       row.dataset.feedReadPending = "true";
-      const detail = feedWorkbench?.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+      const detail = feedWorkbench?.querySelector('[data-feed-detail="' + CSS.escape(entryId) + '"]');
       const status = detail?.querySelector("[data-feed-action-status]");
       try {
         await feedApi("/api/feed/items/" + encodeURIComponent(itemId) + "/read", "POST", {});
@@ -7375,19 +8254,36 @@ const CLIENT_SCRIPT = `
     const localPathname = () => routePrefix && location.pathname.startsWith(routePrefix)
       ? location.pathname.slice(routePrefix.length) || "/"
       : location.pathname;
+    const decisionFeedEntryFromHash = () => {
+      const prefix = "#decision-goal-";
+      if (!decisionView || !location.hash.startsWith(prefix)) return "";
+      return "decision:" + decodeURIComponent(location.hash.slice(prefix.length));
+    };
     const visibleGoals = (source = state) => trashView ? source.trashed_goals : archiveView ? source.archived_goals : source.goals;
     const goalUiStorageKey = "goalboard-ui:" + (state.project?.project_id || state.snapshot.board.board_id);
-    const storageKey = decisionView ? goalUiStorageKey + ":inbox" : goalUiStorageKey;
+    const currentGoalUiStorageKey = goalUiStorageKey + ":current";
+    const storageKey = decisionView
+      ? goalUiStorageKey + ":inbox"
+      : trashView
+        ? goalUiStorageKey + ":trash"
+        : archiveView
+          ? goalUiStorageKey + ":archive"
+          : currentGoalUiStorageKey;
+    const goalMoveReceiptKey = "goalboard-goal-move-receipt:" + (state.project?.project_id || state.snapshot.board.board_id);
     const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
     const desktopNavigationStateVersion = 2;
     let desktopDirectoryOrigin = null;
     let activeDesktopSurface = decisionView ? "feed" : "goal";
     let activeFeedPreset = feedDirectory?.dataset.feedPreset || "inbox_message";
     let selectedFeedItem = feedList?.querySelector("[data-feed-entry-id].is-selected")?.dataset.feedEntryId || "";
+    let selectedSource = sourceList?.querySelector("[data-source-entry-id].is-selected")?.dataset.sourceEntryId || "";
+    let activeSourceFilter = "all";
     const defaultFeedPresetState = () => ({
       selected: "",
       query: "",
       source: "all",
+      type: "all",
+      time: "all",
       status: "active",
       sort: "newest",
     });
@@ -7397,7 +8293,7 @@ const CLIENT_SCRIPT = `
     };
     let desktopSurfaceScroll = {};
     let goalWorkspaceMode = "focus";
-    let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? visibleGoals()[0]?.goal.goal_id : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
+    let selected = decisionView ? "" : document.querySelector("[data-goal-view]:not([hidden])")?.dataset.goalView || (collectionView ? "" : state.active_goal_id || visibleGoals()[0]?.goal.goal_id) || "";
     if (!decisionView) {
       const initialHistoryState = history.state && typeof history.state === "object" ? history.state : {};
       history.replaceState({ ...initialHistoryState, goalId: selected }, "", location.href);
@@ -7420,10 +8316,15 @@ const CLIENT_SCRIPT = `
     let searchComposing = false;
     let deferredRefreshTimer;
     let navigatorView = "list";
-    let graphFocusOnly = false;
+    let momentumOpenOnly = false;
+    let momentumPeriod = 7;
+    let momentumSelected = selected;
     let graphZoom = 1;
+    let graphAutoFit = true;
+    let graphResizeObserver = null;
+    let graphResizeTarget = null;
+    let graphResizeFrame = 0;
     let desktopCompanionActive = document.body.dataset.desktopShell === "true" && matchMedia("(max-width: 760px)").matches;
-    let graphRelationTypes = new Set(["part_of", "depends_on"]);
     let openWorkTabs = [];
     const goalPanelKeys = ["overview", "completion", "progress", "factors", "records"];
     const goalFactorKeys = ["relations", "risks", "impacts", "rules"];
@@ -7529,11 +8430,11 @@ const CLIENT_SCRIPT = `
     const restoreLastGoal = (openGoalsDirectory = false) => {
       let goalId = "";
       try {
-        const goalUi = JSON.parse(sessionStorage.getItem(goalUiStorageKey) || "null");
+        const goalUi = JSON.parse(sessionStorage.getItem(currentGoalUiStorageKey) || sessionStorage.getItem(goalUiStorageKey) || "null");
         goalId = String(goalUi?.selected || "");
         if (openGoalsDirectory) {
           const nextGoalUi = goalUi && typeof goalUi === "object" ? goalUi : {};
-          sessionStorage.setItem(goalUiStorageKey, JSON.stringify({
+          sessionStorage.setItem(currentGoalUiStorageKey, JSON.stringify({
             ...nextGoalUi,
             navigationVersion: desktopNavigationStateVersion,
             directory: "goals",
@@ -7559,8 +8460,18 @@ const CLIENT_SCRIPT = `
       }
       activeDesktopSurface = surface;
       document.body.dataset.desktopSurface = surface;
-      if (mobileTreeTab) mobileTreeTab.textContent = surface === "feed" ? "Item" : defaultMobileTreeLabel;
-      if (mobileDocumentTab) mobileDocumentTab.textContent = surface === "feed" ? L("详情") : defaultMobileDocumentLabel;
+      if (mobileTreeTab) mobileTreeTab.textContent = surface === "feed"
+        ? (activeFeedPreset === "feed" ? "Feed" : "Inbox")
+        : surface === "sources"
+          ? L("来源")
+          : surface === "sessions"
+            ? "Sessions"
+            : surface === "workspaces"
+              ? L("工作目录")
+              : defaultMobileTreeLabel;
+      if (mobileDocumentTab) mobileDocumentTab.textContent = surface === "feed" || surface === "sources" || surface === "sessions" || surface === "workspaces"
+        ? L("详情")
+        : defaultMobileDocumentLabel;
       desktopWorkSurfaces.forEach((candidate) => {
         candidate.hidden = candidate !== nextSurface;
       });
@@ -7579,6 +8490,7 @@ const CLIENT_SCRIPT = `
         documentPane.scrollTop = restoreScroll ? Number(desktopSurfaceScroll[surface] || 0) : 0;
       });
       if (surface === "feed") void ensureFeedWorkbenchLoaded();
+      if (surface === "sources" && selectedSource) selectSource(selectedSource, false);
       if (persist) queueSave();
       return true;
     };
@@ -7615,6 +8527,80 @@ const CLIENT_SCRIPT = `
         });
       }
       if (persist) queueSave();
+    };
+
+    const setSourceDetailTab = (detail, tabName, focus = false) => {
+      if (!detail) return;
+      detail.querySelectorAll("[data-source-detail-tab]").forEach((tab) => {
+        const active = tab.dataset.sourceDetailTab === tabName;
+        tab.classList.toggle("is-active", active);
+        tab.setAttribute("aria-selected", String(active));
+        if (active && focus) tab.focus();
+      });
+      detail.querySelectorAll("[data-source-detail-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.sourceDetailPanel !== tabName;
+      });
+    };
+
+    const selectSource = (sourceId, moveToDetail = false) => {
+      if (!sourceList || !sourceWorkbench) return false;
+      const selectedRow = [...sourceList.querySelectorAll("[data-source-entry-id]")]
+        .find((row) => row.dataset.sourceEntryId === sourceId && !row.hidden);
+      if (!selectedRow) return false;
+      selectedSource = sourceId;
+      sourceList.querySelectorAll("[data-source-entry-id]").forEach((row) => {
+        const active = row === selectedRow;
+        row.classList.toggle("is-selected", active);
+        row.setAttribute("aria-selected", String(active));
+        row.tabIndex = active ? 0 : -1;
+      });
+      sourceWorkbench.querySelectorAll("[data-source-detail]").forEach((detail) => {
+        detail.hidden = detail.dataset.sourceDetail !== sourceId;
+      });
+      const selectedDetail = sourceWorkbench.querySelector('[data-source-detail="' + CSS.escape(sourceId) + '"]');
+      if (selectedDetail) setSourceDetailTab(selectedDetail, "overview");
+      if (moveToDetail && matchMedia("(max-width: 760px)").matches) setMobileView("document");
+      queueSave();
+      return true;
+    };
+
+    const filterSources = (preserveSelection = true) => {
+      if (!sourceList) return;
+      const query = String(sourceSearch?.value || "").trim().toLocaleLowerCase();
+      const rows = [...sourceList.querySelectorAll("[data-source-entry-id]")];
+      const visible = rows.filter((row) => {
+        const kind = row.dataset.sourceKind;
+        const status = row.dataset.sourceStatus;
+        const matchesKind = activeSourceFilter === "all" ||
+          (activeSourceFilter === "account" && (kind === "github" || kind === "gmail")) ||
+          (activeSourceFilter === "public" && kind === "rss") ||
+          (activeSourceFilter === "attention" && status === "attention");
+        const matchesQuery = !query || String(row.dataset.sourceSearchValue || "").includes(query);
+        row.hidden = !(matchesKind && matchesQuery);
+        return !row.hidden;
+      });
+      if (sourceResultCount) sourceResultCount.textContent = L("{count} 个来源", { count: visible.length });
+      if (sourceEmpty) sourceEmpty.hidden = visible.length > 0;
+      const selectedStillVisible = visible.some((row) => row.dataset.sourceEntryId === selectedSource);
+      if (!preserveSelection || !selectedStillVisible) {
+        const next = visible[0];
+        if (next) selectSource(next.dataset.sourceEntryId, false);
+        else {
+          sourceWorkbench?.querySelectorAll("[data-source-detail]").forEach((detail) => { detail.hidden = true; });
+          const emptyDetail = sourceWorkbench?.querySelector("[data-source-detail-empty]");
+          if (emptyDetail) emptyDetail.hidden = false;
+        }
+      }
+      queueSave();
+    };
+
+    const showPrototypeStatus = (control, message) => {
+      const detail = control.closest("[data-source-detail], [data-prototype-feed-detail]");
+      const status = control.closest("[data-source-detail-panel]")?.querySelector("[data-source-action-status], [data-prototype-config-status], [data-prototype-schedule-status], [data-prototype-action-status]") ||
+        detail?.querySelector("[data-source-action-status], [data-prototype-config-status], [data-prototype-schedule-status], [data-prototype-action-status]");
+      if (!status) return;
+      status.textContent = message;
+      status.hidden = false;
     };
 
     const setFeedDetailPlaceholder = (title, copy, retry = false) => {
@@ -7669,28 +8655,32 @@ const CLIENT_SCRIPT = `
       return feedWorkbenchRequest;
     };
 
-    const loadFeedItemDetail = async (row, itemId) => {
+    const loadFeedItemDetail = async (row, entryId) => {
       if (!feedWorkbench || !row || row.dataset.feedEntryPersisted !== "true") return;
-      const existing = feedWorkbench.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+      const itemId = row.dataset.feedItemId || entryId;
+      const existing = feedWorkbench.querySelector('[data-feed-detail="' + CSS.escape(entryId) + '"]');
       if (existing) {
-        existing.hidden = selectedFeedItem !== itemId;
-        if (selectedFeedItem === itemId && feedDetailEmpty) feedDetailEmpty.hidden = true;
+        existing.hidden = selectedFeedItem !== entryId;
+        if (selectedFeedItem === entryId && feedDetailEmpty) feedDetailEmpty.hidden = true;
         return;
       }
       feedDetailRequest?.abort();
       const controller = new AbortController();
       feedDetailRequest = controller;
-      feedWorkbench.dataset.feedLoadingItem = itemId;
+      feedWorkbench.dataset.feedLoadingItem = entryId;
       setFeedDetailPlaceholder(L("正在载入 Item…"), L("只读取当前选择的正文和资料。"));
       try {
+        const inboxEntryQuery = row.dataset.inboxEntryId
+          ? "&entry=" + encodeURIComponent(row.dataset.inboxEntryId)
+          : "";
         const response = await fetch(
-          route("/api/feed/items/" + encodeURIComponent(itemId) + "/detail"),
+          route("/api/feed/items/" + encodeURIComponent(itemId) + "/detail?preset=" + encodeURIComponent(activeFeedPreset) + inboxEntryQuery),
           { cache: "no-store", signal: controller.signal },
         );
         if (!response.ok) throw new Error(L("无法读取这条 Item"));
         const template = document.createElement("template");
         template.innerHTML = (await response.text()).trim();
-        const detail = template.content.querySelector('[data-feed-detail="' + CSS.escape(itemId) + '"]');
+        const detail = template.content.querySelector('[data-feed-detail="' + CSS.escape(entryId) + '"]');
         if (!detail) throw new Error(L("Item 详情响应不完整"));
         if (feedDetailRequest !== controller || !feedWorkbench.isConnected) return;
         feedWorkbench.insertBefore(detail, feedDetailEmpty);
@@ -7701,10 +8691,10 @@ const CLIENT_SCRIPT = `
         feedWorkbench.querySelectorAll("[data-feed-detail]").forEach((candidate) => {
           candidate.hidden = candidate.dataset.feedDetail !== selectedFeedItem;
         });
-        if (selectedFeedItem === itemId && feedDetailEmpty) feedDetailEmpty.hidden = true;
+        if (selectedFeedItem === entryId && feedDetailEmpty) feedDetailEmpty.hidden = true;
       } catch (error) {
         if (isAbortError(error) || feedDetailRequest !== controller) return;
-        if (selectedFeedItem !== itemId) return;
+        if (selectedFeedItem !== entryId) return;
         const message = error instanceof Error ? error.message : L("无法读取这条 Item");
         setFeedDetailPlaceholder(message, L("这条 Item 仍然保留，点击重试即可。"), true);
       } finally {
@@ -7755,6 +8745,8 @@ const CLIENT_SCRIPT = `
       const query = String(feedSearch?.value || "").trim().toLocaleLowerCase();
       const type = activeFeedPreset;
       const source = feedSourceFilter?.value || "all";
+      const providerType = feedTypeFilter?.value || "all";
+      const time = feedTimeFilter?.value || "all";
       const status = feedStatusFilter?.value || "active";
       const sort = feedSort?.value || "newest";
       const rows = [...feedList.querySelectorAll("[data-feed-entry-id]")];
@@ -7762,16 +8754,29 @@ const CLIENT_SCRIPT = `
       const visible = rows.filter((row) => {
         const matchesType = type === "all" || row.dataset.feedEntryType === type;
         const matchesSource = source === "all" || row.dataset.feedEntrySource === source;
+        const matchesProvider = providerType === "all" || row.dataset.feedEntryProvider === providerType;
+        const occurredAt = Date.parse(row.dataset.feedEntryTime || "");
+        const age = Number.isFinite(occurredAt) ? Date.now() - occurredAt : Number.POSITIVE_INFINITY;
+        const matchesTime = time === "all"
+          || (time === "day" && age >= 0 && age <= 86_400_000)
+          || (time === "week" && age >= 0 && age <= 7 * 86_400_000)
+          || (time === "month" && age >= 0 && age <= 30 * 86_400_000);
         const matchesStatus = status === "all"
           ? true
           : status === "active"
-            ? row.dataset.feedEntryStatus !== "archived"
+            ? type === "inbox_message"
+              ? row.dataset.feedEntryStatus === "inbox" || row.dataset.feedEntryStatus === "processing"
+              : row.dataset.feedEntryStatus !== "archived"
             : row.dataset.feedEntryStatus === status;
         const matchesQuery = !query || String(row.dataset.feedEntrySearch || "").includes(query);
-        row.hidden = !(matchesType && matchesSource && matchesStatus && matchesQuery);
+        row.hidden = !(matchesType && matchesSource && matchesProvider && matchesTime && matchesStatus && matchesQuery);
         return !row.hidden;
       });
       const compare = (left, right) => {
+        const attentionDifference = activeFeedPreset === "inbox_message"
+          ? Number(right.dataset.feedEntryAttentionRank || 0) - Number(left.dataset.feedEntryAttentionRank || 0)
+          : 0;
+        if (attentionDifference) return attentionDifference;
         if (sort === "oldest") return String(left.dataset.feedEntryTime || "").localeCompare(String(right.dataset.feedEntryTime || ""));
         if (sort === "source") return String(left.dataset.feedEntrySource || "").localeCompare(String(right.dataset.feedEntrySource || ""));
         if (sort === "title") return String(left.dataset.feedEntryTitle || "").localeCompare(String(right.dataset.feedEntryTitle || ""));
@@ -7810,11 +8815,59 @@ const CLIENT_SCRIPT = `
       queueSave();
     };
 
+    const syncFeedFilterUi = () => {
+      if (!feedFilterPanel) return;
+      const values = {
+        source: feedSourceFilter?.value || "all",
+        type: feedTypeFilter?.value || "all",
+        time: feedTimeFilter?.value || "all",
+        status: feedStatusFilter?.value || "active",
+        sort: feedSort?.value || "newest",
+      };
+      feedFilterPanel.querySelectorAll("[data-feed-filter-option]").forEach((option) => {
+        const kind = option.dataset.feedFilterOption;
+        const selected = values[kind] === option.dataset.feedFilterValue;
+        option.setAttribute("aria-checked", String(selected));
+        option.tabIndex = selected ? 0 : -1;
+      });
+      const labels = [feedSourceFilter, feedTypeFilter, feedTimeFilter, feedStatusFilter, feedSort]
+        .map((control) => control?.selectedOptions?.[0]?.textContent?.trim())
+        .filter(Boolean);
+      const summary = labels.join(" · ");
+      if (feedFilterSummary) feedFilterSummary.textContent = summary;
+      const activeCount = Number(values.source !== "all") + Number(values.type !== "all") + Number(values.time !== "all") + Number(values.status !== "active") + Number(values.sort !== "newest");
+      if (feedFilterBadge) {
+        feedFilterBadge.textContent = String(activeCount);
+        feedFilterBadge.hidden = activeCount === 0;
+      }
+      if (feedFilterReset) feedFilterReset.disabled = activeCount === 0;
+      feedFilterTrigger?.classList.toggle("is-active", activeCount > 0);
+      const label = summary ? L("筛选与排序") + "：" + summary : L("筛选与排序");
+      feedFilterTrigger?.setAttribute("aria-label", label);
+      feedFilterTrigger?.setAttribute("title", label);
+    };
+
+    const setFeedFilterOpen = (open, focusFirst = false) => {
+      if (!feedFilterPanel || !feedFilterTrigger) return;
+      feedFilterPanel.hidden = !open;
+      feedFilterTrigger.setAttribute("aria-expanded", String(open));
+      if (open) setTreeFilterOpen(false);
+      if (open && focusFirst) {
+        requestAnimationFrame(() => {
+          if (feedFilterPanel.hidden) return;
+          const selectedSource = feedFilterPanel.querySelector('[data-feed-filter-option="source"][aria-checked="true"]');
+          (selectedSource instanceof HTMLElement ? selectedSource : feedFilterPanel.querySelector("[data-feed-filter-option]"))?.focus?.({ preventScroll: true });
+        });
+      }
+    };
+
     const rememberFeedPresetState = () => {
       feedPresetState[activeFeedPreset] = {
         selected: selectedFeedItem,
         query: String(feedSearch?.value || ""),
         source: feedSourceFilter?.value || "all",
+        type: feedTypeFilter?.value || "all",
+        time: feedTimeFilter?.value || "all",
         status: feedStatusFilter?.value || "active",
         sort: feedSort?.value || "newest",
       };
@@ -7828,6 +8881,14 @@ const CLIENT_SCRIPT = `
         feedSourceFilter.value = saved.source || "all";
         if (!feedSourceFilter.value) feedSourceFilter.value = "all";
       }
+      if (feedTypeFilter) {
+        feedTypeFilter.value = saved.type || "all";
+        if (!feedTypeFilter.value) feedTypeFilter.value = "all";
+      }
+      if (feedTimeFilter) {
+        feedTimeFilter.value = saved.time || "all";
+        if (!feedTimeFilter.value) feedTimeFilter.value = "all";
+      }
       if (feedStatusFilter) {
         feedStatusFilter.value = saved.status || "active";
         if (!feedStatusFilter.value) feedStatusFilter.value = "active";
@@ -7836,6 +8897,19 @@ const CLIENT_SCRIPT = `
         feedSort.value = saved.sort || "newest";
         if (!feedSort.value) feedSort.value = "newest";
       }
+      syncFeedFilterUi();
+    };
+
+    const setFeedStatusOptionLabel = (value, label) => {
+      if (feedStatusFilter) {
+        const option = [...feedStatusFilter.options].find((candidate) => candidate.value === value);
+        if (option) option.textContent = label;
+      }
+      feedFilterPanel?.querySelectorAll('[data-feed-filter-option="status"]').forEach((option) => {
+        if (option.dataset.feedFilterValue !== value) return;
+        const copy = option.querySelector("span");
+        if (copy) copy.textContent = label;
+      });
     };
 
     const setFeedPreset = (preset, restoreSavedState = true) => {
@@ -7851,8 +8925,16 @@ const CLIENT_SCRIPT = `
       const heading = feedDirectory?.querySelector("[data-feed-directory-title]");
       if (heading) heading.textContent = activeFeedPreset === "feed" ? "Feed" : "Inbox";
       const semanticType = activeFeedPreset;
-      if (feedStatusActiveOption) feedStatusActiveOption.textContent = semanticType === "inbox_message" ? L("未归档") : semanticType === "feed" ? L("未忽略") : L("未处置");
-      if (feedStatusArchivedOption) feedStatusArchivedOption.textContent = semanticType === "inbox_message" ? L("已归档") : semanticType === "feed" ? L("已忽略") : L("已归档 / 忽略");
+      if (activeDesktopSurface === "feed" && mobileTreeTab) mobileTreeTab.textContent = semanticType === "feed" ? "Feed" : "Inbox";
+      const feedDirectoryCopy = feedDirectory?.querySelector("[data-feed-directory-copy]");
+      if (feedDirectoryCopy) feedDirectoryCopy.textContent = semanticType === "feed"
+        ? L("所有来源消息，完整保留")
+        : L("只保留需要你介入的事情");
+      setFeedStatusOptionLabel("active", semanticType === "inbox_message" ? L("待处理") : L("未忽略"));
+      setFeedStatusOptionLabel("inbox", semanticType === "inbox_message" ? L("未开始") : L("待处理"));
+      setFeedStatusOptionLabel("saved", semanticType === "inbox_message" ? L("已完成") : L("已保存"));
+      setFeedStatusOptionLabel("archived", L("已忽略"));
+      syncFeedFilterUi();
       filterFeedItems(true);
       if (activeDesktopSurface === "feed") {
         setDesktopWorkSurface("feed", false, false);
@@ -8182,19 +9264,7 @@ const CLIENT_SCRIPT = `
       });
     };
 
-    const graphElement = () => workspace.querySelector("[data-goal-graph]");
-
-    const graphConnectedGoalIds = () => {
-      const connected = new Set(selected ? [selected] : []);
-      const edges = [...workspace.querySelectorAll("[data-graph-edge]")].filter((edge) =>
-        graphRelationTypes.has(edge.dataset.edgeType),
-      );
-      for (const edge of edges) {
-        if (edge.dataset.edgeFrom === selected && edge.dataset.edgeTo) connected.add(edge.dataset.edgeTo);
-        if (edge.dataset.edgeTo === selected && edge.dataset.edgeFrom) connected.add(edge.dataset.edgeFrom);
-      }
-      return connected;
-    };
+    const graphElement = () => workspace.querySelector("[data-goal-momentum]");
 
     const drawGoalGraph = () => {
       const graph = graphElement();
@@ -8205,250 +9275,210 @@ const CLIENT_SCRIPT = `
       const nodeById = new Map(
         [...stage.querySelectorAll("[data-graph-node]")]
           .filter((node) => !node.hidden)
-          .map((node) => [node.dataset.selectGoal, node]),
+          .map((node) => [node.dataset.goalId, node]),
       );
-      const radialEdges = [...stage.querySelectorAll("[data-graph-edge]")].filter((edge) => !edge.hasAttribute("hidden"));
-      radialEdges.forEach((edge, visibleEdgeIndex) => {
-        const from = nodeById.get(edge.dataset.edgeFrom);
-        const to = nodeById.get(edge.dataset.edgeTo);
-        const path = edge.querySelector("path");
-        if (!from || !to || !path) return;
-        const fromRect = (from.querySelector(".graph-node-mark") || from).getBoundingClientRect();
-        const toRect = (to.querySelector(".graph-node-mark") || to).getBoundingClientRect();
-        const fromX = (fromRect.left + fromRect.width / 2 - stageRect.left) / scale;
-        const fromY = (fromRect.top + fromRect.height / 2 - stageRect.top) / scale;
-        const toX = (toRect.left + toRect.width / 2 - stageRect.left) / scale;
-        const toY = (toRect.top + toRect.height / 2 - stageRect.top) / scale;
-        if (edge.dataset.edgeType === "part_of") {
-          path.setAttribute("d", "M " + fromX + " " + fromY + " L " + toX + " " + toY);
-          return;
-        }
-        const centerX = stageRect.width / scale / 2;
-        const centerY = stageRect.height / scale / 2;
-        const fromAngle = Number(from.dataset.graphAngle || 0);
-        const toAngle = Number(to.dataset.graphAngle || 0);
-        const delta = ((toAngle - fromAngle + 540) % 360) - 180;
-        const middleAngle = (fromAngle + delta / 2) * Math.PI / 180;
-        const edgeIndex = Number(edge.dataset.edgeIndex || visibleEdgeIndex) || 0;
-        const radiusOffset = (edgeIndex % 3) * 7;
-        const controlX = centerX + Math.cos(middleAngle) * (stageRect.width / scale * .45 + radiusOffset);
-        const controlY = centerY + Math.sin(middleAngle) * (stageRect.height / scale * .42 + radiusOffset);
-        path.setAttribute("d", "M " + fromX + " " + fromY + " Q " + controlX + " " + controlY + " " + toX + " " + toY);
-      });
-      return;
-      const visibleNodeBottom = Math.max(
-        0,
-        ...[...nodeById.values()].map((node) => (node.getBoundingClientRect().bottom - stageRect.top) / scale),
-      );
-      const visibleEdges = [...stage.querySelectorAll("[data-graph-edge]")].filter((edge) => !edge.hasAttribute("hidden"));
-      const partOfGroups = new Map();
-      visibleEdges.filter((edge) => edge.dataset.edgeType === "part_of").forEach((edge) => {
-        const targetId = edge.dataset.edgeTo || "";
-        partOfGroups.set(targetId, [...(partOfGroups.get(targetId) || []), edge]);
-      });
-      partOfGroups.forEach((edges) => edges.sort((left, right) => {
-        const leftNode = nodeById.get(left.dataset.edgeFrom);
-        const rightNode = nodeById.get(right.dataset.edgeFrom);
-        if (!leftNode || !rightNode) return 0;
-        const leftRect = leftNode.getBoundingClientRect();
-        const rightRect = rightNode.getBoundingClientRect();
-        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
-      }));
-      visibleEdges.forEach((edge, visibleEdgeIndex) => {
+      [...stage.querySelectorAll("[data-graph-edge]")].filter((edge) => !edge.hasAttribute("hidden")).forEach((edge, visibleEdgeIndex) => {
         const from = nodeById.get(edge.dataset.edgeFrom);
         const to = nodeById.get(edge.dataset.edgeTo);
         const path = edge.querySelector("path");
         if (!from || !to || !path) return;
         const fromRect = from.getBoundingClientRect();
         const toRect = to.getBoundingClientRect();
+        const fromX = (fromRect.right - stageRect.left) / scale;
+        const fromY = (fromRect.top + fromRect.height / 2 - stageRect.top) / scale;
+        const toX = (toRect.left - stageRect.left) / scale;
+        const toY = (toRect.top + toRect.height / 2 - stageRect.top) / scale;
         const edgeIndex = Number(edge.dataset.edgeIndex || visibleEdgeIndex) || 0;
-        const routeOffset = ((edgeIndex % 5) - 2) * 6;
-        const fromCenterX = (fromRect.left + fromRect.width / 2 - stageRect.left) / scale;
-        const fromCenterY = (fromRect.top + fromRect.height / 2 - stageRect.top) / scale;
-        const toCenterX = (toRect.left + toRect.width / 2 - stageRect.left) / scale;
-        const toCenterY = (toRect.top + toRect.height / 2 - stageRect.top) / scale;
-        if (edge.dataset.edgeType === "part_of") {
-          const travelsUp = fromCenterY >= toCenterY;
-          const group = partOfGroups.get(edge.dataset.edgeTo || "") || [edge];
-          const groupIndex = Math.max(0, group.indexOf(edge));
-          const sourceRects = group
-            .map((candidate) => nodeById.get(candidate.dataset.edgeFrom)?.getBoundingClientRect())
-            .filter(Boolean);
-          const nearestSourceTop = Math.min(...sourceRects.map((rect) => rect.top));
-          const lowerSourceRow = travelsUp && fromRect.top > nearestSourceTop + fromRect.height * .55;
-          const targetPortInset = Math.min(34, toRect.width * .16);
-          const targetPortRange = Math.max(0, toRect.width - targetPortInset * 2);
-          const endX = (toRect.left + targetPortInset + (group.length === 1 ? targetPortRange / 2 : targetPortRange * groupIndex / (group.length - 1)) - stageRect.left) / scale;
-          const endY = ((travelsUp ? toRect.bottom : toRect.top) - stageRect.top) / scale;
-          const sourceBoundaryY = ((travelsUp ? nearestSourceTop : Math.max(...sourceRects.map((rect) => rect.bottom))) - stageRect.top) / scale;
-          const middleY = endY + (sourceBoundaryY - endY) * .48 + routeOffset;
-          if (lowerSourceRow) {
-            const sameLane = Math.abs(fromCenterX - toCenterX) < 12;
-            const sourceColumn = Number(from.dataset.graphColumn || "0");
-            const exitsLeft = sameLane
-              ? sourceColumn <= 1
-                ? false
-                : sourceColumn >= 5
-                  ? true
-                  : groupIndex % 2 === 0
-              : fromCenterX > toCenterX;
-            const startX = ((exitsLeft ? fromRect.left : fromRect.right) - stageRect.left) / scale;
-            const startY = fromCenterY;
-            const gutterX = startX + (exitsLeft ? -1 : 1) * (22 + groupIndex * 7) + routeOffset;
-            path.setAttribute("d", "M " + startX + " " + startY + " H " + gutterX + " V " + middleY + " H " + endX + " V " + endY);
-          } else {
-            const startX = fromCenterX;
-            const startY = ((travelsUp ? fromRect.top : fromRect.bottom) - stageRect.top) / scale;
-            path.setAttribute("d", "M " + startX + " " + startY + " V " + middleY + " H " + endX + " V " + endY);
-          }
+        if (toX > fromX + 16) {
+          const middleX = fromX + (toX - fromX) * .5 + ((edgeIndex % 3) - 1) * 5;
+          path.setAttribute("d", "M " + fromX + " " + fromY + " H " + middleX + " V " + toY + " H " + toX);
         } else {
-          const sameLane = Math.abs(fromCenterX - toCenterX) < 12;
-          const sourceColumn = Number(from.dataset.graphColumn || "0");
-          const exitsRight = sameLane ? sourceColumn < 5 : fromCenterX < toCenterX;
-          const direction = exitsRight ? 1 : -1;
-          const startX = ((exitsRight ? fromRect.right : fromRect.left) - stageRect.left) / scale;
-          const startY = fromCenterY;
-          const endX = ((sameLane
-            ? exitsRight ? toRect.right : toRect.left
-            : exitsRight ? toRect.left : toRect.right) - stageRect.left) / scale;
-          const endY = toCenterY;
-          const gutterOffset = 14 + (edgeIndex % 2) * 6;
-          const sourceGutterX = startX + direction * gutterOffset;
-          const targetGutterX = endX + direction * (sameLane ? gutterOffset : -gutterOffset);
-          const busY = visibleNodeBottom + 18 + (edgeIndex % 4) * 8;
-          path.setAttribute("d", "M " + startX + " " + startY + " H " + sourceGutterX + " V " + busY + " H " + targetGutterX + " V " + endY + " H " + endX);
+          const routeY = Math.min(fromY, toY) - 24 - edgeIndex % 4 * 7;
+          path.setAttribute("d", "M " + fromX + " " + fromY + " H " + (fromX + 16) + " V " + routeY + " H " + (toX - 16) + " V " + toY + " H " + toX);
         }
       });
+    };
+
+    const bindGoalGraphViewport = () => {
+      const viewport = graphElement()?.querySelector("[data-graph-viewport]");
+      if (!viewport) return;
+      if (typeof ResizeObserver === "function" && graphResizeTarget !== viewport) {
+        graphResizeObserver?.disconnect();
+        graphResizeTarget = viewport;
+        graphResizeObserver = new ResizeObserver(() => {
+          cancelAnimationFrame(graphResizeFrame);
+          graphResizeFrame = requestAnimationFrame(() => graphAutoFit ? fitGoalGraph(false) : drawGoalGraph());
+        });
+        graphResizeObserver.observe(viewport);
+      }
+      if (viewport.dataset.panBound === "true") return;
+      viewport.dataset.panBound = "true";
+      let pointerId = null;
+      let pointerX = 0;
+      let pointerY = 0;
+      let scrollLeft = 0;
+      let scrollTop = 0;
+      viewport.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || event.target.closest("button, a, input, select, textarea")) return;
+        pointerId = event.pointerId;
+        pointerX = event.clientX;
+        pointerY = event.clientY;
+        scrollLeft = viewport.scrollLeft;
+        scrollTop = viewport.scrollTop;
+        viewport.classList.add("is-panning");
+        viewport.setPointerCapture(pointerId);
+        event.preventDefault();
+      });
+      viewport.addEventListener("pointermove", (event) => {
+        if (pointerId !== event.pointerId || !viewport.hasPointerCapture(pointerId)) return;
+        viewport.scrollLeft = scrollLeft - (event.clientX - pointerX);
+        viewport.scrollTop = scrollTop - (event.clientY - pointerY);
+      });
+      const finishPan = (event) => {
+        if (pointerId !== event.pointerId) return;
+        if (viewport.hasPointerCapture(pointerId)) viewport.releasePointerCapture(pointerId);
+        pointerId = null;
+        viewport.classList.remove("is-panning");
+      };
+      viewport.addEventListener("pointerup", finishPan);
+      viewport.addEventListener("pointercancel", finishPan);
+    };
+
+    const updateMomentumSelection = (goalId, persist = true) => {
+      const graph = graphElement();
+      if (!graph?.querySelector('[data-momentum-node][data-goal-id="' + CSS.escape(goalId || "") + '"]')) return;
+      momentumSelected = goalId;
+      const relatedGoalIds = new Set([goalId]);
+      graph.querySelectorAll("[data-graph-edge]").forEach((edge) => {
+        const related = edge.dataset.edgeFrom === goalId || edge.dataset.edgeTo === goalId;
+        edge.classList.toggle("is-selected-path", related);
+        if (related && edge.dataset.edgeFrom) relatedGoalIds.add(edge.dataset.edgeFrom);
+        if (related && edge.dataset.edgeTo) relatedGoalIds.add(edge.dataset.edgeTo);
+      });
+      graph.querySelectorAll("[data-momentum-node]").forEach((node) => {
+        const active = node.dataset.goalId === goalId;
+        node.classList.toggle("is-selected", active);
+        node.classList.toggle("is-connected-path", !active && relatedGoalIds.has(node.dataset.goalId));
+        node.setAttribute("aria-pressed", String(active));
+      });
+      graph.querySelectorAll("[data-momentum-select]").forEach((button) => {
+        const active = button.dataset.momentumSelect === goalId;
+        button.classList.toggle("is-selected", active);
+        if (button.matches(".momentum-queue-item")) button.setAttribute("aria-pressed", String(active));
+      });
+      graph.querySelectorAll("[data-momentum-detail]").forEach((detail) => {
+        detail.hidden = detail.dataset.momentumDetail !== goalId;
+      });
+      requestAnimationFrame(drawGoalGraph);
+      if (persist) queueSave();
     };
 
     const updateGraphVisibility = () => {
       const graph = graphElement();
       if (!graph) return;
-      graph.dataset.focusMode = graphFocusOnly ? "focused" : "all";
+      graph.dataset.filter = momentumOpenOnly ? "open" : "all";
       const query = String(treeSearch.value || "").trim().toLowerCase();
-      const connected = graphConnectedGoalIds();
       const visibleNodeIds = new Set();
       graph.querySelectorAll("[data-graph-node]").forEach((node) => {
         const matchesQuery = !query || String(node.dataset.goalSearch || "").includes(query);
         const matchesStatus = selectedStatuses.size === 0 || selectedStatuses.has(node.dataset.goalStatus);
-        const matchesFocus = !graphFocusOnly || connected.has(node.dataset.selectGoal);
-        node.hidden = !(matchesQuery && matchesStatus && matchesFocus);
-        if (!node.hidden) visibleNodeIds.add(node.dataset.selectGoal);
+        const matchesCompletion = !momentumOpenOnly || node.dataset.goalCompleted !== "true";
+        node.hidden = !(matchesQuery && matchesStatus && matchesCompletion);
+        if (!node.hidden) visibleNodeIds.add(node.dataset.goalId);
       });
-      const stage = graph.querySelector("[data-graph-stage]");
-      const graphNodes = [...graph.querySelectorAll("[data-graph-node]")];
-      graphNodes.forEach((node) => {
-        node.style.setProperty("--graph-column", node.dataset.graphColumn || "1");
-        node.style.setProperty("--graph-column-span", node.dataset.graphColumnSpan || "1");
-        node.style.setProperty("--graph-row", node.dataset.graphRow || "1");
-      });
-      const compactVisibleRole = (role, columns, startRow) => {
-        graphNodes
-          .filter((node) => !node.hidden && node.dataset.graphRole === role)
-          .sort((left, right) => Number(left.dataset.graphRow) - Number(right.dataset.graphRow) || Number(left.dataset.graphColumn) - Number(right.dataset.graphColumn))
-          .forEach((node, index) => {
-            node.style.setProperty("--graph-column", String(columns[index % columns.length]));
-            node.style.setProperty("--graph-row", String(startRow + Math.floor(index / columns.length) * 2));
-          });
-      };
-      if (graphFocusOnly) {
-        const roleStart = (role, fallback) => Math.min(
-          ...graphNodes.filter((node) => node.dataset.graphRole === role).map((node) => Number(node.dataset.graphRow) || fallback),
-          fallback,
-        );
-        compactVisibleRole("ancestor", [2, 4], roleStart("ancestor", 1));
-        compactVisibleRole("prerequisite", [1], roleStart("prerequisite", 3));
-        compactVisibleRole("dependent", [5], roleStart("dependent", 3));
-        compactVisibleRole("child", [1, 3, 5], roleStart("child", 7));
-      }
-      const visibleNodes = graphNodes.filter((node) => !node.hidden);
-      const visibleRows = Math.max(8, ...visibleNodes.map((node) => Number(node.style.getPropertyValue("--graph-row")) + 2));
-      const visibleChildren = visibleNodes.filter((node) => node.dataset.graphRole === "child");
-      const visibleOthers = visibleNodes.filter((node) => node.dataset.graphRole === "other");
-      const activeOtherStart = visibleChildren.length
-        ? Math.max(...visibleChildren.map((node) => Number(node.style.getPropertyValue("--graph-row")) + 3))
-        : Number(stage?.style.getPropertyValue("--graph-other-start")) || visibleRows;
-      stage?.style.setProperty("--graph-visible-rows", String(visibleRows));
-      stage?.style.setProperty("--graph-active-other-start", String(activeOtherStart));
-      graph.querySelector(".graph-region--children")?.toggleAttribute("hidden", visibleChildren.length === 0);
-      graph.querySelector(".graph-region--other")?.toggleAttribute("hidden", visibleOthers.length === 0);
-      const pathSources = new Set();
-      const pathTargets = new Set();
       graph.querySelectorAll("[data-graph-edge]").forEach((edge) => {
-        const hidden = !graphRelationTypes.has(edge.dataset.edgeType) ||
-          !visibleNodeIds.has(edge.dataset.edgeFrom) ||
+        const hidden = !visibleNodeIds.has(edge.dataset.edgeFrom) ||
           !visibleNodeIds.has(edge.dataset.edgeTo);
         edge.toggleAttribute("hidden", hidden);
-        const selectedPath = !hidden && (edge.dataset.edgeFrom === selected || edge.dataset.edgeTo === selected);
-        edge.classList.toggle("is-selected-path", selectedPath);
-        if (selectedPath) {
-          if (edge.dataset.edgeFrom) pathSources.add(edge.dataset.edgeFrom);
-          if (edge.dataset.edgeTo) pathTargets.add(edge.dataset.edgeTo);
-        }
       });
-      graph.querySelectorAll("[data-graph-node]").forEach((node) => {
-        const goalId = node.dataset.selectGoal;
-        node.classList.toggle("is-connected-path", pathSources.has(goalId) || pathTargets.has(goalId));
-        node.classList.toggle("is-path-source", pathSources.has(goalId));
-        node.classList.toggle("is-path-target", pathTargets.has(goalId));
+      graph.querySelectorAll("[data-momentum-group]").forEach((group) => {
+        const hasVisibleNode = [...graph.querySelectorAll("[data-momentum-node]")]
+          .some((node) => !node.hidden && node.dataset.momentumGroupId === group.dataset.momentumGroup);
+        group.toggleAttribute("hidden", !hasVisibleNode);
       });
-      graph.querySelectorAll("[data-graph-relation]").forEach((button) => {
-        const active = graphRelationTypes.has(button.dataset.graphRelation);
+      graph.querySelectorAll("[data-momentum-filter]").forEach((button) => {
+        const active = button.dataset.momentumFilter === (momentumOpenOnly ? "open" : "all");
         button.classList.toggle("is-active", active);
         button.setAttribute("aria-pressed", String(active));
       });
-      const focusButton = graph.querySelector("[data-graph-focus]");
-      focusButton?.classList.toggle("is-active", graphFocusOnly);
-      focusButton?.setAttribute("aria-pressed", String(graphFocusOnly));
-      const focusLabel = focusButton?.querySelector("span");
-      if (focusLabel) focusLabel.textContent = graphFocusOnly ? L("直接相关") : L("完整网络");
-      requestAnimationFrame(drawGoalGraph);
+      updateMomentumSelection(momentumSelected || selected, false);
+      requestAnimationFrame(() => graphAutoFit ? fitGoalGraph(false) : drawGoalGraph());
     };
 
-    const setGraphZoom = (value, persist = true) => {
+    const setMomentumPeriod = (value, persist = true) => {
+      const graph = graphElement();
+      momentumPeriod = Number(value) === 30 ? 30 : 7;
+      graph?.querySelectorAll("[data-momentum-period]").forEach((button) => {
+        const active = Number(button.dataset.momentumPeriod) === momentumPeriod;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      graph?.querySelectorAll("[data-momentum-period-panel]").forEach((panel) => {
+        panel.hidden = Number(panel.dataset.momentumPeriodPanel) !== momentumPeriod;
+      });
+      if (persist) queueSave();
+    };
+
+    const setGraphZoom = (value, persist = true, autoFit = false) => {
       const graph = graphElement();
       const stage = graph?.querySelector("[data-graph-stage]");
-      graphZoom = Math.min(1.25, Math.max(.9, Math.round((Number(value) || 1) * 100) / 100));
+      graphAutoFit = autoFit;
+      graphZoom = Math.min(1.25, Math.max(.55, Math.round((Number(value) || 1) * 100) / 100));
       if (stage) {
         stage.dataset.graphScale = String(graphZoom);
         stage.style.zoom = String(graphZoom);
       }
       const output = graph?.querySelector("[data-graph-zoom-value]");
       if (output) output.textContent = Math.round(graphZoom * 100) + "%";
-      graph?.querySelector('[data-graph-zoom="out"]')?.toggleAttribute("disabled", graphZoom <= .9);
+      graph?.querySelector('[data-graph-zoom="out"]')?.toggleAttribute("disabled", graphZoom <= .55);
       graph?.querySelector('[data-graph-zoom="in"]')?.toggleAttribute("disabled", graphZoom >= 1.25);
       requestAnimationFrame(drawGoalGraph);
       if (persist) queueSave();
+    };
+
+    const fitGoalGraph = (persist = true) => {
+      const graph = graphElement();
+      const viewport = graph?.querySelector("[data-graph-viewport]");
+      const stage = graph?.querySelector("[data-graph-stage]");
+      if (!viewport || !stage) return;
+      const availableWidth = Math.max(1, viewport.clientWidth - 24);
+      const scale = Math.min(1, availableWidth / stage.offsetWidth);
+      setGraphZoom(scale, persist, true);
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
     };
 
     const loadGoalGraph = async (force = false) => {
       const graph = graphElement();
       if (!graph || (!force && graph.dataset.loaded === "true")) return true;
       if (goalGraphRequest) return goalGraphRequest;
-      const status = graph.querySelector("[data-goal-graph-status]");
-      const retry = graph.querySelector("[data-retry-goal-graph]");
-      if (status) status.textContent = L("正在载入关系图…");
+      const status = graph.querySelector("[data-goal-momentum-status]");
+      const retry = graph.querySelector("[data-retry-goal-momentum]");
+      if (status) status.textContent = L("正在载入推进态势…");
       if (retry) retry.hidden = true;
       graph.setAttribute("aria-busy", "true");
       goalGraphRequest = (async () => {
         try {
           const response = await fetch(
-            route("/api/board/graph?view=" + documentCollection + "&goal_id=" + encodeURIComponent(selected || "")),
+            route("/api/board/momentum?view=" + documentCollection + "&goal_id=" + encodeURIComponent(momentumSelected || selected || "")),
             { cache: "no-store" },
           );
-          if (!response.ok) throw new Error(L("无法载入关系图"));
+          if (!response.ok) throw new Error(L("无法载入推进态势"));
           const template = document.createElement("template");
           template.innerHTML = (await response.text()).trim();
-          const nextGraph = template.content.querySelector("[data-goal-graph]");
-          if (!nextGraph) throw new Error(L("关系图响应不完整"));
+          const nextGraph = template.content.querySelector("[data-goal-momentum]");
+          if (!nextGraph) throw new Error(L("推进态势响应不完整"));
           nextGraph.dataset.loaded = "true";
           graph.replaceWith(nextGraph);
           setWorkspaceMode("graph", false);
-          setGraphZoom(graphZoom, false);
+          bindGoalGraphViewport();
+          if (graphAutoFit) requestAnimationFrame(() => fitGoalGraph(false));
+          else setGraphZoom(graphZoom, false, false);
+          setMomentumPeriod(momentumPeriod, false);
           updateGraphVisibility();
           return true;
         } catch (error) {
-          const message = error instanceof Error ? error.message : L("无法载入关系图");
+          const message = error instanceof Error ? error.message : L("无法载入推进态势");
           if (status) status.textContent = message;
           if (retry) retry.hidden = false;
           return false;
@@ -8498,18 +9528,40 @@ const CLIENT_SCRIPT = `
       setWorkspaceMode(view === "graph" ? "graph" : "focus", persist);
     };
 
-    const goalPanelFromHash = () => {
-      const targetId = decodeURIComponent(location.hash.slice(1));
+    const goalPanelFromTargetId = (targetId) => {
       if (!targetId) return "";
       const target = document.getElementById(targetId);
-      return target?.closest?.("[data-goal-panel]")?.dataset.goalPanel || "";
+      const renderedPanel = target?.closest?.("[data-goal-panel]")?.dataset.goalPanel;
+      if (renderedPanel) return renderedPanel;
+      const panelTarget = targetId.match(/^goal-panel-(overview|completion|progress|factors|records)-/);
+      if (panelTarget) return panelTarget[1];
+      if (targetId.startsWith("completion-") || targetId.startsWith("acceptance-")) return "completion";
+      if (targetId.startsWith("progress-")) return "progress";
+      if (/^(?:goal-factor-panel|relation|risk|impact)-/.test(targetId)) return "factors";
+      return "";
+    };
+
+    const goalPanelFromHash = () => {
+      const targetId = decodeURIComponent(location.hash.slice(1));
+      return goalPanelFromTargetId(targetId);
+    };
+
+    const goalFactorFromTargetId = (targetId) => {
+      if (!targetId) return "";
+      const target = document.getElementById(targetId);
+      const renderedFactor = target?.closest?.("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
+      if (renderedFactor) return renderedFactor;
+      const factorTarget = targetId.match(/^goal-factor-panel-(relations|risks|impacts|rules)-/);
+      if (factorTarget) return factorTarget[1];
+      if (targetId.startsWith("relation-")) return "relations";
+      if (targetId.startsWith("risk-")) return "risks";
+      if (targetId.startsWith("impact-")) return "impacts";
+      return "";
     };
 
     const goalFactorFromHash = () => {
       const targetId = decodeURIComponent(location.hash.slice(1));
-      if (!targetId) return "";
-      const target = document.getElementById(targetId);
-      return target?.closest?.("[data-goal-factor-panel]")?.dataset.goalFactorPanel || "";
+      return goalFactorFromTargetId(targetId);
     };
 
     const isAbortError = (error) => error instanceof DOMException && error.name === "AbortError";
@@ -8904,6 +9956,7 @@ const CLIENT_SCRIPT = `
       const width = Math.round(Math.min(maximum, Math.max(260, Number(value) || 320)));
       workspace.style.setProperty("--tree-width", width + "px");
       treeResizer.setAttribute("aria-valuenow", String(width));
+      requestAnimationFrame(() => graphAutoFit ? fitGoalGraph(false) : drawGoalGraph());
       if (persist) queueSave();
     };
 
@@ -8920,6 +9973,7 @@ const CLIENT_SCRIPT = `
         button.setAttribute("title", nextCollapsed ? L("展开目录") : L("收起目录"));
       });
       treeResizer?.setAttribute("aria-hidden", String(nextCollapsed));
+      requestAnimationFrame(() => graphAutoFit ? fitGoalGraph(false) : drawGoalGraph());
       if (persist) queueSave();
     };
 
@@ -8942,9 +9996,11 @@ const CLIENT_SCRIPT = `
       mobileView: workspace.dataset.mobileView || "tree",
       navigatorView,
       workspaceMode: activeDesktopSurface === "goal" ? workspace.dataset.workspaceMode || "focus" : goalWorkspaceMode,
-      graphFocusOnly,
+      momentumOpenOnly,
+      momentumPeriod,
+      momentumSelected,
       graphZoom,
-      graphRelationTypes: [...graphRelationTypes],
+      graphAutoFit,
       navigationVersion: desktopNavigationStateVersion,
       directory: treePane?.dataset.desktopDirectory || "root",
       directoryCollapsed: workspace.classList.contains("is-directory-collapsed"),
@@ -8952,9 +10008,15 @@ const CLIENT_SCRIPT = `
       feedSelected: selectedFeedItem,
       feedQuery: feedSearch?.value || "",
       feedSource: feedSourceFilter?.value || "all",
+      feedType: feedTypeFilter?.value || "all",
+      feedTime: feedTimeFilter?.value || "all",
       feedStatus: feedStatusFilter?.value || "active",
       feedSort: feedSort?.value || "newest",
       feedPresets: feedPresetState,
+      sourceSelected: selectedSource,
+      sourceQuery: sourceSearch?.value || "",
+      sourceFilter: activeSourceFilter,
+      sourceDetailTab: sourceWorkbench?.querySelector('[data-source-detail="' + CSS.escape(selectedSource) + '"] [data-source-detail-tab][aria-selected="true"]')?.dataset.sourceDetailTab || "overview",
       goalPanel: documentPane.querySelector('[data-goal-tab][aria-selected="true"]')?.dataset.goalTab || "overview",
       goalFactor: documentPane.querySelector('[data-goal-factor-tab][aria-selected="true"]')?.dataset.goalFactorTab || "relations",
       });
@@ -8964,16 +10026,17 @@ const CLIENT_SCRIPT = `
       desktopSurfaceScroll = ui?.surfaceScroll && typeof ui.surfaceScroll === "object" ? { ...ui.surfaceScroll } : {};
       if (ui?.documentTop != null && desktopSurfaceScroll.goal == null) desktopSurfaceScroll.goal = Number(ui.documentTop || 0);
       goalWorkspaceMode = ui?.workspaceMode || "focus";
-      const nextDesktopSurface = decisionView ? "feed" : ui?.workSurface || "goal";
+      const requestedDesktopSurface = ui?.workSurface || (decisionView ? "feed" : "goal");
+      const nextDesktopSurface = desktopWorkSurfaces.some((candidate) => candidate.dataset.workSurface === requestedDesktopSurface)
+        ? requestedDesktopSurface
+        : decisionView ? "feed" : "goal";
       if (ui?.treeWidth) setTreeWidth(ui.treeWidth, false);
       if (ui?.tuiWidth) setTuiWidth(ui.tuiWidth, false);
       setDirectoryCollapsed(ui?.directoryCollapsed === true, false);
       if (desktopDirectoryPanels.length) {
-        const restoredDirectory = decisionView
-          ? "feed"
-          : ui?.navigationVersion === desktopNavigationStateVersion
-            ? ui?.directory || "root"
-            : "root";
+        const restoredDirectory = ui?.navigationVersion === desktopNavigationStateVersion
+          ? ui?.directory || (decisionView ? "feed" : "root")
+          : decisionView ? "feed" : "root";
         setDesktopDirectory(restoredDirectory, false, false);
       }
       const collapsed = new Set(ui?.collapsed || []);
@@ -8988,15 +10051,15 @@ const CLIENT_SCRIPT = `
       });
       treeSearch.value = ui?.query || "";
       setSelectedStatuses(ui?.statuses || []);
-      graphFocusOnly = ui?.graphFocusOnly === true;
+      momentumOpenOnly = ui?.momentumOpenOnly === true;
+      momentumPeriod = Number(ui?.momentumPeriod) === 30 ? 30 : 7;
+      momentumSelected = String(ui?.momentumSelected || selected || "");
       graphZoom = Number(ui?.graphZoom) || graphZoom;
-      const savedGraphTypes = Array.isArray(ui?.graphRelationTypes)
-        ? ui.graphRelationTypes.filter((type) => type === "part_of" || type === "depends_on")
-        : ["part_of", "depends_on"];
-      graphRelationTypes = new Set(savedGraphTypes.length ? savedGraphTypes : ["part_of", "depends_on"]);
+      graphAutoFit = ui?.graphAutoFit !== false;
       filterTree(ui?.query || "");
       if (feedDirectory) {
-        activeFeedPreset = ui?.feedPreset === "feed" ? "feed" : "inbox_message";
+        const deepLinkedDecisionEntry = decisionFeedEntryFromHash();
+        activeFeedPreset = deepLinkedDecisionEntry ? "inbox_message" : ui?.feedPreset === "feed" ? "feed" : "inbox_message";
         const persistedPresets = ui?.feedPresets && typeof ui.feedPresets === "object"
           ? ui.feedPresets
           : {};
@@ -9009,18 +10072,51 @@ const CLIENT_SCRIPT = `
             selected: String(ui?.feedSelected || selectedFeedItem || ""),
             query: String(ui?.feedQuery || ""),
             source: ui?.feedSource || "all",
+            type: ui?.feedType || "all",
+            time: ui?.feedTime || "all",
             status: ui?.feedStatus || "active",
             sort: ui?.feedSort || "newest",
           };
         }
+        if (deepLinkedDecisionEntry) {
+          feedPresetState.inbox_message = {
+            ...feedPresetState.inbox_message,
+            selected: deepLinkedDecisionEntry,
+            query: "",
+            source: "all",
+            type: "all",
+            time: "all",
+            status: "active",
+          };
+        }
         setFeedPreset(activeFeedPreset, true);
+      }
+      const restoredSourceDetailTab = String(ui?.sourceDetailTab || "overview");
+      if (sourceDirectory) {
+        const availableSourceFilters = new Set(["all", "account", "public", "attention"]);
+        activeSourceFilter = availableSourceFilters.has(ui?.sourceFilter) ? ui.sourceFilter : "all";
+        selectedSource = String(ui?.sourceSelected || selectedSource || "");
+        if (sourceSearch) sourceSearch.value = String(ui?.sourceQuery || "");
+        sourceDirectory.querySelectorAll("[data-source-filter]").forEach((button) => {
+          const active = button.dataset.sourceFilter === activeSourceFilter;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+        filterSources(true);
+        if (selectedSource) selectSource(selectedSource, false);
       }
       setWorkspaceMode(ui?.workspaceMode || (ui?.navigatorView === "graph" ? "graph" : "focus"), false);
       if (desktopWorkSurfaces.length) setDesktopWorkSurface(nextDesktopSurface, false, false);
       if (nextDesktopSurface === "feed" && selectedFeedItem) {
         selectFeedItem(selectedFeedItem, false, true);
       }
-      setGraphZoom(graphZoom, false);
+      if (nextDesktopSurface === "sources" && selectedSource) {
+        const selectedDetail = sourceWorkbench?.querySelector('[data-source-detail="' + CSS.escape(selectedSource) + '"]');
+        setSourceDetailTab(selectedDetail, restoredSourceDetailTab);
+      }
+      bindGoalGraphViewport();
+      if (graphAutoFit) requestAnimationFrame(() => fitGoalGraph(false));
+      else setGraphZoom(graphZoom, false, false);
       setGoalPanel(goalPanelFromHash() || (ui?.selected === selected ? ui?.goalPanel : "overview"), false);
       setGoalFactor(goalFactorFromHash() || (ui?.selected === selected ? ui?.goalFactor : "relations"), false);
       const hashTargetId = decodeURIComponent(location.hash.slice(1));
@@ -9064,6 +10160,7 @@ const CLIENT_SCRIPT = `
       const item = visibleGoals().find((entry) => entry.goal.goal_id === goalId);
       if (!item) return false;
       selected = goalId;
+      momentumSelected = goalId;
       document.querySelector("[data-tui-pane]")?.setAttribute("data-goal-id", goalId);
       document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: {
         goalId,
@@ -9078,11 +10175,6 @@ const CLIENT_SCRIPT = `
         button.classList.toggle("is-selected", active);
         button.setAttribute("aria-pressed", String(active));
         if (active) expandAncestors(button);
-      });
-      treeScroll.querySelectorAll(".graph-node[data-select-goal]").forEach((button) => {
-        const active = button.dataset.selectGoal === goalId;
-        button.classList.toggle("is-selected", active);
-        button.setAttribute("aria-pressed", String(active));
       });
       if (navigatorView === "graph") updateGraphVisibility();
       document.title = item.goal.title + " · GoalBoard";
@@ -9242,6 +10334,15 @@ const CLIENT_SCRIPT = `
 
     const searchInteractionActive = () => searchComposing || Date.now() < searchBusyUntil;
 
+    const liveUiInteractionActive = () => {
+      const active = document.activeElement;
+      if (!active) return false;
+      if (active.closest?.("[data-live-form]")) return true;
+      return active.matches?.('input, textarea, select, [contenteditable="true"]') && Boolean(
+        active.closest?.('[data-directory-panel="feed"], [data-directory-panel="sources"], [data-work-surface="feed"], [data-work-surface="sources"]'),
+      );
+    };
+
     const scheduleDeferredRefresh = () => {
       clearTimeout(deferredRefreshTimer);
       const wait = Math.max(80, searchBusyUntil - Date.now() + 40);
@@ -9259,7 +10360,7 @@ const CLIENT_SCRIPT = `
         scheduleDeferredRefresh();
         return;
       }
-      if (!force && document.activeElement?.closest?.("[data-live-form]")) {
+      if (!force && liveUiInteractionActive()) {
         return;
       }
       syncing = true;
@@ -9274,16 +10375,22 @@ const CLIENT_SCRIPT = `
           scheduleDeferredRefresh();
           return;
         }
-        const ui = readUiState();
+        if (!force && liveUiInteractionActive()) return;
+        if (decisionView) {
+          saveUiState();
+          location.reload();
+          return "reloading";
+        }
+        const refreshGoalId = selected;
         const pageBase = goalPageBase();
         const collectionPath = trashView ? "/trash" : archiveView ? "/archive" : "/";
         const pagePath = decisionView
           ? route("/decisions")
-          : selected
-            ? pageBase + encodeURIComponent(selected)
+          : refreshGoalId
+            ? pageBase + encodeURIComponent(refreshGoalId)
             : route(collectionPath);
         const compactRefreshPath = route("/api/board/refresh?view=" + documentCollection +
-          (selected ? "&goal_id=" + encodeURIComponent(selected) : ""));
+          (refreshGoalId ? "&goal_id=" + encodeURIComponent(refreshGoalId) : ""));
         let pageResponse = await fetch(decisionView ? pagePath : compactRefreshPath, { cache: "no-store" });
         if (!pageResponse.ok && !decisionView) {
           pageResponse = await fetch(pagePath, { cache: "no-store" });
@@ -9302,7 +10409,7 @@ const CLIENT_SCRIPT = `
         const nextState = JSON.parse(nextStateNode.textContent);
         const nextGoals = visibleGoals(nextState);
         const renderedGoalId = parsed.querySelector("[data-goal-view]")?.dataset.goalView || "";
-        const goalStillExists = nextGoals.some((item) => item.goal.goal_id === selected);
+        const goalStillExists = nextGoals.some((item) => item.goal.goal_id === refreshGoalId);
         const nextSelected = decisionView
           ? ""
           : renderedGoalId || (goalStillExists ? selected : nextState.active_goal_id || nextGoals[0]?.goal.goal_id || "");
@@ -9320,6 +10427,37 @@ const CLIENT_SCRIPT = `
           scheduleDeferredRefresh();
           return;
         }
+        if (!decisionView && selected !== refreshGoalId) {
+          scheduleDeferredRefresh();
+          return;
+        }
+        if (refreshGoalId && !goalStillExists) {
+          const movedToCurrent = nextState.goals.some((item) => item.goal.goal_id === refreshGoalId);
+          const movedToArchive = nextState.archived_goals.some((item) => item.goal.goal_id === refreshGoalId);
+          const movedToTrash = nextState.trashed_goals.some((item) => item.goal.goal_id === refreshGoalId);
+          const movedPath = movedToCurrent
+            ? "/goals/" + encodeURIComponent(refreshGoalId)
+            : movedToArchive
+              ? "/archive/goals/" + encodeURIComponent(refreshGoalId)
+              : movedToTrash
+                ? "/trash/goals/" + encodeURIComponent(refreshGoalId)
+                : collectionPath;
+          const message = movedToCurrent
+            ? L("这条 Goal 已恢复到当前 Goal，已继续打开同一条 Goal。")
+            : movedToArchive
+              ? L("这条 Goal 已归档，已继续打开归档中的同一条 Goal。")
+              : movedToTrash
+                ? L("这条 Goal 已移入回收站，已继续打开同一条 Goal。")
+                : L("这条 Goal 已不在当前集合，已返回列表。");
+          try {
+            sessionStorage.setItem(goalMoveReceiptKey, JSON.stringify({ goalId: refreshGoalId, message }));
+          } catch {}
+          saveUiState();
+          location.replace(globalThis.goalboardNavigationUrl(route(movedPath)));
+          return "reloading";
+        }
+        if (!force && liveUiInteractionActive()) return;
+        const ui = readUiState();
         const createDraft = dialog.open ? readCreateDraft() : null;
         documentPane.classList.add("is-syncing");
         treeScroll.innerHTML = nextTree.innerHTML;
@@ -9407,6 +10545,18 @@ const CLIENT_SCRIPT = `
       receipt.focus({ preventScroll: true });
     };
 
+    const refreshBoardWithDecisionReceipt = async (message, context) => {
+      try {
+        sessionStorage.setItem("goalboard-decision-receipt", JSON.stringify({ message, context }));
+      } catch {}
+      const refreshResult = await refreshBoard(true);
+      if (refreshResult === "reloading") return;
+      try {
+        sessionStorage.removeItem("goalboard-decision-receipt");
+      } catch {}
+      showDecisionReceipt(message, context);
+    };
+
     const showFactorReceipt = (factor, titleText, detailText) => {
       setGoalPanel("factors", false);
       setGoalFactor(factor, false, true);
@@ -9485,8 +10635,10 @@ const CLIENT_SCRIPT = `
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "决定提交失败");
-        await refreshBoard(true);
-        showDecisionReceipt(typeof successMessage === "function" ? successMessage(result) : successMessage, receiptContext);
+        await refreshBoardWithDecisionReceipt(
+          typeof successMessage === "function" ? successMessage(result) : successMessage,
+          receiptContext,
+        );
       } catch (error) {
         errorBox.textContent = humanDecisionError(error.message, "决定提交失败，请检查输入后重试");
         errorBox.hidden = false;
@@ -9637,11 +10789,39 @@ const CLIENT_SCRIPT = `
       event.stopPropagation();
       setTreeFilterOpen(treeFilter?.hidden !== false, true);
     });
-    feedSearch?.addEventListener("input", () => filterFeedItems());
-    [feedSourceFilter, feedStatusFilter, feedSort].forEach((control) => {
+    feedFilterTrigger?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setFeedFilterOpen(feedFilterPanel?.hidden !== false, true);
+    });
+    feedSearch?.addEventListener("input", () => {
+      noteSearchActivity();
+      filterFeedItems();
+    });
+    sourceSearch?.addEventListener("input", () => {
+      noteSearchActivity();
+      filterSources();
+    });
+    [feedSourceFilter, feedTypeFilter, feedTimeFilter, feedStatusFilter, feedSort].forEach((control) => {
       control?.addEventListener("change", () => {
+        syncFeedFilterUi();
         filterFeedItems();
       });
+    });
+    feedFilterPanel?.addEventListener("keydown", (event) => {
+      const current = event.target.closest?.("[data-feed-filter-option]");
+      if (!current || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      const group = [...current.parentElement.querySelectorAll("[data-feed-filter-option]")];
+      const currentIndex = group.indexOf(current);
+      const direction = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? group.length - 1
+          : (currentIndex + direction + group.length) % group.length;
+      event.preventDefault();
+      group[nextIndex]?.click();
+      group[nextIndex]?.focus();
     });
     feedList?.addEventListener("keydown", (event) => {
       const current = event.target.closest?.("[data-feed-entry-id]");
@@ -9656,14 +10836,321 @@ const CLIENT_SCRIPT = `
       selectFeedItem(next.dataset.feedEntryId, false, true);
       next.focus();
     });
+    sourceList?.addEventListener("keydown", (event) => {
+      const current = event.target.closest?.("[data-source-entry-id]");
+      if (!current || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const rows = [...sourceList.querySelectorAll("[data-source-entry-id]")].filter((row) => !row.hidden);
+      const index = rows.indexOf(current);
+      const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+      event.preventDefault();
+      const next = rows[nextIndex];
+      if (next) {
+        selectSource(next.dataset.sourceEntryId, false);
+        next.focus();
+      }
+    });
 
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
+      const humanReviewJump = target.closest("[data-human-review-jump]");
+      if (humanReviewJump) {
+        const reviewForm = humanReviewJump.closest(".human-review-list")?.querySelector("[data-human-review-form]");
+        reviewForm?.scrollIntoView({ block: "start" });
+        requestAnimationFrame(() => reviewForm?.querySelector('[name="verdict"]')?.focus({ preventScroll: true }));
+        return;
+      }
       const activeProjectMenu = target.closest("[data-project-menu]");
       projectMenus.forEach((menu) => {
         if (menu.open && menu !== activeProjectMenu) menu.open = false;
       });
+      if (!feedFilterPanel?.hidden && !target.closest("[data-feed-filter-panel], [data-feed-filter-trigger]")) setFeedFilterOpen(false);
+      const feedFilterOption = target.closest("[data-feed-filter-option]");
+      if (feedFilterOption) {
+        const control = {
+          source: feedSourceFilter,
+          type: feedTypeFilter,
+          time: feedTimeFilter,
+          status: feedStatusFilter,
+          sort: feedSort,
+        }[feedFilterOption.dataset.feedFilterOption];
+        if (control) control.value = feedFilterOption.dataset.feedFilterValue || "";
+        syncFeedFilterUi();
+        filterFeedItems();
+        return;
+      }
+      if (target.closest("[data-feed-filter-reset]")) {
+        if (feedSourceFilter) feedSourceFilter.value = "all";
+        if (feedTypeFilter) feedTypeFilter.value = "all";
+        if (feedTimeFilter) feedTimeFilter.value = "all";
+        if (feedStatusFilter) feedStatusFilter.value = "active";
+        if (feedSort) feedSort.value = "newest";
+        syncFeedFilterUi();
+        filterFeedItems(false);
+        return;
+      }
+      const sourceFilter = target.closest("[data-source-filter]");
+      if (sourceFilter) {
+        activeSourceFilter = sourceFilter.dataset.sourceFilter || "all";
+        sourceDirectory?.querySelectorAll("[data-source-filter]").forEach((button) => {
+          const active = button === sourceFilter;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+        filterSources(false);
+        return;
+      }
+      if (target.closest("[data-source-filter-reset]")) {
+        activeSourceFilter = "all";
+        if (sourceSearch) sourceSearch.value = "";
+        sourceDirectory?.querySelectorAll("[data-source-filter]").forEach((button) => {
+          const active = button.dataset.sourceFilter === "all";
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+        filterSources(false);
+        return;
+      }
+      const sourceEntry = target.closest("[data-source-entry-id]");
+      if (sourceEntry) {
+        selectSource(sourceEntry.dataset.sourceEntryId, true);
+        return;
+      }
+      const sourceDetailTab = target.closest("[data-source-detail-tab]");
+      if (sourceDetailTab) {
+        setSourceDetailTab(sourceDetailTab.closest("[data-source-detail]"), sourceDetailTab.dataset.sourceDetailTab || "overview");
+        queueSave();
+        return;
+      }
+      const sourceConfigSave = target.closest("[data-source-config-save]");
+      if (sourceConfigSave) {
+        const detail = sourceConfigSave.closest("[data-source-detail]");
+        const sourceId = sourceConfigSave.dataset.sourceId;
+        const readField = (name) => detail?.querySelector('[data-source-config-field="' + name + '"]')?.value || "";
+        sourceConfigSave.disabled = true;
+        showPrototypeStatus(sourceConfigSave, L("正在保存来源配置…"));
+        try {
+          await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId), "PATCH", {
+            name: readField("name"),
+            description: readField("description"),
+            scope: readField("scope"),
+            feed_url: readField("feed_url") || undefined,
+          });
+          showPrototypeStatus(sourceConfigSave, L("来源配置已保存。地址与秘密凭据没有改变。"));
+          globalThis.setTimeout(() => location.reload(), 450);
+        } catch (error) {
+          showPrototypeStatus(sourceConfigSave, error.message || L("来源配置保存失败，请检查后重试。"));
+          sourceConfigSave.disabled = false;
+        }
+        return;
+      }
+      const sourceScheduleSave = target.closest("[data-source-schedule-save]");
+      if (sourceScheduleSave) {
+        const detail = sourceScheduleSave.closest("[data-source-detail]");
+        const sourceId = sourceScheduleSave.dataset.sourceId;
+        const mode = detail?.querySelector("[data-source-schedule-mode]")?.value || "manual";
+        const enabled = Boolean(detail?.querySelector("[data-source-schedule-enabled]")?.checked);
+        const intervalMinutes = Number(detail?.querySelector("[data-source-schedule-interval]")?.value || 60);
+        sourceScheduleSave.disabled = true;
+        showPrototypeStatus(sourceScheduleSave, L("正在保存拉取计划…"));
+        try {
+          await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId) + "/schedule", "PUT", mode === "manual"
+            ? { mode: "manual" }
+            : { mode: "interval", enabled, interval_minutes: intervalMinutes });
+          showPrototypeStatus(sourceScheduleSave, mode === "manual"
+            ? L("已改为仅手动拉取。")
+            : enabled ? L("定时拉取已保存；本地服务会在到期后执行。") : L("定时拉取已暂停。"));
+          globalThis.setTimeout(() => location.reload(), 450);
+        } catch (error) {
+          showPrototypeStatus(sourceScheduleSave, error.message || L("拉取计划保存失败，请检查后重试。"));
+          sourceScheduleSave.disabled = false;
+        }
+        return;
+      }
+      const sourceScheduleEnabled = target.closest("[data-source-schedule-enabled]");
+      if (sourceScheduleEnabled) {
+        const label = sourceScheduleEnabled.closest("label")?.querySelector("span");
+        if (label) label.textContent = sourceScheduleEnabled.checked ? L("已开启") : L("已暂停");
+        return;
+      }
+      const sourceRuntimeAction = target.closest("[data-source-runtime-action]");
+      if (sourceRuntimeAction) {
+        const sourceId = sourceRuntimeAction.dataset.sourceId;
+        const action = sourceRuntimeAction.dataset.sourceRuntimeAction;
+        sourceRuntimeAction.disabled = true;
+        showPrototypeStatus(sourceRuntimeAction, action === "sync" ? L("正在拉取；失败不会被写成成功…") : L("正在更新来源状态…"));
+        try {
+          const body = action === "sync"
+            ? { idempotency_key: globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-source-sync") }
+            : {};
+          const result = await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId) + "/" + action, "POST", body);
+          const message = action === "sync"
+            ? result.run?.error_code
+              ? L("拉取失败：{code}。已保留上次成功内容，可按来源提示重试。", { code: result.run.error_code })
+              : result.run?.receipt?.rss_http?.not_modified
+                ? L("拉取完成：源站未修改，没有新增 Item。")
+                : L("拉取完成：新增 {created}，去重 {deduped}", { created: result.created || 0, deduped: result.deduped || 0 })
+            : action === "pause" ? L("来源已暂停；消息与历史仍保留。")
+              : action === "resume" ? L("来源已恢复。") : L("账号已断开，后续不会再拉取。")
+          showPrototypeStatus(sourceRuntimeAction, message);
+          globalThis.setTimeout(() => location.reload(), 550);
+        } catch (error) {
+          showPrototypeStatus(sourceRuntimeAction, error.message || L("来源操作失败，请按提示处理后重试。"));
+          sourceRuntimeAction.disabled = false;
+        }
+        return;
+      }
+      const sourceDelete = target.closest("[data-source-delete]");
+      if (sourceDelete) {
+        const sourceId = sourceDelete.dataset.sourceId;
+        const historyDecision = sourceDelete.dataset.sourceDelete;
+        const warning = historyDecision === "delete_local_history"
+          ? L("确认删除这个来源及其本地消息、资料、Inbox 引用和运行记录？此操作无法从 GoalBoard 恢复。")
+          : L("确认删除这个来源并停止拉取？已有消息和运行历史会保留。 ");
+        if (!globalThis.confirm(warning)) return;
+        sourceDelete.disabled = true;
+        showPrototypeStatus(sourceDelete, L("正在删除来源…"));
+        try {
+          await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId), "DELETE", { history_decision: historyDecision });
+          showPrototypeStatus(sourceDelete, historyDecision === "delete_local_history" ? L("来源与本地历史已删除。") : L("来源已删除，历史已保留。"));
+          globalThis.setTimeout(() => location.reload(), 550);
+        } catch (error) {
+          showPrototypeStatus(sourceDelete, error.message || L("删除来源失败，请重试。"));
+          sourceDelete.disabled = false;
+        }
+        return;
+      }
+      const prototypeConfigSave = target.closest("[data-prototype-config-save]");
+      if (prototypeConfigSave) {
+        showPrototypeStatus(prototypeConfigSave, L("演示配置已保存到当前页面；刷新后恢复，不会写入真实来源。"));
+        return;
+      }
+      const prototypeScheduleSave = target.closest("[data-prototype-schedule-save]");
+      if (prototypeScheduleSave) {
+        const sheet = prototypeScheduleSave.closest(".source-schedule-sheet");
+        const enabled = sheet?.querySelector("[data-prototype-schedule-enabled]")?.checked;
+        const frequency = sheet?.querySelector("[data-prototype-schedule-frequency]")?.value || L("当前频率");
+        showPrototypeStatus(prototypeScheduleSave, enabled
+          ? L("模拟计划已保存：{frequency}。浏览器关闭后不会继续运行。", { frequency })
+          : L("模拟计划已暂停。真实后台调度未启动。"));
+        return;
+      }
+      const prototypeScheduleEnabled = target.closest("[data-prototype-schedule-enabled]");
+      if (prototypeScheduleEnabled) {
+        const label = prototypeScheduleEnabled.closest("label")?.querySelector("span");
+        if (label) label.textContent = prototypeScheduleEnabled.checked ? L("已开启") : L("已暂停");
+        return;
+      }
+      const prototypeSourceSync = target.closest("[data-prototype-source-sync]");
+      if (prototypeSourceSync) {
+        const sourceId = prototypeSourceSync.dataset.prototypeSourceSync;
+        const detail = prototypeSourceSync.closest("[data-source-detail]");
+        const health = detail?.querySelector("[data-source-health-label]");
+        const row = sourceList?.querySelector('[data-source-entry-id="' + CSS.escape(sourceId) + '"]');
+        const rowState = row?.querySelector(".source-list-state");
+        const original = prototypeSourceSync.innerHTML;
+        prototypeSourceSync.disabled = true;
+        prototypeSourceSync.setAttribute("aria-busy", "true");
+        prototypeSourceSync.innerHTML = L("模拟拉取中…");
+        if (health) health.textContent = L("正在拉取");
+        if (rowState) rowState.textContent = L("正在拉取");
+        if (row) row.dataset.sourceStatus = "syncing";
+        globalThis.setTimeout(() => {
+          prototypeSourceSync.disabled = false;
+          prototypeSourceSync.removeAttribute("aria-busy");
+          prototypeSourceSync.innerHTML = original;
+          if (health) health.textContent = L("运行正常");
+          if (rowState) rowState.textContent = L("运行正常");
+          if (row) row.dataset.sourceStatus = "active";
+          showPrototypeStatus(prototypeSourceSync, L("模拟拉取完成：新增 3，去重 8；没有访问真实外部服务。"));
+        }, 850);
+        return;
+      }
+      const openPrototypeSource = target.closest("[data-open-prototype-source]");
+      if (openPrototypeSource) {
+        setDesktopDirectory("sources", true, false, openPrototypeSource);
+        setDesktopWorkSurface("sources", true, false);
+        const requestedSource = openPrototypeSource.dataset.openPrototypeSource;
+        const fallbackSource = sourceList?.querySelector('[data-source-kind="' + CSS.escape(openPrototypeSource.dataset.openSourceKind || "") + '"]')?.dataset.sourceEntryId;
+        selectSource(sourceList?.querySelector('[data-source-entry-id="' + CSS.escape(requestedSource) + '"]') ? requestedSource : fallbackSource, true);
+        return;
+      }
+      const prototypeFeedAction = target.closest("[data-prototype-feed-action]");
+      if (prototypeFeedAction) {
+        const detail = prototypeFeedAction.closest("[data-prototype-feed-detail]");
+        const destination = detail?.querySelector("[data-prototype-destination]");
+        const action = prototypeFeedAction.dataset.prototypeFeedAction;
+        const labels = {
+          inbox: [L("已进入 Inbox"), L("Inbox 只保存需处理引用；原消息仍在 Feed")],
+          save: [L("已保存为资料"), L("当前页面演示状态，不写入数据库")],
+          promote: [L("已准备升格 Goal"), L("正式 Goal 创建留给后续功能")],
+          ignore: [L("已忽略"), L("消息仍可从 Feed 历史追溯")],
+        }[action] || [L("演示状态已更新"), L("没有发生真实写入")];
+        if (destination) {
+          const strong = destination.querySelector("strong");
+          const small = destination.querySelector("small");
+          if (strong) strong.textContent = labels[0];
+          if (small) small.textContent = labels[1];
+          destination.dataset.destinationState = action;
+        }
+        showPrototypeStatus(prototypeFeedAction, labels[0] + "。" + labels[1] + "。");
+        if (action === "inbox") {
+          prototypeFeedAction.disabled = true;
+          prototypeFeedAction.textContent = L("已加入 Inbox");
+        }
+        return;
+      }
+      const prototypeInboxComplete = target.closest("[data-prototype-inbox-complete]");
+      if (prototypeInboxComplete) {
+        const itemId = prototypeInboxComplete.dataset.prototypeItemId;
+        const row = feedList?.querySelector('[data-feed-entry-id="' + CSS.escape(itemId) + '"]');
+        if (row) row.dataset.feedEntryStatus = "archived";
+        const detail = prototypeInboxComplete.closest("[data-prototype-feed-detail]");
+        if (detail) detail.hidden = true;
+        setFeedDetailPlaceholder(L("这件事已处理完成"), L("它已退出默认 Inbox；原 Feed Item、来源或 Goal 仍可追溯。"));
+        filterFeedItems(false);
+        showToast(L("已完成 · 仅本页演示"));
+        return;
+      }
+      const prototypeInboxDefer = target.closest("[data-prototype-inbox-defer]");
+      if (prototypeInboxDefer) {
+        showPrototypeStatus(prototypeInboxDefer, L("仍保留在 Inbox；稍后处理不会改变进入原因。"));
+        return;
+      }
+      if (target.closest("[data-prototype-feed-empty-state]")) {
+        feedList?.querySelectorAll("[data-feed-entry-id]").forEach((row) => {
+          if (row.dataset.feedEntryType === activeFeedPreset) row.hidden = true;
+        });
+        feedWorkbench?.querySelectorAll("[data-feed-detail]").forEach((detail) => { detail.hidden = true; });
+        if (feedEmpty) {
+          feedEmpty.dataset.prototypeEmptyPreview = "true";
+          feedEmpty.hidden = false;
+          const title = feedEmpty.querySelector("[data-feed-empty-title]");
+          const copy = feedEmpty.querySelector("[data-feed-empty-copy]");
+          const restore = feedEmpty.querySelector("[data-prototype-feed-restore]");
+          const clear = feedEmpty.querySelector("[data-feed-clear-filters]");
+          const sources = feedEmpty.querySelector("[data-feed-empty-sources]");
+          if (title) title.textContent = activeFeedPreset === "inbox_message" ? L("Inbox 已经处理完") : L("暂时没有新消息");
+          if (copy) copy.textContent = activeFeedPreset === "inbox_message"
+            ? L("需要你介入的事情都已退出默认列表；原对象和历史仍可追溯。")
+            : L("来源仍按计划拉取；新消息到达后会先进入 Feed。");
+          if (restore) restore.hidden = false;
+          if (clear) clear.hidden = true;
+          if (sources) sources.hidden = true;
+        }
+        if (feedResultCount) feedResultCount.textContent = L("0 个 Item");
+        setFeedDetailPlaceholder(activeFeedPreset === "inbox_message" ? L("Inbox 已处理完") : L("Feed 暂无新消息"), L("这是页面内空状态预览，不会修改真实 Item。"));
+        return;
+      }
+      if (target.closest("[data-prototype-feed-restore]")) {
+        if (feedEmpty) delete feedEmpty.dataset.prototypeEmptyPreview;
+        const restore = feedEmpty?.querySelector("[data-prototype-feed-restore]");
+        const sources = feedEmpty?.querySelector("[data-feed-empty-sources]");
+        if (restore) restore.hidden = true;
+        if (sources) sources.hidden = false;
+        filterFeedItems(false);
+        return;
+      }
       if (target.closest("[data-feed-sources-open]")) {
         feedSourcesDialog?.showModal();
         setFeedSourceFeedback("");
@@ -9719,7 +11206,11 @@ const CLIENT_SCRIPT = `
         try {
           const operationKey = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-feed-sync");
           const result = await feedApi("/api/feed/sources/" + encodeURIComponent(sourceId) + "/sync", "POST", { idempotency_key: operationKey });
-          setFeedSourceFeedback(L("同步完成：新增 {created}，去重 {deduped}", { created: result.created || 0, deduped: result.deduped || 0 }));
+          setFeedSourceFeedback(result.run?.error_code
+            ? L("同步失败：{code}。已保留上次成功内容，可按来源提示重试。", { code: result.run.error_code })
+            : result.run?.receipt?.rss_http?.not_modified
+              ? L("同步完成：源站未修改，没有新增 Item。")
+              : L("同步完成：新增 {created}，去重 {deduped}", { created: result.created || 0, deduped: result.deduped || 0 }));
           saveUiState();
           location.reload();
         } catch (error) {
@@ -9810,8 +11301,7 @@ const CLIENT_SCRIPT = `
             client_secret: clientSecret,
             redirect_uri: location.origin + route("/api/feed/connectors/gmail/oauth/callback"),
           });
-          globalThis.open(result.authorizationUrl, "_blank", "noopener,noreferrer");
-          setFeedSourceFeedback(L("已打开 Google 授权页面；授权后会回到当前项目。"));
+          location.assign(result.authorizationUrl);
         } catch (error) {
           setFeedSourceFeedback(error.message || L("Gmail 授权启动失败"), true);
           button.disabled = false;
@@ -9853,8 +11343,12 @@ const CLIENT_SCRIPT = `
       if (target.closest("[data-feed-clear-filters]")) {
         if (feedSearch) feedSearch.value = "";
         if (feedSourceFilter) feedSourceFilter.value = "all";
+        if (feedTypeFilter) feedTypeFilter.value = "all";
+        if (feedTimeFilter) feedTimeFilter.value = "all";
         if (feedStatusFilter) feedStatusFilter.value = "active";
         if (feedSort) feedSort.value = "newest";
+        syncFeedFilterUi();
+        setFeedFilterOpen(false);
         filterFeedItems(false);
         return;
       }
@@ -9868,9 +11362,60 @@ const CLIENT_SCRIPT = `
         if (selectedRow) void loadFeedItemDetail(selectedRow, selectedFeedItem);
         return;
       }
+      const openSourceRecord = target.closest("[data-open-source-record]");
+      if (openSourceRecord) {
+        const sourceId = openSourceRecord.dataset.openSourceRecord;
+        if (!sourceId || !sourceList?.querySelector('[data-source-entry-id="' + CSS.escape(sourceId) + '"]')) {
+          showToast(L("这个来源已删除或暂时不可用"));
+          return;
+        }
+        setDesktopDirectory("sources", true, false, openSourceRecord);
+        setDesktopWorkSurface("sources", true, false);
+        selectSource(sourceId, true);
+        return;
+      }
       const feedEntry = target.closest("[data-feed-entry-id]");
       if (feedEntry) {
         selectFeedItem(feedEntry.dataset.feedEntryId, true, true);
+        return;
+      }
+      const inboxOpenFeed = target.closest("[data-inbox-open-feed]");
+      if (inboxOpenFeed) {
+        const itemId = inboxOpenFeed.dataset.inboxOpenFeed;
+        if (!itemId) return;
+        setFeedPreset("feed", true);
+        setDesktopDirectory("feed", true, false, inboxOpenFeed);
+        setDesktopWorkSurface("feed", true, false);
+        selectFeedItem(itemId, true, true);
+        return;
+      }
+      const inboxAction = target.closest("[data-inbox-action]");
+      if (inboxAction) {
+        const statusValue = inboxAction.dataset.inboxAction;
+        const entryId = inboxAction.dataset.inboxEntryId;
+        const expectedRevision = Number(inboxAction.dataset.inboxEntryRevision || 0) || undefined;
+        if (!statusValue || !entryId || !expectedRevision) return;
+        const status = inboxAction.closest("[data-feed-detail]")?.querySelector("[data-inbox-action-status], [data-feed-action-status]");
+        const original = inboxAction.innerHTML;
+        inboxAction.disabled = true;
+        inboxAction.setAttribute("aria-busy", "true");
+        if (status) status.hidden = true;
+        try {
+          await feedApi("/api/inbox/entries/" + encodeURIComponent(entryId) + "/status", "POST", {
+            status: statusValue,
+            expected_revision: expectedRevision,
+          });
+          saveUiState();
+          location.reload();
+        } catch (error) {
+          if (status) {
+            status.textContent = error.message || L("Inbox 操作失败");
+            status.hidden = false;
+          }
+          inboxAction.disabled = false;
+          inboxAction.removeAttribute("aria-busy");
+          inboxAction.innerHTML = original;
+        }
         return;
       }
       const feedAction = target.closest("[data-feed-action]");
@@ -9885,21 +11430,24 @@ const CLIENT_SCRIPT = `
         if (status) status.hidden = true;
         try {
           const expectedRevision = Number(feedAction.dataset.feedRevision || 0) || undefined;
+          const restoreTarget = feedAction.dataset.feedRestoreTarget;
           const response = await fetch(route("/api/feed/items/" + encodeURIComponent(itemId) + "/" + action), {
             method: "POST",
             headers: goalboardControlHeaders(),
-            body: JSON.stringify(expectedRevision ? { expected_revision: expectedRevision } : {}),
+            body: JSON.stringify(expectedRevision
+              ? { expected_revision: expectedRevision, ...(restoreTarget ? { restore_target: restoreTarget } : {}) }
+              : {}),
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || L("Item 操作失败"));
           if (action === "promote" || action === "start") {
             saveUiState();
             let existing = {};
-            try { existing = JSON.parse(sessionStorage.getItem(goalUiStorageKey) || "null") || {}; } catch {}
+            try { existing = JSON.parse(sessionStorage.getItem(currentGoalUiStorageKey) || sessionStorage.getItem(goalUiStorageKey) || "null") || {}; } catch {}
             if (action === "start" && result.runtime_autofill && result.goal_id) {
               sessionStorage.setItem("goalboard-feed-runtime-autofill:" + result.goal_id, JSON.stringify({ itemId, at: Date.now() }));
             }
-            sessionStorage.setItem(goalUiStorageKey, JSON.stringify({
+            sessionStorage.setItem(currentGoalUiStorageKey, JSON.stringify({
               ...existing,
               selected: result.goal_id,
               navigationVersion: desktopNavigationStateVersion,
@@ -9939,14 +11487,34 @@ const CLIENT_SCRIPT = `
       const surfaceOpen = target.closest("[data-work-surface-open]");
       if (surfaceOpen) {
         const surface = surfaceOpen.dataset.workSurfaceOpen || "goal";
-        if (surface === "feed") setFeedPreset(surfaceOpen.dataset.feedPreset || "inbox_message", true);
+        if (surface === "feed") {
+          setFeedPreset(surfaceOpen.dataset.feedPreset || "inbox_message", true);
+          const source = surfaceOpen.dataset.feedSource;
+          if (source) {
+            if (feedSearch) feedSearch.value = "";
+            if (feedSourceFilter) {
+              feedSourceFilter.value = source;
+              if (!feedSourceFilter.value) feedSourceFilter.value = "all";
+            }
+            if (feedTypeFilter) feedTypeFilter.value = "all";
+            if (feedTimeFilter) feedTimeFilter.value = "all";
+            if (feedStatusFilter) feedStatusFilter.value = "active";
+            if (feedSort) feedSort.value = "newest";
+            syncFeedFilterUi();
+            filterFeedItems(false);
+          }
+        }
         const available = desktopWorkSurfaces.some((candidate) => candidate.dataset.workSurface === surface);
-        if (!available && surface === "goal") {
+        if (surface === "goal" && (decisionView || !available)) {
           saveUiState();
           restoreLastGoal(true);
           return;
         }
-        setDesktopDirectory(surface === "goal" ? "goals" : surface === "feed" ? "feed" : "root", true, true, surfaceOpen);
+        setDesktopDirectory(surface === "goal"
+          ? "goals"
+          : surface === "feed" || surface === "sources" || surface === "sessions" || surface === "workspaces"
+            ? surface
+            : "root", true, true, surfaceOpen);
         setDesktopWorkSurface(surface, true, true);
         if (surface === "feed" && selectedFeedItem) selectFeedItem(selectedFeedItem, false, true);
         if (matchMedia("(max-width: 760px)").matches) setMobileView("tree");
@@ -10024,7 +11592,7 @@ const CLIENT_SCRIPT = `
         saveUiState();
         return;
       }
-      if (target.closest("[data-retry-goal-graph]")) {
+      if (target.closest("[data-retry-goal-momentum]")) {
         void loadGoalGraph();
         return;
       }
@@ -10046,19 +11614,21 @@ const CLIENT_SCRIPT = `
         setDirectoryCollapsed(!workspace.classList.contains("is-directory-collapsed"));
         return;
       }
-      const graphRelationButton = target.closest("[data-graph-relation]");
-      if (graphRelationButton) {
-        const type = graphRelationButton.dataset.graphRelation;
-        if (graphRelationTypes.has(type)) graphRelationTypes.delete(type);
-        else graphRelationTypes.add(type);
+      const momentumFilterButton = target.closest("[data-momentum-filter]");
+      if (momentumFilterButton) {
+        momentumOpenOnly = momentumFilterButton.dataset.momentumFilter === "open";
         updateGraphVisibility();
         queueSave();
         return;
       }
-      if (target.closest("[data-graph-focus]")) {
-        graphFocusOnly = !graphFocusOnly;
-        updateGraphVisibility();
-        queueSave();
+      const momentumPeriodButton = target.closest("[data-momentum-period]");
+      if (momentumPeriodButton) {
+        setMomentumPeriod(momentumPeriodButton.dataset.momentumPeriod);
+        return;
+      }
+      const momentumSelectButton = target.closest("[data-momentum-select], [data-momentum-node]");
+      if (momentumSelectButton) {
+        updateMomentumSelection(momentumSelectButton.dataset.momentumSelect || momentumSelectButton.dataset.goalId);
         return;
       }
       if (target.closest("[data-companion-runtime-open]")) {
@@ -10069,12 +11639,9 @@ const CLIENT_SCRIPT = `
       if (graphZoomButton) {
         const action = graphZoomButton.dataset.graphZoom;
         if (action === "fit") {
-          const graph = graphElement();
-          const viewport = graph?.querySelector("[data-graph-viewport]");
-          const stage = graph?.querySelector("[data-graph-stage]");
-          setGraphZoom(viewport && stage ? (viewport.clientWidth - 16) / stage.offsetWidth : 1);
+          fitGoalGraph();
         } else {
-          setGraphZoom(action === "in" ? graphZoom + .1 : graphZoom - .1);
+          setGraphZoom(action === "in" ? graphZoom + .1 : graphZoom - .1, true, false);
         }
         return;
       }
@@ -10204,15 +11771,17 @@ const CLIENT_SCRIPT = `
       if (sectionLink) {
         const targetId = sectionLink.getAttribute("href")?.slice(1);
         const targetElement = targetId ? document.getElementById(targetId) : null;
-        if (targetElement) {
+        const targetPanel = targetId ? goalPanelFromTargetId(targetId) : "";
+        const targetFactor = targetId ? goalFactorFromTargetId(targetId) : "";
+        if (targetId && (targetElement || targetPanel || targetFactor)) {
           event.preventDefault();
-          const targetPanel = targetElement.closest("[data-goal-panel]")?.dataset.goalPanel;
           if (targetPanel) setGoalPanel(targetPanel, true);
-          const targetFactor = targetElement.closest("[data-goal-factor-panel]")?.dataset.goalFactorPanel;
           if (targetFactor) setGoalFactor(targetFactor, true);
-          const deepLinkScrollTarget = revealDeepLinkTarget(targetElement);
           history.replaceState(null, "", "#" + targetId);
-          requestAnimationFrame(() => deepLinkScrollTarget.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+          if (targetElement) {
+            const deepLinkScrollTarget = revealDeepLinkTarget(targetElement);
+            requestAnimationFrame(() => deepLinkScrollTarget.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+          }
           return;
         }
       }
@@ -10382,8 +11951,10 @@ const CLIENT_SCRIPT = `
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || L("风险处理保存失败"));
-            await refreshBoard(true);
-            showDecisionReceipt(L("风险处理已保存。方案的其他内容没有改变，仍需补全的问题会继续显示。"), receiptContext);
+            await refreshBoardWithDecisionReceipt(
+              L("风险处理已保存。方案的其他内容没有改变，仍需补全的问题会继续显示。"),
+              receiptContext,
+            );
           } catch (error) {
             errorBox.textContent = humanDecisionError(error.message, L("风险处理保存失败，请重试"));
             errorBox.hidden = false;
@@ -10420,8 +11991,7 @@ const CLIENT_SCRIPT = `
           if (Array.isArray(result.conflict_item_ids) && result.conflict_item_ids.length) {
             throw new Error(L("GoalBoard 已经发生变化。请让 Runtime 更新方案后再决定。"));
           }
-          await refreshBoard(true);
-          showDecisionReceipt(
+          await refreshBoardWithDecisionReceipt(
             decision === "confirm" ? L("这份 Goal 方案已经采用，相关 Goal 和关系已更新。") : L("这份 Goal 方案已退回，当前 Goal Tree 保持不变。"),
             receiptContext,
           );
@@ -10738,7 +12308,6 @@ const CLIENT_SCRIPT = `
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Risk 状态更新失败");
-          await refreshBoard(true);
           const resultState = result?.risk?.state;
           const resultMessages = {
             open: L("风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。"),
@@ -10747,7 +12316,10 @@ const CLIENT_SCRIPT = `
             accepted: L("风险已接受，不再阻止关联 Goal。"),
             expired: L("风险已过期，不再继续跟踪或阻止关联 Goal。"),
           };
-          showDecisionReceipt(resultMessages[resultState] || L("风险处理方式已记录。"), receiptContext);
+          await refreshBoardWithDecisionReceipt(
+            resultMessages[resultState] || L("风险处理方式已记录。"),
+            receiptContext,
+          );
         } catch (error) {
           errorBox.textContent = humanDecisionError(error.message, "风险决定保存失败，请检查输入后重试");
           errorBox.hidden = false;
@@ -11018,7 +12590,6 @@ const CLIENT_SCRIPT = `
           );
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "结果确认保存失败");
-          await refreshBoard(true);
           const resultMessages = {
             pass: L("结果已确认通过；Goal 是否完成仍由全部完成条件共同决定。"),
             needs_changes: L("结果已退回修改；你的理由和依据已保留。"),
@@ -11026,11 +12597,7 @@ const CLIENT_SCRIPT = `
             inconclusive: L("结果暂未判断；请补充与完成标准对应的依据。"),
           };
           const receiptMessage = resultMessages[result?.review?.verdict] || L("结果确认已记录。");
-          sessionStorage.setItem("goalboard-decision-receipt", JSON.stringify({
-            message: receiptMessage,
-            context: receiptContext,
-          }));
-          location.reload();
+          await refreshBoardWithDecisionReceipt(receiptMessage, receiptContext);
         } catch (error) {
           errorBox.textContent = humanDecisionError(error.message, "结果确认保存失败，请检查输入后重试");
           errorBox.hidden = false;
@@ -11067,7 +12634,7 @@ const CLIENT_SCRIPT = `
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "创建失败");
-        sessionStorage.removeItem(storageKey);
+        sessionStorage.removeItem(currentGoalUiStorageKey);
         location.assign(globalThis.goalboardNavigationUrl(result.goal_path));
       } catch (error) {
         formError.textContent = error.message || "创建失败，请检查输入后重试";
@@ -11171,6 +12738,12 @@ const CLIENT_SCRIPT = `
         treeFilterTrigger?.focus();
         return;
       }
+      if (event.key === "Escape" && !feedFilterPanel?.hidden) {
+        event.preventDefault();
+        setFeedFilterOpen(false);
+        feedFilterTrigger?.focus();
+        return;
+      }
       const quickDialog = document.querySelector("[data-quick-record-dialog][open]");
       if (event.key === "Escape" && quickDialog) {
         event.preventDefault();
@@ -11193,26 +12766,34 @@ const CLIENT_SCRIPT = `
       if (nextCompanionActive && !desktopCompanionActive && selected) setMobileView("document");
       desktopCompanionActive = nextCompanionActive;
       setTreeWidth(treePane.getBoundingClientRect().width, false);
-      requestAnimationFrame(drawGoalGraph);
+      requestAnimationFrame(() => graphAutoFit ? fitGoalGraph(false) : drawGoalGraph());
     });
 
     setTreeWidth(treePane.getBoundingClientRect().width, false);
     if (tuiPane) setTuiWidth(tuiPane.getBoundingClientRect().width, false);
     let restoredUi = false;
     try {
-      const stored = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+      const stored = JSON.parse(
+        sessionStorage.getItem(storageKey) ||
+        (!decisionView && !collectionView ? sessionStorage.getItem(goalUiStorageKey) : null) ||
+        "null",
+      );
       if (stored) {
         applyUiState(stored);
         restoredUi = true;
+        sessionStorage.setItem(storageKey, JSON.stringify(stored));
       }
     } catch {}
     if (!restoredUi) {
       setWorkspaceMode("focus", false);
       setGoalPanel(goalPanelFromHash() || "overview", false);
       if (feedDirectory) setFeedPreset("inbox_message", false);
+      if (desktopDirectoryPanels.length) {
+        setDesktopDirectory(decisionView ? "feed" : treePane?.dataset.desktopDirectory || "root", false, false);
+      }
       if (desktopWorkSurfaces.length) setDesktopWorkSurface(decisionView ? "feed" : "goal", false, false);
     }
-    const directGoalRequested = /^\\/goals\\/[^\\/]+\\/?$/.test(localPathname());
+    const directGoalRequested = /^\\/(?:archive\\/|trash\\/)?goals\\/[^\\/]+\\/?$/.test(localPathname());
     if (directGoalRequested && selected) {
       goalWorkspaceMode = "focus";
       setDesktopDirectory("goals", false, false);
@@ -11232,6 +12813,13 @@ const CLIENT_SCRIPT = `
     }
     const initialHashTargetId = decodeURIComponent(location.hash.slice(1));
     if (!restoredUi && initialHashTargetId) void revealDeepLinkFromId(initialHashTargetId);
+    try {
+      const goalMoveReceipt = JSON.parse(sessionStorage.getItem(goalMoveReceiptKey) || "null");
+      sessionStorage.removeItem(goalMoveReceiptKey);
+      if (goalMoveReceipt?.message) showToast(goalMoveReceipt.message);
+    } catch {
+      sessionStorage.removeItem(goalMoveReceiptKey);
+    }
     try {
       const storedDecisionReceipt = JSON.parse(sessionStorage.getItem("goalboard-decision-receipt") || "null");
       sessionStorage.removeItem("goalboard-decision-receipt");
@@ -11286,9 +12874,9 @@ export function renderGoalBoardProjectIndex(
   desktopShell = false,
 ): string {
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
-  const projectCards = projects
+  const projectRows = projects
     .map(
-      (project) => `<a class="project-card" href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}"><header><span class="project-card-icon">${icon("database")}</span><span class="project-card-kind">${project.data_class === "regenerable_demo" ? L("演示数据 · 可重建") : project.data_class === "migrated_user" ? L("已迁移项目") : L("本地项目")}</span></header><div><h2>${escapeHtml(project.display_name)}</h2><p>${L("Goal、记录和项目设置保存在当前设备。")}</p></div><footer><span>${L("打开 Goal Tree")}</span>${icon("arrow")}</footer></a>`,
+      (project) => `<a class="project-directory-row" href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}" data-project-search-row="${escapeHtml(`${project.display_name} ${project.data_class}`.toLocaleLowerCase())}"><span class="project-directory-icon">${icon("database")}</span><span class="project-directory-copy"><strong>${escapeHtml(project.display_name)}</strong><small>${L("Goals、Sessions 与工作目录")}</small></span><span class="project-directory-kind">${project.data_class === "regenerable_demo" ? L("演示数据") : project.data_class === "migrated_user" ? L("已迁移") : L("本地项目")}</span><span class="project-directory-open">${L("打开")}${icon("arrow")}</span></a>`,
     )
     .join("");
   return `<!doctype html>
@@ -11303,21 +12891,16 @@ export function renderGoalBoardProjectIndex(
 </head>
 <body class="project-index-page" data-desktop-shell="true"${desktopShell ? ' data-native-desktop="true"' : ""}>
   ${renderIconSprite()}
-  <header class="topbar">
-    <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目列表")}">${icon("brand")}<strong>GoalBoard</strong></a>
-    <div class="project-context"${desktopShell ? " data-tauri-drag-region" : ""}><strong${desktopShell ? " data-tauri-drag-region" : ""}>${L("项目列表")}</strong><small${desktopShell ? " data-tauri-drag-region" : ""}>${L("打开项目后，Goal 右侧可以添加终端")}</small></div>
+  <header class="topbar project-directory-topbar">
+    <a class="brand" href="${href("/")}" aria-label="${L("GoalBoard 项目目录")}">${icon("brand")}<strong>GoalBoard</strong></a>
     <div class="top-spacer"${desktopShell ? " data-tauri-drag-region" : ""}></div>
     <a class="top-action" href="${href("/settings/appearance")}" aria-label="${L("打开系统设置")}">${icon("settings")}<span>${L("系统设置")}</span></a>
   </header>
   <main class="project-index">
     <section class="project-index-panel" aria-labelledby="project-index-title">
-      <header class="project-index-heading">
-        <h1 id="project-index-title">${L("选择一个项目")}</h1>
-        <p>${L("你可以在网页创建、导入和打开项目，也可以在 Runtime 中通过 GoalBoard Skill 连接。网页选择项目不会自动绑定或切换 Runtime Session。")}</p>
-        <p class="project-index-desktop-note">${L("打开项目后，Goal 详情右侧会出现终端栏。点「添加终端」即可在当前 Goal 上打开 TUI。")}</p>
-      </header>
+      <header class="project-index-heading"><div><h1 id="project-index-title">${L("选择一个项目")}</h1><p>${L("每个项目管理自己的 Goals、Sessions 和工作目录；打开项目不会自动绑定或切换正在对话的 Runtime Session。")}</p></div><div class="project-index-actions">${projects.length ? `<label class="project-index-search">${icon("search")}<input type="search" data-project-search placeholder="${L("搜索项目")}" aria-label="${L("搜索项目")}"></label>` : ""}<a class="project-index-create" href="${href("/settings/projects")}">${icon("plus")}${L("新建项目")}</a></div></header>
       ${projects.length
-        ? `<div class="project-card-grid">${projectCards}</div>`
+        ? `<div class="project-directory-list" role="list">${projectRows}</div><p class="project-index-search-empty" data-project-search-empty hidden>${L("没有匹配的项目，换一个关键词。")}</p>`
         : `<div class="project-index-empty"><h2>${L("从一个真实项目开始")}</h2><p>${L("你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。")}</p><div class="project-index-start"><a href="${href("/settings/projects")}">${L("创建第一个项目")}</a><a href="${href("/settings/runtimes")}">${L("设置 Runtime 接入")}</a></div></div>`}
       <section class="project-index-migration"><div><strong>${L("已有一份旧的 GoalBoard DB？")}</strong><small>${L("只有你明确选择并确认后，才会迁移它并保留已有历史。")}</small></div><button class="project-index-migrate" type="button" data-open-project-migration>${L("迁移已有 GoalBoard 数据")}</button></section>
       <p class="project-index-note">${L("选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。")}</p>
@@ -11403,44 +12986,8 @@ function renderRuntimeSettings(view: GoalBoardSettingsView): string {
   return `<section class="settings-document" aria-labelledby="settings-title">
     <header class="settings-heading"><h1 id="settings-title">${L("AI 与执行工具")}</h1><p>${L("不接入也能正常使用 Goal Tree、待决定和记录。只有想让 AI 工具直接读取或推进 Goal 时才需要连接；每次修改前都会先展示变化并由你确认。")}</p></header>
     <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>${L("没有可探测的 Runtime")}</h2><p>${L("GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。")}</p></div>`}</div>
-    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。")}</p>
-    ${renderConnectionSettings(view)}
-    ${renderWorkspaceSettings(view)}
+    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。Session 与工作目录关系请进入对应项目管理。")}</p>
   </section>`;
-}
-
-function renderConnectionSettings(view: GoalBoardSettingsView): string {
-  const rows = view.connections.map((connection) => {
-    const alternateProjects = view.projects.filter((project) => project.project_id !== connection.project_id);
-    const switchForm = alternateProjects.length
-      ? `<form class="connection-action-form" data-connection-rebind="${escapeHtml(connection.binding_id)}"><label>${L("切换到")}<select name="project_id" required>${alternateProjects.map((project) => `<option value="${escapeHtml(project.project_id)}">${escapeHtml(project.display_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认只把这个 Session 从“{name}”切换到所选项目", { name: connection.project_name })}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("确认切换")}</button></form>`
-      : `<div class="connection-action-form"><p class="settings-footnote">${L("当前没有其他项目可切换。先创建或导入另一个项目。")}</p></div>`;
-    return `<article class="settings-record connection-record" data-connection-row="${escapeHtml(connection.binding_id)}">
-      <header><div class="settings-record-title"><span class="record-icon">${icon("workflow")}</span><div><h3>${escapeHtml(connection.context_label)}</h3><p>${escapeHtml(connection.runtime_name)}${L(" · 当前项目 ")}<strong>${escapeHtml(connection.project_name)}</strong></p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${L("已关联")}</span></div></header>
-      <div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("切换项目")}</span>${icon("chevron-down")}</summary>${switchForm}</details><details><summary>${icon("blocked")}<span>${L("解绑")}</span>${icon("chevron-down")}</summary><form class="connection-action-form connection-action-form--danger" data-connection-unbind="${escapeHtml(connection.binding_id)}"><p class="settings-footnote">${L("只停止这个 Session 使用 GoalBoard；不会删除“{name}”或其他 Session 关联。", { name: connection.project_name })}</p><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解绑这个 Session")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("确认解绑")}</button></form></details></div>
-    </article>`;
-  }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="connection-settings-title"><header class="connection-settings-heading"><h2 id="connection-settings-title">${L("已关联的 AI 会话")}</h2><p>${L("这里只显示你已经在对应 AI 工具里确认过的会话。新会话会先询问要连接哪个项目，不会自动出现在这里。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有已确认的会话关联")}</h3><p>${L("在 AI 工具中使用 GoalBoard 后，当前会话会先询问你要连接哪个项目。")}</p></div>`}</div></section>`;
-}
-
-function renderWorkspaceSettings(view: GoalBoardSettingsView): string {
-  const groups = new Map<string, typeof view.workspace_memberships>();
-  for (const membership of view.workspace_memberships) {
-    const current = groups.get(membership.workspace_id) ?? [];
-    current.push(membership);
-    groups.set(membership.workspace_id, current);
-  }
-  const rows = [...groups.entries()].map(([workspaceId, memberships]) => {
-    const workspaceName = memberships[0]?.workspace_name ?? L("未命名目录");
-    const defaultMembership = memberships.find((membership) => membership.is_default);
-    const defaultChoices = memberships.filter((membership) => !membership.is_default);
-    const defaultForm = defaultChoices.length
-      ? `<form class="connection-action-form" data-workspace-default="${escapeHtml(workspaceId)}"><label>${L("新 Session 默认使用")}<select name="project_id" required>${defaultChoices.map((membership) => `<option value="${escapeHtml(membership.project_id)}">${escapeHtml(membership.project_name)}</option>`).join("")}</select></label><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认更改“{name}”的默认项目", { name: workspaceName })}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("设为默认")}</button></form>`
-      : `<div class="connection-action-form"><p class="settings-footnote">${L("当前没有其他已关联项目可设为默认。")}</p></div>`;
-    const projects = memberships.map((membership) => `<li><span><strong>${escapeHtml(membership.project_name)}</strong>${membership.is_default ? `<span class="settings-state settings-state--success">${L("默认")}</span>` : ""}</span><form data-workspace-unlink="${escapeHtml(workspaceId)}" data-workspace-project="${escapeHtml(membership.project_id)}"><label class="inline-confirm"><input type="checkbox" name="user_confirmed"><span>${L("确认解除关联")}</span></label><p class="settings-form-error" role="alert" hidden></p><button type="submit">${L("解除")}</button></form></li>`).join("");
-    return `<article class="settings-record connection-record" data-workspace-row="${escapeHtml(workspaceId)}"><header><div class="settings-record-title"><span class="record-icon">${icon("folder")}</span><div><h3>${escapeHtml(workspaceName)}</h3><p>${defaultMembership ? `${L("新 Session 默认进入 ")}<strong>${escapeHtml(defaultMembership.project_name)}</strong>` : L("已关联多个项目，进入新 Session 时需要选择")}</p></div></div><div class="settings-record-action"><span class="settings-state settings-state--success">${memberships.length}${L("个项目")}</span></div></header><ul class="workspace-project-list">${projects}</ul><div class="connection-record-tools"><details><summary>${icon("refresh")}<span>${L("更改默认项目")}</span>${icon("chevron-down")}</summary>${defaultForm}</details></div></article>`;
-  }).join("");
-  return `<section class="connection-settings-section" aria-labelledby="workspace-settings-title"><header class="connection-settings-heading"><h2 id="workspace-settings-title">${L("工作目录关联")}</h2><p>${L("一个工作目录可以关联多个 GoalBoard 项目，并为新会话指定默认项目。这里不会展示完整目录路径。")}</p></header><div class="connection-record-list">${rows || `<div class="settings-empty"><h3>${L("还没有工作目录关联")}</h3><p>${L("在某个工作目录的 AI 工具中首次选择 GoalBoard 项目后，这里会出现关联。")}</p></div>`}</div></section>`;
 }
 
 function renderProjectSettings(view: GoalBoardSettingsView): string {
@@ -11964,9 +13511,106 @@ function prefixLocalLinks(html: string, routePrefix: string, desktopShell = fals
   return desktopShell ? appendDesktopQueryToLocalHrefs(resolved) : resolved;
 }
 
+const TRASH_GOAL_STYLES = String.raw`
+  .trash-goal-document .trash-goal-hero { padding-bottom: 30px; }
+  .trash-goal-document .goal-header { padding-bottom: 0; }
+  .trash-goal-document .goal-title-kicker { align-items: center; gap: 12px; }
+  .trash-goal-document .goal-title-kicker .goal-status {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    min-height: 26px;
+    margin: 0;
+    padding: 2px 9px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--goal-status-tone) 7%, var(--paper));
+  }
+  .trash-goal-facts {
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px 14px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .trash-goal-facts > div { min-width: 0; display: inline-flex; align-items: center; gap: 4px; }
+  .trash-goal-facts svg { width: 11px; height: 11px; color: var(--faint); }
+  .trash-goal-facts dt { color: var(--faint); }
+  .trash-goal-facts dd { margin: 0; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .trash-goal-workspace {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 14px;
+  }
+  .trash-goal-panel {
+    min-width: 0;
+    padding: 22px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--rail) 72%, var(--paper));
+  }
+  .trash-goal-panel--state { grid-column: 1 / -1; }
+  .trash-goal-panel .section-heading { margin-bottom: 14px; }
+  .trash-goal-panel .section-heading > span { color: var(--muted); }
+  .trash-goal-panel .section-heading h2 { color: var(--ink); font-size: 15px; }
+  .trash-goal-panel .section-heading p { max-width: 62ch; color: var(--muted); line-height: 1.5; }
+  .trash-goal-panel .trash-summary,
+  .trash-goal-panel .business-copy,
+  .trash-goal-panel .trash-restore-row { margin: 0; padding: 0; color: var(--ink-soft); }
+  .trash-goal-panel .trash-summary p,
+  .trash-goal-panel .business-copy p,
+  .trash-goal-panel .trash-restore-row p { max-width: 68ch; margin: 0; line-height: 1.65; }
+  .trash-goal-panel .trash-summary p + p,
+  .trash-goal-panel .business-copy p + p { margin-top: 12px; }
+  .trash-goal-panel .trash-summary strong { display: block; margin-bottom: 5px; color: var(--ink); }
+  .trash-goal-panel .business-copy strong {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 680;
+  }
+  .trash-goal-panel .business-copy .outcome { color: var(--ink-soft); }
+  .trash-goal-panel .trash-restore-row { display: grid; align-content: start; justify-items: start; gap: 18px; }
+  .trash-goal-panel .trash-restore-row .button-primary { min-height: 40px; margin: 0; }
+
+  @media (min-width: 761px) {
+    body[data-desktop-shell="true"] .trash-goal-document .trash-goal-hero,
+    body[data-desktop-shell="true"] .trash-goal-document .trash-goal-workspace {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      overflow: visible;
+    }
+    body[data-desktop-shell="true"] .trash-goal-document .trash-goal-hero { padding: 16px 8px 4px; }
+    body[data-desktop-shell="true"] .trash-goal-document .trash-goal-workspace { padding: 8px; }
+    body[data-desktop-shell="true"] .trash-goal-panel {
+      border: 0;
+      background: var(--paper);
+      box-shadow: var(--shadow-soft);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .trash-goal-document .trash-goal-hero { padding: 25px 18px 24px; }
+    .trash-goal-document .goal-title-kicker { align-items: flex-start; flex-direction: column; gap: 9px; }
+    .trash-goal-facts { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+    .trash-goal-document .goal-title-row { display: grid; gap: 12px; }
+    .trash-goal-document .goal-title-actions { justify-content: flex-start; }
+    .trash-goal-document .goal-title-actions .document-action { min-height: 44px; }
+    .trash-goal-workspace { padding: 14px; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .trash-goal-panel,
+    .trash-goal-panel--state { grid-column: 1; padding: 17px; }
+    .trash-goal-panel .trash-restore-row .button-primary { min-height: 44px; white-space: normal; }
+  }
+`;
+
 /** Shared workbench presentation. Kept outside project HTML so the browser can reuse it. */
 export function renderGoalBoardWorkbenchStylesheet(): string {
-  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${VISUAL_FOUNDATION_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
+  return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${VISUAL_FOUNDATION_STYLES}${TRASH_GOAL_STYLES}${PROJECT_OPERATIONS_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
 }
 
 /** Shared project index presentation. */
@@ -11981,7 +13625,7 @@ export function renderGoalBoardSettingsStylesheet(): string {
 
 /** Shared workbench behavior. Locale strings and project facts remain page-local. */
 export function renderGoalBoardWorkbenchClientScript(): string {
-  return `${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}`;
+  return `${CONTROL_CLIENT_SCRIPT}${CLIENT_SCRIPT}${VISUAL_FOUNDATION_CLIENT_SCRIPT}${PROJECT_OPERATIONS_CLIENT_SCRIPT}`;
 }
 
 export function renderGoalBoardRefreshFragment(
@@ -12046,6 +13690,7 @@ export function renderGoalBoardWeb(
   controlToken = "",
   desktopShell = false,
   cliAvailability: Record<string, boolean> = {},
+  projectOperationsData?: ProjectOperationsData,
 ): string {
   const visibleGoals = trashView ? view.trashed_goals : archiveView ? view.archived_goals : view.goals;
   const collectionView = archiveView || trashView;
@@ -12096,12 +13741,20 @@ export function renderGoalBoardWeb(
       ? L("在已归档 Goal 中搜索")
       : L("在当前 Goal Tree 内搜索");
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
-  const pendingCount = pendingDecisionCount(view);
-  const inboxFeedCount = view.feed.items.filter((item) => item.item_type === "inbox_message" && item.disposition !== "archived").length + pendingCount;
-  const feedCount = view.feed.items.filter((item) => item.item_type === "feed" && item.disposition !== "archived").length;
+  const directoryEntries = feedDirectoryEntries(view);
+  const inboxFeedCount = directoryEntries.filter((item) =>
+    item.itemType === "inbox_message" && (item.disposition === "inbox" || item.disposition === "processing")
+  ).length;
+  const feedCount = directoryEntries.filter((item) =>
+    item.itemType === "feed" && item.disposition !== "archived"
+  ).length;
+  const sourceCount = sourceWorkbenchEntries(view).length;
   const initialFeedPreset: FeedItemType = "inbox_message";
   const initialDesktopDirectory: string = decisionView ? "feed" : requestedGoalId ? "goals" : "root";
   const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
+  const projectOperations = renderProjectOperations(view.project
+    ? { project_id: view.project.project_id, display_name: view.project.display_name }
+    : null, projectOperationsData);
   const desktopAccountFooter = `<footer class="personal-sidebar-footer">
     <a class="personal-account" data-settings-link href="__SYSTEM_SETTINGS__" aria-label="${L("打开全局设置")}">
       <span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span>
@@ -12111,10 +13764,11 @@ export function renderGoalBoardWeb(
   </footer>`;
   const desktopRootDirectory = `<section class="desktop-directory-panel desktop-directory-root" data-directory-panel="root"${initialDesktopDirectory === "root" ? "" : " hidden"}>
     <nav class="desktop-module-list" aria-label="${L("工作台目录")}">
-      <button class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("未归档的输入和决定")}</small></span><em>${inboxFeedCount}</em></button>
+      <button class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("只处理需要你介入的事情")}</small></span><em>${inboxFeedCount}</em></button>
       <button class="desktop-module-item${!decisionView ? " is-current" : ""}" type="button" data-directory-open="goals" data-work-surface-open="goal"${!decisionView ? ' aria-current="page"' : ""}>${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
-      <button class="desktop-module-item" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("来源更新与发现")}</small></span><em>${feedCount}</em></button>
-      <button class="desktop-module-item" type="button" data-feed-sources-open>${icon("settings")}<span><strong>${L("来源与连接")}</strong><small>${L("管理 Connector 与已配置来源")}</small></span><em>${view.feed.sources.length}</em></button>
+      ${projectOperations.rootItems}
+      <button class="desktop-module-item" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("所有来源消息，完整保留")}</small></span><em>${feedCount}</em></button>
+      <button class="desktop-module-item" type="button" data-directory-open="sources" data-work-surface-open="sources">${icon("settings")}<span><strong>${L("来源")}</strong><small>${L("账号、接入源与拉取计划")}</small></span><em>${sourceCount}</em></button>
       <button class="desktop-module-item" type="button" data-work-surface-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
       <button class="desktop-module-item" type="button" data-work-surface-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
     </nav>
@@ -12153,7 +13807,9 @@ export function renderGoalBoardWeb(
         ? `<div class="archive-empty">${icon("archive")}<h1>${L("回收站是空的")}</h1><p>${L("移入回收站的 Goal 可以在这里恢复；日常 Goal Tree 不会被它们干扰。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`
         : `<div class="archive-empty">${icon("archive")}<h1>${L("还没有归档 Goal")}</h1><p>${L("已完成的 Goal 可以在正文顶部手动归档，历史事实不会被删除。")}</p><a href="/">${L("返回 Goal Tree")}</a></div>`;
   const desktopDocumentContent = `<section class="desktop-work-surface" data-work-surface="goal" data-work-surface-label="${escapeHtml(collectionTitle)}"${decisionView ? " hidden" : ""}>${renderedDocumentContent}</section>
+      ${projectOperations.surfaces}
       ${renderFeedWorkbench(view, initialFeedPreset, decisionView)}
+      ${renderSourceWorkbench(view)}
       ${desktopUtilitySurface("promotion", "Promotion", L("把内容升格为 Goal"), L("等候选内容、团队决策和 Goal 创建边界确认后，再在这里接入升格流程；现在不伪造待处理项。"), "arrow")}
       ${desktopUtilitySurface("visual", L("可视化工作区"), L("Goal 关系与规划画布"), L("等画布实体、关系编辑和保存契约确认后，再在这里接入真实可视化工作区。"), "workflow")}`;
   const html = `<!--
@@ -12184,12 +13840,14 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         ${projectNavigatorLayer}
         ${desktopRootDirectory}
         <section class="desktop-directory-panel desktop-goal-directory" data-directory-panel="goals"${initialDesktopDirectory === "goals" ? "" : " hidden"}>
-          <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("arrow")}</button><span><strong>${collectionTitle === L("Goal Tree") ? "Goals" : collectionTitle}</strong><small>${collectionView ? collectionNote : L("Goal Tree")}</small></span></header>
+          <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="${L("返回上一级")}">${icon("back")}</button><span><strong>${collectionTitle === L("Goal Tree") ? "Goals" : collectionTitle}</strong><small>${collectionView ? collectionNote : L("Goal Tree")}</small></span></header>
           ${renderTreeChrome(view, visibleGoals, archiveView, trashView, searchPlaceholder, searchLabel)}
           <div class="tree-scroll" data-tree-scroll tabindex="0" aria-label="${collectionTitle} ${L("目标列表")}"><div class="goal-list-view" data-goal-list-view>${renderGoalTree(view, selectedId, visibleGoals)}<div class="tree-filter-empty" data-tree-filter-empty hidden><p>${L("没有符合当前筛选条件的 Goal。")}</p><button type="button" data-clear-tree-filter>${L("清除所有筛选")}</button></div></div></div>
           <footer class="tree-footer" data-tree-footer><span data-tree-filter-count data-tree-suffix="${escapeHtml(collectionSuffix)}">${L("共 {count} 个{suffix}目标", { count: visibleGoals.length, suffix: collectionSuffix ? `${collectionSuffix} ` : "" })}</span><small>${collectionNote}</small></footer>
         </section>
+        ${projectOperations.directories}
         ${renderFeedDirectory(view, initialFeedPreset)}
+        ${renderSourceDirectory(view)}
         ${desktopAccountFooter}
       </aside>
       <div class="tree-resizer" role="separator" aria-label="${L("调整 Goal Tree 宽度")}" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="520" aria-valuenow="320" tabindex="0" data-tree-resizer></div>
@@ -12200,12 +13858,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         ${desktopDocumentContent}
       </section>
       ${renderFeedOverlays(view)}
-      ${!archiveView && !trashView ? `<section class="goal-graph" id="goal-graph-pane" data-goal-graph data-loaded="false" hidden aria-label="${L("Goal Graph 关系视图")}"><p class="empty-row goal-graph-lazy-status" data-goal-graph-status role="status">${L("打开关系图时载入")}</p><button type="button" data-retry-goal-graph hidden>${L("重试")}</button></section>` : ""}
+      ${!archiveView && !trashView ? `<section class="goal-momentum" id="goal-momentum-pane" data-goal-momentum data-loaded="false" hidden aria-label="${L("Goal 推进态势")}"><p class="empty-row momentum-lazy-status" data-goal-momentum-status role="status">${L("打开推进态势时载入")}</p><button type="button" data-retry-goal-momentum hidden>${L("重试")}</button></section>` : ""}
       ${showTui ? renderTuiPane(selected, view, cliAvailability) : ""}
     </main>
   </div>
   ${renderCreateDialog(view)}
   ${renderGoalTrashDialog()}
+  ${projectOperations.overlays}
   <div class="toast" data-toast role="status" aria-live="polite"></div>
   <script id="goalboard-data" type="application/json">${dataJson(view)}</script>
   <script>${clientI18nScript()}</script>

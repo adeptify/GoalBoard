@@ -1,6 +1,6 @@
 {
   "name": "@adeptify/goalboard",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "GoalBoard V1：面向人和 AI Runtime 的本地 SQLite 目标真相源",
   "type": "module",
   "license": "MIT",
@@ -42,7 +42,7 @@
     "build": "pnpm clean && tsc -p tsconfig.json && pnpm build:pty-client && node dist/install/fingerprint.js .",
     "build:pty-client": "esbuild src/web/pty-client.ts --bundle --format=iife --platform=browser --outfile=dist/web/pty-client.js --loader:.css=text",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/service.test.ts tests/uninstall.test.ts tests/project-catalog.test.ts tests/runtime-integration.test.ts tests/mcp.test.ts tests/planning-engine.test.ts tests/v1.test.ts tests/feed.test.ts tests/feed-sources.test.ts tests/feed-connectors.test.ts tests/feed-security.test.ts tests/i18n.test.ts tests/web.test.ts tests/desktop-tui.test.ts tests/e2e.test.ts",
+    "test": "pnpm build && node --import tsx --test tests/install.test.ts tests/service.test.ts tests/uninstall.test.ts tests/project-catalog.test.ts tests/runtime-integration.test.ts tests/session-adapters.test.ts tests/session-handoff.test.ts tests/session-handoff-recovery.test.ts tests/session-registry.test.ts tests/session-migration.test.ts tests/session-content.test.ts tests/session-resume.test.ts tests/session-tui-capture.test.ts tests/session-content-privacy.test.ts tests/session-web.test.ts tests/mcp.test.ts tests/planning-engine.test.ts tests/goal-momentum.test.ts tests/v1.test.ts tests/feed-contract.test.ts tests/feed.test.ts tests/feed-sources.test.ts tests/feed-connectors.test.ts tests/feed-security.test.ts tests/i18n.test.ts tests/web.test.ts tests/desktop-tui.test.ts tests/e2e.test.ts",
     "prepack": "pnpm build",
     "install:local": "pnpm build && node dist/cli/main.js install --source .",
     "cli": "tsx src/cli/main.ts",

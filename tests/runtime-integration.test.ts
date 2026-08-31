@@ -116,6 +116,8 @@ test("detect and prepare are read-only and public plans never expose the user's 
     assert.equal(claudePlan.status, "ready");
     assert.match(codexPlan.changes[0].after, /GOALBOARD_RUNTIME_ID/);
     assert.match(claudePlan.changes[0].after, /goalboard-mcp/);
+    assert.match(codexPlan.restart_instructions.join("\n"), /每个 Session 都要由你确认关联哪个项目/);
+    assert.doesNotMatch(codexPlan.restart_instructions.join("\n"), /设为这个目录的默认项目/);
     const publicPlans = JSON.stringify([codexPlan, claudePlan]);
     assert.doesNotMatch(publicPlans, /DO-NOT-LEAK/);
     assert.doesNotMatch(publicPlans, /private_note|privateNote/);

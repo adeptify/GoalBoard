@@ -1,0 +1,1383 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Goal 推进态势 · 高保真切片</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f2f1ed;
+      --paper: #fbfaf7;
+      --paper-strong: #ffffff;
+      --paper-muted: #f5f4f0;
+      --ink: #1f2422;
+      --ink-soft: #5f6662;
+      --ink-faint: #8a908c;
+      --line: #dcded9;
+      --line-strong: #c7cac4;
+      --focus: #345fd4;
+      --focus-soft: #e8edff;
+      --good: #3d765d;
+      --good-soft: #e5f1e9;
+      --warn: #a76524;
+      --warn-soft: #f8ecd8;
+      --bad: #a54c48;
+      --bad-soft: #f7e5e2;
+      --shadow: 0 18px 52px rgba(41, 46, 43, 0.08);
+      --radius: 15px;
+      --mono: "SFMono-Regular", "SF Mono", "Roboto Mono", ui-monospace, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #171a18;
+        --paper: #1e211f;
+        --paper-strong: #242826;
+        --paper-muted: #1a1d1b;
+        --ink: #eef0ed;
+        --ink-soft: #b2b8b3;
+        --ink-faint: #7f8781;
+        --line: #343a35;
+        --line-strong: #4a514b;
+        --focus: #91aafa;
+        --focus-soft: #253153;
+        --good: #80b597;
+        --good-soft: #20372b;
+        --warn: #e2a55f;
+        --warn-soft: #422f1b;
+        --bad: #df8b83;
+        --bad-soft: #432623;
+        --shadow: 0 18px 58px rgba(0, 0, 0, 0.24);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--bg); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 78% -20%, color-mix(in srgb, var(--focus) 8%, transparent), transparent 35%),
+        var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, a { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, a:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 48%, transparent);
+      outline-offset: 2px;
+    }
+    [hidden] { display: none !important; }
+
+    .shell {
+      width: min(1500px, 100%);
+      min-height: 100vh;
+      margin: 0 auto;
+      border-inline: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+      background: color-mix(in srgb, var(--paper) 92%, transparent);
+    }
+
+    .appbar {
+      height: 58px;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto minmax(260px, 1fr);
+      align-items: center;
+      gap: 18px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 94%, transparent);
+      backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .project-lockup {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+    .project-mark {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line-strong);
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      background: var(--paper-strong);
+      color: var(--focus);
+      flex: 0 0 auto;
+    }
+    .project-mark svg { width: 16px; height: 16px; }
+    .project-copy { min-width: 0; }
+    .project-copy small {
+      display: block;
+      color: var(--ink-faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .project-copy strong {
+      display: block;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .view-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper-muted);
+    }
+    .view-tabs button {
+      min-height: 31px;
+      padding: 0 13px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--ink-soft);
+      cursor: default;
+    }
+    .view-tabs button[aria-selected="true"] {
+      background: var(--paper-strong);
+      color: var(--ink);
+      box-shadow: 0 1px 4px rgba(25, 30, 27, 0.09);
+      font-weight: 650;
+    }
+    .prototype-badge {
+      justify-self: end;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+    .prototype-badge::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 0 4px var(--warn-soft);
+    }
+
+    .page {
+      padding: 22px;
+    }
+
+    .headline {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 17px;
+    }
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--focus);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(25px, 3vw, 38px);
+      line-height: 1.13;
+      letter-spacing: -.035em;
+      font-weight: 710;
+    }
+    .headline-summary {
+      max-width: 920px;
+      margin: 9px 0 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .period-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper-muted);
+    }
+    .period-switch button {
+      border: 0;
+      border-radius: 7px;
+      padding: 8px 13px;
+      background: transparent;
+      color: var(--ink-soft);
+      cursor: pointer;
+    }
+    .period-switch button[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper-strong);
+      font-weight: 650;
+    }
+
+    .cadence {
+      display: grid;
+      grid-template-columns: minmax(230px, .85fr) minmax(480px, 2.5fr);
+      gap: 22px;
+      padding: 18px 20px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper-strong);
+      box-shadow: var(--shadow);
+    }
+    .cadence-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .section-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      color: var(--ink-faint);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .section-label::before {
+      content: "";
+      width: 18px;
+      height: 1px;
+      background: currentColor;
+    }
+    .cadence-copy strong {
+      display: block;
+      max-width: 440px;
+      font-size: 17px;
+      line-height: 1.4;
+      letter-spacing: -.01em;
+    }
+    .metric-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px 14px;
+      margin: 0;
+    }
+    .metric {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+    .metric b { color: var(--ink); font-family: var(--mono); font-size: 15px; }
+    .metric[data-tone="good"] b { color: var(--good); }
+    .metric[data-tone="bad"] b { color: var(--bad); }
+    .metric[data-tone="warn"] b { color: var(--warn); }
+    .cadence-viz { min-width: 0; }
+    .cadence-legend {
+      display: flex;
+      justify-content: flex-end;
+      gap: 16px;
+      margin-bottom: 10px;
+      color: var(--ink-faint);
+      font-size: 11px;
+    }
+    .cadence-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .cadence-legend i { width: 7px; height: 7px; border-radius: 2px; background: var(--focus); }
+    .cadence-legend [data-tone="good"] i { background: var(--good); }
+    .cadence-legend [data-tone="bad"] i { background: var(--bad); }
+    .rail {
+      position: relative;
+      min-height: 104px;
+      display: grid;
+      grid-template-columns: repeat(7, minmax(52px, 1fr));
+      gap: 8px;
+      align-items: end;
+      padding: 4px 0 22px;
+    }
+    .rail::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 28px;
+      border-top: 1px solid var(--line-strong);
+    }
+    .rail-day {
+      position: relative;
+      z-index: 1;
+      min-width: 0;
+      height: 70px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 3px;
+    }
+    .rail-day span {
+      width: 7px;
+      min-height: 3px;
+      border-radius: 3px 3px 1px 1px;
+      background: var(--focus);
+      transition: height 180ms ease;
+    }
+    .rail-day .complete { background: var(--good); }
+    .rail-day .blocked { background: var(--bad); }
+    .rail-day time {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      color: var(--ink-faint);
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .data-honesty {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      margin-top: 7px;
+      color: var(--ink-faint);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .data-honesty svg { width: 14px; height: 14px; flex: 0 0 auto; margin-top: 1px; }
+
+    .workbench {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 17px;
+      margin-top: 17px;
+      align-items: start;
+    }
+    .map-panel, .queue-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper-strong);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .panel-head {
+      min-height: 61px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 12px 15px 12px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .panel-head p { margin: 3px 0 0; color: var(--ink-faint); font-size: 11px; }
+    .map-mode {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .map-mode::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--focus);
+      box-shadow: 0 0 0 4px var(--focus-soft);
+    }
+    .map-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--paper-muted);
+    }
+    .map-controls button {
+      min-height: 28px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink-soft);
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .map-controls button[aria-pressed="true"] {
+      background: var(--paper-strong);
+      color: var(--ink);
+      box-shadow: 0 1px 4px rgba(25, 30, 27, .09);
+      font-weight: 650;
+    }
+    .map-scroll {
+      max-height: 650px;
+      overflow: auto;
+      scrollbar-color: var(--line-strong) transparent;
+      scrollbar-width: thin;
+      overscroll-behavior: contain;
+    }
+    .goal-map {
+      position: relative;
+      width: 1120px;
+      height: 1250px;
+      background:
+        linear-gradient(to right, color-mix(in srgb, var(--line) 42%, transparent) 1px, transparent 1px),
+        linear-gradient(to bottom, color-mix(in srgb, var(--line) 35%, transparent) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      isolation: isolate;
+    }
+    .topology-columns {
+      position: sticky;
+      top: 0;
+      z-index: 6;
+      width: 1120px;
+      height: 42px;
+      display: grid;
+      grid-template-columns: repeat(5, 185px);
+      gap: 32px;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 94%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .topology-columns span {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--ink-faint);
+      font-size: 10px;
+      font-weight: 650;
+    }
+    .topology-columns b {
+      min-width: 21px;
+      height: 21px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--paper-strong);
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .goal-group {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+      border-radius: 13px;
+      background: color-mix(in srgb, var(--paper-strong) 76%, transparent);
+      z-index: 0;
+    }
+    .goal-group[data-group="standalone"] { top: 58px; height: 182px; }
+    .goal-group[data-group="workbench"] { top: 254px; height: 222px; }
+    .goal-group[data-group="infoflow"] { top: 490px; height: 304px; }
+    .goal-group[data-group="session"] { top: 808px; height: 260px; }
+    .goal-group[data-group="momentum"] { top: 1082px; height: 150px; }
+    .goal-group-title {
+      position: absolute;
+      left: 12px;
+      top: 9px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 520px;
+      padding: 3px 6px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink-faint);
+      font-size: 10px;
+      font-weight: 650;
+      text-align: left;
+      cursor: default;
+    }
+    button.goal-group-title { cursor: pointer; }
+    button.goal-group-title:hover { background: var(--paper-muted); color: var(--ink-soft); }
+    .goal-group-title b {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--line-strong);
+      flex: 0 0 auto;
+    }
+    .goal-group-title[aria-pressed="true"] { color: var(--focus); }
+    .goal-group-title[aria-pressed="true"] b { background: var(--focus); }
+    .group-count {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      color: var(--ink-faint);
+      font-size: 10px;
+    }
+    .edge-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      pointer-events: none;
+      overflow: visible;
+    }
+    .edge {
+      fill: none;
+      stroke: var(--line-strong);
+      stroke-width: 1.2;
+      opacity: .58;
+      marker-end: url(#arrow-muted);
+      transition: opacity 120ms ease, stroke 120ms ease, stroke-width 120ms ease;
+    }
+    .edge.is-related {
+      stroke: var(--focus);
+      stroke-width: 2;
+      opacity: 1;
+      marker-end: url(#arrow-active);
+    }
+    .goal-map.has-selection .edge:not(.is-related) { opacity: .16; }
+    .goal-node {
+      position: absolute;
+      z-index: 2;
+      width: 185px;
+      min-height: 58px;
+      padding: 10px 10px 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--paper-strong);
+      text-align: left;
+      cursor: pointer;
+      box-shadow: 0 5px 16px rgba(25, 30, 27, 0.06);
+      transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .goal-node:hover { transform: translateY(-2px); border-color: var(--ink-faint); }
+    .goal-node[aria-pressed="true"] {
+      border-color: var(--focus);
+      box-shadow: 0 0 0 3px var(--focus-soft), 0 8px 22px rgba(35, 66, 155, .13);
+    }
+    .goal-node.is-bottleneck { border-color: color-mix(in srgb, var(--bad) 58%, var(--line)); }
+    .goal-node.is-bottleneck::after {
+      content: "";
+      position: absolute;
+      top: -4px;
+      right: 13px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--bad);
+      box-shadow: 0 0 0 4px var(--bad-soft);
+    }
+    .goal-node small {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 5px;
+      color: var(--ink-faint);
+      font-size: 9px;
+      font-weight: 750;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .goal-node small span:last-child { font-family: var(--mono); letter-spacing: 0; }
+    .goal-node strong {
+      display: -webkit-box;
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 10.5px;
+      line-height: 1.35;
+      font-weight: 650;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+    .node-state { color: var(--ink-faint); }
+    .goal-node[data-state="ready"] .node-state { color: var(--focus); }
+    .goal-node[data-state="running"] .node-state { color: var(--warn); }
+    .goal-node[data-state="blocked"] .node-state { color: var(--bad); }
+    .goal-node[data-state="done"] .node-state { color: var(--good); }
+    .goal-node[data-state="done"] { opacity: .72; box-shadow: none; }
+    .goal-node[data-state="done"]:hover,
+    .goal-node[data-state="done"][aria-pressed="true"] { opacity: 1; }
+    .goal-node[data-state="parent"] { border-style: dashed; box-shadow: none; }
+    .goal-node.is-filtered { display: none; }
+    .map-legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px 18px;
+      min-height: 43px;
+      padding: 9px 17px;
+      border-top: 1px solid var(--line);
+      color: var(--ink-faint);
+      font-size: 10px;
+    }
+    .map-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .map-legend i { width: 19px; height: 0; border-top: 2px solid var(--line-strong); }
+    .map-legend [data-kind="dependency"] i { border-color: var(--line-strong); }
+    .map-legend [data-kind="selected"] i { border-color: var(--focus); }
+    .map-legend [data-kind="group"] i { border-color: var(--line-strong); border-top-style: dashed; }
+
+    .queue-panel {
+      position: static;
+      display: grid;
+      grid-template-columns: minmax(360px, 430px) minmax(0, 1fr);
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .queue-panel > .panel-head { grid-column: 1; grid-row: 1; }
+    .queue-panel > .queue-filters { grid-column: 1; grid-row: 2; }
+    .queue-panel > .queue-list,
+    .queue-panel > .queue-empty { grid-column: 1; grid-row: 3; }
+    .queue-panel > .selection {
+      grid-column: 2;
+      grid-row: 1 / 4;
+      border-left: 1px solid var(--line);
+    }
+    .queue-filters {
+      display: flex;
+      gap: 5px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      overflow-x: auto;
+    }
+    .queue-filters button {
+      min-height: 28px;
+      padding: 0 9px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--ink-soft);
+      font-size: 11px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .queue-filters button[aria-pressed="true"] {
+      border-color: var(--line-strong);
+      background: var(--paper-muted);
+      color: var(--ink);
+      font-weight: 650;
+    }
+    .queue-list { margin: 0; padding: 0; list-style: none; }
+    .queue-item {
+      display: grid;
+      grid-template-columns: 27px minmax(0, 1fr);
+      gap: 10px;
+      width: 100%;
+      padding: 13px 14px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .queue-item:hover { background: var(--paper-muted); }
+    .queue-item[aria-pressed="true"] { background: var(--focus-soft); }
+    .queue-rank {
+      width: 25px;
+      height: 25px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      color: var(--ink-faint);
+      font-family: var(--mono);
+      font-size: 10px;
+      background: var(--paper-strong);
+    }
+    .queue-item[aria-pressed="true"] .queue-rank {
+      border-color: var(--focus);
+      color: var(--focus);
+    }
+    .queue-item header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .queue-item strong { font-size: 12px; line-height: 1.4; font-weight: 660; }
+    .state {
+      flex: 0 0 auto;
+      border-radius: 6px;
+      padding: 3px 6px;
+      background: var(--paper-muted);
+      color: var(--ink-soft);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+    .state--ready { background: var(--focus-soft); color: var(--focus); }
+    .state--running { background: var(--warn-soft); color: var(--warn); }
+    .state--blocked { background: var(--bad-soft); color: var(--bad); }
+    .queue-item p { margin: 6px 0 0; color: var(--ink-soft); font-size: 10.5px; line-height: 1.45; }
+    .queue-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; color: var(--ink-faint); font-size: 9px; }
+    .queue-empty { padding: 28px 20px; text-align: center; }
+    .queue-empty strong { display: block; font-size: 13px; }
+    .queue-empty p { margin: 7px auto 13px; max-width: 250px; color: var(--ink-faint); font-size: 11px; line-height: 1.5; }
+    .queue-empty button {
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: var(--paper-strong);
+      cursor: pointer;
+    }
+    .selection {
+      padding: 15px 15px 16px;
+      background: var(--paper);
+    }
+    .selection-kicker {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--ink-faint);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .selection h3 { margin: 8px 0 6px; font-size: 15px; line-height: 1.35; letter-spacing: -.015em; }
+    .selection p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.55; }
+    .selection dl {
+      display: grid;
+      grid-template-columns: 80px 1fr;
+      gap: 7px 10px;
+      margin: 13px 0;
+      padding: 11px 0;
+      border-block: 1px solid var(--line);
+      font-size: 10px;
+    }
+    .selection dt { color: var(--ink-faint); }
+    .selection dd { margin: 0; color: var(--ink); }
+    .goal-link {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      width: 100%;
+      border-radius: 9px;
+      background: var(--ink);
+      color: var(--paper-strong);
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .goal-link svg { width: 14px; height: 14px; }
+    details.method-note {
+      margin-top: 17px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper-strong);
+    }
+    details.method-note summary {
+      padding: 12px 15px;
+      cursor: pointer;
+      color: var(--ink-soft);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .method-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      border-top: 1px solid var(--line);
+      background: var(--line);
+    }
+    .method-grid article {
+      padding: 13px 14px;
+      background: var(--paper);
+    }
+    .method-grid strong { display: block; margin-bottom: 5px; font-size: 10px; }
+    .method-grid p { margin: 0; color: var(--ink-faint); font-size: 10px; line-height: 1.5; }
+
+    @media (max-width: 1080px) {
+      .cadence { grid-template-columns: 1fr 2fr; }
+      .queue-panel { grid-template-columns: minmax(330px, 390px) minmax(0, 1fr); }
+    }
+
+    @media (max-width: 760px) {
+      .shell { border: 0; }
+      .appbar {
+        height: auto;
+        min-height: 54px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        padding: 9px 13px;
+      }
+      .view-tabs { display: none; }
+      .prototype-badge { font-size: 10px; }
+      .page { padding: 14px 11px 22px; }
+      .headline { grid-template-columns: 1fr; gap: 13px; }
+      h1 { font-size: 27px; }
+      .headline-summary { font-size: 13px; }
+      .period-switch { justify-self: start; }
+      .cadence { grid-template-columns: 1fr; gap: 9px; padding: 16px 13px 12px; }
+      .cadence-copy { gap: 12px; }
+      .cadence-copy strong { font-size: 15px; }
+      .cadence-legend { justify-content: flex-start; }
+      .rail { grid-template-columns: repeat(7, minmax(38px, 1fr)); gap: 3px; }
+      .workbench { display: grid; }
+      .panel-head { align-items: flex-start; }
+      .map-panel { width: 100%; }
+      .map-scroll { max-height: 560px; }
+      .queue-panel { display: block; width: 100%; }
+      .queue-panel > .selection { border-top: 1px solid var(--line); border-left: 0; }
+      .map-legend { align-items: flex-start; }
+      .method-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 430px) {
+      .project-copy small { display: none; }
+      .project-copy strong { font-size: 12px; }
+      .prototype-badge { max-width: 91px; line-height: 1.25; }
+      .headline-summary { line-height: 1.5; }
+      .metric-line { gap: 6px 11px; }
+      .cadence-legend { gap: 9px; }
+      .method-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 16V9a4 4 0 0 1 4-4h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="icon-external" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  </svg>
+
+  <div class="shell" data-prototype>
+    <header class="appbar">
+      <div class="project-lockup">
+        <span class="project-mark"><svg><use href="#icon-route"></use></svg></span>
+        <span class="project-copy"><small>当前项目</small><strong>GoalBoard 信息流工作台重设计</strong></span>
+      </div>
+      <div class="view-tabs" role="tablist" aria-label="Goal 视图">
+        <button type="button" role="tab" aria-selected="false">列表</button>
+        <button type="button" role="tab" aria-selected="true">推进态势</button>
+      </div>
+      <span class="prototype-badge">高保真演示 · 不写入数据</span>
+    </header>
+
+    <main class="page">
+      <section class="headline">
+        <div>
+          <h1>先看推进是否流动，再决定现在做什么</h1>
+          <p class="headline-summary">把时间变化、完整依赖拓扑和行动顺序放在同一个工作面里。所有 Goal 按前置层级从左到右展开，瓶颈只是一种状态，不再裁掉图的其余部分。</p>
+        </div>
+        <div class="period-switch" aria-label="时间窗口">
+          <button type="button" data-period="7" aria-pressed="true">近 7 天</button>
+          <button type="button" data-period="30" aria-pressed="false">近 30 天</button>
+        </div>
+      </section>
+
+      <section class="cadence" aria-labelledby="cadence-title">
+        <div class="cadence-copy">
+          <div>
+            <p class="section-label" id="cadence-title">推进节奏</p>
+            <strong data-cadence-headline>推进速度在上升，但 Session 基础仍挡住最多下游结果。</strong>
+          </div>
+          <p class="metric-line" aria-label="时间窗口统计">
+            <span class="metric"><b data-metric="started">3</b>启动</span>
+            <span class="metric" data-tone="good"><b data-metric="completed">9</b>完成</span>
+            <span class="metric" data-tone="bad"><b data-metric="blocked">2</b>新阻塞</span>
+            <span class="metric" data-tone="warn"><b data-metric="stalled">4</b>停滞</span>
+          </p>
+        </div>
+        <div class="cadence-viz">
+          <div class="cadence-legend" aria-label="时间轨图例">
+            <span><i></i>启动</span>
+            <span data-tone="good"><i></i>完成</span>
+            <span data-tone="bad"><i></i>新阻塞</span>
+          </div>
+          <div class="rail" data-cadence-rail aria-label="近 7 天 Goal 事件变化"></div>
+          <p class="data-honesty"><svg><use href="#icon-info"></use></svg><span>代表性快照，不是生产实时统计。4 个 Goal 历史不足，未计入“停滞”；选择下方“口径与缺口”可查看定义。</span></p>
+        </div>
+      </section>
+
+      <section class="workbench">
+        <section class="map-panel" aria-labelledby="map-title">
+          <header class="panel-head">
+            <div><h2 id="map-title">完整 Goal 依赖拓扑</h2><p>30 个 Goal · 38 条 depends_on · 按依赖层级从左到右</p></div>
+            <div class="map-controls" aria-label="拓扑显示范围">
+              <button type="button" data-map-filter="all" aria-pressed="true">全部 30</button>
+              <button type="button" data-map-filter="open" aria-pressed="false">未完成 14</button>
+            </div>
+          </header>
+          <div class="map-scroll" tabindex="0" aria-label="可横向和纵向浏览的完整 Goal 依赖拓扑">
+            <div class="goal-map" data-topology-map>
+              <div class="topology-columns" aria-hidden="true">
+                <span><b>L0</b>无前置 / 基础输入</span>
+                <span><b>L1</b>一级消费</span>
+                <span><b>L2</b>能力汇合</span>
+                <span><b>L3</b>真实接入</span>
+                <span><b>L4</b>最终集成</span>
+              </div>
+
+              <div class="goal-group" data-group="standalone"><div class="goal-group-title"><b></b>项目级独立事项</div><span class="group-count">2 个 Goal</span></div>
+              <div class="goal-group" data-group="workbench"><button class="goal-group-title" type="button" data-goal-id="draft-c0339355-7a4a-468b-af28-e932902359fc" aria-pressed="false"><b></b>交付内部完整的 GoalBoard 信息流工作台</button><span class="group-count">1 个父 Goal · 6 个子 Goal</span></div>
+              <div class="goal-group" data-group="infoflow"><button class="goal-group-title" type="button" data-goal-id="draft-ad22f3b4-07d8-4c21-8e74-4272f65f0207" aria-pressed="false"><b></b>完成来源、Feed 与 Inbox 的完整功能重构</button><span class="group-count">1 个父 Goal · 9 个子 Goal</span></div>
+              <div class="goal-group" data-group="session"><button class="goal-group-title" type="button" data-goal-id="draft-f4832ca7-41e2-40d6-a1a2-acebfa29da74" aria-pressed="false"><b></b>交付以 Session 为核心的会话与工作目录工作台</button><span class="group-count">1 个父 Goal · 7 个子 Goal</span></div>
+              <div class="goal-group" data-group="momentum"><button class="goal-group-title" type="button" data-goal-id="draft-f2fa3519-9666-4c8e-8198-938d8123f43e" aria-pressed="false"><b></b>用 Goal 推进态势替换现有关系图</button><span class="group-count">1 个父 Goal · 2 个子 Goal</span></div>
+
+              <svg class="edge-layer" viewBox="0 0 1120 1250" aria-hidden="true" data-topology-edges>
+                <defs>
+                  <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path></marker>
+                  <marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--focus)"></path></marker>
+                </defs>
+              </svg>
+              <div data-topology-nodes></div>
+            </div>
+          </div>
+          <footer class="map-legend">
+            <span data-kind="dependency"><i></i>depends_on：前置提供者 → 消费者</span>
+            <span data-kind="selected"><i></i>当前选择的一阶依赖</span>
+            <span data-kind="group"><i></i>虚线分组带表达 part_of</span>
+            <span>瓶颈是节点状态，不再决定图里显示什么</span>
+          </footer>
+        </section>
+
+        <aside class="queue-panel" aria-labelledby="queue-title">
+          <header class="panel-head">
+            <div><h2 id="queue-title">现在做什么</h2><p>按可解释层级排序，不用隐藏综合分</p></div>
+            <span class="map-mode" style="--bad:var(--focus);--bad-soft:var(--focus-soft)">4 项</span>
+          </header>
+          <div class="queue-filters" aria-label="行动筛选">
+            <button type="button" data-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-filter="ready" aria-pressed="false">可开始</button>
+            <button type="button" data-filter="running" aria-pressed="false">执行中</button>
+            <button type="button" data-filter="decision" aria-pressed="false">需要决定</button>
+          </div>
+          <ol class="queue-list" data-queue-list>
+            <li data-queue-state="ready">
+              <button class="queue-item" type="button" data-goal-id="session-runtime-foundation" aria-pressed="true">
+                <span class="queue-rank">01</span>
+                <span>
+                  <header><strong>建立统一 Session 身份与 Runtime 适配基础</strong><em class="state state--ready">可开始</em></header>
+                  <p>没有未完成前置；完成后 4 项实现与最终验收会解除前置阻塞。</p>
+                  <span class="queue-meta"><span>影响 5 项下游</span><span>历史充足</span></span>
+                </span>
+              </button>
+            </li>
+            <li data-queue-state="running">
+              <button class="queue-item" type="button" data-goal-id="goal-infoflow-rss-connector" aria-pressed="false">
+                <span class="queue-rank">02</span>
+                <span>
+                  <header><strong>接通 RSS 与 Atom 订阅来源</strong><em class="state state--running">执行中</em></header>
+                  <p>已有 active Claim；完成可移除真实集成的两项阻塞之一。</p>
+                  <span class="queue-meta"><span>可完成</span><span>影响 1 项下游</span></span>
+                </span>
+              </button>
+            </li>
+            <li data-queue-state="ready">
+              <button class="queue-item" type="button" data-goal-id="goal-infoflow-gmail-connector" aria-pressed="false">
+                <span class="queue-rank">03</span>
+                <span>
+                  <header><strong>接通 Gmail 邮件来源</strong><em class="state state--ready">可开始</em></header>
+                  <p>运行底座已满足、当前无人领取；完成后真实集成只剩 RSS。</p>
+                  <span class="queue-meta"><span>可立即领取</span><span>影响 1 项下游</span></span>
+                </span>
+              </button>
+            </li>
+            <li data-queue-state="running">
+              <button class="queue-item" type="button" data-goal-id="goal-momentum-hifi-slice" aria-pressed="false">
+                <span class="queue-rank">04</span>
+                <span>
+                  <header><strong>验证 Goal 推进态势高保真切片</strong><em class="state state--running">执行中</em></header>
+                  <p>当前正在验证本视图；需要人类判断后才能进入真实接入。</p>
+                  <span class="queue-meta"><span>需要验收</span><span>影响 1 项下游</span></span>
+                </span>
+              </button>
+            </li>
+          </ol>
+          <div class="queue-empty" data-queue-empty hidden>
+            <strong>当前没有需要决定的行动</strong>
+            <p>这是一个好状态，不用为了填满队列制造人工决策。</p>
+            <button type="button" data-clear-filter>查看全部行动</button>
+          </div>
+
+          <section class="selection" aria-live="polite" data-selection>
+            <div class="selection-kicker"><span>当前选择</span><span data-selection-state>可开始</span></div>
+            <h3 data-selection-title>建立统一 Session 身份与 Runtime 适配基础</h3>
+            <p data-selection-reason>没有未完成前置；它是当前解锁范围最大的底层 Goal。</p>
+            <dl>
+              <dt>下一步</dt><dd data-selection-next>领取并固定 Session identity / adapter 契约</dd>
+              <dt>影响链</dt><dd data-selection-impact>4 项实现 + 1 项内部验收</dd>
+              <dt>数据可信度</dt><dd data-selection-confidence>历史充足 · 可追溯到 Contract 与关系</dd>
+            </dl>
+            <a class="goal-link" data-selection-link href="http://127.0.0.1:4173/projects/project-aeb51deb-e335-403b-80cc-387e20e0e000/goals/session-runtime-foundation" target="_blank" rel="noreferrer">打开这个 Goal 的真实详情 <svg><use href="#icon-external"></use></svg></a>
+          </section>
+        </aside>
+      </section>
+
+      <details class="method-note">
+        <summary>口径与缺口：为什么这些数字和排序可以相信？</summary>
+        <div class="method-grid">
+          <article><strong>时间事件</strong><p>启动来自首个 executor Run；完成来自首次可信 satisfied；新阻塞来自 blocker 或 completion-blocking Risk。</p></article>
+          <article><strong>停滞</strong><p>窗口内没有 Run、Evidence、Review、Contract 或关系更新才算停滞；历史不足直接排除并标注。</p></article>
+          <article><strong>完整拓扑</strong><p>30 个 Goal 与 38 条 depends_on 全部保留；part_of 用分组带表达，节点列号只来自依赖深度。</p></article>
+          <article><strong>行动顺序</strong><p>先决定，再完成执行中项，再开始高解锁项；同层只按最近有效变化稳定排序。</p></article>
+        </div>
+      </details>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      var boardBase = "http://127.0.0.1:4173/projects/project-aeb51deb-e335-403b-80cc-387e20e0e000/goals/";
+      function goal(title, state, reason, next, impact, confidence) {
+        return { title: title, state: state, reason: reason, next: next, impact: impact, confidence: confidence || "当前项目快照 · 关系可追溯" };
+      }
+
+      var goals = {
+        "draft-78a84b05-54c9-423d-b2f1-3c171ed6ebdc": goal("关闭已完成缓解的共享列表 UI 回归风险", "已完成", "这是一项项目级独立纠正工作，没有执行前置。", "无需继续行动", "已关闭一项共享 UI 风险"),
+        "draft-f1c6b937-d1b4-45c3-bc29-891e964261bc": goal("修复工作台导航控件归属与网页版项目切换", "已完成", "项目级导航修复已可信完成，没有归入当前四棵复合 Goal。", "无需继续行动", "稳定单目录导航与项目切换"),
+
+        "draft-c0339355-7a4a-468b-af28-e932902359fc": goal("交付内部完整的 GoalBoard 信息流工作台", "已完成", "六个子 Goal 均已可信完成，父 Goal 已收口。", "无需继续行动", "6/6 子 Goal 完成"),
+        "info-workbench-directory-system": goal("统一四类目录与列表系统", "已完成", "它提供信息流工作台、推进态势和来源管理共同消费的目录基线。", "无需继续行动", "9 个下游依赖使用该结果"),
+        "info-workbench-sources-connectors": goal("完成来源与连接管理工作台", "已完成", "来源工作台消费统一目录并为 Runtime/TUI 与内部验收提供结果。", "无需继续行动", "2 个直接消费者"),
+        "info-workbench-feed": goal("完成 Feed 信号工作台", "已完成", "Feed 消费统一目录，并向 Item Runtime/TUI 提供真实选择与动作。", "无需继续行动", "1 个直接消费者"),
+        "info-workbench-inbox": goal("完成 Inbox 消息工作台", "已完成", "Inbox 消费统一目录，并向 Item Runtime/TUI 提供待处理对象。", "无需继续行动", "1 个直接消费者"),
+        "info-workbench-runtime-tui": goal("完成 Item 到 Goal Runtime/TUI 的处理闭环", "已完成", "它汇合 Feed、Inbox 与来源能力，供内部完整验收消费。", "无需继续行动", "1 个直接消费者"),
+        "info-workbench-internal-qa": goal("完成信息流工作台内部完整验收", "已完成", "目录、来源和 Runtime/TUI 闭环均已进入内部验收。", "无需继续行动", "完成信息流工作台复合结果"),
+
+        "draft-ad22f3b4-07d8-4c21-8e74-4272f65f0207": goal("完成来源、Feed 与 Inbox 的完整功能重构", "等待子 Goal", "九个子 Goal 中 Gmail、RSS 与最终集成仍未可信完成。", "先完成两个来源接入", "6/9 子 Goal 完成"),
+        "draft-8f160677-f8f8-4f2b-935d-0881edb3aba3": goal("交付来源、Feed 与 Inbox 的可交互高保真原型", "已完成", "它是数据契约与迁移边界的已验证输入。", "无需继续行动", "1 个直接消费者"),
+        "goal-infoflow-contract-migration": goal("固化来源、Feed、Inbox 的数据契约与迁移边界", "已完成", "契约消费高保真原型，并为运行底座、Feed 与 Inbox 提供共同输入。", "无需继续行动", "3 个直接消费者"),
+        "goal-infoflow-source-runtime": goal("实现来源管理与定时拉取运行底座", "已完成", "运行底座为三个真实来源与最终集成提供共同能力。", "无需继续行动", "4 个直接消费者"),
+        "goal-infoflow-attention-inbox": goal("交付引用式 Inbox 处理闭环", "已完成", "引用式 Inbox 已可信完成，等待最终真实链路集成消费。", "无需继续行动", "1 个直接消费者"),
+        "goal-infoflow-real-feed": goal("交付统一真实 Feed 工作台", "已完成", "真实 Feed 已可信完成，等待最终集成消费。", "无需继续行动", "1 个直接消费者"),
+        "goal-infoflow-github-connector": goal("接通 GitHub 账号通知来源", "已完成", "GitHub 来源已经通过运行底座接通并可供最终集成消费。", "无需继续行动", "最终集成的一项前置"),
+        "goal-infoflow-gmail-connector": goal("接通 Gmail 邮件来源", "可开始", "运行底座已经满足且当前无人领取。", "领取并完成 Gmail 只读授权、增量游标与恢复验证", "最终集成的一项未完成前置"),
+        "goal-infoflow-rss-connector": goal("接通 RSS 与 Atom 订阅来源", "执行中", "已有 active Claim；完成后可移除最终集成的两项阻塞之一。", "完成 RSS 拉取、游标和故障恢复", "最终集成的一项未完成前置", "当前 active Claim 可见 · 关系可追溯"),
+        "goal-infoflow-internal-integration": goal("完成真实链路迁移、集成与内部试用验收", "被阻塞", "Gmail 与 RSS 仍未完成；它是结果节点，不应进入可执行队列。", "先完成 Gmail 和 RSS 来源", "完成来源 → Feed → Inbox 的真实闭环"),
+
+        "draft-f4832ca7-41e2-40d6-a1a2-acebfa29da74": goal("交付以 Session 为核心的会话与工作目录工作台", "等待子 Goal", "七个子 Goal 中六项仍未可信完成。", "先完成统一 Session 基础", "1/7 子 Goal 完成"),
+        "session-runtime-foundation": goal("建立统一 Session 身份与 Runtime 适配基础", "可开始", "没有未完成前置；它是当前受阻下游最多的底层 Goal。", "领取并固定 Session identity / adapter 契约", "6 个未完成下游 Goal", "历史充足 · Contract 与关系可追溯"),
+        "session-workspace-hifi-slice": goal("验证 Session 与工作目录工作台高保真切片", "已完成", "已验证的交互动线被目录、内容、工作目录和 Handoff 实现共同消费。", "无需继续行动", "4 个直接消费者"),
+        "session-content-runtime-load": goal("交付 Session 内容时间线与原 Runtime 加载", "被阻塞", "必须先消费统一 Session 基础；高保真切片已经满足。", "先完成统一 Session 身份与 Runtime 适配基础", "继续提供 Handoff 与内部验收输入"),
+        "session-directory-management": goal("交付全局与项目内 Sessions 管理目录", "被阻塞", "目录需要稳定的 Session 查询、关联和能力契约。", "等待 Session 基础 Contract 可消费", "内部验收的一项必要输入"),
+        "workspace-directory-management": goal("交付全局与项目内工作目录关联管理", "被阻塞", "工作目录管理需要统一 workspace / session 关联与授权契约。", "等待 Session 基础 Contract 可消费", "内部验收的一项必要输入"),
+        "session-goal-handoff": goal("交付 Goal Handoff 到目标 Runtime 新 Session", "被阻塞", "Handoff 同时消费 Runtime adapter、可读取的 Session 内容与已验证动线。", "先完成 Session 基础与内容加载", "内部验收的一项必要输入"),
+        "session-workspace-internal-qa": goal("完成 Session 与工作目录工作台内部完整验收", "被阻塞", "它汇合目录、内容、工作目录与 Handoff 四项真实能力。", "等待四项能力可运行", "完成 Session 工作台复合 Goal"),
+
+        "draft-f2fa3519-9666-4c8e-8198-938d8123f43e": goal("用 Goal 推进态势替换现有关系图", "等待子 Goal", "高保真切片正在返工，内部完整实现仍被它阻塞。", "先完成完整拓扑切片的人类验收", "0/2 子 Goal 完成"),
+        "goal-momentum-hifi-slice": goal("验证 Goal 推进态势高保真切片", "执行中", "正在把局部解锁链改为完整的左到右依赖拓扑。", "完成浏览器检查并交给一骏做人类判断", "内部完整推进态势的一项前置", "当前 executor Claim 可见"),
+        "goal-momentum-internal-complete": goal("交付内部完整的 Goal 推进态势视图", "被阻塞", "必须先消费高保真切片确认的完整拓扑、指标和交互契约。", "等待本切片的人类验收", "替换现有关系图并接入真实数据")
+      };
+
+      var topologyNodes = [
+        { id: "draft-78a84b05-54c9-423d-b2f1-3c171ed6ebdc", x: 32, y: 98, level: 0, state: "done", meta: "独立" },
+        { id: "draft-f1c6b937-d1b4-45c3-bc29-891e964261bc", x: 32, y: 165, level: 0, state: "done", meta: "独立" },
+
+        { id: "info-workbench-directory-system", x: 32, y: 320, level: 0, state: "done", meta: "9 下游" },
+        { id: "info-workbench-sources-connectors", x: 249, y: 285, level: 1, state: "done", meta: "来源" },
+        { id: "info-workbench-feed", x: 249, y: 352, level: 1, state: "done", meta: "Feed" },
+        { id: "info-workbench-inbox", x: 249, y: 419, level: 1, state: "done", meta: "Inbox" },
+        { id: "info-workbench-runtime-tui", x: 466, y: 328, level: 2, state: "done", meta: "汇合 3" },
+        { id: "info-workbench-internal-qa", x: 683, y: 328, level: 3, state: "done", meta: "验收" },
+
+        { id: "draft-8f160677-f8f8-4f2b-935d-0881edb3aba3", x: 32, y: 565, level: 0, state: "done", meta: "原型" },
+        { id: "goal-infoflow-contract-migration", x: 249, y: 565, level: 1, state: "done", meta: "契约" },
+        { id: "goal-infoflow-source-runtime", x: 466, y: 530, level: 2, state: "done", meta: "4 下游" },
+        { id: "goal-infoflow-attention-inbox", x: 466, y: 597, level: 2, state: "done", meta: "Inbox" },
+        { id: "goal-infoflow-real-feed", x: 466, y: 664, level: 2, state: "done", meta: "Feed" },
+        { id: "goal-infoflow-github-connector", x: 683, y: 505, level: 3, state: "done", meta: "来源" },
+        { id: "goal-infoflow-gmail-connector", x: 683, y: 572, level: 3, state: "ready", meta: "可开始" },
+        { id: "goal-infoflow-rss-connector", x: 683, y: 639, level: 3, state: "running", meta: "Claim" },
+        { id: "goal-infoflow-internal-integration", x: 900, y: 572, level: 4, state: "blocked", meta: "缺 2 前置" },
+
+        { id: "session-runtime-foundation", x: 32, y: 876, level: 0, state: "ready", meta: "6 下游", bottleneck: true },
+        { id: "session-workspace-hifi-slice", x: 32, y: 943, level: 0, state: "done", meta: "4 下游" },
+        { id: "session-content-runtime-load", x: 249, y: 842, level: 1, state: "blocked", meta: "缺 1 前置" },
+        { id: "session-directory-management", x: 249, y: 909, level: 1, state: "blocked", meta: "缺 1 前置" },
+        { id: "workspace-directory-management", x: 249, y: 976, level: 1, state: "blocked", meta: "缺 1 前置" },
+        { id: "session-goal-handoff", x: 466, y: 842, level: 2, state: "blocked", meta: "缺 2 前置" },
+        { id: "session-workspace-internal-qa", x: 683, y: 909, level: 3, state: "blocked", meta: "缺 4 前置" },
+
+        { id: "goal-momentum-hifi-slice", x: 249, y: 1134, level: 1, state: "running", meta: "当前" },
+        { id: "goal-momentum-internal-complete", x: 466, y: 1134, level: 2, state: "blocked", meta: "缺 1 前置" }
+      ];
+
+      var topologyEdges = [
+        ["info-workbench-sources-connectors", "info-workbench-directory-system"],
+        ["info-workbench-feed", "info-workbench-directory-system"],
+        ["info-workbench-inbox", "info-workbench-directory-system"],
+        ["info-workbench-runtime-tui", "info-workbench-sources-connectors"],
+        ["info-workbench-runtime-tui", "info-workbench-feed"],
+        ["info-workbench-runtime-tui", "info-workbench-inbox"],
+        ["info-workbench-internal-qa", "info-workbench-directory-system"],
+        ["info-workbench-internal-qa", "info-workbench-sources-connectors"],
+        ["info-workbench-internal-qa", "info-workbench-runtime-tui"],
+
+        ["goal-infoflow-contract-migration", "draft-8f160677-f8f8-4f2b-935d-0881edb3aba3"],
+        ["goal-infoflow-source-runtime", "goal-infoflow-contract-migration"],
+        ["goal-infoflow-attention-inbox", "goal-infoflow-contract-migration"],
+        ["goal-infoflow-real-feed", "goal-infoflow-contract-migration"],
+        ["goal-infoflow-github-connector", "goal-infoflow-source-runtime"],
+        ["goal-infoflow-gmail-connector", "goal-infoflow-source-runtime"],
+        ["goal-infoflow-rss-connector", "goal-infoflow-source-runtime"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-real-feed"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-attention-inbox"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-source-runtime"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-github-connector"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-gmail-connector"],
+        ["goal-infoflow-internal-integration", "goal-infoflow-rss-connector"],
+
+        ["session-content-runtime-load", "session-runtime-foundation"],
+        ["session-content-runtime-load", "session-workspace-hifi-slice"],
+        ["session-directory-management", "session-runtime-foundation"],
+        ["session-directory-management", "session-workspace-hifi-slice"],
+        ["workspace-directory-management", "session-runtime-foundation"],
+        ["workspace-directory-management", "session-workspace-hifi-slice"],
+        ["session-goal-handoff", "session-runtime-foundation"],
+        ["session-goal-handoff", "session-content-runtime-load"],
+        ["session-goal-handoff", "session-workspace-hifi-slice"],
+        ["session-workspace-internal-qa", "session-directory-management"],
+        ["session-workspace-internal-qa", "session-content-runtime-load"],
+        ["session-workspace-internal-qa", "workspace-directory-management"],
+        ["session-workspace-internal-qa", "session-goal-handoff"],
+
+        ["goal-momentum-hifi-slice", "info-workbench-directory-system"],
+        ["goal-momentum-internal-complete", "info-workbench-directory-system"],
+        ["goal-momentum-internal-complete", "goal-momentum-hifi-slice"]
+      ];
+
+      var periods = {
+        "7": {
+          headline: "推进速度在上升，但 Session 基础仍挡住最多下游结果。",
+          metrics: { started: 3, completed: 9, blocked: 2, stalled: 4 },
+          label: "近 7 天 Goal 事件变化",
+          days: [
+            { label: "08/24", start: 1, complete: 1, blocked: 0 },
+            { label: "08/25", start: 0, complete: 2, blocked: 0 },
+            { label: "08/26", start: 1, complete: 0, blocked: 1 },
+            { label: "08/27", start: 0, complete: 1, blocked: 0 },
+            { label: "08/28", start: 0, complete: 2, blocked: 0 },
+            { label: "08/29", start: 0, complete: 2, blocked: 0 },
+            { label: "今天", start: 1, complete: 1, blocked: 1 }
+          ]
+        },
+        "30": {
+          headline: "近 30 天完成集中在信息流，新的未完成工作正在转向 Session 管理。",
+          metrics: { started: 15, completed: 14, blocked: 3, stalled: 6 },
+          label: "近 30 天 Goal 事件变化，按时间段汇总",
+          days: [
+            { label: "08/01", start: 3, complete: 1, blocked: 0 },
+            { label: "08/06", start: 2, complete: 2, blocked: 1 },
+            { label: "08/11", start: 1, complete: 1, blocked: 0 },
+            { label: "08/16", start: 3, complete: 2, blocked: 0 },
+            { label: "08/21", start: 2, complete: 3, blocked: 1 },
+            { label: "08/26", start: 2, complete: 3, blocked: 0 },
+            { label: "今天", start: 2, complete: 2, blocked: 1 }
+          ]
+        }
+      };
+
+      function renderTopology() {
+        var container = document.querySelector("[data-topology-nodes]");
+        var svg = document.querySelector("[data-topology-edges]");
+        var svgNs = "http://www.w3.org/2000/svg";
+
+        topologyNodes.forEach(function (item) {
+          var data = goals[item.id];
+          var button = document.createElement("button");
+          button.className = "goal-node" + (item.bottleneck ? " is-bottleneck" : "");
+          button.type = "button";
+          button.style.left = item.x + "px";
+          button.style.top = item.y + "px";
+          button.setAttribute("data-goal-id", item.id);
+          button.setAttribute("data-level", String(item.level));
+          button.setAttribute("data-state", item.state);
+          button.setAttribute("aria-pressed", "false");
+
+          var small = document.createElement("small");
+          var state = document.createElement("span");
+          state.className = "node-state";
+          state.textContent = data.state;
+          var meta = document.createElement("span");
+          meta.textContent = item.meta;
+          small.appendChild(state);
+          small.appendChild(meta);
+
+          var title = document.createElement("strong");
+          title.textContent = data.title;
+          button.appendChild(small);
+          button.appendChild(title);
+          container.appendChild(button);
+        });
+
+        topologyEdges.forEach(function (relation) {
+          var consumer = container.querySelector('[data-goal-id="' + relation[0] + '"]');
+          var provider = container.querySelector('[data-goal-id="' + relation[1] + '"]');
+          if (!consumer || !provider) return;
+          var x1 = provider.offsetLeft + provider.offsetWidth;
+          var y1 = provider.offsetTop + provider.offsetHeight / 2;
+          var x2 = consumer.offsetLeft;
+          var y2 = consumer.offsetTop + consumer.offsetHeight / 2;
+          var bend = Math.max(28, (x2 - x1) * .46);
+          var path = document.createElementNS(svgNs, "path");
+          path.setAttribute("class", "edge");
+          path.setAttribute("d", "M" + x1 + " " + y1 + " C" + (x1 + bend) + " " + y1 + " " + (x2 - bend) + " " + y2 + " " + x2 + " " + y2);
+          path.setAttribute("data-provider", relation[1]);
+          path.setAttribute("data-consumer", relation[0]);
+          svg.appendChild(path);
+        });
+      }
+
+      renderTopology();
+
+      var periodButtons = Array.from(document.querySelectorAll("[data-period]"));
+      var rail = document.querySelector("[data-cadence-rail]");
+      var headline = document.querySelector("[data-cadence-headline]");
+      var metricNodes = Array.from(document.querySelectorAll("[data-metric]"));
+      var goalButtons = Array.from(document.querySelectorAll("[data-goal-id]"));
+      var nodeButtons = Array.from(document.querySelectorAll(".goal-node[data-goal-id]"));
+      var filterButtons = Array.from(document.querySelectorAll("[data-filter]"));
+      var mapFilterButtons = Array.from(document.querySelectorAll("[data-map-filter]"));
+      var queueRows = Array.from(document.querySelectorAll("[data-queue-state]"));
+      var queueList = document.querySelector("[data-queue-list]");
+      var queueEmpty = document.querySelector("[data-queue-empty]");
+      var topologyMap = document.querySelector("[data-topology-map]");
+      var topologyPaths = Array.from(document.querySelectorAll(".edge[data-provider]"));
+
+      function barHeight(value) {
+        return String(Math.max(3, Math.min(58, value * 15))) + "px";
+      }
+
+      function renderPeriod(key) {
+        var data = periods[key];
+        headline.textContent = data.headline;
+        rail.setAttribute("aria-label", data.label);
+        metricNodes.forEach(function (node) {
+          node.textContent = String(data.metrics[node.getAttribute("data-metric")]);
+        });
+        rail.innerHTML = "";
+        data.days.forEach(function (day) {
+          var cell = document.createElement("div");
+          cell.className = "rail-day";
+          cell.innerHTML =
+            '<span class="start" style="height:' + barHeight(day.start) + '" title="启动 ' + day.start + '"></span>' +
+            '<span class="complete" style="height:' + barHeight(day.complete) + '" title="完成 ' + day.complete + '"></span>' +
+            '<span class="blocked" style="height:' + barHeight(day.blocked) + '" title="新阻塞 ' + day.blocked + '"></span>' +
+            "<time>" + day.label + "</time>";
+          rail.appendChild(cell);
+        });
+        periodButtons.forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.getAttribute("data-period") === key));
+        });
+      }
+
+      function selectGoal(goalId) {
+        var goal = goals[goalId];
+        if (!goal) return;
+        goalButtons.forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.getAttribute("data-goal-id") === goalId));
+        });
+        document.querySelector("[data-selection-state]").textContent = goal.state;
+        document.querySelector("[data-selection-title]").textContent = goal.title;
+        document.querySelector("[data-selection-reason]").textContent = goal.reason;
+        document.querySelector("[data-selection-next]").textContent = goal.next;
+        document.querySelector("[data-selection-impact]").textContent = goal.impact;
+        document.querySelector("[data-selection-confidence]").textContent = goal.confidence;
+        document.querySelector("[data-selection-link]").setAttribute("href", boardBase + encodeURIComponent(goalId));
+        var related = 0;
+        topologyPaths.forEach(function (path) {
+          var isRelated = path.getAttribute("data-provider") === goalId || path.getAttribute("data-consumer") === goalId;
+          path.classList.toggle("is-related", isRelated);
+          if (isRelated) related += 1;
+        });
+        topologyMap.classList.toggle("has-selection", related > 0);
+      }
+
+      function filterTopology(scope) {
+        var hiddenIds = [];
+        nodeButtons.forEach(function (node) {
+          var hide = scope === "open" && node.getAttribute("data-state") === "done";
+          node.classList.toggle("is-filtered", hide);
+          if (hide) hiddenIds.push(node.getAttribute("data-goal-id"));
+        });
+        topologyPaths.forEach(function (path) {
+          var hide = hiddenIds.indexOf(path.getAttribute("data-provider")) >= 0 || hiddenIds.indexOf(path.getAttribute("data-consumer")) >= 0;
+          path.toggleAttribute("hidden", hide);
+        });
+        Array.from(document.querySelectorAll("button.goal-group-title[data-goal-id]")).forEach(function (button) {
+          button.hidden = scope === "open" && goals[button.getAttribute("data-goal-id")].state === "已完成";
+        });
+        mapFilterButtons.forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.getAttribute("data-map-filter") === scope));
+        });
+      }
+
+      function filterQueue(state) {
+        var visible = 0;
+        queueRows.forEach(function (row) {
+          var show = state === "all" || row.getAttribute("data-queue-state") === state;
+          row.hidden = !show;
+          if (show) visible += 1;
+        });
+        queueList.hidden = visible === 0;
+        queueEmpty.hidden = visible !== 0;
+        filterButtons.forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.getAttribute("data-filter") === state));
+        });
+      }
+
+      periodButtons.forEach(function (button) {
+        button.addEventListener("click", function () { renderPeriod(button.getAttribute("data-period")); });
+      });
+      goalButtons.forEach(function (button) {
+        button.addEventListener("click", function () { selectGoal(button.getAttribute("data-goal-id")); });
+      });
+      filterButtons.forEach(function (button) {
+        button.addEventListener("click", function () { filterQueue(button.getAttribute("data-filter")); });
+      });
+      mapFilterButtons.forEach(function (button) {
+        button.addEventListener("click", function () { filterTopology(button.getAttribute("data-map-filter")); });
+      });
+      document.querySelector("[data-clear-filter]").addEventListener("click", function () { filterQueue("all"); });
+      document.querySelector(".map-scroll").addEventListener("keydown", function (event) {
+        if (["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].indexOf(event.key) < 0) return;
+        event.preventDefault();
+        var current = nodeButtons.find(function (node) { return node.getAttribute("aria-pressed") === "true" && !node.classList.contains("is-filtered"); });
+        if (!current) current = nodeButtons.find(function (node) { return !node.classList.contains("is-filtered"); });
+        if (!current) return;
+        var currentId = current.getAttribute("data-goal-id");
+        var candidateIds = [];
+        if (event.key === "ArrowRight") {
+          candidateIds = topologyEdges.filter(function (edge) { return edge[1] === currentId; }).map(function (edge) { return edge[0]; });
+        } else if (event.key === "ArrowLeft") {
+          candidateIds = topologyEdges.filter(function (edge) { return edge[0] === currentId; }).map(function (edge) { return edge[1]; });
+        } else {
+          var level = current.getAttribute("data-level");
+          candidateIds = nodeButtons
+            .filter(function (node) { return node !== current && !node.classList.contains("is-filtered") && node.getAttribute("data-level") === level; })
+            .sort(function (a, b) { return Math.abs(a.offsetTop - current.offsetTop) - Math.abs(b.offsetTop - current.offsetTop); })
+            .map(function (node) { return node.getAttribute("data-goal-id"); });
+          if (event.key === "ArrowUp") candidateIds = candidateIds.filter(function (id) { return document.querySelector('.goal-node[data-goal-id="' + id + '"]').offsetTop < current.offsetTop; });
+          if (event.key === "ArrowDown") candidateIds = candidateIds.filter(function (id) { return document.querySelector('.goal-node[data-goal-id="' + id + '"]').offsetTop > current.offsetTop; });
+        }
+        var nextNode = candidateIds
+          .map(function (id) { return document.querySelector('.goal-node[data-goal-id="' + id + '"]'); })
+          .filter(function (node) { return node && !node.classList.contains("is-filtered"); })
+          .sort(function (a, b) { return Math.abs(a.offsetTop - current.offsetTop) - Math.abs(b.offsetTop - current.offsetTop); })[0];
+        if (!nextNode) return;
+        nextNode.focus();
+        selectGoal(nextNode.getAttribute("data-goal-id"));
+      });
+
+      renderPeriod("7");
+      filterTopology("all");
+      selectGoal("session-runtime-foundation");
+    }());
+  </script>
+</body>
+</html>

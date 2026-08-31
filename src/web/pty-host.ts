@@ -7,6 +7,8 @@ import { spawn, type IPty } from "node-pty";
 
 export interface PtySpawnRequest {
   panelId: string;
+  /** GoalBoard business identity used only by the socket recorder. */
+  sessionId?: string | null;
   command?: string;
   args?: string[];
   cwd?: string | null;

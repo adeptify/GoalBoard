@@ -52,7 +52,7 @@ function relayFixture(databasePath: string): Database.Database {
   return db;
 }
 
-test("migration 24 creates Feed runtime tables and persisted read state", () => {
+test("migration 29 creates separated Feed and Inbox contracts with persisted read state", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-feed-schema-"));
   const databasePath = join(directory, "goalboard.sqlite");
   try {
@@ -68,11 +68,16 @@ test("migration 24 creates Feed runtime tables and persisted read state", () => 
       assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 22").get());
       assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 23").get());
       assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 24").get());
+      assert.ok(store.db.prepare("SELECT 1 FROM schema_migrations WHERE migration_id = 29").get());
       const feedItemColumns = new Set((store.db.pragma("table_info(feed_items)") as Array<{ name: string }>).map((row) => row.name));
       assert.ok(feedItemColumns.has("read_at"));
       assert.ok(tables.has("feed_source_runs"));
       assert.ok(tables.has("feed_runtime_blobs"));
       assert.ok(tables.has("feed_import_receipts"));
+      assert.ok(tables.has("inbox_entries"));
+      assert.ok(tables.has("feed_contract_migration_receipts"));
+      const sourceColumns = new Set((store.db.pragma("table_info(feed_sources)") as Array<{ name: string }>).map((row) => row.name));
+      assert.ok(sourceColumns.has("schedule_json"));
     } finally {
       store.close();
     }
@@ -116,7 +121,7 @@ test("opening a Feed item persists read state without invalidating its action re
   }
 });
 
-test("Inbox Message uses disposition state instead of Feed read state", () => {
+test("Inbox compatibility view is derived from InboxEntry instead of stored message type", () => {
   const directory = mkdtempSync(join(tmpdir(), "goalboard-inbox-state-"));
   const goalboardPath = join(directory, "goalboard.sqlite");
   try {
@@ -130,11 +135,14 @@ test("Inbox Message uses disposition state instead of Feed read state", () => {
           source_kind, source_label, external_id, url, origin_status, priority,
           tags_json, author, disposition, linked_goal_id, read_at, revision,
           source_created_at, source_updated_at, imported_at, updated_at
-        ) VALUES (?, 'inbox-message-1', NULL, 'inbox_message', 'github_issue', ?, ?, NULL,
+        ) VALUES (?, 'inbox-message-1', NULL, 'feed', 'github_issue', ?, ?, NULL,
           'github', 'GitHub', 'issue-1', 'https://example.com/issues/1', 'open', 'high',
           '[]', 'octocat', 'inbox', NULL, NULL, 1, ?, ?, ?, ?)
       `).run(DEMO_BOARD_ID, "需要处理的 Issue", "这是一条待判断消息", now, now, now, now);
       const feed = new FeedStore(store.db);
+      feed.ensureInboxEntryForFeedItem(DEMO_BOARD_ID, "inbox-message-1", "source_rule", { source_id: "github" });
+      assert.equal(feed.getFeedItem(DEMO_BOARD_ID, "inbox-message-1").item_type, "feed");
+      assert.equal(feed.getItem(DEMO_BOARD_ID, "inbox-message-1").item_type, "inbox_message");
       assert.throws(
         () => feed.markRead(DEMO_BOARD_ID, "inbox-message-1"),
         /Inbox Message 使用处理状态，不记录已读状态/,
@@ -143,11 +151,11 @@ test("Inbox Message uses disposition state instead of Feed read state", () => {
       assert.equal(archived.read_at, null);
       assert.throws(
         () => feed.setDisposition(DEMO_BOARD_ID, "inbox-message-1", "saved", archived.revision),
-        /已归档的 Inbox Message/,
+        /已忽略的 Feed Item/,
       );
       assert.throws(
         () => feed.linkGoal(DEMO_BOARD_ID, "inbox-message-1", "CORE", "processing"),
-        /已归档的 Inbox Message/,
+        /已忽略的 Feed Item/,
       );
     } finally {
       store.close();
@@ -276,8 +284,51 @@ test("Feed disposition updates reject stale revisions and archived shortcuts", (
         () => feed.linkGoal(DEMO_BOARD_ID, item.item_id, "CORE", "processing"),
         /已忽略的 Feed Item/,
       );
-      const restored = feed.setDisposition(DEMO_BOARD_ID, item.item_id, "inbox", archived.revision);
+      const restored = feed.restoreToFeed(DEMO_BOARD_ID, item.item_id, archived.revision);
       assert.equal(restored.disposition, "inbox");
+      assert.equal(feed.getItem(DEMO_BOARD_ID, item.item_id).item_type, "feed");
+      assert.equal(
+        feed.listInboxEntries(DEMO_BOARD_ID)
+          .filter((entry) => entry.subject_id === item.item_id && entry.status === "open").length,
+        0,
+      );
+      const addedToInbox = feed.setDisposition(DEMO_BOARD_ID, item.item_id, "inbox", restored.revision);
+      assert.equal(addedToInbox.revision, restored.revision, "creating the reference does not rewrite the Feed fact");
+      assert.equal(feed.getItem(DEMO_BOARD_ID, item.item_id).item_type, "inbox_message");
+      feed.setDisposition(DEMO_BOARD_ID, item.item_id, "inbox", addedToInbox.revision);
+      const inboxEntries = feed.listInboxEntries(DEMO_BOARD_ID)
+        .filter((entry) => entry.subject_id === item.item_id);
+      assert.equal(
+        inboxEntries.filter((entry) => entry.status === "open").length,
+        1,
+        "repeat Inbox actions reuse one active reference",
+      );
+      const completed = feed.setInboxEntryStatus(
+        DEMO_BOARD_ID,
+        inboxEntries[0]!.entry_id,
+        "done",
+        inboxEntries[0]!.revision,
+      );
+      assert.equal(completed.status, "done");
+      const completedAgain = feed.setInboxEntryStatus(
+        DEMO_BOARD_ID,
+        completed.entry_id,
+        "done",
+        completed.revision,
+      );
+      assert.equal(completedAgain.revision, completed.revision, "repeat completion is idempotent");
+      const reopenedByManualInbox = feed.setDisposition(
+        DEMO_BOARD_ID,
+        item.item_id,
+        "inbox",
+        addedToInbox.revision,
+      );
+      assert.equal(reopenedByManualInbox.revision, addedToInbox.revision);
+      assert.equal(feed.getInboxEntry(DEMO_BOARD_ID, completed.entry_id).status, "open");
+      assert.ok(
+        feed.snapshot(DEMO_BOARD_ID).feed_items.some((candidate) => candidate.item_id === item.item_id),
+        "an Inbox reference never removes the canonical item from Feed",
+      );
       assert.throws(
         () => feed.setDisposition(DEMO_BOARD_ID, item.item_id, "saved", item.revision),
         /已经变化/,

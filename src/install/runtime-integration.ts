@@ -299,7 +299,7 @@ const ADAPTERS: readonly RuntimeAdapter[] = [
 function restartInstructionsFor(displayName: string): readonly string[] {
   return [
     `请新开一个 ${displayName} Session：${displayName} 只在 Session 启动时读取 MCP 与 Skill 清单，所以当前对话不会动态出现 GoalBoard 工具。`,
-    "新 Session 可直接复制这句继续：「继续用 GoalBoard」。GoalBoard 会列出当前目录以前用过的项目并请你确认；若要以后自动进入某个项目，请另外明确说“设为这个目录的默认项目”。",
+    "新 Session 可直接复制这句继续：「继续用 GoalBoard」。GoalBoard 会列出当前目录以前用过的项目；每个 Session 都要由你确认关联哪个项目，不会保存目录默认项目。",
   ];
 }
 

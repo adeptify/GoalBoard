@@ -21,7 +21,7 @@ import {
   displayedPassedCriterionIds,
   firstBlockedDescendant,
   goalTreeReferenceLabel,
-  renderGoalBoardGraphFragment,
+  renderGoalBoardMomentumFragment,
   renderFeedWorkbenchFragment,
   renderGoalPanelFragment,
   renderGoalQuickRecordFragment,
@@ -1366,7 +1366,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   const coreProgressFragment = renderGoalPanelFragment(view, "CORE", "progress");
   const coreFactorsFragment = renderGoalPanelFragment(view, "CORE", "factors");
   const quickRecordFragment = renderGoalQuickRecordFragment(view, "V1");
-  const graphFragment = renderGoalBoardGraphFragment(view, "V1");
+  const momentumFragment = renderGoalBoardMomentumFragment(view, "V1");
   assert.ok(completionFragment);
   assert.ok(progressFragment);
   assert.ok(factorsFragment);
@@ -1374,7 +1374,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.ok(coreProgressFragment);
   assert.ok(coreFactorsFragment);
   assert.ok(quickRecordFragment);
-  assert.ok(graphFragment);
+  assert.ok(momentumFragment);
   const waitingForHumanView = structuredClone(view);
   const waitingForHumanGoal = waitingForHumanView.goals.find((item) => item.goal.goal_id === "CORE");
   assert.ok(waitingForHumanGoal);
@@ -1395,7 +1395,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   // Keep this broad presentation contract checking the same assembled workbench
   // surface even though production now serves shared assets and heavy Goal
   // panels through separate lazy fragments.
-  const html = `${pageHtml}${completionFragment}${progressFragment}${factorsFragment}${quickRecordFragment}${graphFragment}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
+  const html = `${pageHtml}${completionFragment}${progressFragment}${factorsFragment}${quickRecordFragment}${momentumFragment}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
   const coreHtml = `${corePageHtml}${coreCompletionFragment}${coreProgressFragment}${coreFactorsFragment}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
   const recordsFragment = renderGoalRecordsFragment(view, "V1");
   const coreRecordsFragment = renderGoalRecordsFragment(view, "CORE");
@@ -1416,6 +1416,10 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.equal((pageHtml.match(/data-goal-panel="(?:overview|completion|progress|factors|records)"/g) ?? []).length, 5);
   assert.match(html, /data-goal-tab="overview"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-goal-tab="overview"/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /setGoalPanel\(goalTab\.dataset\.goalTab, true, true, true\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const goalPanelFromTargetId = \(targetId\) =>/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /targetId\.startsWith\("progress-"\)\) return "progress"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /targetId\.startsWith\("completion-"\) \|\| targetId\.startsWith\("acceptance-"\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /targetId && \(targetElement \|\| targetPanel \|\| targetFactor\)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /const activateFocusSection = \(trigger\) =>/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealFocusTarget = \(target\) =>/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /revealDeepLinkTarget\(targetElement\)/);
@@ -1603,6 +1607,41 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /class="sync-state"/);
   assert.match(html, /setInterval\(refreshBoard, 4000\)/);
   assert.match(html, /fetch\(route\("\/api\/board\/cursor"\)/);
+  assert.match(html, /const refreshGoalId = selected/);
+  assert.match(html, /selected !== refreshGoalId/);
+  assert.match(
+    html,
+    /if \(decisionView\) \{\s*saveUiState\(\);\s*location\.reload\(\);\s*return "reloading";/,
+  );
+  assert.match(
+    html,
+    /await fetch\(decisionView \? pagePath : compactRefreshPath[\s\S]*const ui = readUiState\(\);[\s\S]*const createDraft/,
+  );
+  assert.doesNotMatch(html, /const ui = readUiState\(\);\s*const pageBase/);
+  assert.match(html, /const currentGoalUiStorageKey = goalUiStorageKey \+ ":current"/);
+  assert.match(html, /goalUiStorageKey \+ ":inbox"/);
+  assert.match(html, /goalUiStorageKey \+ ":archive"/);
+  assert.match(html, /goalUiStorageKey \+ ":trash"/);
+  assert.match(html, /sourceSelected: selectedSource/);
+  assert.match(html, /sourceQuery: sourceSearch\?\.value \|\| ""/);
+  assert.match(html, /sourceFilter: activeSourceFilter/);
+  assert.match(html, /sourceDetailTab:/);
+  assert.match(html, /data-work-surface-open="feed" data-feed-preset="feed" data-feed-source=/);
+  assert.match(html, /const source = surfaceOpen\.dataset\.feedSource;[\s\S]*feedSearch\.value = "";[\s\S]*feedSourceFilter\.value = source;[\s\S]*filterFeedItems\(false\)/);
+  assert.match(html, /location\.assign\(result\.authorizationUrl\)/);
+  assert.doesNotMatch(html, /globalThis\.open\(result\.authorizationUrl/);
+  assert.doesNotMatch(html, /const nextDesktopSurface = decisionView \? "feed"/);
+  assert.doesNotMatch(html, /activeFeedPreset = decisionView \? "inbox_message"/);
+  assert.match(html, /const movedToCurrent = nextState\.goals\.some/);
+  assert.match(html, /const movedToArchive = nextState\.archived_goals\.some/);
+  assert.match(html, /const movedToTrash = nextState\.trashed_goals\.some/);
+  assert.match(html, /location\.replace\(globalThis\.goalboardNavigationUrl\(route\(movedPath\)\)\)/);
+  assert.match(html, /\^\\\/\(\?:archive\\\/\|trash\\\/\)\?goals\\\/\[\^\\\/\]\+\\\/\?\$/);
+  assert.match(html, /surface === "goal" && \(decisionView \|\| !available\)/);
+  assert.match(
+    html,
+    /setDesktopDirectory\(decisionView \? "feed" : treePane\?\.dataset\.desktopDirectory \|\| "root", false, false\)/,
+  );
   assert.match(html, /\/document\?view=" \+ documentCollection/);
   assert.match(html, /const setGoalDocumentBusy = \(busy\) =>/);
   assert.match(html, /documentPane\.setAttribute\("aria-busy", "true"\)/);
@@ -1616,7 +1655,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /document\.hidden \|\| dialog\.open/);
   assert.match(html, /const createDraft = dialog\.open \? readCreateDraft\(\) : null/);
   assert.match(html, /applyCreateDraft\(createDraft\)/);
-  assert.match(html, /document\.activeElement\?\.closest\?\.\("\[data-live-form\]"\)/);
+  assert.match(html, /const liveUiInteractionActive = \(\) =>/);
+  assert.match(html, /active\.closest\?\.\("\[data-live-form\]"\)/);
+  assert.match(html, /if \(!force && liveUiInteractionActive\(\)\) return/);
   assert.match(html, /form\?\.addEventListener\("change", updateRelationPreviews\)/);
   assert.match(html, /sessionStorage\.setItem/);
   assert.match(html, /data-tree-scroll/);
@@ -1663,12 +1704,19 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-navigator-view="graph"/);
   assert.match(WORKBENCH_STYLES, /body\[data-desktop-shell="true"\] \.navigator-view-switch button::after \{ display: none; \}/);
   assert.match(WORKBENCH_STYLES, /body\[data-desktop-shell="true"\] \.navigator-view-switch button\.is-active \{[^}]*background: color-mix\(in srgb, var\(--blue\) 11%, var\(--paper\)\);[^}]*box-shadow: none;/);
-  assert.match(html, /data-goal-graph/);
-  assert.match(pageHtml, /data-goal-graph data-loaded="false"/);
+  assert.match(html, /data-goal-momentum/);
+  assert.match(pageHtml, /data-goal-momentum data-loaded="false"/);
   assert.doesNotMatch(pageHtml, /data-graph-node|data-graph-edge/);
   assert.match(html, /data-graph-node/);
   assert.match(html, /data-graph-edge/);
   assert.match(html, /data-graph-zoom="in"/);
+  assert.match(html, /momentum-node[^\n]*is-group-first-row/);
+  assert.match(html, /const fitGoalGraph =/);
+  assert.match(html, /availableWidth \/ stage\.offsetWidth/);
+  assert.doesNotMatch(html, /availableHeight \/ stage\.offsetHeight/);
+  assert.match(html, /const bindGoalGraphViewport =/);
+  assert.match(html, /graphResizeObserver = new ResizeObserver/);
+  assert.match(html, /graphAutoFit/);
   assert.match(html, /data-desktop-directory="root"/);
   assert.match(projectPageHtml, /class="navigator-directory-toggle"[^>]*data-directory-toggle[^>]*aria-expanded="true"/);
   assert.match(html, /const setDirectoryCollapsed =/);
@@ -1676,8 +1724,23 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /directoryCollapsed: workspace\.classList\.contains\("is-directory-collapsed"\)/);
   assert.match(html, /setDirectoryCollapsed\(ui\?\.directoryCollapsed === true, false\)/);
   assert.match(html, /target\.closest\("\[data-directory-toggle\]"\)/);
-  assert.match(WORKBENCH_STYLES, /\.workspace\.is-directory-collapsed[\s\S]*grid-template-columns: 44px 0 minmax\(0, 1fr\) !important/);
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.workspace\.is-directory-collapsed[\s\S]*grid-template-columns: max\(44px, calc\(var\(--desktop-project-safe-inline-start\) \+ 44px\)\) 0 minmax\(0, 1fr\) !important/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.workspace\.is-directory-collapsed \.navigator-project \{[^}]*padding: 0 0 0 var\(--desktop-project-safe-inline-start\);/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /body\[data-desktop-shell="true"\]\[data-native-desktop="true"\] \.workspace\.is-directory-collapsed \.navigator-project/,
+  );
   assert.match(WORKBENCH_STYLES, /\.workspace\.is-directory-collapsed > \.tree-pane > :not\(\.navigator-project\)/);
+  assert.match(
+    WORKBENCH_STYLES,
+    /html\[data-density="compact"\][\s\S]*\.desktop-goal-directory \.directory-row-state > \.goal-status \{[^}]*border: 0;[^}]*background: transparent;/,
+  );
   assert.match(html, /data-companion-runtime/);
   assert.match(html, /data-companion-runtime-open/);
   assert.match(html, /target\.closest\("\[data-companion-runtime-open\]"\)\) \{\s*setWorkspaceMode\("runtime"\)/);
@@ -1696,16 +1759,17 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /class="desktop-workbench-actions"/);
   assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\) \{[\s\S]*\.goal-mode-switch,[\s\S]*\.tui-focus-return \{ display: none !important; \}/);
   assert.doesNotMatch(html, /data-workbench-view="graph"/);
-  assert.match(html, /marker-start="url\(#goal-graph-start-part_of\)"/);
-  assert.match(html, /marker-start="url\(#goal-graph-start-depends_on\)"/);
-  assert.match(html, /graph-orbit--inner/);
-  assert.match(html, /graph-orbit--middle/);
-  assert.match(html, /graph-orbit--outer/);
-  assert.match(html, /data-graph-ring=/);
-  assert.match(html, /--graph-x:/);
-  assert.match(html, /data-edge-type="part_of"/);
+  assert.match(html, /marker-end="url\(#momentum-arrow\)"/);
+  assert.match(html, /class="momentum-level"/);
+  assert.match(html, /class="momentum-group"/);
+  assert.match(html, /data-momentum-period="7"/);
+  assert.match(html, /data-momentum-period="30"/);
+  assert.match(html, /class="momentum-queue-item/);
+  assert.doesNotMatch(html, /graph-orbit|data-graph-ring=|--graph-x:|marker-start=/);
+  assert.doesNotMatch(html, /data-edge-type="part_of"/);
   assert.match(html, /data-edge-type="depends_on"/);
-  assert.match(html, /graphRelationTypes = new Set\(\["part_of", "depends_on"\]\)/);
+  assert.match(html, /momentumOpenOnly/);
+  assert.match(html, /updateMomentumSelection/);
   assert.match(html, /const setNavigatorView =/);
   assert.match(html, /const drawGoalGraph =/);
   assert.match(html, /target\.closest\("button\[data-navigator-view\]"\)/);
@@ -1744,7 +1808,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(workSurfaceHtml(html, "goal"), /<form class="decision-record rewire-decision"/);
   assert.doesNotMatch(decisionHtml, /USER AUTHORITY/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
-  assert.match(decisionHtml, /data-goal-graph/);
+  assert.match(decisionHtml, /data-goal-momentum/);
   assert.match(decisionHtml, /href="\/goals\/CORE"><strong>让每项工作都有可信的完成依据<\/strong>/);
   assert.match(decisionHtml, /decision-kind decision-kind--risk/);
   assert.equal((decisionHtml.match(/decision-kind decision-kind--risk/g) ?? []).length, 2);
@@ -1981,12 +2045,66 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
     updated_at: "2026-08-29T16:00:00.000Z",
     materials: [],
   };
-  view.feed.items.push(
-    { ...feedItemBase, item_id: "inbox-item", item_type: "inbox_message", linked_goal_id: "CORE" },
-    { ...feedItemBase, item_id: "feed-item", item_type: "feed" },
+  const inboxItem = { ...feedItemBase, item_id: "inbox-item", item_type: "inbox_message" as const, linked_goal_id: "CORE" };
+  const feedItem = { ...feedItemBase, item_id: "feed-item", item_type: "feed" as const };
+  view.feed.items.push(inboxItem, feedItem);
+  view.feed.feed_items.push(
+    { ...inboxItem, item_type: "feed" },
+    feedItem,
   );
-  const inboxDetail = renderPersistedFeedItemDetail(view.feed.items.at(-2)!, view.route_prefix);
+  const manualInboxEntry = {
+    board_id: DEMO_BOARD_ID,
+    entry_id: "inbox-entry-manual",
+    subject_type: "feed_item" as const,
+    subject_id: inboxItem.item_id,
+    reason: "manual" as const,
+    status: "open" as const,
+    detail: { added_by: "web_user" },
+    revision: 1,
+    created_at: feedItemBase.created_at ?? feedItemBase.imported_at,
+    updated_at: feedItemBase.updated_at,
+    completed_at: null,
+  };
+  view.feed.inbox_entries.push(
+    manualInboxEntry,
+    { ...manualInboxEntry, entry_id: "inbox-entry-rule", subject_id: feedItem.item_id, reason: "source_rule" },
+    { ...manualInboxEntry, entry_id: "inbox-entry-fault", subject_type: "source_fault", subject_id: "missing-source", reason: "source_fault", detail: { error_code: "connector_needs_auth", user_action: "reconnect" } },
+    { ...manualInboxEntry, entry_id: "inbox-entry-decision", subject_type: "goal_decision", subject_id: "CORE", reason: "goal_decision", detail: { obligation_id: "fixture-obligation" } },
+  );
+  const inboxDetail = renderPersistedFeedItemDetail(view.feed.items.at(-2)!, view.route_prefix, {
+    entryId: `inbox:${manualInboxEntry.entry_id}`,
+    inboxEntry: manualInboxEntry,
+    inboxActive: true,
+  });
   const feedDetail = renderPersistedFeedItemDetail(view.feed.items.at(-1)!, view.route_prefix);
+  const unsafeDetail = renderPersistedFeedItemDetail({
+    ...feedItem,
+    title: '<img src=x onerror="globalThis.pwned=true">',
+    summary: "",
+    body: '<script>globalThis.pwned=true</script><a href="javascript:alert(1)">click</a>',
+    url: "javascript:alert(1)",
+    materials: [{
+      board_id: DEMO_BOARD_ID,
+      material_id: "unsafe-material",
+      item_id: feedItem.item_id,
+      canonical_url: "data:text/html,unsafe",
+      title: "<svg onload=alert(1)>",
+      source_name: "Unsafe fixture",
+      published_at: null,
+      preview: "<b>preview</b>",
+      content_hash: null,
+      content_ref: null,
+      content_available: true,
+      content: "<iframe src=javascript:alert(1)></iframe>",
+      content_type: "text/html",
+      character_count: 44,
+      captured_at: null,
+      provenance: {},
+      selected_for_context: false,
+      imported_at: feedItem.imported_at,
+      updated_at: feedItem.updated_at,
+    }],
+  }, view.route_prefix);
   const inboxWorkbench = renderFeedWorkbenchFragment(view, "inbox_message");
   const feedWorkbench = renderFeedWorkbenchFragment(view, "feed");
   const orphanedInboxWorkbench = renderFeedWorkbenchFragment({
@@ -2006,9 +2124,20 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   const orphanedDetailIds = [...orphanedInboxWorkbench.matchAll(/data-feed-detail="([^"]+)"/g)]
     .map((match) => match[1]);
   assert.equal(new Set(orphanedDetailIds).size, orphanedDetailIds.length);
-  assert.match(decisionHtml, /data-feed-type-filter|data-feed-source-filter|data-feed-status-filter|data-feed-sort/);
-  assert.doesNotMatch(decisionHtml, /data-feed-type-filter/);
+  assert.match(decisionHtml, /class="feed-directory-toolbar"/);
+  assert.match(decisionHtml, /data-feed-filter-trigger[^>]*aria-expanded="false"[^>]*aria-controls="feed-filter-panel"/);
+  assert.match(decisionHtml, /class="feed-filter-panel"[^>]*data-feed-filter-panel hidden/);
+  assert.match(decisionHtml, /data-feed-filter-option="source"[^>]*data-feed-filter-value="all"/);
+  assert.match(decisionHtml, /data-feed-filter-option="type"[^>]*data-feed-filter-value="github"/);
+  assert.match(decisionHtml, /data-feed-filter-option="time"[^>]*data-feed-filter-value="week"/);
+  assert.match(decisionHtml, /data-feed-filter-option="status"[^>]*data-feed-filter-value="active"/);
+  assert.match(decisionHtml, /data-feed-filter-option="sort"[^>]*data-feed-filter-value="newest"/);
+  assert.match(decisionHtml, /data-feed-source-filter hidden[\s\S]*data-feed-status-filter hidden[\s\S]*data-feed-sort hidden/);
+  assert.doesNotMatch(decisionHtml, /class="feed-filter-grid"/);
+  assert.match(decisionHtml, /data-feed-type-filter hidden/);
+  assert.match(decisionHtml, /data-feed-time-filter hidden/);
   assert.match(decisionHtml, /data-feed-entry-id="feed-item"[^>]*data-feed-entry-read="unread"/);
+  assert.match(decisionHtml, /<strong>Feed<\/strong><small>所有来源消息，完整保留<\/small><\/span><em>2<\/em>/);
   const selectedInboxRow = decisionHtml.match(/<button class="feed-list-item[^>]*aria-selected="true"[^>]*>/)?.[0];
   assert.ok(selectedInboxRow);
   assert.match(selectedInboxRow, /tabindex="0"/);
@@ -2020,19 +2149,71 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   assert.match(hiddenFeedRow, / hidden/);
   assert.doesNotMatch(decisionHtml, /data-feed-detail="feed-item"/);
   assert.match(feedDetail, /data-feed-detail="feed-item"[^>]*data-feed-detail-item-type="feed"[\s\S]*data-feed-read-state>未读</);
+  assert.match(feedDetail, /data-feed-action="inbox"[\s\S]*加入 Inbox/);
+  assert.match(feedDetail, /data-destination-state="feed"[\s\S]*仅保留在 Feed/);
+  assert.match(unsafeDetail, /&lt;img src=x onerror=&quot;globalThis\.pwned=true&quot;&gt;/);
+  assert.match(unsafeDetail, /&lt;script&gt;globalThis\.pwned=true&lt;\/script&gt;/);
+  assert.doesNotMatch(unsafeDetail, /href="(?:javascript|data):/);
+  assert.doesNotMatch(unsafeDetail, /<(?:script|iframe|img)\b/);
+  assert.match(unsafeDetail, /&lt;svg onload=alert\(1\)&gt;/);
   assert.match(decisionHtml, /data-feed-empty-title>[\s\S]*data-feed-empty-copy>[\s\S]*data-feed-clear-filters hidden/);
+  assert.doesNotMatch(decisionHtml, /data-prototype-feed-(?:restore|empty-state)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /没有符合当前条件的 Item/);
   assert.match(decisionHtml, /data-mobile-directory-root data-directory-open="root"/);
-  assert.match(decisionHtml, /管理 Connector 与已配置来源/);
-  assert.match(inboxDetail, /data-feed-detail="inbox-item"[\s\S]*data-feed-action="archive"[\s\S]*>归档<\/button>/);
+  assert.match(decisionHtml, /data-directory-open="sources" data-work-surface-open="sources"[\s\S]*<strong>来源<\/strong>[\s\S]*账号、接入源与拉取计划/);
+  assert.match(decisionHtml, /data-directory-panel="sources"[^>]*data-source-directory hidden/);
+  assert.match(decisionHtml, /class="source-mobile-add"[^>]*data-feed-sources-open[\s\S]*添加来源/);
+  assert.match(decisionHtml, /data-work-surface="sources"[^>]*data-source-workbench hidden/);
+  assert.match(decisionHtml, /data-source-detail-empty[\s\S]*还没有可管理的来源[\s\S]*data-feed-sources-open/);
+  assert.doesNotMatch(decisionHtml, /data-source-detail="prototype-source-/);
+  assert.match(WORKBENCH_STYLES, /\.source-detail-tabs \{[\s\S]*border-radius: 10px;[\s\S]*background: color-mix\(in srgb, var\(--paper\) 54%, transparent\)/);
+  assert.match(WORKBENCH_STYLES, /\.source-detail-panel \{[\s\S]*border-radius: 14px;[\s\S]*background: var\(--paper\);[\s\S]*box-shadow:/);
+  assert.match(WORKBENCH_STYLES, /\.source-now \{[\s\S]*border-bottom: 1px solid/);
+  assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\)[\s\S]*\.source-detail-panel \{[^}]*padding: 20px 16px 24px;[^}]*border-radius: 12px;/);
+  assert.match(WORKBENCH_STYLES, /\.feed-detail \{[\s\S]*width: min\(100%, 920px\);[\s\S]*border-radius: 14px;[\s\S]*background: var\(--paper\);[\s\S]*box-shadow:/);
+  assert.match(WORKBENCH_STYLES, /\.feed-destination-strip \{[^}]*border-top: 1px solid[^}]*border-bottom: 1px solid[^}]*border-radius: 0;[^}]*background: transparent;/);
+  assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\)[\s\S]*\.feed-detail \{[^}]*padding: 22px 16px 28px;/);
+  assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\)[\s\S]*\.feed-detail-actions button,[\s\S]*\.feed-linked-goal \{[^}]*min-height: 44px;/);
+  assert.doesNotMatch(decisionHtml, /data-feed-entry-prototype="true"/);
+  assert.doesNotMatch(inboxWorkbench, /data-prototype-inbox-complete/);
+  assert.doesNotMatch(feedWorkbench, /data-prototype-feed-action/);
+  assert.match(inboxDetail, /data-feed-detail="inbox:inbox-entry-manual"[\s\S]*data-inbox-open-feed="inbox-item"/);
+  assert.match(inboxDetail, /class="feed-detail feed-detail--attention"[^>]*data-feed-detail="inbox:inbox-entry-manual"/);
+  assert.match(inboxDetail, /data-inbox-action="done"[\s\S]*data-inbox-action="dismissed"/);
+  assert.match(inboxDetail, /为什么进入 Inbox[\s\S]*你手工加入[\s\S]*关联对象[\s\S]*下一步/);
+  assert.match(inboxDetail, /这里展示的是原 Feed Item，内容没有复制进 Inbox/);
+  assert.doesNotMatch(inboxDetail, /data-feed-action="start"|data-feed-action="archive"/);
+  assert.match(WORKBENCH_STYLES, /\.inbox-attention-context dl \{[^}]*display: flex;[^}]*flex-direction: column;/);
+  assert.match(WORKBENCH_STYLES, /\.inbox-attention-context dl > div:last-child \{[^}]*order: -1;[^}]*padding: 0 0 18px;/);
   assert.match(feedDetail, /data-feed-detail="feed-item"[\s\S]*data-feed-action="archive"[\s\S]*>忽略<\/button>/);
   assert.match(inboxDetail, /class="feed-linked-goal" href="\/projects\/project-test\/goals\/CORE"/);
-  assert.match(WORKBENCH_CLIENT_SCRIPT, /semanticType === "inbox_message" \? L\("未归档"\)/);
+  assert.match(decisionHtml, /data-inbox-subject-type="source_fault"[\s\S]*来源需要人工恢复/);
+  assert.match(decisionHtml, /data-inbox-reference-detail[\s\S]*Inbox 只保存这条引用和进入原因；原对象内容没有复制到这里/);
+  assert.match(decisionHtml, /data-inbox-reason="manual"/);
+  assert.match(decisionHtml, /data-inbox-reason="source_rule"/);
+  assert.match(decisionHtml, /data-inbox-reason="goal_decision"/);
+  assert.match(decisionHtml, /data-inbox-reason="source_fault"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /type === "inbox_message"[\s\S]*row\.dataset\.feedEntryStatus === "inbox" \|\| row\.dataset\.feedEntryStatus === "processing"/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /semanticType === "inbox_message" \? L\("待处理"\)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /feedPresets: feedPresetState/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /if \(nextPreset !== activeFeedPreset\) rememberFeedPresetState\(\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const setFeedFilterOpen = \(open, focusFirst = false\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /feedFilterBadge\.hidden = activeCount === 0/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /event\.key === "Escape" && !feedFilterPanel\?\.hidden/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /feedWorkbench\.dataset\.loadedPreset === activeFeedPreset/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /feedWorkbench\.dataset\.loadedPreset = requestedPreset/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /row\.tabIndex = active \? 0 : -1/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const selectSource = \(sourceId, moveToDetail = false\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /data-prototype-source-sync/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /模拟计划已保存/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /这件事已处理完成/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /Inbox 已经处理完/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /这是页面内空状态预览，不会修改真实 Item/);
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.feed-directory-toolbar \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) 44px;/,
+  );
+  assert.match(WORKBENCH_STYLES, /\.feed-filter-trigger \{[^}]*width: 44px;[^}]*display: grid;/);
   assert.match(WORKBENCH_STYLES, /tree-pane\[data-desktop-directory="root"\] \.desktop-directory-root/);
   assert.match(decisionHtml, /让每项工作都有可信的完成依据 → 依赖 → 让新用户安装后知道下一步怎么开始/);
   assert.match(decisionHtml, /你的理由：关系方向和依据已经核对/);
@@ -2145,6 +2326,201 @@ test("Decision Center never presents a Runtime review as user approval", () => {
   store.close();
 });
 
+test("Decision Center prioritizes pending human decisions and submits the linked human verdict", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-web-human-decision-inbox-"));
+  const databasePath = join(directory, "goalboard.db");
+  const boardId = "human-decision-inbox-board";
+  const goalId = "HUMAN-DECISION-INBOX";
+  const store = new SqliteGoalBoardStore(databasePath);
+  const coordinator = new GoalBoardCoordinator(store);
+  coordinator.initializeBoard({
+    board_id: boardId,
+    title: "人工决定 Inbox 闭环",
+    actor_id: "owner",
+    idempotency_key: "human-decision-inbox-board",
+  });
+  coordinator.createGoal(boardId, {
+    goal_id: goalId,
+    title: "工程检查后由用户确认体验",
+    outcome: "待用户决定的事项始终可见且一次提交完成审计闭环",
+    why: "用户不能被历史 Runtime 结果挡住操作入口",
+    business_logic: "Runtime 检查工程事实，用户本人判断真实体验。",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+    acceptance_criteria: [
+      {
+        criterion_id: "human-decision-inbox-inspection",
+        statement: "工程路径通过检查",
+        decision_method: "inspection",
+        pass_condition: "Runtime 提交独立检查",
+        required_evidence: ["inspection"],
+      },
+      {
+        criterion_id: "human-decision-inbox-owner",
+        statement: "用户亲自操作后认可体验",
+        decision_method: "human_decision",
+        pass_condition: "用户提交本人决定",
+        required_evidence: ["human_verdict"],
+      },
+    ],
+  }, { actor_id: "owner", idempotency_key: "human-decision-inbox-goal" });
+  const execution = coordinator.selectGoalAndStart({
+    board_id: boardId,
+    goal_id: goalId,
+    actor_id: "runtime-executor",
+    role: "executor",
+    idempotency_key: "human-decision-inbox-execute",
+  });
+  coordinator.reportRun({
+    board_id: boardId,
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-executor",
+    state: "completed",
+    idempotency_key: "human-decision-inbox-execute-complete",
+  });
+  const inspectionEvidence = coordinator.submitEvidence({
+    board_id: boardId,
+    goal_id: goalId,
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["human-decision-inbox-inspection"],
+    kind: "inspection",
+    locator: "review://human-decision-inbox-engineering",
+    result: "passed",
+    idempotency_key: "human-decision-inbox-inspection-evidence",
+  }).evidence;
+  coordinator.releaseClaim({
+    board_id: boardId,
+    claim_id: execution.claim!.claim_id,
+    actor_id: "runtime-executor",
+    reason: "工程工作已完成",
+    idempotency_key: "human-decision-inbox-execute-release",
+  });
+  const selfObligation = store.snapshot(boardId).review_obligations.find(
+    (item) => item.goal_id === goalId && item.role === "self_verifier",
+  )!;
+  const reviewRun = coordinator.selectGoalAndStart({
+    board_id: boardId,
+    goal_id: goalId,
+    actor_id: "runtime-reviewer",
+    role: "self_verifier",
+    idempotency_key: "human-decision-inbox-review-select",
+  });
+  coordinator.submitReview({
+    board_id: boardId,
+    goal_id: goalId,
+    obligation_id: selfObligation.obligation_id,
+    actor_id: "runtime-reviewer",
+    actor_kind: "runtime",
+    verdict: "pass",
+    evidence_refs: [inspectionEvidence.evidence_id],
+    reasoning: "工程检查已通过；体验由用户本人决定。",
+    idempotency_key: "human-decision-inbox-review-pass",
+  });
+  coordinator.reportRun({
+    board_id: boardId,
+    run_id: reviewRun.run!.run_id,
+    actor_id: "runtime-reviewer",
+    state: "completed",
+    idempotency_key: "human-decision-inbox-review-complete",
+  });
+  coordinator.releaseClaim({
+    board_id: boardId,
+    claim_id: reviewRun.claim!.claim_id,
+    actor_id: "runtime-reviewer",
+    reason: "Runtime 复核完成",
+    idempotency_key: "human-decision-inbox-review-release",
+  });
+
+  const view = buildGoalBoardWebView(store, coordinator, { databasePath, boardId });
+  const decisionHtml = renderGoalBoardWeb(view, undefined, false, true);
+  const decisionRow = decisionHtml.match(
+    new RegExp(`<button class="[^"]*"[^>]*data-feed-entry-id="decision:${goalId}"[^>]*>`),
+  )?.[0];
+  assert.ok(decisionRow);
+  assert.match(decisionRow, /is-selected/);
+  assert.match(decisionRow, /data-feed-entry-attention-rank="3"/);
+  const decisionDetail = decisionHtml.match(
+    new RegExp(`<article class="[^"]*"[^>]*data-feed-detail="decision:${goalId}"[^>]*>`),
+  )?.[0];
+  assert.ok(decisionDetail);
+  assert.doesNotMatch(decisionDetail, / hidden/);
+  assert.match(decisionHtml, /<form class="human-review-form"/);
+  assert.match(decisionHtml, /data-human-review-jump[^>]*>[\s\S]*填写确认结论/);
+  assert.match(decisionHtml, /<button class="button-primary" type="submit">提交结果确认<\/button>/);
+  assert.match(decisionHtml, /用户亲自操作后认可体验」只能由你根据实际体验判断/);
+  assert.match(decisionHtml, /同时记录为该标准的人工结论依据/);
+  assert.match(decisionHtml, /Runtime 复核/);
+  assert.doesNotMatch(decisionHtml, /本次用户确认已通过；Goal 是否完成仍由全部完成条件共同决定/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /const decisionFeedEntryFromHash = \(\) =>/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /return "decision:" \+ decodeURIComponent\(location\.hash\.slice\(prefix\.length\)\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /selected: deepLinkedDecisionEntry/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /feedEntryAttentionRank/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /humanReviewJump\.closest\("\.human-review-list"\)/);
+  store.close();
+
+  const server = createGoalBoardWebServer({ databasePath, boardId });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const obligationStore = new SqliteGoalBoardStore(databasePath);
+    const humanObligation = obligationStore.snapshot(boardId).review_obligations.find(
+      (item) => item.goal_id === goalId && item.role === "human_approver",
+    )!;
+    obligationStore.close();
+    const requestBody = JSON.stringify({
+      verdict: "pass",
+      reasoning: "我亲自走完主路径，来源、Feed 与 Inbox 的对象边界已经清楚。",
+      idempotency_key: "human-decision-inbox-web-pass",
+    });
+    const submit = await webFetch(
+      `${origin}/api/goals/${goalId}/review-obligations/${humanObligation.obligation_id}/review`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: requestBody },
+    );
+    assert.equal(submit.status, 200);
+    const submitted = await submit.json() as {
+      review: { review_id: string };
+      human_verdict_evidence: { evidence_id: string; review_id: string | null; criterion_ids: string[]; locator: string; digest: string | null };
+    };
+    assert.equal(submitted.human_verdict_evidence.review_id, submitted.review.review_id);
+    assert.deepEqual(submitted.human_verdict_evidence.criterion_ids, ["human-decision-inbox-owner"]);
+    assert.equal(submitted.human_verdict_evidence.locator, `review://${submitted.review.review_id}`);
+    assert.equal(submitted.human_verdict_evidence.digest, "我亲自走完主路径，来源、Feed 与 Inbox 的对象边界已经清楚。");
+
+    const replay = await webFetch(
+      `${origin}/api/goals/${goalId}/review-obligations/${humanObligation.obligation_id}/review`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: requestBody },
+    );
+    assert.equal(replay.status, 200);
+    const replayed = await replay.json() as typeof submitted;
+    assert.equal(replayed.review.review_id, submitted.review.review_id);
+    assert.equal(replayed.human_verdict_evidence.evidence_id, submitted.human_verdict_evidence.evidence_id);
+
+    const verifiedStore = new SqliteGoalBoardStore(databasePath);
+    const verifiedCoordinator = new GoalBoardCoordinator(verifiedStore);
+    const snapshot = verifiedStore.snapshot(boardId);
+    assert.equal(
+      snapshot.reviews.filter((item) => item.obligation_id === humanObligation.obligation_id).length,
+      1,
+    );
+    assert.equal(
+      snapshot.evidence.filter((item) => item.review_id === submitted.review.review_id && item.kind === "human_verdict").length,
+      1,
+    );
+    assert.equal(
+      verifiedCoordinator.getGoalWorkState({ board_id: boardId, goal_id: goalId }).work_state,
+      "completion_pending",
+    );
+    verifiedStore.close();
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("Web project catalog switches browser scope without exposing storage or changing Runtime bindings", async () => {
   const fixture = await webProjectCatalogFixture();
   addProjectGoal(fixture.alpha, "ALPHA-ONLY", "仅 Alpha 可见的 Goal");
@@ -2192,22 +2568,26 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(projectIndex, new RegExp(fixture.alpha.database_path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(projectIndex, /数据源:|board_id/);
     assert.match(projectIndex, /href="\/assets\/goalboard-project-index\.css"/);
-    assert.match(projectIndex, /class="project-card-grid"/);
-    assert.match(projectIndex, /class="project-card"/);
+    assert.doesNotMatch(projectIndex, /class="project-primary-directories"|打开全部 Sessions/);
+    assert.match(projectIndex, /class="project-directory-list"/);
+    assert.match(projectIndex, /class="project-directory-row"/);
+    assert.match(projectIndex, /data-project-search/);
+    assert.match(projectIndex, /data-project-search-row="产品 alpha user"/);
     assert.doesNotMatch(projectIndex, /class="project-list"/);
+    assert.doesNotMatch(projectIndex, /href="\/sessions"/);
+    assert.doesNotMatch(projectIndex, /href="\/workspaces"[^>]*aria-label="打开全部工作目录"/);
     assert.match(projectIndex, /<body class="project-index-page" data-desktop-shell="true">/);
     assert.doesNotMatch(projectIndex, /data-native-desktop="true"|data-tauri-drag-region/);
     assert.match(projectIndexStyles, /\.project-index-page > \.topbar \{ height: 58px; \}/);
     assert.match(projectIndexStyles, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
-    assert.match(projectIndexStyles, /\.project-card-grid \{ display: grid;/);
-    assert.match(projectIndexStyles, /\.project-card-grid \{[^}]*minmax\(270px, 1fr\)[^}]*gap: 18px/);
-    assert.match(projectIndexStyles, /\.project-card \{[^}]*min-height: 196px;[^}]*padding: 24px;[^}]*box-shadow: var\(--shadow-soft\)/);
+    assert.match(projectIndexStyles, /\.project-directory-list \{ border-block: 1px solid var\(--line-strong\); \}/);
+    assert.match(projectIndexStyles, /\.project-directory-row \{[^}]*min-height: 72px;[^}]*grid-template-columns: 36px minmax\(0, 1fr\) 110px 74px/);
 
     const desktopProjectIndex = await (await webFetch(`${origin}/?desktop=1`)).text();
     assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true" data-native-desktop="true">/);
-    assert.match(desktopProjectIndex, /<header class="topbar">/);
-    assert.doesNotMatch(desktopProjectIndex, /<header class="topbar" data-tauri-drag-region>/);
-    assert.match(desktopProjectIndex, /class="project-context" data-tauri-drag-region/);
+    assert.match(desktopProjectIndex, /<header class="topbar project-directory-topbar">/);
+    assert.doesNotMatch(desktopProjectIndex, /<header class="topbar project-directory-topbar" data-tauri-drag-region>/);
+    assert.doesNotMatch(desktopProjectIndex, /class="project-primary-directories"|打开全部 Sessions/);
     assert.match(desktopProjectIndex, /class="top-spacer" data-tauri-drag-region/);
 
     const legacyCookieResponse = await webFetch(`${origin}${alphaPrefix}/`, {
@@ -2245,6 +2625,13 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(alphaPage, /ALPHA-LAZY-BODY-SENTINEL/);
     assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
     assert.match(alphaPage, /data-directory-open="feed"[^>]*data-feed-preset="inbox_message"/);
+    assert.match(alphaPage, /data-directory-open="sessions" data-work-surface-open="sessions"/);
+    assert.match(alphaPage, /data-directory-open="workspaces" data-work-surface-open="workspaces"/);
+    assert.match(alphaPage, /data-directory-panel="sessions"/);
+    assert.match(alphaPage, /data-directory-panel="workspaces"/);
+    assert.match(alphaPage, /data-work-surface="sessions"/);
+    assert.match(alphaPage, /data-work-surface="workspaces"/);
+    assert.doesNotMatch(alphaPage, /sw-page|sw-project-chrome|sw-shell|sw-commandbar/);
     assert.match(alphaPage, /data-feed-workbench/);
     assert.match(alphaPage, /data-feed-workbench[^>]*data-loaded="false"/);
     assert.doesNotMatch(alphaPage, /data-graph-node|data-graph-edge/);
@@ -2258,7 +2645,33 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(WORKBENCH_STYLES, /\.app \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\)/);
     assert.match(WORKBENCH_STYLES, /:not\(\[data-native-desktop="true"\]\) \.mobile-project-bar \{[\s\S]*display: grid;/);
     assert.match(WORKBENCH_STYLES, /\.mobile-project-switcher \.navigator-project-menu-popover \{[\s\S]*z-index: 120;/);
+    assert.match(WORKBENCH_STYLES, /\.project-record-directory \{ min-height: 0; grid-template-rows:/);
+    assert.match(WORKBENCH_STYLES, /\.project-operation-layout \{ padding-inline: 0; \}/);
+    assert.doesNotMatch(WORKBENCH_STYLES, /\.sw-page|\.sw-project-chrome|\.sw-shell|\.sw-commandbar/);
     assert.equal((alphaPage.match(/data-goal-view=/g) ?? []).length, 1);
+
+    const globalSessions = await webFetch(`${origin}/sessions`, { redirect: "manual" });
+    assert.equal(globalSessions.status, 302);
+    assert.equal(globalSessions.headers.get("location"), "/");
+
+    const globalWorkspaces = await webFetch(`${origin}/workspaces`, { redirect: "manual" });
+    assert.equal(globalWorkspaces.status, 302);
+    assert.equal(globalWorkspaces.headers.get("location"), "/");
+
+    const alphaSessions = await webFetch(`${origin}${alphaPrefix}/sessions`, { redirect: "manual" });
+    assert.equal(alphaSessions.status, 302);
+    assert.equal(alphaSessions.headers.get("location"), `${alphaPrefix}/#sessions`);
+    const alphaWorkspaces = await webFetch(`${origin}${alphaPrefix}/workspaces`, { redirect: "manual" });
+    assert.equal(alphaWorkspaces.status, 302);
+    assert.equal(alphaWorkspaces.headers.get("location"), `${alphaPrefix}/#workspaces`);
+    const desktopAlphaSessions = await webFetch(`${origin}${alphaPrefix}/sessions?desktop=1`, { redirect: "manual" });
+    assert.equal(desktopAlphaSessions.status, 302);
+    assert.equal(desktopAlphaSessions.headers.get("location"), `${alphaPrefix}/?desktop=1#sessions`);
+
+    const removedSessionWorkspaceStyles = await webFetch(`${origin}/assets/goalboard-session-workspace.css`);
+    assert.equal(removedSessionWorkspaceStyles.status, 404);
+    const removedSessionWorkspaceClient = await webFetch(`${origin}/assets/goalboard-session-workspace.js`);
+    assert.equal(removedSessionWorkspaceClient.status, 404);
 
     const nativeAlphaPage = await (await webFetch(`${origin}${alphaPrefix}/goals/ALPHA-ONLY?desktop=1`)).text();
     assert.match(nativeAlphaPage, /data-native-desktop="true"/);
@@ -2271,6 +2684,10 @@ test("Web project catalog switches browser scope without exposing storage or cha
     const stylesheetEtag = stylesheetResponse.headers.get("etag");
     assert.ok(stylesheetEtag);
     assert.equal(await stylesheetResponse.text(), WORKBENCH_STYLES);
+    assert.match(
+      WORKBENCH_STYLES,
+      /html\[data-resolved-theme="dark"\] \.risk-resolution-fields,[\s\S]{0,500}background: color-mix\(in srgb, var\(--rail\) 76%, var\(--paper\)\);/,
+    );
     const revalidatedStylesheet = await webFetch(`${origin}/assets/goalboard-workbench.css`, {
       headers: { "if-none-match": stylesheetEtag },
     });
@@ -2367,12 +2784,12 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(alphaRefresh, /data-refresh-tree-chrome/);
     assert.match(alphaRefresh, /data-goal-view="ALPHA-ONLY"/);
     assert.doesNotMatch(alphaRefresh, /goalboard-workbench\.(?:css|js)|pty-client\.js|data-feed-workbench/);
-    const alphaGraphResponse = await webFetch(
-      `${origin}${alphaPrefix}/api/board/graph?view=current&goal_id=ALPHA-ONLY`,
+    const alphaMomentumResponse = await webFetch(
+      `${origin}${alphaPrefix}/api/board/momentum?view=current&goal_id=ALPHA-ONLY`,
     );
-    assert.equal(alphaGraphResponse.status, 200);
-    assert.equal(alphaGraphResponse.headers.get("cache-control"), "no-store");
-    assert.match(await alphaGraphResponse.text(), /data-goal-graph[^>]*data-graph|data-goal-graph[\s\S]*data-graph-node/);
+    assert.equal(alphaMomentumResponse.status, 200);
+    assert.equal(alphaMomentumResponse.headers.get("cache-control"), "no-store");
+    assert.match(await alphaMomentumResponse.text(), /data-goal-momentum[\s\S]*data-momentum-node/);
     const alphaFeedWorkbenchResponse = await webFetch(
       `${origin}${alphaPrefix}/api/feed/workbench?preset=feed`,
     );
@@ -2682,8 +3099,8 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(runtimePage, /data-runtime-plan="codex"/);
     assert.match(runtimePage, /data-runtime-plan-dialog/);
     assert.match(runtimePage, /我已查看并确认这份变更/);
-    assert.match(runtimePage, /已关联的 AI 会话/);
-    assert.match(runtimePage, /工作目录关联/);
+    assert.doesNotMatch(runtimePage, /已关联的 AI 会话|工作目录关联|data-connection-rebind|data-workspace-default/);
+    assert.match(runtimePage, /Session 与工作目录关系请进入对应项目管理/);
     assert.match(runtimePage, /不接入也能正常使用 Goal Tree、待决定和记录/);
     assert.match(runtimePage, /href="\/assets\/goalboard-settings\.css"/);
     assert.match(settingsStyles, /.settings-page > \.topbar \{ height: 58px; \}/);
@@ -3312,7 +3729,7 @@ test("Web clearly separates regenerable demo data from user projects and shares 
   }
 });
 
-test("Web manages only confirmed Runtime Session bindings without exposing host identities", async () => {
+test("global settings leaves Session and workspace management to project directories", async () => {
   const fixture = await webProjectCatalogFixture();
   const workspacePath = join(fixture.homeDirectory, "..", "ordinary-workspace");
   mkdirSync(workspacePath, { recursive: true });
@@ -3352,119 +3769,30 @@ test("Web manages only confirmed Runtime Session bindings without exposing host 
 
     const page = await (await webFetch(`${origin}/settings/runtimes`)).text();
     assertInlineScriptsCompile(page);
-    assert.match(page, /已关联的 AI 会话/);
-    assert.match(page, /工作目录关联/);
-    assert.match(page, /ordinary-workspace/);
-    assert.match(page, /data-workspace-default/);
-    assert.match(page, /data-connection-rebind/);
-    assert.match(page, /data-connection-unbind/);
+    assert.doesNotMatch(page, /已关联的 AI 会话|工作目录关联|ordinary-workspace|data-workspace-default|data-connection-rebind|data-connection-unbind/);
+    assert.match(page, /Session 与工作目录关系请进入对应项目管理/);
     assert.doesNotMatch(page, /web-project-alpha-session|web-project-beta-session/);
 
-    const listed = (await (await webFetch(`${origin}/api/settings/connections`)).json()) as {
-      connections: Array<{
-        binding_id: string;
-        context_label: string;
-        project_id: string;
-        project_name: string;
-      }>;
-    };
-    assert.equal(listed.connections.length, 2);
-    assert.match(listed.connections[0]?.context_label ?? "", /Session · [A-F0-9]{6}$/);
-    assert.doesNotMatch(JSON.stringify(listed), /stable_work_context_id|database_path|web-project-alpha-session/);
-    const workspaces = (await (await webFetch(`${origin}/api/settings/workspaces`)).json()) as {
-      workspace_memberships: Array<{ workspace_id: string; project_id: string; is_default: boolean }>;
-    };
-    assert.equal(workspaces.workspace_memberships.length, 2);
-    assert.equal(workspaces.workspace_memberships.some((membership) => membership.is_default), false);
-    assert.doesNotMatch(JSON.stringify(workspaces), /canonical_path|ordinary-workspace\//);
-    const workspaceId = workspaces.workspace_memberships[0]!.workspace_id;
-
-    const unconfirmedDefault = await webFetch(
-      `${origin}/api/settings/workspaces/${encodeURIComponent(workspaceId)}/default`,
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: fixture.beta.project_id }) },
-    );
-    assert.equal(unconfirmedDefault.status, 400);
-    const confirmedDefault = await webFetch(
-      `${origin}/api/settings/workspaces/${encodeURIComponent(workspaceId)}/default`,
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: fixture.beta.project_id, user_confirmed: true }) },
-    );
-    assert.equal(confirmedDefault.status, 200);
-    const alphaConnection = listed.connections.find((connection) => connection.project_id === fixture.alpha.project_id);
-    assert.ok(alphaConnection);
-
-    const unconfirmedRebind = await webFetch(
-      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/rebind`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project_id: fixture.beta.project_id }),
-      },
-    );
-    assert.equal(unconfirmedRebind.status, 400);
-
-    const beforeConfirmed = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
-    try {
-      assert.equal(beforeConfirmed.resolveRuntimeContext(fixture.alphaContext).project?.project_id, fixture.alpha.project_id);
-    } finally {
-      beforeConfirmed.close();
+    for (const path of [
+      "/api/settings/connections",
+      "/api/settings/workspaces",
+      "/api/settings/connections/legacy-binding/rebind",
+      "/api/settings/connections/legacy-binding/unbind",
+      "/api/settings/workspaces/legacy-workspace/default",
+      "/api/settings/workspaces/legacy-workspace/projects/legacy-project/unlink",
+    ]) {
+      const response = await webFetch(`${origin}${path}`, path.includes("/rebind") || path.includes("/unbind") || path.includes("/default") || path.includes("/unlink")
+        ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ user_confirmed: true }) }
+        : undefined);
+      assert.ok(response.status >= 400 && response.status < 500, `${path}: ${response.status}`);
     }
 
-    const reboundResponse = await webFetch(
-      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/rebind`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project_id: fixture.beta.project_id, user_confirmed: true }),
-      },
-    );
-    assert.equal(reboundResponse.status, 200);
-    const rebound = (await reboundResponse.json()) as { connection: { project_id: string; project_name: string } };
-    assert.equal(rebound.connection.project_id, fixture.beta.project_id);
-    assert.equal(rebound.connection.project_name, fixture.beta.display_name);
-    assert.doesNotMatch(JSON.stringify(rebound), /stable_work_context_id|database_path|web-project-alpha-session/);
-
-    const runtime = new GoalBoardServer("runtime", null, {
-      homeDirectory: fixture.homeDirectory,
-      runtimeContext: fixture.alphaContext,
-      webBaseUrl: origin,
-    });
-    const runtimeResolution = JSON.parse(await runtime.callTool("goalboard_v1_context_resolve", {})) as {
-      project: { project_id: string } | null;
-    };
-    assert.equal(runtimeResolution.project?.project_id, fixture.beta.project_id);
-
-    const unconfirmedUnbind = await webFetch(
-      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/unbind`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      },
-    );
-    assert.equal(unconfirmedUnbind.status, 400);
-
-    const unboundResponse = await webFetch(
-      `${origin}/api/settings/connections/${encodeURIComponent(alphaConnection.binding_id)}/unbind`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ user_confirmed: true }),
-      },
-    );
-    assert.equal(unboundResponse.status, 200);
-    const after = await GoalBoardProjectCatalog.open({ homeDirectory: fixture.homeDirectory });
-    try {
-      assert.equal(after.resolveRuntimeContext(fixture.alphaContext).status, "unbound");
-      assert.equal(after.resolveRuntimeContext(fixture.betaContext).project?.project_id, fixture.beta.project_id);
-      assert.equal(after.listProjects().length, 2);
-      assert.equal(after.listRuntimeContextBindings().length, 1);
-      assert.deepEqual(
-        after.listRuntimeContextBindingEvents(fixture.alphaContext).map((event) => event.type),
-        ["context.bound", "context.rebound", "context.unbound"],
-      );
-    } finally {
-      after.close();
-    }
+    const alphaProject = await webFetch(`${origin}/projects/${encodeURIComponent(fixture.alpha.project_id)}/`);
+    assert.equal(alphaProject.status, 200);
+    assert.match(await alphaProject.text(), /data-directory-open="sessions"/);
+    const betaProject = await webFetch(`${origin}/projects/${encodeURIComponent(fixture.beta.project_id)}/`);
+    assert.equal(betaProject.status, 200);
+    assert.match(await betaProject.text(), /data-directory-open="workspaces"/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -6891,7 +7219,7 @@ test("Web result confirmation names the criterion that still lacks passing evide
     assert.match(group, /拿当前完成标准和依据来说/);
     assert.match(group, /完成标准「用户能看到保存后的实际结果」还没有对应的通过依据/);
     assert.match(group, /现在不应选择“通过”/);
-    assert.match(group, /即使选择“通过”[\s\S]*仍有 1 条完成标准缺少通过依据，不会完成/);
+    assert.match(group, /即使选择“通过”[\s\S]*仍有 1 条由测试或检查判断的完成标准缺少通过依据，不会完成/);
     assert.match(page, /<option value="" selected disabled>请选择结论<\/option>/);
     assert.doesNotMatch(group, /建议确认通过/);
   } finally {
@@ -7570,6 +7898,12 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     assert.match(trashPage, /data-tree-item data-goal-id="TRASH-UI-READY"/);
     assert.match(trashPage, /data-open-goal-restore/);
     assert.match(trashPage, /Goal 的 Contract、Run、Evidence 与事件历史都已保留/);
+    assert.match(trashPage, /class="goal-hero trash-goal-hero"/);
+    assert.match(trashPage, /class="goal-workspace-panels trash-goal-workspace"/);
+    assert.match(trashPage, /class="trash-goal-panel trash-goal-panel--state"/);
+    assert.match(WORKBENCH_STYLES, /\.trash-goal-workspace \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\)[\s\S]*\.trash-goal-workspace \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+    assert.match(WORKBENCH_STYLES, /\.trash-goal-document \.goal-title-actions \.document-action \{ min-height: 44px; \}/);
     const trashFragment = await (
       await webFetch(`${origin}/api/goals/TRASH-UI-READY/document?view=trash`)
     ).text();

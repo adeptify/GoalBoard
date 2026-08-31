@@ -47,6 +47,7 @@ import {
   GMAIL_FULL_SYNC_MESSAGE_LIMIT,
   GMAIL_HISTORY_PAGE_LIMIT,
   buildGmailLiveCursor,
+  decideGmailScopeChangeRecovery,
   decideGmailStaleHistoryRecovery,
   decideGmailSyncFromCursor,
   initialGmailHistoryReduceState,
@@ -57,6 +58,11 @@ import {
   type GmailLiveCursor,
   type GmailSyncEntryDecision,
 } from "./gmail-history-cursor.js";
+import {
+  gmailScopeMatchesLabels,
+  normalizeGmailScope,
+  type GmailScope,
+} from "./gmail-scope.js";
 import { connectorFixtureAllowed } from "../execution-mode.js";
 
 const FIXTURE_MAIL: ConnectorIngestItem[] = [
@@ -101,10 +107,17 @@ const MESSAGES_PATH = `${GMAIL_BASE_PATH}/messages`;
  */
 const HISTORY_TYPES = ["messageAdded", "labelAdded"] as const;
 
-/** Bounded Q params for the message list path of full sync. */
-const FULL_SYNC_QUERY = "is:unread";
 const HISTORY_PAGE_RESULTS = 100;
-const MESSAGE_DETAIL_HEADERS = ["Subject", "From"];
+const MESSAGE_DETAIL_HEADERS = [
+  "Subject",
+  "From",
+  "To",
+  "Cc",
+  "Date",
+  "Auto-Submitted",
+  "Precedence",
+  "List-Unsubscribe",
+];
 
 export type GmailFetch = (
   input: string,
@@ -223,6 +236,7 @@ export type GmailForbiddenDisposition =
 interface GmailFetchContext {
   fetchImpl: GmailFetch;
   token: string;
+  scope: GmailScope;
   /** Deterministic clock for the cursor timestamp (tests only). */
   nowMs?: number;
 }
@@ -233,7 +247,11 @@ interface GmailFetchContext {
  * sound, narrowing-friendly discriminator - never a shape-hiding cast or an
  * `Array.isArray` guard that cannot actually tell success from failure.
  */
-type ProfileHistoryOutcome = { ok: true; historyId: string } | ConnectorSyncFailure;
+type ProfileHistoryOutcome = {
+  ok: true;
+  historyId: string;
+  emailAddress: string;
+} | ConnectorSyncFailure;
 type MessagesListOutcome = { ok: true; ids: string[] } | ConnectorSyncFailure;
 type DetailFetchOutcome =
   | { ok: true; byId: Map<string, ConnectorIngestItem>; raceSkipped: Set<string> }
@@ -426,6 +444,8 @@ export function createGmailConnector(opts?: {
    * the legacy shared lifecycle.
    */
   tokenRefs?: GmailTokenRefs;
+  /** One of the closed, incrementally enforceable Gmail range presets. */
+  scope?: string;
   fetchImpl?: GmailFetch;
   /** Deterministic clock for tests (epoch ms). */
   getNowMs?: () => number;
@@ -434,6 +454,7 @@ export function createGmailConnector(opts?: {
   const allowFixture = opts?.allowFixture ?? connectorFixtureAllowed();
   const authRef = opts?.authRef ?? process.env.GOALBOARD_GMAIL_AUTH_REF;
   const tokenRefs = opts?.tokenRefs;
+  const scope = normalizeGmailScope(opts?.scope);
   const envToken = opts?.accessToken;
   const fetchImpl = opts?.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   const getNowMs = opts?.getNowMs;
@@ -572,13 +593,18 @@ export function createGmailConnector(opts?: {
       // rebuild_cursor: force bounded full_sync from the closed recovery
       // decision — never clear the persisted cursor here; application owns it.
       // Normal path still decides from the read-only cursor snapshot.
-      const decision =
+      const baseDecision =
         mode === "rebuild_cursor"
           ? decideGmailStaleHistoryRecovery()
           : decideGmailSyncFromCursor(cursor);
+      const decision = baseDecision.decision === "incremental"
+        && baseDecision.cursor.scope !== scope
+        ? decideGmailScopeChangeRecovery()
+        : baseDecision;
       const ctx: GmailFetchContext = {
         fetchImpl,
         token: usable.accessToken,
+        scope,
         nowMs: getNowMs?.(),
       };
       try {
@@ -633,6 +659,7 @@ async function runFullSync(
     ctx,
     ids: candidateIds,
     maxDetails,
+    accountEmail: profile.emailAddress,
   });
   if (!details.ok) return details;
 
@@ -650,6 +677,8 @@ async function runFullSync(
     historyId: profile.historyId,
     at,
     provenance: "full_sync",
+    scope: ctx.scope,
+    accountEmail: profile.emailAddress,
   });
   if (!cursor.ok) {
     return providerFailure("profile", { reason: "malformed" });
@@ -698,14 +727,24 @@ async function fetchProfileHighWaterMark(
     return providerFailure("profile", { reason: "malformed" });
   }
   const historyId = (json as { historyId?: unknown }).historyId;
+  const emailAddressRaw = (json as { emailAddress?: unknown }).emailAddress;
   if (!isValidGmailHistoryId(historyId)) {
     return providerFailure("profile", { reason: "malformed" });
   }
-  return { ok: true, historyId };
+  if (
+    typeof emailAddressRaw !== "string"
+    || !emailAddressRaw.trim()
+    || emailAddressRaw.length > 254
+    || /\s/.test(emailAddressRaw.trim())
+    || !emailAddressRaw.includes("@")
+  ) {
+    return providerFailure("profile", { reason: "malformed" });
+  }
+  return { ok: true, historyId, emailAddress: emailAddressRaw.trim().toLowerCase() };
 }
 
 /**
- * Bounded users.messages.list of recent unread mail. Returns deduped ids only;
+ * Bounded users.messages.list for the configured range. Returns deduped ids only;
  * never reads historyId from the list payload (the cursor comes from profile).
  */
 async function fetchMessagesList(
@@ -715,7 +754,7 @@ async function fetchMessagesList(
   const authHeaders = { headers: { Authorization: `Bearer ${ctx.token}` } };
   const url = `https://${GMAIL_HOST}${buildMessagesListUrl({
     maxResults: maxMessages,
-    query: FULL_SYNC_QUERY,
+    query: ctx.scope,
   })}`;
   let res: Response;
   try {
@@ -759,6 +798,8 @@ async function runIncremental(
   ctx: GmailFetchContext,
   startCursor: GmailLiveCursor,
 ): Promise<ConnectorSyncResult> {
+  const profile = await fetchProfileHighWaterMark(ctx);
+  if (!profile.ok) return profile;
   const authHeaders = { headers: { Authorization: `Bearer ${ctx.token}` } };
   let state: GmailHistoryReduceState = initialGmailHistoryReduceState();
   let pageToken: string | undefined = undefined;
@@ -811,7 +852,11 @@ async function runIncremental(
       historyId: (pageJson as { historyId?: unknown }).historyId,
       nextPageToken: (pageJson as { nextPageToken?: unknown }).nextPageToken,
       history: (pageJson as { history?: unknown }).history,
-    }, { at: nowIso(ctx.nowMs) });
+    }, {
+      at: nowIso(ctx.nowMs),
+      scope: ctx.scope,
+      accountEmail: profile.emailAddress,
+    });
 
     if (decision.kind === "continue") {
       state = {
@@ -851,6 +896,7 @@ async function runIncremental(
     ctx,
     ids: collectedMessageIds,
     maxDetails: GMAIL_DETAIL_FETCH_LIMIT,
+    accountEmail: profile.emailAddress,
   });
   if (!details.ok) return details;
 
@@ -877,6 +923,7 @@ async function fetchBoundedDetails(opts: {
   ctx: GmailFetchContext;
   ids: string[];
   maxDetails: number;
+  accountEmail: string;
 }): Promise<DetailFetchOutcome> {
   const { ctx } = opts;
   const authHeaders = { headers: { Authorization: `Bearer ${ctx.token}` } };
@@ -923,7 +970,14 @@ async function fetchBoundedDetails(opts: {
     if (!isPlainObject(msgJson)) {
       return providerFailure("detail", { reason: "malformed" });
     }
-    const item = mapMessageDetailToItem(msgJson, id);
+    const labelIds = getLabelIds(msgJson);
+    if (!labelIds) return providerFailure("detail", { reason: "malformed" });
+    if (!gmailScopeMatchesLabels(ctx.scope, labelIds)) continue;
+    const item = mapMessageDetailToItem(msgJson, id, {
+      accountEmail: opts.accountEmail,
+      labelIds,
+      nowMs: ctx.nowMs,
+    });
     if (!item) return providerFailure("detail", { reason: "malformed" });
     byId.set(id, item);
   }
@@ -934,11 +988,25 @@ async function fetchBoundedDetails(opts: {
 function mapMessageDetailToItem(
   msgJson: Record<string, unknown>,
   fallbackId: string,
+  opts: { accountEmail: string; labelIds: string[]; nowMs?: number },
 ): ConnectorIngestItem | null {
   const headers = getHeaders(msgJson);
   if (!headers) return null;
   const subject = pickHeader(headers, "subject") ?? "(no subject)";
   const from = pickHeader(headers, "from");
+  const to = pickHeader(headers, "to");
+  const cc = pickHeader(headers, "cc");
+  const directlyAddressed = headerContainsEmail(to, opts.accountEmail)
+    || headerContainsEmail(cc, opts.accountEmail);
+  const automated = isAutomatedMail(headers);
+  const normalizedLabels = Array.from(new Set(opts.labelIds.map((label) => label.toUpperCase())));
+  const markedImportant = normalizedLabels.includes("IMPORTANT");
+  const starred = normalizedLabels.includes("STARRED");
+  const attentionMatches = [
+    ...(starred ? ["starred"] : []),
+    ...(markedImportant ? ["important"] : []),
+    ...(directlyAddressed && !automated ? ["direct_recipient"] : []),
+  ];
   const snippetRaw = msgJson.snippet;
   const snippet = typeof snippetRaw === "string" ? snippetRaw : "";
   const id = typeof msgJson.id === "string" && msgJson.id ? msgJson.id : fallbackId;
@@ -946,12 +1014,78 @@ function mapMessageDetailToItem(
     externalId: `gmail-msg-${id}`,
     title: subject,
     summary: snippet || subject,
+    url: gmailMessageUrl(id, opts.accountEmail),
+    occurredAt: gmailMessageOccurredAt(msgJson, headers, opts.nowMs),
     kind: "message",
-    priority: "medium",
-    tags: ["gmail"],
+    priority: attentionMatches.length ? "high" : "medium",
+    tags: [
+      "gmail",
+      ...normalizedLabels
+        .filter((label) => ["INBOX", "UNREAD", "STARRED", "IMPORTANT"].includes(label))
+        .map((label) => `label:${label.toLowerCase()}`),
+    ],
     author: from,
+    attention: attentionMatches.length
+      ? {
+          reason: "source_rule",
+          detail: {
+            rule: "gmail_attention_v1",
+            matched_by: attentionMatches,
+            system_labels: normalizedLabels.filter((label) => ["STARRED", "IMPORTANT"].includes(label)),
+          },
+        }
+      : false,
   };
   return item;
+}
+
+function getLabelIds(msgJson: Record<string, unknown>): string[] | null {
+  if (!Array.isArray(msgJson.labelIds)) return null;
+  const labels: string[] = [];
+  for (const label of msgJson.labelIds) {
+    if (typeof label !== "string" || !label || label.length > 128) return null;
+    if (!labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
+function headerContainsEmail(value: string | undefined, email: string): boolean {
+  if (!value) return false;
+  const target = email.trim().toLowerCase();
+  return value
+    .toLowerCase()
+    .split(/[;,]/)
+    .some((part) => part.match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+/i)?.[0]?.toLowerCase() === target);
+}
+
+function isAutomatedMail(headers: Array<{ name?: unknown; value?: unknown }>): boolean {
+  const autoSubmitted = pickHeader(headers, "auto-submitted")?.trim().toLowerCase();
+  if (autoSubmitted && autoSubmitted !== "no") return true;
+  const precedence = pickHeader(headers, "precedence")?.trim().toLowerCase();
+  if (precedence && ["bulk", "list", "junk"].includes(precedence)) return true;
+  return Boolean(pickHeader(headers, "list-unsubscribe"));
+}
+
+function gmailMessageOccurredAt(
+  msgJson: Record<string, unknown>,
+  headers: Array<{ name?: unknown; value?: unknown }>,
+  nowMs?: number,
+): string {
+  if (typeof msgJson.internalDate === "string" && /^\d{1,16}$/.test(msgJson.internalDate)) {
+    const internalMs = Number(msgJson.internalDate);
+    const internalDate = new Date(internalMs);
+    if (Number.isFinite(internalDate.getTime())) return internalDate.toISOString();
+  }
+  const headerDate = pickHeader(headers, "date");
+  if (headerDate) {
+    const parsed = Date.parse(headerDate);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return nowIso(nowMs);
+}
+
+function gmailMessageUrl(messageId: string, accountEmail: string): string {
+  return `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(accountEmail)}#all/${encodeURIComponent(messageId)}`;
 }
 
 function getHeaders(

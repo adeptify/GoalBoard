@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { GoalBoardProjectCatalog, type RuntimeWorkContext } from "../src/projects/catalog.js";
+
+test("a known workspace suggests a Project but never silently binds a fresh Runtime Session", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "goalboard-workspace-suggestion-"));
+  const home = path.join(directory, ".goalboard");
+  const workspacePath = path.join(directory, "repository");
+  await mkdir(workspacePath, { recursive: true });
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory: home });
+  try {
+    const project = await catalog.createProject({ display_name: "候选项目", actor_id: "user" });
+    catalog.addWorkspaceProject({
+      canonical_path: workspacePath,
+      project_id: project.project_id,
+      actor_id: "user",
+      user_confirmed: true,
+    });
+    const context: RuntimeWorkContext = {
+      runtime_id: "codex",
+      stable_work_context_id: "fresh-runtime-session",
+      host_declares_stable: true,
+      workspace: { canonical_path: workspacePath, realpath_verified: true },
+    };
+
+    const resolution = catalog.resolveRuntimeContext(context);
+    assert.equal(resolution.status, "suggested");
+    assert.equal(resolution.project, null);
+    assert.deepEqual(resolution.suggested_projects.map((item) => item.project_id), [project.project_id]);
+    assert.equal(catalog.listRuntimeContextBindings().length, 0);
+    assert.equal(catalog.listWorkspaceMemberships().some((membership) => membership.is_default), false);
+  } finally {
+    catalog.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

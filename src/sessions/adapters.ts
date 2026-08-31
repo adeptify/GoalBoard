@@ -1,0 +1,261 @@
+import { GoalBoardSessionRegistry } from "./registry.js";
+import {
+  RUNTIME_SESSION_CAPABILITIES,
+  type RuntimeSessionAdapter,
+  type RuntimeSessionAdapterResult,
+  type RuntimeSessionCapabilities,
+  type RuntimeSessionCapability,
+  type RuntimeSessionTransport,
+} from "./types.js";
+
+const CODEX_CAPABILITIES: RuntimeSessionCapabilities = {
+  create: "native",
+  list: "native",
+  discover: "native",
+  read: "native",
+  resume: "native",
+  events: "native",
+  handoff: "native",
+};
+
+const FALLBACK_CAPABILITIES: RuntimeSessionCapabilities = {
+  create: "registry",
+  list: "registry",
+  discover: "unsupported",
+  read: "unsupported",
+  resume: "unsupported",
+  events: "unsupported",
+  handoff: "unsupported",
+};
+
+const CODEX_METHODS: Partial<Record<RuntimeSessionCapability, string>> = {
+  create: "thread/start",
+  list: "thread/list",
+  discover: "thread/list",
+  read: "thread/read",
+  resume: "thread/resume",
+};
+
+export class CodexRuntimeSessionAdapter implements RuntimeSessionAdapter {
+  readonly runtime_id = "codex";
+  readonly capabilities = CODEX_CAPABILITIES;
+
+  constructor(private readonly transport: RuntimeSessionTransport) {}
+
+  async invoke(
+    capability: RuntimeSessionCapability,
+    input: Record<string, unknown>,
+  ): Promise<RuntimeSessionAdapterResult> {
+    if (capability === "handoff") return this.handoff(input);
+    try {
+      if (capability === "events") {
+        const listener = input.listener;
+        if (typeof listener !== "function") {
+          return failed(capability, "Codex 事件订阅需要 listener");
+        }
+        const unsubscribe = this.transport.subscribe(listener as (event: { method: string; params: unknown }) => void);
+        return ok(capability, "native", { unsubscribe });
+      }
+      const method = CODEX_METHODS[capability];
+      if (!method) return unsupported(capability, "Codex Adapter 未声明这项能力");
+      const value = await this.transport.request(method, input);
+      return ok(capability, "native", value);
+    } catch (error) {
+      return failed(
+        capability,
+        error instanceof Error ? error.message : String(error),
+        capability === "create"
+          ? { phase: "create", retryable: definitelyNotAccepted(error) }
+          : undefined,
+      );
+    }
+  }
+
+  private async handoff(input: Record<string, unknown>): Promise<RuntimeSessionAdapterResult> {
+    const prompt = optionalString(input.prompt);
+    if (!prompt) return failed("handoff", "Codex Handoff 缺少已确认的 package 内容");
+    let nativeSessionId = optionalString(input.existingThreadId);
+    let thread: unknown = null;
+    if (!nativeSessionId) {
+      try {
+        thread = await this.transport.request("thread/start", objectValue(input.threadStart));
+        nativeSessionId = nativeSessionIdFromValue(thread);
+        if (!nativeSessionId) {
+          return failed(
+            "handoff",
+            "Codex 已响应新 Session 请求，但没有返回可识别的原生 Session ID",
+            { phase: "create", retryable: false },
+          );
+        }
+      } catch (error) {
+        return failed(
+          "handoff",
+          error instanceof Error ? error.message : String(error),
+          { phase: "create", retryable: true },
+        );
+      }
+    }
+    try {
+      const turn = await this.transport.request("turn/start", {
+        threadId: nativeSessionId,
+        input: [{ type: "text", text: prompt, text_elements: [] }],
+        turnTrigger: "goalboard_handoff",
+      });
+      return ok("handoff", "native", { thread, threadId: nativeSessionId, turn });
+    } catch (error) {
+      return failed(
+        "handoff",
+        error instanceof Error ? error.message : String(error),
+        {
+          phase: "deliver",
+          native_runtime_session_id: nativeSessionId,
+          retryable: definitelyNotAccepted(error),
+        },
+      );
+    }
+  }
+}
+
+export class RegistryFallbackSessionAdapter implements RuntimeSessionAdapter {
+  readonly capabilities = FALLBACK_CAPABILITIES;
+
+  constructor(
+    readonly runtime_id: string,
+    private readonly registry: GoalBoardSessionRegistry,
+  ) {}
+
+  async invoke(
+    capability: RuntimeSessionCapability,
+    input: Record<string, unknown>,
+  ): Promise<RuntimeSessionAdapterResult> {
+    try {
+      if (capability === "create") {
+        const record = this.registry.createSession({
+          runtime_id: this.runtime_id,
+          actor_id: typeof input.actor_id === "string" ? input.actor_id : "",
+          user_confirmed: input.user_confirmed === true,
+          native_runtime_session_id: optionalString(input.native_runtime_session_id),
+          surface_id: optionalString(input.surface_id),
+          project_id: optionalString(input.project_id),
+          current_goal_id: optionalString(input.current_goal_id),
+          workspace_id: optionalString(input.workspace_id),
+          workspace_path: optionalString(input.workspace_path),
+          title: optionalString(input.title),
+          provenance: "goalboard_created",
+          metadata: objectValue(input.metadata),
+        });
+        return ok(capability, "registry", record);
+      }
+      if (capability === "list") {
+        return ok(capability, "registry", this.registry.list({
+          runtime_id: this.runtime_id,
+          project_id: optionalString(input.project_id) ?? undefined,
+          workspace_id: optionalString(input.workspace_id) ?? undefined,
+          status: input.status === "discovered" || input.status === "active" || input.status === "closed"
+            ? input.status
+            : undefined,
+        }));
+      }
+      return unsupported(
+        capability,
+        `${this.runtime_id} 没有声明 ${capability} 原生能力；fallback 不会伪造结果`,
+      );
+    } catch (error) {
+      return failed(capability, error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+export class RuntimeSessionAdapterRouter {
+  private readonly adapters = new Map<string, RuntimeSessionAdapter>();
+
+  constructor(private readonly registry: GoalBoardSessionRegistry) {}
+
+  register(adapter: RuntimeSessionAdapter): void {
+    const runtimeId = adapter.runtime_id.trim();
+    if (!runtimeId) throw new Error("Runtime Adapter 必须提供 runtime_id");
+    assertCompleteRuntimeSessionCapabilities(adapter.capabilities);
+    this.adapters.set(runtimeId, adapter);
+  }
+
+  adapter(runtimeId: string): RuntimeSessionAdapter {
+    const normalized = runtimeId.trim();
+    if (!normalized) throw new Error("Runtime 标识不能为空");
+    return this.adapters.get(normalized) ?? new RegistryFallbackSessionAdapter(normalized, this.registry);
+  }
+
+  capabilities(runtimeId: string): RuntimeSessionCapabilities {
+    return { ...this.adapter(runtimeId).capabilities };
+  }
+
+  invoke(
+    runtimeId: string,
+    capability: RuntimeSessionCapability,
+    input: Record<string, unknown>,
+  ): Promise<RuntimeSessionAdapterResult> {
+    return this.adapter(runtimeId).invoke(capability, input);
+  }
+
+  matrix(runtimeIds: string[]): Array<{ runtime_id: string; capabilities: RuntimeSessionCapabilities }> {
+    return [...new Set(runtimeIds.map((item) => item.trim()).filter(Boolean))]
+      .sort()
+      .map((runtimeId) => ({ runtime_id: runtimeId, capabilities: this.capabilities(runtimeId) }));
+  }
+}
+
+export function assertCompleteRuntimeSessionCapabilities(capabilities: RuntimeSessionCapabilities): void {
+  for (const capability of RUNTIME_SESSION_CAPABILITIES) {
+    if (!["native", "registry", "unsupported"].includes(capabilities[capability])) {
+      throw new Error(`Runtime Adapter 缺少 ${capability} 能力声明`);
+    }
+  }
+}
+
+function ok(
+  capability: RuntimeSessionCapability,
+  source: "native" | "registry",
+  value: unknown,
+): RuntimeSessionAdapterResult {
+  return { status: "ok", source, capability, value };
+}
+
+function unsupported(capability: RuntimeSessionCapability, message: string): RuntimeSessionAdapterResult {
+  return { status: "unsupported", capability, code: "runtime.capability_unavailable", message };
+}
+
+function failed(
+  capability: RuntimeSessionCapability,
+  message: string,
+  recovery?: Extract<RuntimeSessionAdapterResult, { status: "failed" }>["recovery"],
+): RuntimeSessionAdapterResult {
+  return {
+    status: "failed",
+    capability,
+    code: "runtime.operation_failed",
+    message,
+    ...(recovery ? { recovery } : {}),
+  };
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" ? value.trim() || null : null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function definitelyNotAccepted(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const detail = error as { deliveryAccepted?: unknown; retryable?: unknown };
+  return detail.deliveryAccepted === false && detail.retryable === true;
+}
+
+function nativeSessionIdFromValue(value: unknown): string | null {
+  const record = objectValue(value);
+  const thread = objectValue(record.thread);
+  return optionalString(thread.id)
+    ?? optionalString(record.threadId)
+    ?? optionalString(record.thread_id)
+    ?? optionalString(record.id);
+}

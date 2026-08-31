@@ -562,7 +562,7 @@ test("runtime Session/work-entry contexts reconnect only after an explicit bindi
   });
 });
 
-test("canonical workspace routing supports symlinks, multiple projects, defaults, and isolated Session overrides", async () => {
+test("canonical workspace routing supports symlinks, multiple project candidates, and isolated Session overrides", async () => {
   await withTemporaryDirectory(async (directory) => {
     const home = join(directory, "home", ".goalboard");
     const workspace = join(directory, "ordinary-project-directory");
@@ -620,16 +620,13 @@ test("canonical workspace routing supports symlinks, multiple projects, defaults
       assert.equal(catalog.resolveRuntimeContext(workspaceContext("generic", null, workspace)).status, "suggested");
 
       const workspaceId = initial.context.workspace!.workspace_id;
-      catalog.setWorkspaceDefault({
+      assert.throws(() => catalog.setWorkspaceDefault({
         workspace_id: workspaceId,
         project_id: second.project_id,
         actor_id: "user",
         user_confirmed: true,
-      });
-      assert.equal(
-        catalog.resolveRuntimeContext(workspaceContext("codex", "thread-4", workspace)).project?.project_id,
-        second.project_id,
-      );
+      }), /不再保存默认项目/);
+      assert.equal(catalog.resolveRuntimeContext(workspaceContext("codex", "thread-4", workspace)).status, "suggested");
       catalog.removeWorkspaceMembership({
         workspace_id: workspaceId,
         project_id: second.project_id,
