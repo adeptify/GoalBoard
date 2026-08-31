@@ -77,7 +77,7 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
     child.stderr.on("data", () => undefined);
 
     await this.requestRaw("initialize", {
-      clientInfo: { name: "goalboard-session-browser", title: "GoalBoard", version: "0.1.12" },
+      clientInfo: { name: "goalboard-session-browser", title: "GoalBoard", version: "0.1.13" },
       capabilities: {
         experimentalApi: false,
         requestAttestation: false,
