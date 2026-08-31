@@ -135,6 +135,7 @@ test("macOS LaunchAgent preview is read-only and confirmed install is persistent
     assert.match(plist, /<key>KeepAlive<\/key><true\/>/);
     assert.match(plist, /<key>EnvironmentVariables<\/key>/);
     assert.match(plist, new RegExp(dirname(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(plist, new RegExp(join(item.userHome, ".local", "bin").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(plist, new RegExp(item.home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(plist, /web-service\.log/);
     assert.match(plist, /web-service\.error\.log/);

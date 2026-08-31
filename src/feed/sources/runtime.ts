@@ -29,7 +29,7 @@ import {
 } from "./rss-http.js";
 
 const APP_ID = "goalboard";
-const APP_VERSION = "0.1.12";
+const APP_VERSION = "0.1.13";
 const MAX_FEED_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 2;
 

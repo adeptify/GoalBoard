@@ -306,6 +306,7 @@ export class GoalBoardWebServiceManager {
     const args = this.command().map((value) => `      <string>${escapeXml(value)}</string>`).join("\n");
     const servicePath = [
       path.dirname(this.nodeExecutablePath),
+      path.join(this.userHomeDirectory, ".local", "bin"),
       "/opt/homebrew/bin",
       "/usr/local/bin",
       "/usr/bin",

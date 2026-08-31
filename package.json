@@ -1,6 +1,6 @@
 {
   "name": "@adeptify/goalboard",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "GoalBoard V1：面向人和 AI Runtime 的本地 SQLite 目标真相源",
   "type": "module",
   "license": "MIT",
