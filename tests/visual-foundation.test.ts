@@ -109,6 +109,13 @@ test("visual foundation keeps terminal appearance separate and local", () => {
   assert.match(VISUAL_FOUNDATION_CLIENT_SCRIPT, /localStorage\.setItem\(terminalThemeKey/);
 });
 
+test("embedded onboarding Runtime exposes only the real TUI work surface", () => {
+  assert.match(VISUAL_FOUNDATION_STYLES, /data-onboarding-embed="true"/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.workspace > :not\(\.tui-pane\) \{ display: none !important; \}/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.workspace > \.tui-pane \{[\s\S]*inset: 0 !important;[\s\S]*display: grid !important;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.mobile-project-bar,[\s\S]*\.mobile-switch,[\s\S]*\.tui-chrome-actions \{ display: none !important; \}/);
+});
+
 test("live xterm sessions receive the selected terminal palette", () => {
   const ptyClientSource = readFileSync(new URL("../src/web/pty-client.ts", import.meta.url), "utf8");
   assert.match(ptyClientSource, /theme: terminalPalette\(\)/);
@@ -248,6 +255,8 @@ test("desktop shell uses one project directory, project tabs, and soft work surf
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-brief-item,[\s\S]*box-shadow:/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panels \{[\s\S]*min-height: max\(420px, calc\(100dvh - 340px\)\);[\s\S]*display: grid;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-title-kicker \.goal-status \{[\s\S]*min-height: 26px;[\s\S]*padding: 2px 9px;[\s\S]*gap: 6px;[\s\S]*border-radius: 8px;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-title-status--narrow \.goal-status \{[\s\S]*min-height: 0;[\s\S]*padding: 0;[\s\S]*border: 0;[\s\S]*background: transparent;/);
+  assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-title-status--narrow \.goal-status::before \{[^}]*width: 5px;[^}]*background: var\(--goal-status-tone\)/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel:not\(\[hidden\]\) \.focus-section-stage \{[\s\S]*min-height: max\(280px, calc\(100dvh - 510px\)\);[\s\S]*align-items: stretch;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.focus-section-stage > \.focus-section-card-reveal \{[\s\S]*grid-area: 1 \/ 1;/);
   assert.match(VISUAL_FOUNDATION_STYLES, /\.goal-workspace-panel\[data-goal-panel="overview"\]:not\(\[hidden\]\) \.goal-focus-main,[\s\S]*\.goal-focus-aside \{[\s\S]*grid-template-rows: auto minmax\(0, 1fr\);[\s\S]*align-content: stretch;/);

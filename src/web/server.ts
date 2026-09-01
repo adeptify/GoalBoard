@@ -28,6 +28,11 @@ import { GoalBoardSessionError, type RuntimeSessionTransport } from "../sessions
 import { desktopAdvancePrompt } from "../desktop/advance-prompt.js";
 import { desktopLaunchSpec, desktopPanelEnv, desktopRuntimeTitle, isDesktopRuntimeKind } from "../desktop/launch.js";
 import { isDesktopShellRequest } from "./desktop-shell.js";
+import {
+  onboardingIntentFrame,
+  onboardingPlanningHint,
+  type OnboardingIntentFrame,
+} from "./onboarding-intent.js";
 import { goalTreeProposalItemValidationIssues } from "../v1/goal-tree-proposal-validation.js";
 import { goalTreeProposalDecompositionIssues } from "../v1/goal-decomposition-validation.js";
 import { isPtyCommandAvailable, type GoalBoardPtyHost } from "./pty-host.js";
@@ -1227,6 +1232,7 @@ async function handleDesktopPanelApi(
             title: contract.goal.title,
             source_context: sourceContext,
             project_guidance_prefix: coordinator.readProjectGuidance(boardId).runtime_prompt_prefix,
+            onboarding: url.searchParams.get("onboarding") === "1",
           }),
         });
         return true;
@@ -1550,6 +1556,7 @@ function desktopRuntimeAvailability(): Record<string, boolean> {
 interface WebOnboardingInitializationInput {
   projectName: string;
   outcome: string;
+  intentFrame: OnboardingIntentFrame;
   workspacePath: string | null;
   runtimeKind: string | null;
 }
@@ -1562,6 +1569,9 @@ function webOnboardingInitializationInput(body: Record<string, unknown>): WebOnb
   if (body.user_confirmed !== true) throw new Error("请先确认这次 Project 和根 Goal 写入");
   const projectName = typeof body.project_name === "string" ? body.project_name.trim() : "";
   const outcome = typeof body.outcome === "string" ? body.outcome.trim() : "";
+  const intentFrame = body.intent_frame === undefined
+    ? "open"
+    : onboardingIntentFrame(body.intent_frame);
   const workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
     ? body.workspace_path.trim()
     : null;
@@ -1572,6 +1582,7 @@ function webOnboardingInitializationInput(body: Record<string, unknown>): WebOnb
   if (projectName.length > 160) throw new Error("项目名称不能超过 160 个字符");
   if (!hasMeaningfulOnboardingText(outcome)) throw new Error("请用一句包含文字的话描述你想看到的结果");
   if (outcome.length > 2_000) throw new Error("结果描述不能超过 2000 个字符");
+  if (!intentFrame) throw new Error("请选择一个有效的工作意图");
   if (workspacePath) {
     if (!path.isAbsolute(workspacePath)) throw new Error("工作目录必须是绝对路径");
     let directoryExists = false;
@@ -1589,7 +1600,7 @@ function webOnboardingInitializationInput(body: Record<string, unknown>): WebOnb
       throw new Error("这个 Runtime CLI 当前不可用，请重新选择或先不开 TUI");
     }
   }
-  return { projectName, outcome, workspacePath, runtimeKind };
+  return { projectName, outcome, intentFrame, workspacePath, runtimeKind };
 }
 
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
@@ -1853,7 +1864,7 @@ async function handleGoalBoardWebRequest(
                     title,
                     outcome: input.outcome,
                     why: "把第一次表达的目标保存为可继续澄清的共同事实",
-                    business_logic: "先保存用户想看到的结果，再由用户和 Runtime 共同补全范围、拆分与验收，不把推断直接写成已确认目标树。",
+                    business_logic: `${onboardingPlanningHint(input.intentFrame)} 先保存用户想看到的结果，再由用户和 Runtime 共同补全范围、拆分与验收，不把推断直接写成已确认目标树。`,
                     definition_state: "draft",
                     decomposition_state: "abstract",
                     priority: 50,

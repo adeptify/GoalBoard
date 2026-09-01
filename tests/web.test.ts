@@ -4194,9 +4194,22 @@ test("Web first-run onboarding can be skipped without creating a project or Runt
 
     const onboarding = await (await webFetch(`${origin}/onboarding`)).text();
     assertInlineScriptsCompile(onboarding);
-    assert.match(onboarding, /你好，我们今天做点什么/);
-    assert.match(onboarding, /先不开 TUI/);
-    assert.match(onboarding, /只填入提示，不自动发送/);
+    assert.match(onboarding, /你希望我们一起做什么/);
+    assert.doesNotMatch(onboarding, /onboarding-topology/);
+    assert.match(onboarding, /这次先跳过/);
+    assert.match(onboarding, /只把内容填进终端，等我自己发送/);
+    assert.match(onboarding, /class="onboarding-stage"/);
+    assert.match(onboarding, /class="onboarding-actions" aria-label="引导步骤导航"/);
+    assert.match(onboarding, /data-onboarding-next-label/);
+    assert.match(onboarding, /name="intent_frame"/);
+    assert.match(onboarding, /data-onboarding-intent-trigger/);
+    assert.match(onboarding, /role="listbox"/);
+    assert.match(onboarding, /我想想清楚/);
+    assert.match(onboarding, /onboarding-runtime/);
+    assert.match(onboarding, /data-onboarding-step="4"/);
+    assert.match(onboarding, /data-onboarding-runtime-frame/);
+    assert.match(onboarding, /我们先把项目安排清楚/);
+    assert.match(onboarding, /安排好了，进入 GoalBoard/);
 
     const dismissed = await webFetch(`${origin}/api/onboarding/dismiss`, {
       method: "POST",
@@ -4252,12 +4265,27 @@ test("Web onboarding creates one real Project, root Draft Goal, and optional Wor
     });
     assert.equal(invalid.status, 400);
 
+    const invalidIntent = await webFetch(`${origin}/api/onboarding/initialize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        project_name: "真实首次项目",
+        outcome: "让第一次使用 GoalBoard 的人建立可以继续澄清的目标",
+        intent_frame: "unknown",
+        workspace_path: null,
+        runtime_kind: null,
+        user_confirmed: true,
+      }),
+    });
+    assert.equal(invalidIntent.status, 400);
+
     const initialized = await webFetch(`${origin}/api/onboarding/initialize`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         project_name: "真实首次项目",
         outcome: "让第一次使用 GoalBoard 的人建立可以继续澄清的目标",
+        intent_frame: "diagnose_fix",
         workspace_path: workspaceDirectory,
         runtime_kind: null,
         user_confirmed: true,
@@ -4306,6 +4334,7 @@ test("Web onboarding creates one real Project, root Draft Goal, and optional Wor
       assert.equal(goals[0]?.definition_state, "draft");
       assert.equal(goals[0]?.decomposition_state, "abstract");
       assert.equal(goals[0]?.outcome, "让第一次使用 GoalBoard 的人建立可以继续澄清的目标");
+      assert.match(goals[0]?.business_logic ?? "", /work-diagnose-fix/);
     } finally {
       store.close();
     }

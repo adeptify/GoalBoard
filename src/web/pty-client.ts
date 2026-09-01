@@ -131,7 +131,14 @@ if (pane) {
         brightWhite: "#ffffff",
       };
 
-  const sessions = new Map<string, { term: Terminal; fit: FitAddon; wrapper: HTMLElement; hasOutput: boolean }>();
+  const sessions = new Map<string, {
+    term: Terminal;
+    fit: FitAddon;
+    wrapper: HTMLElement;
+    hasOutput: boolean;
+    recentOutput: string;
+    lastOutputAt: number;
+  }>();
   const applyTerminalPalette = () => {
     const palette = terminalPalette();
     sessions.forEach(({ term }) => {
@@ -321,6 +328,11 @@ if (pane) {
       if (!session) return;
       session.term.write(value.data);
       session.hasOutput = true;
+      session.recentOutput = (session.recentOutput + value.data).slice(-12_000);
+      session.lastOutputAt = Date.now();
+      if (pendingOnboardingAutofill()) {
+        window.setTimeout(() => void fillPendingOnboardingContext(), 240);
+      }
       return;
     }
     if (value.type === "exit") {
@@ -534,9 +546,14 @@ if (pane) {
     term.onData((data) => {
       const panel = panels.find((item) => item.panel_id === panelId);
       if (!canControlPanel(panel)) return;
+      if (pendingOnboardingAutofill() && /[\r\n]/.test(data)) {
+        const pendingSession = sessions.get(panelId);
+        if (pendingSession) pendingSession.recentOutput = "";
+        window.setTimeout(() => void fillPendingOnboardingContext(), 420);
+      }
       void sendPty({ type: "write", panelId, data }).catch((error) => setStatus(errorText(error), "error"));
     });
-    session = { term, fit, wrapper, hasOutput: false };
+    session = { term, fit, wrapper, hasOutput: false, recentOutput: "", lastOutputAt: 0 };
     sessions.set(panelId, session);
     return session;
   };
@@ -613,6 +630,8 @@ if (pane) {
         if (result.type === "spawned" && result.replay && (mode === "reconnect" || !session.hasOutput)) {
           session.term.write(result.replay);
           session.hasOutput = true;
+          session.recentOutput = result.replay.slice(-12_000);
+          session.lastOutputAt = Date.now();
         }
         alive.add(panel.panel_id);
         panel.status = "open";
@@ -746,10 +765,10 @@ if (pane) {
     showTerminal(activeId);
   };
 
-  const writePrompt = async (send: boolean, feedItemId?: string) => {
+  const writePrompt = async (send: boolean, feedItemId?: string, onboarding = false) => {
     const panel = current();
     if (!canControlPanel(panel)) return;
-    const text = await loadAdvancePrompt(panel.goal_id, feedItemId);
+    const text = await loadAdvancePrompt(panel.goal_id, feedItemId, onboarding);
     const fillText = text
       .replace(/[\r\n]+/g, " ⏎ ")
       .replace(/[\u0000-\u001f\u007f]/g, " ");
@@ -759,6 +778,11 @@ if (pane) {
   const feedAutofillKey = () => `goalboard-feed-runtime-autofill:${goalId()}`;
 
   const onboardingAutofillKey = () => `goalboard-onboarding-runtime-autofill:${goalId()}`;
+
+  const postOnboardingRuntimeState = (type: "goalboard:onboarding-runtime-ready" | "goalboard:onboarding-runtime-waiting" | "goalboard:onboarding-runtime-error", message?: string) => {
+    if (new URLSearchParams(location.search).get("onboarding-embed") !== "1" || window.parent === window) return;
+    window.parent.postMessage({ type, goalId: goalId(), message }, location.origin);
+  };
 
   const pendingOnboardingAutofill = () => {
     const key = onboardingAutofillKey();
@@ -780,7 +804,7 @@ if (pane) {
         sessionStorage.removeItem(key);
         return false;
       }
-      return { runtimeKind, workspacePath };
+      return { runtimeKind, workspacePath, startedAt: typeof pending.at === "number" ? pending.at : Date.now() };
     } catch {
       sessionStorage.removeItem(key);
       return false;
@@ -808,7 +832,7 @@ if (pane) {
     }
   };
 
-  const waitForTerminalOutput = async (panelId: string, timeoutMs = 2_000) => {
+  const waitForTerminalOutput = async (panelId: string, timeoutMs = 2_000, quietMs = 320) => {
     const deadline = Date.now() + timeoutMs;
     while (
       sessions.has(panelId) &&
@@ -818,6 +842,35 @@ if (pane) {
     ) {
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
+    if (!sessions.get(panelId)?.hasOutput) return false;
+    while (
+      sessions.has(panelId) &&
+      alive.has(panelId) &&
+      Date.now() - (sessions.get(panelId)?.lastOutputAt ?? 0) < quietMs &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    return Date.now() - (sessions.get(panelId)?.lastOutputAt ?? 0) >= quietMs;
+  };
+
+  const terminalVisibleOutput = (panelId: string) => {
+    const session = sessions.get(panelId);
+    const buffer = session?.term.buffer.active;
+    const renderedOutput = buffer
+      ? Array.from({ length: Math.min(session?.term.rows ?? 24, Math.max(0, buffer.length - buffer.viewportY)) }, (_, index) =>
+          buffer.getLine(buffer.viewportY + index)?.translateToString(true) ?? "",
+        ).join("\n")
+      : "";
+    return [terminalHost.textContent ?? "", renderedOutput].join("\n");
+  };
+
+  const terminalIsWaitingForStartupConfirmation = (panelId: string) =>
+    /do you trust the contents of this directory|press enter to (?:continue|confirm)|confirm you trust|trust this (?:folder|directory|workspace)|hooks need review/i.test(terminalVisibleOutput(panelId));
+
+  const terminalShowsReadyPrompt = (panelId: string, runtimeKind: string) => {
+    if (runtimeKind !== "codex") return true;
+    return /ask codex to do anything/i.test(terminalVisibleOutput(panelId));
   };
 
   const fillPendingFeedContext = async () => {
@@ -861,27 +914,84 @@ if (pane) {
       if (!panel || !alive.has(panel.panel_id)) {
         throw new Error(L("终端没有成功打开；你可以从右上角再次选择 Runtime。"));
       }
-      await waitForTerminalOutput(panel.panel_id);
-      await writePrompt(false);
+      const terminalSettled = await waitForTerminalOutput(panel.panel_id, 15_000, 700);
+      if (!terminalSettled) {
+        setStatus(L("Runtime 还在启动；准备好后会自动填入项目提示。"), "busy");
+        postOnboardingRuntimeState("goalboard:onboarding-runtime-waiting");
+        window.setTimeout(() => void fillPendingOnboardingContext(), 900);
+        return;
+      }
+      const startupObservationRemaining = 7_500 - (Date.now() - pending.startedAt);
+      if (startupObservationRemaining > 0) {
+        setStatus(L("Runtime 还在启动；准备好后会自动填入项目提示。"), "busy");
+        postOnboardingRuntimeState("goalboard:onboarding-runtime-waiting");
+        window.setTimeout(() => void fillPendingOnboardingContext(), Math.min(startupObservationRemaining + 80, 1_000));
+        return;
+      }
+      if (terminalIsWaitingForStartupConfirmation(panel.panel_id)) {
+        setStatus(L("先完成 Runtime 里的启动确认；完成后会自动填入项目提示。"), "busy");
+        postOnboardingRuntimeState("goalboard:onboarding-runtime-waiting");
+        return;
+      }
+      if (terminalShowsReadyPrompt(panel.panel_id, pending.runtimeKind)) {
+        await writePrompt(false, undefined, true);
+        sessionStorage.removeItem(onboardingAutofillKey());
+        setStatus(L("初始化提示已填入，检查后再发送。"), "live");
+        showPageToast(L("初始化提示已填入 Terminal"));
+        postOnboardingRuntimeState("goalboard:onboarding-runtime-ready");
+        return;
+      }
+      if (pending.runtimeKind === "codex") {
+        setStatus(L("Runtime 还在启动；准备好后会自动填入项目提示。"), "busy");
+        postOnboardingRuntimeState("goalboard:onboarding-runtime-waiting");
+        window.setTimeout(() => void fillPendingOnboardingContext(), 900);
+        return;
+      }
+      await writePrompt(false, undefined, true);
       sessionStorage.removeItem(onboardingAutofillKey());
       setStatus(L("初始化提示已填入，检查后再发送。"), "live");
       showPageToast(L("初始化提示已填入 Terminal"));
+      postOnboardingRuntimeState("goalboard:onboarding-runtime-ready");
     } catch (error) {
-      setStatus(errorText(error), "error");
+      const message = errorText(error);
+      setStatus(message, "error");
+      postOnboardingRuntimeState("goalboard:onboarding-runtime-error", message);
     } finally {
       onboardingAutofillInFlight = false;
     }
   };
 
-  const loadAdvancePrompt = async (requestedGoalId?: string, feedItemId?: string) => {
+  window.addEventListener("message", (event) => {
+    if (event.origin !== location.origin || event.source !== window.parent) return;
+    const data = event.data as {
+      type?: string;
+      goalId?: string;
+      runtimeKind?: string;
+      workspacePath?: string;
+    } | null;
+    if (data?.type !== "goalboard:onboarding-runtime-bootstrap" || data.goalId !== goalId()) return;
+    const runtimeKind = typeof data.runtimeKind === "string" ? data.runtimeKind.trim() : "";
+    const workspacePath = typeof data.workspacePath === "string" ? data.workspacePath.trim() : "";
+    if (!runtimeKind || !workspacePath) {
+      postOnboardingRuntimeState("goalboard:onboarding-runtime-error", L("Runtime 或工作目录无效，无法继续这次初始化。"));
+      return;
+    }
+    sessionStorage.setItem(onboardingAutofillKey(), JSON.stringify({ runtimeKind, workspacePath, at: Date.now() }));
+    void fillPendingOnboardingContext();
+  });
+
+  const loadAdvancePrompt = async (requestedGoalId?: string, feedItemId?: string, onboarding = false) => {
     const id = requestedGoalId || goalId();
     if (!id) throw new Error(L("打开失败"));
     if (parentReadOnly) throw new Error(parentReadOnlyMessage());
     if (requestedGoalId && requestedGoalId !== goalId()) {
       throw new Error(L("当前页面已经切到另一条 Goal，请回到终端所属的 Goal 再操作。"));
     }
-    const itemQuery = feedItemId ? `?feed_item_id=${encodeURIComponent(feedItemId)}` : "";
-    const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt${itemQuery}`), {
+    const query = new URLSearchParams();
+    if (feedItemId) query.set("feed_item_id", feedItemId);
+    if (onboarding) query.set("onboarding", "1");
+    const queryText = query.size ? `?${query.toString()}` : "";
+    const response = await fetch(route(`/api/goals/${encodeURIComponent(id)}/advance-prompt${queryText}`), {
       cache: "no-store",
       headers: desktopHeaders(),
     });

@@ -33,6 +33,7 @@ import {
 import type { RuntimeIntegrationDetection } from "../install/runtime-integration.js";
 import type { GoalBoardWebServiceDetection } from "../install/web-service.js";
 import { icon, renderIconSprite, type GoalBoardIcon } from "./icons.js";
+import { ONBOARDING_INTENT_FRAMES } from "./onboarding-intent.js";
 import {
   L,
   currentLocale,
@@ -5362,8 +5363,8 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
 --><article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <section class="goal-hero" aria-labelledby="goal-title-${goalId}">
       <header class="goal-header">
-        <div class="goal-title-kicker">${renderVisibleGoalStatus(item)}<div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
-        <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${goalModeSwitch}${quickRecordAction}${moreActions}</div></div>
+        <div class="goal-title-kicker"><span class="goal-title-status--wide" aria-hidden="true">${renderVisibleGoalStatus(item)}</span><div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
+        <div class="goal-title-row"><div class="goal-title-copy"><div class="goal-title-heading"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><span class="goal-title-status--narrow">${renderVisibleGoalStatus(item)}</span></div><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${goalModeSwitch}${quickRecordAction}${moreActions}</div></div>
       </header>
       ${goalBrief}
       ${tabNavigation}
@@ -7257,6 +7258,7 @@ const CONTROL_CLIENT_SCRIPT = `
 
 const ONBOARDING_CLIENT_SCRIPT = `
   (() => {
+    const L = globalThis.L || ((text) => text);
     const form = document.querySelector("[data-onboarding-form]");
     const globalError = document.querySelector("[data-onboarding-error]");
     const dismissButtons = [...document.querySelectorAll("[data-onboarding-dismiss]")];
@@ -7280,7 +7282,7 @@ const ONBOARDING_CLIENT_SCRIPT = `
           body: JSON.stringify({ kind, user_confirmed: true }),
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "无法保存引导状态");
+        if (!response.ok) throw new Error(payload.error || L("无法保存引导状态"));
         location.assign("/");
       } catch (error) {
         setGlobalError(error instanceof Error ? error.message : String(error));
@@ -7295,12 +7297,33 @@ const ONBOARDING_CLIENT_SCRIPT = `
     const back = form.querySelector("[data-onboarding-back]");
     const next = form.querySelector("[data-onboarding-next]");
     const submit = form.querySelector("[data-onboarding-submit]");
+    const nextLabel = form.querySelector("[data-onboarding-next-label]");
+    const submitLabel = form.querySelector("[data-onboarding-submit-label]");
+    const runtimeFrame = form.querySelector("[data-onboarding-runtime-frame]");
+    const runtimeStatus = form.querySelector("[data-onboarding-runtime-status]");
+    const runtimeRetry = form.querySelector("[data-onboarding-runtime-retry]");
+    const intentInput = form.elements.intent_frame;
+    const intentPicker = form.querySelector("[data-onboarding-intent]");
+    const intentTrigger = form.querySelector("[data-onboarding-intent-trigger]");
+    const intentCurrent = form.querySelector("[data-onboarding-intent-current]");
+    const intentOptions = [...form.querySelectorAll("[data-onboarding-intent-option]")];
+    const outcomeInput = form.elements.outcome;
     let currentStep = 0;
+    let transitionTimer = 0;
+    let runtimeReady = false;
+    let runtimeBootstrap = null;
+    let projectDestination = "";
     const meaningful = (value) => /\\p{L}/u.test(String(value || "").trim());
     const values = () => {
       const data = new FormData(form);
+      const intentOption = intentOptions.find((option) => option.getAttribute("aria-selected") === "true");
+      const intentPrefix = intentOption?.dataset.intentLabel || L("我想");
+      const outcome = String(data.get("outcome") || "").trim();
+      const sentenceGap = document.documentElement.lang.startsWith("zh") ? "" : " ";
       return {
-        outcome: String(data.get("outcome") || "").trim(),
+        outcome,
+        outcomeSentence: intentPrefix + sentenceGap + outcome,
+        intentFrame: String(data.get("intent_frame") || "open"),
         projectName: String(data.get("project_name") || "").trim(),
         workspacePath: String(data.get("workspace_path") || "").trim(),
         runtimeKind: String(data.get("runtime_kind") || "").trim(),
@@ -7326,63 +7349,215 @@ const ONBOARDING_CLIENT_SCRIPT = `
       const data = values();
       fieldError(step, "");
       if (step === 0 && !meaningful(data.outcome)) {
-        fieldError(step, "请用一句包含文字的话描述你想看到的结果。");
+        fieldError(step, L("先告诉我们，你想看到什么变化。"));
         return false;
       }
       if (step === 1 && !meaningful(data.projectName)) {
-        fieldError(step, "请填写一个你之后认得出的项目名称。");
+        fieldError(step, L("给这个项目取个名字吧。"));
         return false;
       }
       if (step === 2 && data.runtimeKind && !data.workspacePath) {
-        fieldError(step, "打开 TUI 需要一个存在的绝对工作目录；也可以先选择‘先不开 TUI’。");
+        fieldError(step, L("如果现在打开 TUI，需要先选择一个存在的工作目录；也可以这次先跳过。"));
         return false;
       }
       if (step === 3 && !data.confirmed) {
-        fieldError(step, "请先确认这次真实写入，或返回修改内容。");
+        fieldError(step, L("确认这些内容没问题后，我们再保存。"));
         return false;
       }
       return true;
     };
     const updateReview = () => {
       const data = values();
-      form.querySelectorAll("[data-onboarding-outcome]").forEach((node) => { node.textContent = data.outcome; });
+      form.querySelectorAll("[data-onboarding-outcome]").forEach((node) => { node.textContent = data.outcomeSentence; });
       form.querySelectorAll("[data-onboarding-project]").forEach((node) => { node.textContent = data.projectName; });
-      const runtime = form.querySelector('input[name="runtime_kind"]:checked')?.closest("label")?.querySelector("strong")?.textContent || "先不开 TUI";
+      const runtime = form.querySelector('input[name="runtime_kind"]:checked')?.closest("label")?.querySelector("strong")?.textContent || L("这次先跳过");
       const assignments = [
         ["[data-review-project]", data.projectName],
-        ["[data-review-outcome]", data.outcome],
-        ["[data-review-workspace]", data.workspacePath || "暂不关联"],
-        ["[data-review-runtime]", data.runtimeKind ? runtime + " · 填入提示后等待你发送" : "进入 Goal 工作台，稍后再打开 TUI"],
+        ["[data-review-outcome]", data.outcomeSentence],
+        ["[data-review-workspace]", data.workspacePath || L("之后再选")],
+        ["[data-review-runtime]", data.runtimeKind ? runtime + L(" · 先填入，等你自己发送") : L("先进入 Goal 工作台，之后再打开 TUI")],
       ];
       assignments.forEach(([selector, value]) => {
         const node = form.querySelector(selector);
         if (node) node.textContent = value;
       });
     };
+    const updateNavigation = () => {
+      const stepLabels = [L("说说想法"), L("取个名字"), L("选择工具"), L("确认一下"), L("一起安排")];
+      const hasRuntime = Boolean(values().runtimeKind);
+      const visibleStepCount = hasRuntime ? 5 : 4;
+      if (progress) {
+        progress.textContent = String(currentStep + 1).padStart(2, "0") + " / " + String(visibleStepCount).padStart(2, "0") + " · " + stepLabels[currentStep];
+      }
+      if (back) back.hidden = currentStep === 0 || currentStep === 4;
+      if (next) {
+        next.hidden = currentStep === 3;
+        next.disabled = currentStep === 4 && !runtimeReady;
+      }
+      if (submit) submit.hidden = currentStep !== 3;
+      if (nextLabel) {
+        nextLabel.textContent = currentStep === 4 ? L("安排好了，进入 GoalBoard") : L("下一步");
+      }
+      document.body.dataset.onboardingTone = String(currentStep);
+      if (currentStep === 3) updateReview();
+    };
     const showStep = (step) => {
-      currentStep = Math.max(0, Math.min(steps.length - 1, step));
-      steps.forEach((section, index) => {
-        section.hidden = index !== currentStep;
-        section.classList.toggle("is-current", index === currentStep);
-      });
-      if (progress) progress.textContent = String(currentStep + 1) + " / " + String(steps.length);
-      if (back) back.hidden = currentStep === 0;
-      if (next) next.hidden = currentStep === steps.length - 1;
-      if (submit) submit.hidden = currentStep !== steps.length - 1;
-      if (currentStep === steps.length - 1) updateReview();
-      requestAnimationFrame(() => steps[currentStep]?.querySelector("h1")?.focus({ preventScroll: true }));
+      const targetStep = Math.max(0, Math.min(steps.length - 1, step));
+      const previousStep = currentStep;
+      const outgoing = steps[previousStep];
+      const incoming = steps[targetStep];
+      if (!incoming) return;
+      window.clearTimeout(transitionTimer);
+      currentStep = targetStep;
+      updateNavigation();
+      if (targetStep === previousStep || !outgoing) {
+        steps.forEach((section, index) => {
+          section.hidden = index !== currentStep;
+          section.classList.toggle("is-current", index === currentStep);
+          section.classList.remove("is-entering", "is-leaving");
+        });
+        requestAnimationFrame(() => incoming.querySelector("h1")?.focus({ preventScroll: true }));
+        return;
+      }
+      const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      form.dataset.stepDirection = targetStep > previousStep ? "forward" : "backward";
+      outgoing.classList.remove("is-current", "is-entering");
+      incoming.hidden = false;
+      incoming.classList.remove("is-leaving");
+      incoming.classList.add("is-current");
+      if (reducedMotion) {
+        outgoing.hidden = true;
+        incoming.classList.remove("is-entering");
+        requestAnimationFrame(() => incoming.querySelector("h1")?.focus({ preventScroll: true }));
+        return;
+      }
+      form.dataset.transitioning = "true";
+      outgoing.classList.add("is-leaving");
+      incoming.classList.add("is-entering");
+      [back, next, submit].forEach((button) => { if (button) button.disabled = true; });
+      transitionTimer = window.setTimeout(() => {
+        outgoing.hidden = true;
+        outgoing.classList.remove("is-leaving");
+        incoming.classList.remove("is-entering");
+        delete form.dataset.transitioning;
+        [back, next, submit].forEach((button) => { if (button) button.disabled = false; });
+        updateNavigation();
+        incoming.querySelector("h1")?.focus({ preventScroll: true });
+      }, 320);
     };
     next?.addEventListener("click", () => {
+      if (currentStep === 4) {
+        if (runtimeReady && projectDestination) location.assign(projectDestination);
+        return;
+      }
       if (!validate(currentStep)) return;
       updateReview();
       showStep(currentStep + 1);
     });
     back?.addEventListener("click", () => showStep(currentStep - 1));
+    const closeIntentPicker = (restoreFocus = false) => {
+      if (!intentPicker || !intentTrigger) return;
+      intentPicker.classList.remove("is-open");
+      intentTrigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus) intentTrigger.focus();
+    };
+    const openIntentPicker = () => {
+      if (!intentPicker || !intentTrigger) return;
+      intentPicker.classList.add("is-open");
+      intentTrigger.setAttribute("aria-expanded", "true");
+    };
+    const selectIntent = (option) => {
+      if (!option) return;
+      intentOptions.forEach((candidate) => candidate.setAttribute("aria-selected", candidate === option ? "true" : "false"));
+      if (intentInput) intentInput.value = option.dataset.onboardingIntentOption || "open";
+      if (intentCurrent) intentCurrent.textContent = option.dataset.intentLabel || L("我想");
+      if (outcomeInput && option.dataset.placeholder) outcomeInput.placeholder = option.dataset.placeholder;
+      closeIntentPicker(true);
+    };
+    intentTrigger?.addEventListener("click", () => {
+      const shouldOpen = intentTrigger.getAttribute("aria-expanded") !== "true";
+      if (shouldOpen) openIntentPicker();
+      else closeIntentPicker();
+    });
+    intentTrigger?.addEventListener("keydown", (event) => {
+      if (!intentOptions.length || !["ArrowDown", "ArrowUp"].includes(event.key)) return;
+      event.preventDefault();
+      openIntentPicker();
+      const selectedIndex = Math.max(0, intentOptions.findIndex((option) => option.getAttribute("aria-selected") === "true"));
+      intentOptions[event.key === "ArrowUp" ? Math.max(0, selectedIndex - 1) : Math.min(intentOptions.length - 1, selectedIndex + 1)]?.focus();
+    });
+    intentOptions.forEach((option, optionIndex) => {
+      option.addEventListener("click", () => selectIntent(option));
+      option.addEventListener("keydown", (event) => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          selectIntent(option);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeIntentPicker(true);
+          return;
+        }
+        if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        intentOptions[(optionIndex + offset + intentOptions.length) % intentOptions.length]?.focus();
+      });
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (intentPicker && !intentPicker.contains(event.target)) closeIntentPicker();
+    });
     form.addEventListener("keydown", (event) => {
+      if (event.target.closest?.("[data-onboarding-intent]")) return;
       if (event.key !== "Enter" || event.shiftKey || event.target instanceof HTMLTextAreaElement) return;
-      if (currentStep >= steps.length - 1) return;
+      if (form.dataset.transitioning === "true") return;
+      if (currentStep >= 3) return;
       event.preventDefault();
       next?.click();
+    });
+    const setRuntimeStatus = (message, state = "busy") => {
+      if (!runtimeStatus) return;
+      runtimeStatus.textContent = message || "";
+      runtimeStatus.dataset.state = state;
+    };
+    const sendRuntimeBootstrap = () => {
+      if (!runtimeBootstrap || !runtimeFrame?.contentWindow) return;
+      runtimeFrame.contentWindow.postMessage({ type: "goalboard:onboarding-runtime-bootstrap", ...runtimeBootstrap }, location.origin);
+    };
+    runtimeFrame?.addEventListener("load", () => {
+      setRuntimeStatus(L("正在把项目上下文交给 Runtime…"), "busy");
+      sendRuntimeBootstrap();
+    });
+    window.addEventListener("message", (event) => {
+      if (event.origin !== location.origin || event.source !== runtimeFrame?.contentWindow) return;
+      if (!runtimeBootstrap || event.data?.goalId !== runtimeBootstrap.goalId) return;
+      if (event.data?.type === "goalboard:onboarding-runtime-ready") {
+        runtimeReady = true;
+        setRuntimeStatus(L("提示已经填好。和 Runtime 把项目安排清楚后，再进入 GoalBoard。"), "ready");
+        if (runtimeRetry) runtimeRetry.hidden = true;
+        updateNavigation();
+      }
+      if (event.data?.type === "goalboard:onboarding-runtime-waiting") {
+        runtimeReady = false;
+        setRuntimeStatus(L("先在 Runtime 里完成启动确认；之后会自动填入项目提示。"), "busy");
+        if (runtimeRetry) runtimeRetry.hidden = true;
+        updateNavigation();
+      }
+      if (event.data?.type === "goalboard:onboarding-runtime-error") {
+        runtimeReady = false;
+        setRuntimeStatus(event.data.message || L("Runtime 没有成功打开。"), "error");
+        if (runtimeRetry) runtimeRetry.hidden = false;
+        updateNavigation();
+      }
+    });
+    runtimeRetry?.addEventListener("click", () => {
+      if (!runtimeFrame?.src) return;
+      runtimeReady = false;
+      runtimeRetry.hidden = true;
+      setRuntimeStatus(L("正在重新打开 Runtime…"), "busy");
+      updateNavigation();
+      runtimeFrame.contentWindow?.location.reload();
     });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -7390,7 +7565,7 @@ const ONBOARDING_CLIENT_SCRIPT = `
       const data = values();
       setGlobalError("");
       submit.disabled = true;
-      submit.textContent = "正在建立…";
+      if (submitLabel) submitLabel.textContent = L("正在建立…");
       try {
         const response = await fetch("/api/onboarding/initialize", {
           method: "POST",
@@ -7398,13 +7573,14 @@ const ONBOARDING_CLIENT_SCRIPT = `
           body: JSON.stringify({
             project_name: data.projectName,
             outcome: data.outcome,
+            intent_frame: data.intentFrame,
             workspace_path: data.workspacePath || null,
             runtime_kind: data.runtimeKind || null,
             user_confirmed: true,
           }),
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "项目初始化失败");
+        if (!response.ok) throw new Error(payload.error || L("项目初始化失败"));
         if (data.runtimeKind && payload.goal_id) {
           sessionStorage.setItem("goalboard-onboarding-runtime-autofill:" + payload.goal_id, JSON.stringify({
             runtimeKind: data.runtimeKind,
@@ -7415,11 +7591,29 @@ const ONBOARDING_CLIENT_SCRIPT = `
         const destination = new URL(payload.goal_path || payload.project_path || "/", location.origin);
         destination.searchParams.set("onboarding", "1");
         if (document.body.hasAttribute("data-native-desktop")) destination.searchParams.set("desktop", "1");
-        location.assign(destination.pathname + destination.search + destination.hash);
+        projectDestination = destination.pathname + destination.search + destination.hash;
+        if (!data.runtimeKind || !payload.goal_id) {
+          location.assign(projectDestination);
+          return;
+        }
+        const embeddedDestination = new URL(payload.goal_path || payload.project_path || "/", location.origin);
+        embeddedDestination.searchParams.set("onboarding", "1");
+        embeddedDestination.searchParams.set("onboarding-runtime", "1");
+        embeddedDestination.searchParams.set("onboarding-embed", "1");
+        runtimeBootstrap = {
+          goalId: payload.goal_id,
+          runtimeKind: data.runtimeKind,
+          workspacePath: data.workspacePath,
+        };
+        runtimeReady = false;
+        setRuntimeStatus(L("正在打开 Runtime…"), "busy");
+        if (runtimeRetry) runtimeRetry.hidden = true;
+        showStep(4);
+        if (runtimeFrame) runtimeFrame.src = embeddedDestination.pathname + embeddedDestination.search + embeddedDestination.hash;
       } catch (error) {
         setGlobalError(error instanceof Error ? error.message : String(error));
         submit.disabled = false;
-        submit.textContent = "创建项目";
+        if (submitLabel) submitLabel.textContent = L("创建项目");
       }
     });
     showStep(0);
@@ -13115,6 +13309,15 @@ ${WORK_TAB_VISIBILITY_CLIENT_SCRIPT}
       saveUiState();
     }
     const feedStartRequested = new URLSearchParams(location.search).get("feed-start") === "1";
+    const onboardingRuntimeRequested = new URLSearchParams(location.search).get("onboarding-runtime") === "1";
+    if (onboardingRuntimeRequested && selected && tuiPane) {
+      goalWorkspaceMode = "runtime";
+      setDesktopDirectory("goals", false, false);
+      if (desktopWorkSurfaces.length) setDesktopWorkSurface("goal", false, false);
+      setWorkspaceMode("runtime", false);
+      setMobileView("tui");
+      saveUiState();
+    }
     if (feedStartRequested && selected && tuiPane) {
       goalWorkspaceMode = "runtime";
       setDesktopDirectory("goals", false, false);
@@ -13198,6 +13401,8 @@ const ONBOARDING_RUNTIME_CHOICES: ReadonlyArray<{ id: string; label: string }> =
   { id: "grok-build", label: "Grok Build" },
 ];
 
+const ONBOARDING_ATMOSPHERE = `<div class="onboarding-atmosphere" aria-hidden="true"></div>`;
+
 export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOptions): string {
   const desktopShell = Boolean(options.desktopShell);
   const href = (target: string) => desktopShell ? withDesktopQuery(target) : target;
@@ -13213,6 +13418,7 @@ export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOpti
   <link rel="stylesheet" href="/assets/goalboard-onboarding.css">
 </head>
 <body class="onboarding-page onboarding-page--update"${desktopShell ? ' data-native-desktop="true"' : ""}>
+  ${ONBOARDING_ATMOSPHERE}
   <main class="onboarding-update" aria-labelledby="onboarding-update-title">
     <span class="onboarding-brand">GoalBoard</span>
     <div class="onboarding-update-copy">
@@ -13229,7 +13435,7 @@ export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOpti
     </div>
     <p class="onboarding-error" data-onboarding-error role="alert" hidden></p>
   </main>
-  <script>${CONTROL_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}</script>
   <script>${ONBOARDING_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
@@ -13238,15 +13444,25 @@ export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOpti
   const runtimeAvailability = options.cliAvailability ?? {};
   const availableRuntimes = ONBOARDING_RUNTIME_CHOICES.filter(({ id }) => runtimeAvailability[id] === true);
   const runtimeChoices = [
-    `<label class="onboarding-runtime-choice"><input type="radio" name="runtime_kind" value="" checked><span><strong>${L("先不开 TUI")}</strong><small>${L("项目和根 Goal 仍会真实创建")}</small></span></label>`,
-    ...ONBOARDING_RUNTIME_CHOICES.map(({ id, label }) => {
-      const available = runtimeAvailability[id] === true;
-      return `<label class="onboarding-runtime-choice${available ? "" : " is-unavailable"}"><input type="radio" name="runtime_kind" value="${id}"${available ? "" : " disabled"}><span><strong>${escapeHtml(label)}</strong><small>${available ? L("本机可用") : L("未检测到 CLI")}</small></span></label>`;
-    }),
+    `<label class="onboarding-runtime-choice onboarding-runtime-choice--deferred"><input type="radio" name="runtime_kind" value="" checked><span>${icon("clock")}<strong>${L("之后再选")}</strong><i aria-hidden="true"></i></span></label>`,
+    ...availableRuntimes.map(({ id, label }) => `<label class="onboarding-runtime-choice onboarding-runtime-choice--available"><input type="radio" name="runtime_kind" value="${id}"><span>${icon("terminal")}<strong>${escapeHtml(label)}</strong><i aria-hidden="true"></i></span></label>`),
   ].join("");
   const runtimeHint = availableRuntimes.length
-    ? L("选择 Runtime 时需要同时提供工作目录；GoalBoard 会打开新终端并填入提示，但不会发送。")
-    : L("当前没有检测到可用 Runtime。你可以先创建项目，稍后从 Goal 工作台打开 TUI。");
+    ? L("只会填入终端，等你自己发送。")
+    : L("没有找到可用工具，可以稍后再选。");
+  const intentIcons: Record<(typeof ONBOARDING_INTENT_FRAMES)[number]["id"], GoalBoardIcon> = {
+    open: "target",
+    build_change: "brand",
+    design_plan: "workflow",
+    diagnose_fix: "settings",
+    analyze_decide: "search",
+    migrate_refactor: "switch",
+    operate_process: "activity",
+    content_communication: "book",
+  };
+  const intentOptions = ONBOARDING_INTENT_FRAMES
+    .map((frame, index) => `<button type="button" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-onboarding-intent-option="${frame.id}" data-intent-label="${escapeHtml(L(frame.label))}" data-placeholder="${escapeHtml(L(frame.placeholder))}"><span>${icon(intentIcons[frame.id])}<b>${escapeHtml(L(frame.label))}</b></span><i aria-hidden="true"></i></button>`)
+    .join("");
   const title = options.mode === "first_run" ? L("开始使用 GoalBoard") : L("建立一个新项目");
   return `<!doctype html>
 <html lang="${htmlLang()}">
@@ -13257,53 +13473,81 @@ export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOpti
   <title>${title}</title>
   <link rel="stylesheet" href="/assets/goalboard-onboarding.css">
 </head>
-<body class="onboarding-page" data-onboarding-mode="${options.mode}"${desktopShell ? ' data-native-desktop="true"' : ""}>
+<body class="onboarding-page" data-onboarding-mode="${options.mode}" data-onboarding-tone="0"${desktopShell ? ' data-native-desktop="true"' : ""}>
+  ${renderIconSprite()}
+  ${ONBOARDING_ATMOSPHERE}
   <header class="onboarding-topbar">
     <a class="onboarding-brand" href="${href("/")}">GoalBoard</a>
     <div class="onboarding-topbar-actions"><a href="${href("/settings/projects")}">${L("迁移已有数据")}</a><button type="button" data-onboarding-dismiss="first_run">${options.mode === "first_run" ? L("跳过") : L("返回项目目录")}</button></div>
   </header>
   <main class="onboarding-room">
     <form class="onboarding-flow" data-onboarding-form novalidate>
-      <p class="onboarding-progress" data-onboarding-progress aria-live="polite">1 / 4</p>
+      <div class="onboarding-flow-header">
+        <p class="onboarding-progress" data-onboarding-progress aria-live="polite">01 / 04 · ${L("说说想法")}</p>
+        <nav class="onboarding-actions" aria-label="${L("引导步骤导航")}">
+          <button class="onboarding-back" type="button" data-onboarding-back hidden>${icon("back")}<span>${L("上一步")}</span></button>
+          <button class="onboarding-next" type="button" data-onboarding-next><span data-onboarding-next-label>${L("下一步")}</span>${icon("arrow")}</button>
+          <button class="onboarding-submit" type="submit" data-onboarding-submit hidden><span data-onboarding-submit-label>${L("创建项目")}</span>${icon("arrow")}</button>
+        </nav>
+      </div>
+      <div class="onboarding-stage">
       <section class="onboarding-step is-current" data-onboarding-step="0" aria-labelledby="onboarding-question-0">
-        <h1 id="onboarding-question-0" tabindex="-1">${L("你好，我们今天做点什么？")}</h1>
-        <label class="onboarding-answer"><span>${L("我想")}</span><textarea name="outcome" rows="2" maxlength="2000" autocomplete="off" aria-describedby="onboarding-error-0" placeholder="${L("例如：让第一次使用 GoalBoard 的人顺利建立自己的目标树")}" required></textarea></label>
+        <h1 id="onboarding-question-0" tabindex="-1">${L("你希望我们一起做什么？")}</h1>
+        <p class="onboarding-intro">${L("先说说你想看到的变化，不用急着想得很完整。")}</p>
+        <div class="onboarding-composer">
+          <div class="onboarding-intent" data-onboarding-intent>
+            <input type="hidden" name="intent_frame" value="open">
+            <button type="button" class="onboarding-intent-trigger" data-onboarding-intent-trigger aria-haspopup="listbox" aria-expanded="false"><span data-onboarding-intent-current>${L("我想")}</span>${icon("chevron-down")}</button>
+            <div class="onboarding-intent-options" role="listbox" aria-label="${L("这次更像哪一种？")}">${intentOptions}</div>
+          </div>
+          <label class="onboarding-answer onboarding-answer--plain"><span class="onboarding-visually-hidden">${L("你想推进的事")}</span><textarea name="outcome" rows="1" maxlength="2000" autocomplete="off" aria-describedby="onboarding-error-0" placeholder="${L("例如：把这个想法做成一个真的能用的产品")}" required></textarea></label>
+        </div>
         <p class="onboarding-field-error" id="onboarding-error-0" data-step-error="0" role="alert" hidden></p>
       </section>
       <section class="onboarding-step" data-onboarding-step="1" aria-labelledby="onboarding-question-1" hidden>
-        <p class="onboarding-echo" data-onboarding-outcome></p>
-        <h1 id="onboarding-question-1" tabindex="-1">${L("给这个项目一个你认得出的名字。")}</h1>
-        <label class="onboarding-answer onboarding-answer--single"><span>${L("项目叫")}</span><input name="project_name" type="text" maxlength="160" autocomplete="off" aria-describedby="onboarding-error-1" placeholder="${L("例如：GoalBoard Onboarding")}" required></label>
+        <p class="onboarding-echo"><span>${L("我们一起")}</span><strong data-onboarding-outcome></strong></p>
+        <h1 id="onboarding-question-1" tabindex="-1">${L("给项目取个名字吧。")}</h1>
+        <label class="onboarding-answer onboarding-answer--single"><span>${L("项目叫")}</span><input name="project_name" type="text" maxlength="160" autocomplete="off" aria-describedby="onboarding-error-1" placeholder="${L("例如：GoalBoard 首次体验")}" required></label>
         <p class="onboarding-field-error" id="onboarding-error-1" data-step-error="1" role="alert" hidden></p>
       </section>
       <section class="onboarding-step" data-onboarding-step="2" aria-labelledby="onboarding-question-2" hidden>
-        <p class="onboarding-echo"><span data-onboarding-project></span> · <span data-onboarding-outcome></span></p>
-        <h1 id="onboarding-question-2" tabindex="-1">${L("要从哪个工作现场继续？")}</h1>
-        <label class="onboarding-workspace"><span>${L("工作目录（可选）")}</span><input name="workspace_path" type="text" autocomplete="off" placeholder="/absolute/path/to/project" aria-describedby="onboarding-runtime-hint onboarding-error-2"></label>
-        <fieldset class="onboarding-runtime"><legend>${L("Runtime")}</legend>${runtimeChoices}</fieldset>
+        <p class="onboarding-echo"><span>${L("项目叫")}</span><strong data-onboarding-project></strong></p>
+        <h1 id="onboarding-question-2" tabindex="-1">${L("接下来，你想在哪里继续？")}</h1>
+        <label class="onboarding-workspace"><span>${L("工作目录")}</span><input name="workspace_path" type="text" autocomplete="off" placeholder="/absolute/path/to/project" aria-describedby="onboarding-runtime-hint onboarding-error-2"></label>
+        <fieldset class="onboarding-runtime"><legend>${L("想用哪个工具继续？")}</legend>${runtimeChoices}</fieldset>
         <p class="onboarding-hint" id="onboarding-runtime-hint">${runtimeHint}</p>
         <p class="onboarding-field-error" id="onboarding-error-2" data-step-error="2" role="alert" hidden></p>
       </section>
       <section class="onboarding-step onboarding-step--review" data-onboarding-step="3" aria-labelledby="onboarding-question-3" hidden>
-        <h1 id="onboarding-question-3" tabindex="-1">${L("检查一下，然后把它交给 GoalBoard。")}</h1>
+        <h1 id="onboarding-question-3" tabindex="-1">${L("这样开始，可以吗？")}</h1>
+        <p class="onboarding-intro">${L("我们会先保存项目和第一条目标，不会自动执行。")}</p>
         <dl class="onboarding-review">
-          <div><dt>${L("Project")}</dt><dd data-review-project></dd></div>
-          <div><dt>${L("根 Goal")}</dt><dd data-review-outcome></dd></div>
+          <div><dt>${L("项目名称")}</dt><dd data-review-project></dd></div>
+          <div><dt>${L("想看到的结果")}</dt><dd data-review-outcome></dd></div>
           <div><dt>${L("工作目录")}</dt><dd data-review-workspace></dd></div>
-          <div><dt>${L("下一步")}</dt><dd data-review-runtime></dd></div>
+          <div><dt>${L("接下来")}</dt><dd data-review-runtime></dd></div>
         </dl>
-        <label class="onboarding-confirm"><input type="checkbox" name="user_confirmed"><span>${L("我确认创建这个 Project 和根 Draft Goal；若选择 Runtime，只填入提示，不自动发送。")}</span></label>
+        <label class="onboarding-confirm"><input type="checkbox" name="user_confirmed"><span>${L("我确认先保存这些内容。如果选择了 Runtime，只把内容填进终端，等我自己发送。")}</span></label>
         <p class="onboarding-field-error" id="onboarding-error-3" data-step-error="3" role="alert" hidden></p>
       </section>
-      <footer class="onboarding-actions">
-        <button class="onboarding-back" type="button" data-onboarding-back hidden>${L("返回")}</button>
-        <button class="onboarding-next" type="button" data-onboarding-next>${L("继续")}</button>
-        <button class="onboarding-submit" type="submit" data-onboarding-submit hidden>${L("创建项目")}</button>
-      </footer>
+      <section class="onboarding-step onboarding-step--runtime-embedded" data-onboarding-step="4" aria-labelledby="onboarding-question-4" hidden>
+        <div class="onboarding-runtime-heading">
+          <h1 id="onboarding-question-4" tabindex="-1">${L("我们先把项目安排清楚。")}</h1>
+          <p class="onboarding-intro">${L("这个 Runtime 已经绑定刚创建的根目标。它会一次问一个问题，和你一起整理出合适的目标树。")}</p>
+        </div>
+        <div class="onboarding-runtime-viewport">
+          <iframe data-onboarding-runtime-frame title="${L("项目初始化 Runtime")}" allow="clipboard-read; clipboard-write"></iframe>
+        </div>
+        <div class="onboarding-runtime-state">
+          <p data-onboarding-runtime-status data-state="busy" role="status">${L("正在打开 Runtime…")}</p>
+          <button type="button" data-onboarding-runtime-retry hidden>${icon("refresh")}<span>${L("重新打开")}</span></button>
+        </div>
+      </section>
+      </div>
       <p class="onboarding-error" data-onboarding-error role="alert" hidden></p>
     </form>
   </main>
-  <script>${CONTROL_CLIENT_SCRIPT}</script>
+  <script>${clientI18nScript()}${CONTROL_CLIENT_SCRIPT}</script>
   <script>${ONBOARDING_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
@@ -14085,176 +14329,449 @@ export function renderGoalBoardWorkbenchStylesheet(): string {
 export function renderGoalBoardOnboardingStylesheet(): string {
   return `
   :root {
-    color-scheme: dark;
-    font-family: Manrope, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
-    background: #090b0d;
-    color: #f2f3f1;
+    color-scheme: light;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: #f1f3f2;
+    color: #1f272b;
   }
   * { box-sizing: border-box; }
   html, body { min-height: 100%; margin: 0; }
-  body { min-height: 100dvh; background: #090b0d; color: #f2f3f1; }
+  body { min-height: 100dvh; overflow-x: hidden; background: transparent; color: #1f272b; isolation: isolate; }
+  .onboarding-page:not(.onboarding-page--update) { height: 100dvh; min-height: 0; overflow: hidden; }
   button, input, textarea { font: inherit; }
   button, a { -webkit-tap-highlight-color: transparent; }
-  ::selection { background: #8298e8; color: #080a0d; }
-  :focus-visible { outline: 2px solid #91a7f2; outline-offset: 4px; }
-  .onboarding-page::before {
-    content: "";
+  ::selection { background: #c8d2ec; color: #172027; }
+  :focus-visible { outline: 2px solid #5068b7; outline-offset: 4px; }
+  * { scrollbar-width: thin; scrollbar-color: rgba(91, 105, 113, .38) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgba(91, 105, 113, .38); background-clip: padding-box; }
+  .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+  .onboarding-atmosphere {
     position: fixed;
     inset: 0;
+    z-index: 0;
     pointer-events: none;
-    background: rgba(116, 137, 163, .045);
-    opacity: 0;
-    animation: onboarding-dawn 1100ms 320ms cubic-bezier(.16, 1, .3, 1) forwards;
+    background: #f1f3f2;
   }
+  .onboarding-topbar,
+  .onboarding-room,
+  .onboarding-update { position: relative; z-index: 1; }
+  .onboarding-page [hidden] { display: none !important; }
   .onboarding-topbar {
     position: fixed;
-    z-index: 2;
     inset: 0 0 auto;
-    min-height: 56px;
-    padding: 18px clamp(24px, 4vw, 64px);
+    min-height: 60px;
+    padding: 8px clamp(20px, 3.2vw, 46px);
     display: flex;
     align-items: center;
     justify-content: space-between;
+    color: #465158;
   }
-  .onboarding-brand { color: #a9adae; font-size: 13px; font-weight: 650; letter-spacing: .02em; text-decoration: none; }
-  .onboarding-topbar-actions { display: flex; align-items: center; gap: 24px; }
-  .onboarding-topbar-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #7f8588; text-decoration: none; transition: color 140ms ease, transform 140ms ease; }
-  .onboarding-topbar-actions a:hover { color: #eef0ee; transform: translateY(-1px); }
+  .onboarding-brand { color: #263036; font-size: 10px; font-weight: 760; letter-spacing: .1em; text-decoration: none; text-transform: uppercase; }
+  .onboarding-topbar-actions { display: flex; align-items: center; gap: clamp(8px, 1.4vw, 16px); }
+  .onboarding-topbar-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #566268; font-size: 11px; text-decoration: none; transition: color 130ms ease, transform 130ms ease; }
+  .onboarding-topbar-actions a:hover { color: #1f272b; transform: translateY(-1px); }
   .onboarding-topbar button {
     min-height: 44px;
-    padding: 0 4px;
+    padding: 0 8px;
     border: 0;
+    border-radius: 4px;
     background: transparent;
-    color: #9ca1a3;
+    color: #4e5a60;
+    font-size: 11px;
     cursor: pointer;
-    transition: color 140ms ease, transform 140ms ease;
+    transition: color 130ms ease, transform 130ms ease, background 130ms ease;
   }
-  .onboarding-topbar button:hover { color: #f2f3f1; transform: translateY(-1px); }
-  .onboarding-room { min-height: 100dvh; display: grid; place-items: center; padding: 96px clamp(24px, 7vw, 112px) 70px; }
-  .onboarding-flow { width: min(100%, 980px); }
-  .onboarding-progress { margin: 0 0 38px; color: #666c70; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .onboarding-step { animation: onboarding-question 440ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-topbar button:hover { background: #e5e8e7; color: #1f272b; transform: translateY(-1px); }
+  .onboarding-room { height: 100dvh; min-height: 0; overflow: hidden; }
+  .onboarding-flow {
+    position: absolute;
+    inset: clamp(118px, calc(61.8dvh - 112px), 430px) auto 32px clamp(24px, 9vw, 136px);
+    width: min(calc(100% - clamp(48px, 18vw, 272px)), 480px);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    transition: top 280ms cubic-bezier(.16, 1, .3, 1);
+    animation: onboarding-session-ready 460ms cubic-bezier(.16, 1, .3, 1) both;
+  }
+  .onboarding-flow-header {
+    width: min(100%, 480px);
+    min-height: 44px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .onboarding-progress {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #59666d;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 620;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .onboarding-progress::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 1px; background: #5068b7; transition: background 130ms ease; }
+  .onboarding-stage { position: relative; min-height: 0; }
+  .onboarding-step { position: absolute; inset: 0; width: 100%; }
+  .onboarding-step.is-current { z-index: 2; }
+  .onboarding-step.is-leaving { z-index: 1; pointer-events: none; }
+  .onboarding-flow[data-step-direction="forward"] .onboarding-step.is-entering { animation: onboarding-step-in-forward 300ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-flow[data-step-direction="forward"] .onboarding-step.is-leaving { animation: onboarding-step-out-forward 260ms cubic-bezier(.4, 0, 1, 1) both; }
+  .onboarding-flow[data-step-direction="backward"] .onboarding-step.is-entering { animation: onboarding-step-in-backward 300ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-flow[data-step-direction="backward"] .onboarding-step.is-leaving { animation: onboarding-step-out-backward 260ms cubic-bezier(.4, 0, 1, 1) both; }
   .onboarding-step h1, .onboarding-update h1 {
-    max-width: 18ch;
-    margin: 0 0 42px;
-    color: #f4f4f2;
-    font-size: clamp(34px, 5vw, 68px);
-    font-weight: 440;
-    letter-spacing: -.035em;
-    line-height: 1.12;
+    max-width: 22ch;
+    margin: 0 0 8px;
+    color: #1f272b;
+    font-size: clamp(19px, 1.45vw, 21px);
+    font-weight: 600;
+    letter-spacing: -.025em;
+    line-height: 1.3;
     text-wrap: balance;
   }
   .onboarding-step h1:focus { outline: none; }
-  .onboarding-answer { display: flex; align-items: baseline; gap: 16px; color: #858b8e; font-size: clamp(22px, 3vw, 38px); }
-  .onboarding-answer > span { flex: none; }
-  .onboarding-answer textarea,
-  .onboarding-answer input,
-  .onboarding-workspace input {
-    width: 100%;
-    padding: 8px 0 10px;
+  .onboarding-intro { max-width: 48ch; margin: 0 0 16px; color: #59656b; font-size: 11.5px; line-height: 1.6; }
+  .onboarding-visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+  .onboarding-composer {
+    width: min(100%, 480px);
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: end;
+    gap: 12px;
+  }
+  .onboarding-intent { position: relative; min-width: 0; align-self: stretch; display: flex; }
+  .onboarding-intent-trigger {
+    min-width: 82px;
+    min-height: 46px;
+    padding: 0 2px 0 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     border: 0;
     border-radius: 0;
     outline: 0;
     background: transparent;
-    color: #f4f4f2;
-    caret-color: #91a7f2;
+    box-shadow: inset 0 -1px #cbd3d3;
+    color: #344148;
+    font-size: 12px;
+    font-weight: 660;
+    cursor: pointer;
+    transition: color 140ms ease, box-shadow 140ms ease;
   }
-  .onboarding-answer textarea { min-height: 82px; resize: vertical; line-height: 1.38; }
+  .onboarding-intent-trigger:hover { color: #1f272b; box-shadow: inset 0 -1px #9aa8a8; }
+  .onboarding-intent-trigger:focus-visible,
+  .onboarding-intent.is-open .onboarding-intent-trigger { color: #314d9b; box-shadow: inset 0 -1px #5068b7; }
+  .onboarding-intent-trigger svg { width: 13px; height: 13px; color: #68757b; stroke-width: 1.7; transition: color 140ms ease, transform 180ms cubic-bezier(.16, 1, .3, 1); }
+  .onboarding-intent.is-open .onboarding-intent-trigger svg { color: #405aa1; transform: rotate(180deg); }
+  .onboarding-intent-options {
+    position: absolute;
+    left: -8px;
+    bottom: calc(100% + 8px);
+    z-index: 8;
+    width: 210px;
+    padding: 6px;
+    display: grid;
+    gap: 1px;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(5px) scale(.985);
+    transform-origin: left bottom;
+    pointer-events: none;
+    border-radius: 9px;
+    background: rgba(247, 249, 248, .98);
+    box-shadow: 0 16px 38px rgba(40, 49, 52, .14);
+    transition: opacity 150ms ease, transform 180ms cubic-bezier(.16, 1, .3, 1), visibility 0s linear 180ms;
+  }
+  .onboarding-intent.is-open .onboarding-intent-options { visibility: visible; opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; transition-delay: 0s; }
+  .onboarding-intent-options button {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #455158;
+    font-size: 11px;
+    font-weight: 560;
+    text-align: left;
+    cursor: pointer;
+  }
+  .onboarding-intent-options button:hover,
+  .onboarding-intent-options button:focus-visible { outline: 0; background: #ecefee; color: #20292d; }
+  .onboarding-intent-options button[aria-selected="true"] { background: #e3e7e6; color: #20292d; font-weight: 640; }
+  .onboarding-intent-options button > span { min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .onboarding-intent-options button > span svg { width: 13px; height: 13px; flex: none; color: #718086; stroke-width: 1.5; }
+  .onboarding-intent-options button > span b { min-width: 0; font: inherit; }
+  .onboarding-intent-options button[aria-selected="true"] > span svg { color: #405aa1; }
+  .onboarding-intent-options i { width: 5px; height: 5px; flex: none; border-radius: 50%; background: transparent; }
+  .onboarding-intent-options button[aria-selected="true"] i { background: #5068b7; box-shadow: 0 0 0 3px rgba(80, 104, 183, .09); }
+  .onboarding-answer {
+    position: relative;
+    width: min(100%, 360px);
+    min-height: 46px;
+    padding: 3px 10px;
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    overflow: hidden;
+    border: 1px solid #d4dad9;
+    border-radius: 5px;
+    background: #e6eae9;
+    color: #546168;
+    font-size: 14px;
+    transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+  }
+  .onboarding-answer::before { content: ""; position: absolute; inset: 0; z-index: 0; background: rgba(80, 104, 183, .08); opacity: 0; transform: scaleX(0); transform-origin: left center; pointer-events: none; }
+  .onboarding-step.is-current .onboarding-answer::before { animation: onboarding-control-ready 420ms 80ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-answer::after { content: ""; position: absolute; inset: -1px auto -1px -1px; z-index: 2; width: 1px; background: #5068b7; transform: scaleY(0); transform-origin: center; transition: transform 140ms cubic-bezier(.16, 1, .3, 1); }
+  .onboarding-answer > span { position: relative; z-index: 1; flex: none; padding-top: 8px; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 9px; font-weight: 650; letter-spacing: .06em; line-height: 1.5; }
+  .onboarding-composer .onboarding-answer { width: 100%; }
+  .onboarding-answer--plain {
+    padding: 3px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: inset 0 -1px #cbd3d3;
+  }
+  .onboarding-answer--plain::before,
+  .onboarding-answer--plain::after { display: none; }
+  .onboarding-answer textarea,
+  .onboarding-answer input,
+  .onboarding-workspace input {
+    width: 100%;
+    position: relative;
+    z-index: 1;
+    padding: 7px 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #1f272b;
+    caret-color: #5068b7;
+  }
+  .onboarding-answer textarea { min-height: 38px; max-height: 76px; resize: none; line-height: 1.5; }
   .onboarding-answer input { font-size: inherit; }
   .onboarding-answer textarea::placeholder,
   .onboarding-answer input::placeholder,
-  .onboarding-workspace input::placeholder { color: #6f7578; opacity: 1; }
-  .onboarding-answer:focus-within { color: #b7bdc1; }
-  .onboarding-field-error, .onboarding-error { max-width: 70ch; margin: 18px 0 0; color: #ffb2aa; line-height: 1.5; }
-  .onboarding-echo { max-width: 70ch; margin: 0 0 28px; color: #858b8e; line-height: 1.55; overflow-wrap: anywhere; }
-  .onboarding-workspace { display: grid; gap: 10px; max-width: 740px; color: #aeb3b5; }
-  .onboarding-workspace input { min-height: 52px; font-size: 18px; }
-  .onboarding-runtime { max-width: 820px; margin: 38px 0 0; padding: 0; border: 0; }
-  .onboarding-runtime legend { margin-bottom: 15px; color: #868c8f; font-size: 13px; }
-  .onboarding-runtime { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+  .onboarding-workspace input::placeholder { color: #5d696f; opacity: 1; }
+  .onboarding-answer:focus-within { background: #fbfcfb; border-color: #7184c6; box-shadow: 0 8px 22px rgba(41, 54, 59, .07); color: #334047; transform: translateY(-1px); }
+  .onboarding-answer:focus-within::after { transform: scaleY(1); }
+  .onboarding-answer--plain:focus-within { background: transparent; border-color: transparent; box-shadow: inset 0 -1px #5068b7; transform: none; }
+  .onboarding-field-error, .onboarding-error { max-width: 56ch; margin: 10px 0 0; color: #8c3e43; font-size: 11px; line-height: 1.5; }
+  .onboarding-echo { max-width: 56ch; margin: 0 0 16px; display: inline-flex; align-items: baseline; gap: 7px; color: #5d696f; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; animation: onboarding-receipt-lock 320ms 60ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-echo::before { content: ""; width: 5px; height: 5px; flex: none; align-self: center; border-radius: 1px; background: #5068b7; animation: onboarding-receipt-confirm 360ms 120ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-echo strong { color: #344047; font-size: 11px; font-weight: 570; }
+  .onboarding-echo span + strong::before { content: none; }
+  .onboarding-workspace { width: min(100%, 360px); display: grid; gap: 2px; color: #59656b; font-size: 9.5px; }
+  .onboarding-workspace input { min-height: 34px; padding: 0; border: 0; border-bottom: 1px solid #cbd3d3; border-radius: 0; background: transparent; font-size: 11.5px; transition: border-color 140ms ease, color 140ms ease; }
+  .onboarding-workspace input:focus { border-color: #5068b7; background: transparent; box-shadow: none; }
+  .onboarding-runtime { max-width: 360px; margin: 9px 0 0; padding: 0; border: 0; }
+  .onboarding-runtime legend { margin-bottom: 3px; color: #59656b; font-size: 9.5px; }
+  .onboarding-runtime { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
   .onboarding-runtime legend { grid-column: 1 / -1; }
   .onboarding-runtime-choice { position: relative; min-width: 0; cursor: pointer; }
   .onboarding-runtime-choice input { position: absolute; opacity: 0; pointer-events: none; }
   .onboarding-runtime-choice > span {
-    min-height: 70px;
-    padding: 14px 16px;
+    min-height: 34px;
+    padding: 0 8px;
     display: grid;
-    align-content: center;
-    gap: 3px;
-    border-radius: 13px;
-    background: #121518;
-    color: #aeb4b6;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
-    transition: background 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
-  }
-  .onboarding-runtime-choice small { color: #747b7e; }
-  .onboarding-runtime-choice:hover > span { background: #171b1f; color: #f1f2f0; transform: translateY(-2px); }
-  .onboarding-runtime-choice input:checked + span { background: #e8ebef; color: #15191d; box-shadow: 0 14px 34px rgba(0, 0, 0, .3); }
-  .onboarding-runtime-choice input:checked + span small { color: #4f5961; }
-  .onboarding-runtime-choice input:focus-visible + span { outline: 2px solid #91a7f2; outline-offset: 3px; }
-  .onboarding-runtime-choice.is-unavailable { cursor: not-allowed; }
-  .onboarding-runtime-choice.is-unavailable > span { opacity: .45; box-shadow: none; }
-  .onboarding-hint { max-width: 70ch; margin: 18px 0 0; color: #8d9396; line-height: 1.55; }
-  .onboarding-review { max-width: 850px; margin: 0; display: grid; gap: 7px; }
-  .onboarding-review div { padding: 15px 17px; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 18px; border-radius: 12px; background: #121518; }
-  .onboarding-review dt { color: #777e81; }
-  .onboarding-review dd { margin: 0; color: #e7e9e7; line-height: 1.55; overflow-wrap: anywhere; }
-  .onboarding-confirm { max-width: 780px; margin-top: 24px; display: flex; align-items: flex-start; gap: 12px; color: #adb2b4; line-height: 1.55; cursor: pointer; }
-  .onboarding-confirm input { width: 19px; height: 19px; margin: 2px 0 0; accent-color: #91a7f2; }
-  .onboarding-actions { min-height: 50px; margin-top: 42px; display: flex; align-items: center; gap: 18px; }
-  .onboarding-actions button,
-  .onboarding-update-actions button {
-    min-height: 46px;
-    padding: 0 22px;
+    grid-template-columns: 13px minmax(0, 1fr) 5px;
+    align-items: center;
+    gap: 8px;
     border: 0;
-    border-radius: 10px;
-    background: #eef0f3;
-    color: #111417;
-    font-weight: 680;
-    cursor: pointer;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, .24);
-    transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    border-radius: 6px;
+    background: transparent;
+    color: #3f4a50;
+    font-size: 10.5px;
+    transition: background 130ms ease, color 130ms ease;
   }
-  .onboarding-actions button:hover,
-  .onboarding-update-actions button:hover { transform: translateY(-2px); background: #fff; box-shadow: 0 16px 36px rgba(0, 0, 0, .32); }
-  .onboarding-actions button:disabled,
+  .onboarding-runtime-choice > span > svg { width: 13px; height: 13px; color: #718086; stroke-width: 1.45; }
+  .onboarding-runtime-choice strong { min-width: 0; font-weight: 540; line-height: 1.25; }
+  .onboarding-runtime-choice i { width: 5px; height: 5px; border-radius: 50%; background: #b6bfbe; transition: background 130ms ease, box-shadow 130ms ease; }
+  .onboarding-runtime-choice:not(:has(input:checked)) i { background: transparent; }
+  .onboarding-runtime-choice:hover > span { background: #e9eceb; color: #1f272b; }
+  .onboarding-runtime-choice input:checked + span { background: #e2e5e4; color: #1f272b; }
+  .onboarding-runtime-choice input:checked + span i { background: #5068b7; }
+  .onboarding-runtime-choice input:focus-visible + span { outline: 2px solid #5068b7; outline-offset: 3px; }
+  .onboarding-hint { max-width: 360px; margin: 5px 0 0; color: #657177; font-size: 9px; line-height: 1.4; }
+  .onboarding-review { max-width: 480px; margin: 1px 0 0; display: grid; gap: 2px; }
+  .onboarding-review div { min-height: 34px; padding: 6px 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 14px; }
+  .onboarding-review dt { color: #647077; font-size: 10px; }
+  .onboarding-review dd { margin: 0; color: #303a3f; font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+  .onboarding-confirm { max-width: 480px; margin-top: 13px; display: flex; align-items: flex-start; gap: 9px; color: #566168; font-size: 11px; line-height: 1.55; cursor: pointer; }
+  .onboarding-confirm input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: #5068b7; }
+  body[data-onboarding-tone="4"] .onboarding-flow {
+    inset: 72px auto 18px clamp(24px, 6vw, 92px);
+    width: min(calc(100% - clamp(48px, 12vw, 184px)), 760px);
+  }
+  body[data-onboarding-tone="4"] .onboarding-flow-header { width: 100%; margin-bottom: 8px; }
+  .onboarding-step--runtime-embedded {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) 34px;
+    gap: 9px;
+  }
+  .onboarding-runtime-heading { display: grid; grid-template-columns: minmax(0, .75fr) minmax(250px, 1fr); align-items: end; gap: 24px; }
+  .onboarding-runtime-heading h1 { max-width: none; margin: 0; }
+  .onboarding-runtime-heading .onboarding-intro { max-width: 58ch; margin: 0; font-size: 10.5px; }
+  .onboarding-runtime-viewport {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid #c5cccb;
+    border-radius: 7px;
+    background: #17191c;
+  }
+  .onboarding-runtime-viewport iframe { width: 100%; height: 100%; display: block; border: 0; background: #17191c; }
+  .onboarding-runtime-state { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .onboarding-runtime-state p { min-width: 0; margin: 0; display: flex; align-items: center; gap: 7px; color: #5c686e; font-size: 9.5px; line-height: 1.45; }
+  .onboarding-runtime-state p::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: #8d999e; }
+  .onboarding-runtime-state p[data-state="ready"]::before { background: #5068b7; }
+  .onboarding-runtime-state p[data-state="error"] { color: #8c3e43; }
+  .onboarding-runtime-state p[data-state="error"]::before { background: #a64c52; }
+  .onboarding-runtime-state button { min-height: 34px; padding: 0; display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #405aa1; font-size: 10px; font-weight: 620; cursor: pointer; }
+  .onboarding-runtime-state button svg { width: 12px; height: 12px; }
+  .onboarding-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14px;
+  }
+  .onboarding-actions button {
+    min-height: 44px;
+    padding: 0 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #344148;
+    font-size: 10.5px;
+    font-weight: 620;
+    cursor: pointer;
+    box-shadow: none;
+    transition: color 130ms ease, opacity 130ms ease;
+  }
+  .onboarding-actions button svg { width: 14px; height: 14px; stroke-width: 1.45; transition: transform 140ms cubic-bezier(.16, 1, .3, 1); }
+  .onboarding-actions button:hover { color: #314d9b; }
+  .onboarding-actions .onboarding-back:hover svg { transform: translateX(-2px); }
+  .onboarding-actions .onboarding-next:hover svg,
+  .onboarding-actions .onboarding-submit:hover svg { transform: translateX(2px); }
+  .onboarding-actions button:active { opacity: .62; }
+  .onboarding-actions button:disabled { opacity: .42; cursor: wait; }
+  .onboarding-actions .onboarding-back { color: #657177; }
+  .onboarding-flow > .onboarding-error { position: absolute; top: calc(100% + 8px); left: 0; max-width: min(420px, calc(100vw - 48px)); margin: 0; }
+  .onboarding-update-actions button {
+    min-height: 38px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 5px;
+    background: #222b30;
+    color: #f7f8f7;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform 130ms ease, background 130ms ease;
+  }
+  .onboarding-update-actions button:hover { transform: translateY(-1px); background: #11181c; }
   .onboarding-update-actions button:disabled { opacity: .55; cursor: wait; transform: none; }
-  .onboarding-actions .onboarding-back { padding-inline: 4px; background: transparent; color: #989ea0; box-shadow: none; }
-  .onboarding-actions .onboarding-back:hover { background: transparent; color: #f1f2f0; box-shadow: none; }
-  .onboarding-page--update { background: #e8eaeb; color: #171a1d; }
-  .onboarding-page--update::before { background: rgba(96, 112, 128, .035); }
-  .onboarding-update { width: min(100% - 48px, 900px); min-height: 100dvh; margin: 0 auto; padding: clamp(72px, 11vh, 124px) 0; display: grid; align-content: center; gap: 44px; }
-  .onboarding-update .onboarding-brand { color: #686f73; }
-  .onboarding-update h1 { max-width: none; margin: 0 0 24px; color: #15191c; }
-  .onboarding-update-copy > p { max-width: 68ch; margin: 0; color: #50585d; font-size: 18px; line-height: 1.65; }
-  .onboarding-update ul { max-width: 760px; margin: 38px 0 0; padding: 0; display: grid; gap: 24px; list-style: none; }
+  .onboarding-page--update { color: #1f272b; }
+  .onboarding-update { width: min(100% - 48px, 480px); min-height: 100dvh; margin: 0 0 0 clamp(24px, 9vw, 136px); padding: 88px 0 56px; display: grid; align-content: center; gap: 24px; }
+  .onboarding-update .onboarding-brand { color: #30393e; }
+  .onboarding-update h1 { max-width: none; margin: 0 0 12px; color: #20272b; }
+  .onboarding-update-copy > p { max-width: 60ch; margin: 0; color: #566168; font-size: 11.5px; line-height: 1.65; }
+  .onboarding-update ul { max-width: 480px; margin: 20px 0 0; padding: 0; display: grid; gap: 14px; list-style: none; }
   .onboarding-update li { display: grid; gap: 5px; }
-  .onboarding-update li strong { font-size: 18px; }
-  .onboarding-update li span { color: #586166; line-height: 1.55; }
-  .onboarding-update-actions { display: flex; align-items: center; gap: 22px; }
-  .onboarding-update-actions button { background: #171b1f; color: #f5f6f4; }
-  .onboarding-update-actions button:hover { background: #090b0d; }
-  .onboarding-update-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #50585d; text-underline-offset: 4px; }
-  .onboarding-update .onboarding-error { color: #a33b32; }
-  @keyframes onboarding-dawn { to { opacity: 1; } }
-  @keyframes onboarding-question {
-    from { opacity: 0; transform: translateY(14px); filter: blur(5px); }
-    to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  .onboarding-update li strong { color: #303a3f; font-size: 11.5px; }
+  .onboarding-update li span { color: #5d686e; font-size: 11px; line-height: 1.55; }
+  .onboarding-update-actions { display: flex; align-items: center; gap: 16px; }
+  .onboarding-update-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #566168; font-size: 12px; text-underline-offset: 4px; }
+  .onboarding-update .onboarding-error { color: #913f43; }
+  @keyframes onboarding-session-ready {
+    from { opacity: .62; }
+    to { opacity: 1; }
+  }
+  @keyframes onboarding-step-in-forward {
+    from { opacity: .12; clip-path: inset(0 12% 0 0); transform: translateX(16px); }
+    to { opacity: 1; clip-path: inset(0); transform: translateX(0); }
+  }
+  @keyframes onboarding-step-out-forward {
+    from { opacity: 1; clip-path: inset(0); transform: translateX(0); }
+    to { opacity: 0; clip-path: inset(0 0 0 8%); transform: translateX(-8px); }
+  }
+  @keyframes onboarding-step-in-backward {
+    from { opacity: .12; clip-path: inset(0 0 0 12%); transform: translateX(-16px); }
+    to { opacity: 1; clip-path: inset(0); transform: translateX(0); }
+  }
+  @keyframes onboarding-step-out-backward {
+    from { opacity: 1; clip-path: inset(0); transform: translateX(0); }
+    to { opacity: 0; clip-path: inset(0 8% 0 0); transform: translateX(8px); }
+  }
+  @keyframes onboarding-control-ready {
+    0% { opacity: 0; transform: scaleX(0); }
+    42% { opacity: 1; }
+    100% { opacity: 0; transform: scaleX(1); }
+  }
+  @keyframes onboarding-receipt-lock {
+    from { opacity: .35; clip-path: inset(0 16% 0 0); }
+    to { opacity: 1; clip-path: inset(0); }
+  }
+  @keyframes onboarding-receipt-confirm {
+    from { opacity: .2; transform: scale(.4); }
+    to { opacity: 1; transform: scale(1); }
   }
   @media (max-width: 760px) {
-    .onboarding-topbar { padding-inline: 24px; }
-    .onboarding-room { place-items: center stretch; padding-inline: 24px; }
-    .onboarding-progress { margin-bottom: 28px; }
-    .onboarding-step h1 { margin-bottom: 32px; }
-    .onboarding-answer { display: grid; gap: 7px; }
-    .onboarding-runtime { grid-template-columns: minmax(0, 1fr); }
-    .onboarding-runtime-choice > span { min-height: 60px; }
-    .onboarding-review div { grid-template-columns: minmax(0, 1fr); gap: 5px; }
-    .onboarding-actions { margin-top: 32px; }
-    .onboarding-actions button:not(.onboarding-back) { min-height: 48px; flex: 1; }
-    .onboarding-update { width: min(100% - 48px, 900px); padding-block: 76px 48px; align-content: start; }
+    .onboarding-topbar { min-height: 60px; padding-inline: 18px; }
+    .onboarding-topbar-actions { gap: 8px; }
+    .onboarding-topbar-actions a { font-size: 11px; }
+    .onboarding-topbar button { padding-inline: 8px; }
+    .onboarding-room { height: 100dvh; }
+    .onboarding-flow { inset: clamp(116px, calc(61.8dvh - 112px), 430px) 20px 24px; width: auto; }
+    .onboarding-flow-header { margin-bottom: 8px; }
+    .onboarding-step h1 { font-size: 20px; }
+    .onboarding-intro { margin-bottom: 16px; font-size: 11.5px; }
+    .onboarding-answer { width: 100%; min-height: 48px; padding: 4px 10px; gap: 8px; font-size: 14px; }
+    .onboarding-intent-trigger { min-height: 48px; }
+    .onboarding-answer--plain { padding: 4px 0; }
+    .onboarding-answer > span { padding-top: 8px; font-size: 9px; }
+    .onboarding-answer textarea { min-height: 38px; padding-top: 7px; }
+    .onboarding-echo { max-width: 100%; }
+    .onboarding-runtime-choice > span { min-height: 38px; }
+    .onboarding-review div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    body[data-onboarding-tone="4"] .onboarding-flow { inset: 62px 14px 10px; width: auto; }
+    .onboarding-step--runtime-embedded { grid-template-rows: auto minmax(0, 1fr) 38px; gap: 7px; }
+    .onboarding-runtime-heading { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+    .onboarding-runtime-heading h1 { font-size: 17px; }
+    .onboarding-runtime-heading .onboarding-intro { max-width: none; font-size: 9.5px; line-height: 1.45; }
+    .onboarding-runtime-viewport { border-radius: 5px; }
+    .onboarding-runtime-state p { font-size: 9px; }
+    .onboarding-actions button { min-height: 44px; }
+    .onboarding-update { width: calc(100% - 40px); margin: 0 20px; padding-block: 78px 40px; align-content: start; }
     .onboarding-update-actions { align-items: stretch; flex-direction: column; }
     .onboarding-update-actions button, .onboarding-update-actions a { justify-content: center; min-height: 48px; }
+  }
+  @media (max-width: 460px) {
+    .onboarding-topbar-actions a { display: none; }
+    .onboarding-flow-header { gap: 12px; }
+    .onboarding-actions { gap: 10px; }
+  }
+  body[data-onboarding-tone="2"] .onboarding-flow { top: clamp(96px, calc(50dvh - 136px), 330px); }
+  @media (max-height: 760px) {
+    body[data-onboarding-tone="2"] .onboarding-flow { top: max(80px, calc(50dvh - 160px)); }
+    body[data-onboarding-tone="3"] .onboarding-flow { top: max(108px, calc(50dvh - 86px)); }
+    .onboarding-step--review .onboarding-intro { margin-bottom: 10px; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
@@ -14465,6 +14982,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   ${controlTokenMeta(controlToken)}
   <title>${escapeHtml(title)}</title>
   <script>${THEME_BOOTSTRAP_SCRIPT}</script>
+  <script>if(new URLSearchParams(location.search).get("onboarding-embed")==="1"){document.documentElement.dataset.onboardingEmbed="true";document.documentElement.dataset.resolvedTheme="dark";document.documentElement.dataset.resolvedTerminalTheme="dark";}</script>
   <link rel="stylesheet" href="__WORKBENCH_CSS__">
 </head>
   <body data-board-view="${decisionView ? "decisions" : trashView ? "trash" : archiveView ? "archive" : "current"}" data-route-prefix="${escapeHtml(view.route_prefix)}" data-desktop-shell="true" data-desktop-surface="${decisionView ? "feed" : "goal"}"${desktopShell ? ' data-native-desktop="true"' : ""}>

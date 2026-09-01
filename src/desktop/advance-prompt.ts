@@ -5,6 +5,7 @@ export function desktopAdvancePrompt(input: {
   title: string;
   source_context?: string;
   project_guidance_prefix?: string;
+  onboarding?: boolean;
 }): string {
   const title = input.title.trim() || input.goal_id;
   const sourceContext = input.source_context?.trim();
@@ -13,9 +14,11 @@ export function desktopAdvancePrompt(input: {
       .replaceAll("<UNTRUSTED_FEED_ITEM_DATA>", "[external data marker]")
       .replaceAll("</UNTRUSTED_FEED_ITEM_DATA>", "[external data marker]")
     : undefined;
-  const instruction = sourceContext
-    ? `请用 GoalBoard 推进 Goal（id: ${input.goal_id}）。先读取它的合同，再按当前工作状态澄清或执行。不要改别的 Goal。`
-    : `请用 GoalBoard 推进 Goal「${title}」（id: ${input.goal_id}）。先读取它的合同，再按当前工作状态澄清或执行。不要改别的 Goal。`;
+  const instruction = input.onboarding
+    ? `这是新项目的第一次 Goal 澄清。请用 GoalBoard 与用户一起明确根 Draft Goal「${title}」（id: ${input.goal_id}）：先读取它的合同和当前项目规划组合，从最关键的不确定处开始，一次只问用户一个问题；信息足够后，按真实产出与消费关系拆分 Goal Tree 并提交 Proposal，等待用户确认。不要自动接受 Proposal，不要把未经确认的推断写成正式 Goal，也不要改别的 Goal。`
+    : sourceContext
+      ? `请用 GoalBoard 推进 Goal（id: ${input.goal_id}）。先读取它的合同，再按当前工作状态澄清或执行。不要改别的 Goal。`
+      : `请用 GoalBoard 推进 Goal「${title}」（id: ${input.goal_id}）。先读取它的合同，再按当前工作状态澄清或执行。不要改别的 Goal。`;
   const currentGoalBlock = `<GOALBOARD_CURRENT_GOAL>\n${instruction}\n</GOALBOARD_CURRENT_GOAL>`;
   const trustedPrefix = input.project_guidance_prefix?.trim();
   const prompt = trustedPrefix ? `${trustedPrefix}\n\n${currentGoalBlock}` : currentGoalBlock;

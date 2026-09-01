@@ -1,6 +1,36 @@
-# GoalBoard 北欧冬晨 Onboarding 原型 QA
+# GoalBoard Onboarding QA
 
-## 结论
+## 2026-09-01 当前生产修订：纯净背景、半幅内容与黄金分割
+
+本轮按最新纠偏移除 Goal Spine 背景，科技感改由真实交互状态承担；首屏内容视觉中心落在视口高度约 `61.8%` 的下黄金分割点，不再垂直居中。
+
+- 背景为单一 `#f1f3f2` 中性色面；页面 DOM 中 SVG 数量实测为 `0`，没有连接线、节点、分区图形或远程背景资源；
+- 1440×900 实测首屏 flow 为 `480×201.3px`，主要输入为 `360×46px`，标题 `20.88px`；视觉中心为视口高度 `62.8%`；
+- 390×844 实测首屏 flow 为 `350.4×207.2px`，主要输入为 `350.4×48px`，标题 `20px`；视觉中心为视口高度 `62.7%`；
+- 桌面与移动端横向溢出均为 `0`；手机首屏主操作底部约 `633px`，无需滚动即可到达；桌面 Runtime 步骤使用自然纵向滚动承载完整操作；
+- 步骤状态使用 `01 / 04 · 说说想法`，确认后回答收拢为带状态点的“我们一起……”上下文；输入就绪、焦点和步骤装载使用 100–460ms 的一次性状态动效，无背景循环；
+- 人话校准后的四个问题为：`你希望我们一起做什么？`、`给项目取个名字吧。`、`接下来，你想在哪里继续？`、`这样开始，可以吗？`；安全说明仍明确保留“不自动执行、不替用户发送”；
+- 在本地 in-app browser 实测首屏、第二步回执与 Runtime 步骤；浏览器 console / warning 为空；
+- `pnpm typecheck`、`pnpm build` 通过；首次跳转与跳过、真实 Project / Goal / Workspace 写入、版本更新三条 Onboarding 定向测试全部通过。
+
+完成等级保持 **Level 3：功能可用的生产垂直切片**。真实 Runtime 自动打开与提示填入本轮未重复手测，沿用既有功能测试证据，不将其表述为本轮新验证。
+
+下文为早期 Level 2 原型与上一版生产视觉的历史 QA 记录，不再代表当前首屏。
+
+## 2026-09-01 二次修订：Goal Spine 轻量工作面
+
+本轮根据“一屏占比太大、不能照抄参考图风格”的纠偏，撤销上一版浅色雾面 Hero。旧版北欧冬晨原型记录保留在下文，只作为历史证据，不再代表当前生产首屏。
+
+- 保留 Peace、克制科技感与人话文案；移除柔焦布景、低位大标题、大型白色输入框和悬浮按钮；
+- 背景改为平坦暖灰工作面与右侧冷灰 Goal Spine：一个根节点、两个结果分支和未完成端点，直接来自 GoalBoard 的产品结构；
+- 1440×900 实测首屏内容区 `660×198.7px`，标题 `27.36px`，主输入 `600×54px`；
+- 390×844 实测首屏内容区 `350.4×198.6px`，标题约 `24.99px`，主输入 `350.4×57.6px`；
+- 1440×900 Runtime 步骤高度 `423.3px`，操作区底部约 `720px`，6 个选择项高度 `52–54.4px`；无横向溢出或关键操作遮挡；
+- 浏览器 console / warning 检查为空；`prefers-reduced-motion` 继续取消非必要动效。
+
+定向生产验证：`pnpm build` 通过；首次跳转与跳过、真实 Project / Goal / Workspace 写入、版本更新三条 Onboarding 测试全部通过。真实 Runtime 自动打开与提示填入本轮未重复提交，沿用既有功能测试证据。
+
+## 历史 Level 2 原型结论
 
 原型达到本阶段约定的 **Level 2：可交互高保真切片**。首次安装不再像功能介绍或配置向导，而是一段从黑夜到晨光的渐进对话：黑屏停顿后只出现“你好，我们今天做点什么？”和一个无边界填空位置；用户逐步说清项目、结果与工作环境，GoalBoard 才显露 TUI 和第一棵 Goal Tree。版本更新沿用同一套视觉语言，但使用独立的短路径，不会重放初装问题。
 
@@ -89,3 +119,32 @@ Impeccable detector 在本机因为缺少 `htmlparser2`、`css-select`、`css-tr
 - **替换：** 输入基线、进度线、列表分隔线、按钮下划线、终端描边和树连接线，改为留白、色块、柔光、明暗与空间层级；
 - **重做：** Goal Tree 从机械 SVG 连线图改为无连线的 Goal Grove，先出现根结果，再展开两个结果分支，最后托起第一条行动；
 - **忽略：** 旧截图中的机械连线和条目表格语法，不让它继续影响后续实现。
+
+## 2026-09-01 生产单屏步骤修订
+
+本轮在生产 `/onboarding` 而非静态原型中完成了单屏舞台、独立流程导航、双向步骤动画和轻量选择列表验证。
+
+- 生产构建 `pnpm build` 通过；`pnpm typecheck` 通过；Onboarding 两条定向 Web 测试通过，覆盖跳过、真实 Project / 根 Draft Goal / Workspace 写入、意图值拒绝与 `work-diagnose-fix` 规划线索落入 Draft 待澄清上下文；
+- 首步撤掉原生下拉灰盒与完整输入框容器，闭合状态只保留文字触发器、chevron 和一条功能性输入基线；展开菜单为 8 条单列轻列表，当前项使用浅灰底和右侧 cobalt 状态点；
+- 意图菜单实测支持鼠标与键盘：`ArrowDown` 打开并移动焦点，`Enter` 选择 `我想做成` 后菜单关闭，前缀和 placeholder 同步更新；展开时菜单顶部约 173.8px、底部约 496.8px，仍在窄屏视口内；
+- 前进实测 `data-step-direction=forward`，返回实测 `backward`，切换期间 `data-transitioning=true` 防止重复触发；鼠标点击与键盘 Enter 均可进入下一步；
+- Runtime 不再展示卡片矩阵或未安装项，只显示“这次先跳过”和当前检测到的 Codex、Claude Code、Grok Build；四行均为 44px 单列文字行，选中行以浅灰底和状态点表达；
+- 窄屏有效视口 389×841 下 `documentElement.scrollHeight === innerHeight`；第三步整体上移后提示底部约 715.75px，独立导航顶部约 776.8px，全部内容单屏可见且没有重叠；Review 沿用上一轮单屏验证结果；
+- `prefers-reduced-motion` 继续由现有媒体查询把动画压缩为即时切换，表单和按钮状态不依赖动画成立。
+
+结果：通过。浏览器控制台没有捕获 error 或 warning；没有提交最终创建按钮，避免视觉 QA 写入额外真实项目。
+
+## 2026-09-01 条件式第五步：引导内 Runtime 规划
+
+本轮把“创建后跳进 Runtime 工作台”改为条件式第五步。测试数据全部写入 `/private/tmp/goalboard-onboarding-live-v*`，没有修改用户的真实 GoalBoard Home。
+
+- 选择 Runtime 时，第 4 步先创建真实 Project、根 Draft Goal 与 Workspace；顶层 URL 继续保持 `/onboarding`，第五步 iframe 使用真实 Goal 深链接和 `onboarding-runtime=1&onboarding-embed=1`；未选 Runtime 仍直接进入项目；
+- iframe 实测只保留根 Goal 绑定信息、当前 Runtime、真实终端和状态；GoalBoard 目录、Goal 正文、移动标签、状态胶囊、添加终端、关闭终端和重复的推进 / 复制 / 填入工具条均不显示；
+- Codex 在 `/private/tmp` 出现目录信任确认时，父页显示等待状态，`安排好了，进入 GoalBoard` 为 disabled；安全选择拒绝信任后，进程退出，父页保留已创建项目并给出原位“重新打开”；
+- Codex 在仓库工作目录出现 Hooks 复核时，父页同样保持 disabled。选择 `Continue without trusting` 后，系统等待正常 `Ask Codex to do anything` 输入位出现，再填入带项目说明、根 Draft、项目规划组合、一次一问、Goal Tree Proposal 与用户确认边界的 onboarding prompt；终端没有发送回车，父页此时才启用最终进入操作；
+- 桌面有效视口 819×576 下，页面 `scrollWidth×scrollHeight` 与 viewport 完全相同，Runtime 底部约 514.2px；窄态有效视口 312×675 下同样无页面滚动，Runtime 底部约 619.4px，最终操作、说明、终端和状态均在一页内；
+- 第五步视觉截图确认：外部保持平坦暖灰与小字号线性导航，内部只有一个必要的真实 Runtime 视口；没有背景线条、粒子、发光边界或多余卡片。
+
+验证命令：`pnpm typecheck`、`pnpm build`、`node --import tsx --test tests/i18n.test.ts tests/visual-foundation.test.ts`、定向 Desktop TUI / Onboarding Web 测试均通过。一次未授权回环监听的测试在沙箱内得到 `EPERM`，允许仅监听 `127.0.0.1` 后相同测试通过。
+
+结果：通过。第五步达到 Level 3 的真实功能切片；它确保 Runtime 和首次规划提示已经就绪，但“项目是否已经安排满意”仍由用户在完成本轮对话 / Proposal 后主动点击最终进入操作，不用前端伪造 Goal Tree 完成事实。
