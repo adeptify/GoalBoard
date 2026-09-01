@@ -54,10 +54,12 @@ import {
   renderGoalRecordEventsFragment,
   renderGoalRecordsFragment,
   renderGoalBoardProjectIndexStylesheet,
+  renderGoalBoardOnboardingStylesheet,
   renderGoalBoardSettingsStylesheet,
   renderGoalBoardWorkbenchClientScript,
   renderGoalBoardWorkbenchStylesheet,
   renderGoalBoardWeb,
+  renderGoalBoardOnboarding,
   renderGoalBoardProjectIndex,
   renderGoalBoardProjectGuidanceSettings,
   renderGoalBoardProjectSettings,
@@ -88,6 +90,7 @@ import {
   type PlanningMethodPackInput,
 } from "../planning/method-packs.js";
 import {
+  currentLocale,
   L,
   isWebLocale,
   localeSetCookie,
@@ -96,6 +99,7 @@ import {
   safeNextPath,
 } from "./i18n.js";
 import { goalPresentationState } from "./human-language.js";
+import { presentGoalAction } from "./action-presentation.js";
 import { buildCapsuleSnapshot, renderCapsuleShell } from "./capsule.js";
 import {
   ProjectReferenceError,
@@ -125,6 +129,11 @@ import {
   repairProjectWorkspace,
   unlinkProjectWorkspace,
 } from "./workspace-project-actions.js";
+import {
+  completeGoalBoardOnboarding,
+  dismissGoalBoardOnboarding,
+  goalBoardOnboardingStatus,
+} from "./onboarding.js";
 
 export { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "./control-token.js";
 
@@ -461,6 +470,10 @@ export function buildGoalBoardWebView(
   const workStates = new Map(
     coordinator.getGoalWorkStates({ board_id: options.boardId, snapshot }).map((state) => [state.goal_id, state]),
   );
+  const actionProjections = new Map(
+    coordinator.getGoalActionProjections({ board_id: options.boardId, snapshot })
+      .map((projection) => [projection.goal_id, projection]),
+  );
   const allGoals = snapshot.goals.map((goal) => {
     const workState = workStates.get(goal.goal_id);
     if (!workState) throw new Error(`Goal 工作状态不存在: ${goal.goal_id}`);
@@ -475,6 +488,16 @@ export function buildGoalBoardWebView(
       snapshot,
       workState.reasons,
     );
+    const actionProjection = actionProjections.get(goal.goal_id);
+    if (!actionProjection) throw new Error(`Goal 动作投影不存在: ${goal.goal_id}`);
+    const actionPresentation = presentGoalAction(goal, actionProjection);
+    const visibleStatusLabel = status === "replaced"
+      ? "已替代"
+      : status === "archived"
+        ? "已归档"
+        : status === "trashed"
+          ? "回收站"
+          : actionPresentation.status_label;
     const { claims, runs } = coordinator.projectGoalLifecycle(snapshot, goal.goal_id);
     const evidence = evidenceByGoal.get(goal.goal_id) ?? [];
     const reviewObligations = reviewObligationsByGoal.get(goal.goal_id) ?? [];
@@ -542,8 +565,12 @@ export function buildGoalBoardWebView(
     return {
       goal,
       status,
+      action_projection: actionProjection,
+      display_status: actionPresentation.status,
       work_state: workState.work_state,
-      status_label: status,
+      status_label: visibleStatusLabel,
+      main_action_label: actionPresentation.action_label,
+      action_summary: actionPresentation.summary,
       reasons: workState.reasons,
       active_claim_actor: activeClaim?.actor_id ?? null,
       active_claim: activeClaim ?? null,
@@ -577,8 +604,10 @@ export function buildGoalBoardWebView(
   const counts = Object.fromEntries(WEB_GOAL_STATUSES.map((status) => [status, 0])) as GoalBoardWebView["counts"];
   for (const goal of goals) counts[goal.status]++;
   const fallback =
-    goals.find((item) => ["clarifying", "executing", "reviewing", "revalidating"].includes(item.status)) ??
-    goals.find((item) => ["clarification_pending", "execution_pending", "review_pending", "revalidation_pending"].includes(item.status)) ??
+    goals.find((item) => item.display_status === "in_progress") ??
+    goals.find((item) => item.display_status === "waiting_user") ??
+    goals.find((item) => item.action_projection.progress === "work_recorded" && item.display_status !== "completed") ??
+    goals.find((item) => item.display_status === "continue") ??
     goals[0];
   const activeGoalId = goals.some((item) => item.goal.goal_id === snapshot.board.active_goal_id)
     ? snapshot.board.active_goal_id
@@ -719,6 +748,7 @@ export function cachedGoalBoardWebView(
   const cursor = store.eventCursor(options.boardId);
   const optionsFingerprint = JSON.stringify({
     board_id: options.boardId,
+    locale: currentLocale(),
     demo: Boolean(options.demo),
     project_root: options.projectRoot ?? "",
     project: options.project ?? null,
@@ -1108,6 +1138,8 @@ function serveWorkbenchAsset(
       ? { body: renderGoalBoardWorkbenchClientScript(), contentType: "text/javascript; charset=utf-8" }
       : pathname === "/assets/goalboard-project-index.css"
         ? { body: renderGoalBoardProjectIndexStylesheet(), contentType: "text/css; charset=utf-8" }
+        : pathname === "/assets/goalboard-onboarding.css"
+          ? { body: renderGoalBoardOnboardingStylesheet(), contentType: "text/css; charset=utf-8" }
         : pathname === "/assets/goalboard-settings.css"
           ? { body: renderGoalBoardSettingsStylesheet(), contentType: "text/css; charset=utf-8" }
       : null;
@@ -1505,6 +1537,61 @@ function supportedRuntimeId(value: string): SupportedRuntimeId | null {
   return isSupportedRuntimeId(value) ? value : null;
 }
 
+function desktopRuntimeAvailability(): Record<string, boolean> {
+  return {
+    "claude-code": isPtyCommandAvailable("claude"),
+    codex: isPtyCommandAvailable("codex"),
+    opencode: isPtyCommandAvailable("opencode"),
+    "pi-agent": isPtyCommandAvailable("pi"),
+    "grok-build": isPtyCommandAvailable("grok"),
+  };
+}
+
+interface WebOnboardingInitializationInput {
+  projectName: string;
+  outcome: string;
+  workspacePath: string | null;
+  runtimeKind: string | null;
+}
+
+function hasMeaningfulOnboardingText(value: string): boolean {
+  return /\p{L}/u.test(value);
+}
+
+function webOnboardingInitializationInput(body: Record<string, unknown>): WebOnboardingInitializationInput {
+  if (body.user_confirmed !== true) throw new Error("请先确认这次 Project 和根 Goal 写入");
+  const projectName = typeof body.project_name === "string" ? body.project_name.trim() : "";
+  const outcome = typeof body.outcome === "string" ? body.outcome.trim() : "";
+  const workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
+    ? body.workspace_path.trim()
+    : null;
+  const runtimeKind = typeof body.runtime_kind === "string" && body.runtime_kind.trim()
+    ? body.runtime_kind.trim()
+    : null;
+  if (!hasMeaningfulOnboardingText(projectName)) throw new Error("请填写一个包含文字的项目名称");
+  if (projectName.length > 160) throw new Error("项目名称不能超过 160 个字符");
+  if (!hasMeaningfulOnboardingText(outcome)) throw new Error("请用一句包含文字的话描述你想看到的结果");
+  if (outcome.length > 2_000) throw new Error("结果描述不能超过 2000 个字符");
+  if (workspacePath) {
+    if (!path.isAbsolute(workspacePath)) throw new Error("工作目录必须是绝对路径");
+    let directoryExists = false;
+    try {
+      directoryExists = fs.statSync(workspacePath).isDirectory();
+    } catch {}
+    if (!directoryExists) throw new Error("工作目录不存在或当前不可访问");
+  }
+  if (runtimeKind) {
+    if (!isDesktopRuntimeKind(runtimeKind) || runtimeKind === "generic") {
+      throw new Error("请选择 GoalBoard 支持的 Runtime");
+    }
+    if (!workspacePath) throw new Error("打开 TUI 前需要选择一个存在的绝对工作目录");
+    if (desktopRuntimeAvailability()[runtimeKind] !== true) {
+      throw new Error("这个 Runtime CLI 当前不可用，请重新选择或先不开 TUI");
+    }
+  }
+  return { projectName, outcome, workspacePath, runtimeKind };
+}
+
 function fixtureWebBoardOptions(options: WebServerOptions): ResolvedWebBoardOptions | null {
   if (!options.databasePath) return null;
   return {
@@ -1554,6 +1641,7 @@ async function resolveWebRequest(
     const projects = records.map(projectNavigation);
     if (
       pathname === "/"
+      || pathname === "/onboarding"
       || pathname === "/health"
       || pathname === "/api"
       || pathname.startsWith("/api/")
@@ -1713,6 +1801,141 @@ async function handleGoalBoardWebRequest(
 ): Promise<void> {
   const resolved = await resolveWebRequest(serverOptions, url.pathname);
       if (resolved.kind === "catalog_index") {
+        if (request.method === "GET" && url.pathname === "/api/onboarding/status") {
+          sendJson(response, 200, goalBoardOnboardingStatus(serverOptions.homeDirectory, resolved.projects.length));
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/onboarding/dismiss") {
+          const body = await readBody(request);
+          const kind = body.kind === "first_run" || body.kind === "update" ? body.kind : null;
+          if (!kind || body.user_confirmed !== true) {
+            sendJson(response, 400, { error: "请明确确认要关闭哪一段引导" });
+            return;
+          }
+          try {
+            sendJson(response, 200, {
+              state: dismissGoalBoardOnboarding(serverOptions.homeDirectory, kind),
+            });
+          } catch (error) {
+            sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+          }
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/api/onboarding/initialize") {
+          let input: WebOnboardingInitializationInput;
+          try {
+            input = webOnboardingInitializationInput(await readBody(request));
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+            return;
+          }
+          let partialProjectPath: string | null = null;
+          try {
+            await withGoalBoardProjectCatalog({ homeDirectory: serverOptions.homeDirectory }, async (catalog) => {
+              const project = await catalog.createProject({
+                display_name: input.projectName,
+                actor_id: "web-user",
+              });
+              const projectPath = `/projects/${encodeURIComponent(project.project_id)}/`;
+              partialProjectPath = projectPath;
+              const store = new SqliteGoalBoardStore(project.database_path);
+              let createdGoal;
+              try {
+                const coordinator = new GoalBoardCoordinator(store);
+                const title = input.outcome
+                  .replace(/^我想(?:要)?\s*/u, "")
+                  .replace(/\s+/gu, " ")
+                  .trim()
+                  .slice(0, 120) || input.projectName;
+                createdGoal = coordinator.createGoal(
+                  project.board_id,
+                  {
+                    title,
+                    outcome: input.outcome,
+                    why: "把第一次表达的目标保存为可继续澄清的共同事实",
+                    business_logic: "先保存用户想看到的结果，再由用户和 Runtime 共同补全范围、拆分与验收，不把推断直接写成已确认目标树。",
+                    definition_state: "draft",
+                    decomposition_state: "abstract",
+                    priority: 50,
+                    acceptance_criteria: [],
+                  },
+                  {
+                    actor_id: "web-user",
+                    idempotency_key: `onboarding-root-goal-${project.project_id}`,
+                    reason: "用户在首次项目引导中确认创建根 Draft Goal",
+                  },
+                ).goal;
+              } finally {
+                store.close();
+              }
+              const workspace = input.workspacePath
+                ? catalog.addWorkspaceProject({
+                    project_id: project.project_id,
+                    canonical_path: input.workspacePath,
+                    actor_id: "web-user",
+                    user_confirmed: true,
+                  })
+                : null;
+              let journeyWarning: string | null = null;
+              try {
+                completeGoalBoardOnboarding(serverOptions.homeDirectory, project.project_id);
+              } catch (error) {
+                journeyWarning = error instanceof Error ? error.message : String(error);
+              }
+              sendJson(response, 201, {
+                project: projectNavigation(project),
+                project_path: projectPath,
+                goal: {
+                  goal_id: createdGoal.goal_id,
+                  title: createdGoal.title,
+                  definition_state: createdGoal.definition_state,
+                  decomposition_state: createdGoal.decomposition_state,
+                },
+                goal_id: createdGoal.goal_id,
+                goal_path: `${projectPath}goals/${encodeURIComponent(createdGoal.goal_id)}`,
+                workspace: workspace
+                  ? {
+                      workspace_id: workspace.workspace_id,
+                      display_name: workspace.display_name,
+                      canonical_path: workspace.canonical_path,
+                    }
+                  : null,
+                runtime_autofill: Boolean(input.runtimeKind),
+                ...(journeyWarning ? { journey_warning: journeyWarning } : {}),
+              });
+            });
+          } catch (error) {
+            sendJson(response, partialProjectPath ? 500 : 400, {
+              error: partialProjectPath
+                ? `项目已经创建，但初始化未完成：${error instanceof Error ? error.message : String(error)}`
+                : error instanceof Error ? error.message : String(error),
+              ...(partialProjectPath ? { recovery_path: partialProjectPath } : {}),
+            });
+          }
+          return;
+        }
+        if (request.method === "GET" && url.pathname === "/onboarding") {
+          const status = goalBoardOnboardingStatus(serverOptions.homeDirectory, resolved.projects.length);
+          const requestedMode = url.searchParams.get("mode");
+          const mode = requestedMode === "update" || (status.update_required && requestedMode !== "new-project")
+            ? "update"
+            : resolved.projects.length === 0
+              ? "first_run"
+              : "new_project";
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "content-security-policy": PAGE_CSP,
+          });
+          response.end(renderGoalBoardOnboarding({
+            mode,
+            currentVersion: status.current_version,
+            controlToken,
+            desktopShell: isDesktopShellRequest(request, url),
+            cliAvailability: desktopRuntimeAvailability(),
+          }));
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/desktop/capsule") {
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
@@ -2017,6 +2240,17 @@ async function handleGoalBoardWebRequest(
         }
         if (request.method === "GET" && url.pathname === "/") {
           const desktopShell = isDesktopShellRequest(request, url);
+          const onboarding = goalBoardOnboardingStatus(serverOptions.homeDirectory, resolved.projects.length);
+          if (onboarding.first_run_required || onboarding.update_required) {
+            const modeQuery = onboarding.update_required ? "?mode=update" : "";
+            const desktopQuery = desktopShell ? `${modeQuery ? "&" : "?"}desktop=1` : "";
+            response.writeHead(302, {
+              location: `/onboarding${modeQuery}${desktopQuery}`,
+              "cache-control": "no-store",
+            });
+            response.end();
+            return;
+          }
           response.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
@@ -2079,7 +2313,7 @@ async function handleGoalBoardWebRequest(
         if (request.method === "GET" && projectSessionWorkspaceMatch) {
           const desktopQuery = isDesktopShellRequest(request, url) ? "?desktop=1" : "";
           response.writeHead(302, {
-            location: `${options.routePrefix}/${desktopQuery}#${projectSessionWorkspaceMatch[1]}`,
+            location: `${options.routePrefix}/${desktopQuery}#sessions`,
             "cache-control": "no-store",
           });
           response.end();
@@ -2304,9 +2538,52 @@ async function handleGoalBoardWebRequest(
               return;
             }
             const resources = await sessionResources;
-            const workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
+            let workspaceId = typeof body.workspace_id === "string" && body.workspace_id.trim()
+              ? body.workspace_id.trim()
+              : null;
+            let workspacePath = typeof body.workspace_path === "string" && body.workspace_path.trim()
               ? body.workspace_path.trim()
               : null;
+            if (workspaceId) {
+              const selectedWorkspace = await readProjectWorkspaceRecord(workspaceId);
+              if (!selectedWorkspace) {
+                sendJson(response, 404, { error: "找不到当前 Project 的这个工作目录" });
+                return;
+              }
+              if (workspacePath && workspacePath !== selectedWorkspace.path) {
+                sendJson(response, 409, { error: "工作目录 ID 与路径不一致，请重新选择" });
+                return;
+              }
+              if (action === "create" && (selectedWorkspace.state !== "healthy" || !fs.existsSync(selectedWorkspace.path))) {
+                sendJson(response, 409, { error: "工作目录当前不可用，请选择其他运行位置" });
+                return;
+              }
+              workspaceId = selectedWorkspace.id;
+              workspacePath = selectedWorkspace.path;
+            } else if (workspacePath) {
+              const normalized = normalizeRuntimeWorkContext({
+                runtime_id: "goalboard-web",
+                stable_work_context_id: null,
+                host_declares_stable: false,
+                workspace: { canonical_path: workspacePath, realpath_verified: false },
+              }).workspace;
+              if (!normalized) {
+                sendJson(response, 400, { error: "工作目录必须是绝对路径" });
+                return;
+              }
+              workspaceId = normalized.workspace_id;
+              workspacePath = normalized.canonical_path;
+              if (action === "create") {
+                let usableDirectory = false;
+                try {
+                  usableDirectory = fs.statSync(workspacePath).isDirectory();
+                } catch {}
+                if (!usableDirectory) {
+                  sendJson(response, 409, { error: "工作目录当前不可访问，请选择一个存在的文件夹" });
+                  return;
+                }
+              }
+            }
             const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : null;
             const session = action === "create"
               ? await resources.directory.create({
@@ -2315,6 +2592,7 @@ async function handleGoalBoardWebRequest(
                   user_confirmed: true,
                   project_id: options.project!.project_id,
                   current_goal_id: currentGoalId,
+                  workspace_id: workspaceId,
                   workspace_path: workspacePath,
                   title,
                 })
@@ -2327,6 +2605,7 @@ async function handleGoalBoardWebRequest(
                   user_confirmed: true,
                   project_id: options.project!.project_id,
                   current_goal_id: currentGoalId,
+                  workspace_id: workspaceId,
                   workspace_path: workspacePath,
                   title,
                 });
@@ -2769,13 +3048,7 @@ async function handleGoalBoardWebRequest(
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/runtime-availability") {
-          sendJson(response, 200, {
-            "claude-code": isPtyCommandAvailable("claude"),
-            codex: isPtyCommandAvailable("codex"),
-            opencode: isPtyCommandAvailable("opencode"),
-            "pi-agent": isPtyCommandAvailable("pi"),
-            "grok-build": isPtyCommandAvailable("grok"),
-          });
+          sendJson(response, 200, desktopRuntimeAvailability());
           return;
         }
         if (request.method === "GET" && url.pathname === "/desktop/pty-client.js") {
@@ -3817,38 +4090,74 @@ async function handleGoalBoardWebRequest(
         const riskStateMatch = url.pathname.match(/^\/api\/risks\/([^/]+)\/state$/);
         if (request.method === "POST" && riskStateMatch) {
           const body = await readBody(request);
-          const state = String(body.state ?? "") as RiskRecord["state"];
+          const requestedState = String(body.state ?? "");
+          const state = requestedState as RiskRecord["state"];
           const reason = String(body.reason ?? "").trim();
           const rawResolutionBasis = body.resolution_basis && typeof body.resolution_basis === "object" && !Array.isArray(body.resolution_basis)
             ? body.resolution_basis as Record<string, unknown>
             : null;
           try {
-            const result = coordinator.setRiskState(
-              options.boardId,
-              {
-                risk_id: decodeURIComponent(riskStateMatch[1]),
-                state,
-                reason,
-                ...(rawResolutionBasis == null
-                  ? {}
-                  : {
-                      resolution_basis: {
-                        summary: String(rawResolutionBasis.summary ?? ""),
-                        evidence_refs: Array.isArray(rawResolutionBasis.evidence_refs)
-                          ? rawResolutionBasis.evidence_refs.map(String)
-                          : [],
-                        residual_gaps: Array.isArray(rawResolutionBasis.residual_gaps)
-                          ? rawResolutionBasis.residual_gaps.map(String)
-                          : [],
-                      },
-                    }),
-              },
-              {
-                actor_id: "web-user",
-                idempotency_key: String(body.idempotency_key ?? `web-risk-state-${randomUUID()}`),
-              },
-            );
-            sendJson(response, 200, result);
+            const riskId = decodeURIComponent(riskStateMatch[1]);
+            const idempotencyKey = String(body.idempotency_key ?? `web-risk-state-${randomUUID()}`);
+            if (requestedState === "rejected") {
+              const snapshot = store.snapshot(options.boardId);
+              const currentRisk = snapshot.risks.find((risk) => risk.risk_id === riskId);
+              if (!currentRisk) throw new Error("找不到这条 Risk");
+              const goalIds = snapshot.goal_risks
+                .filter((link) => link.risk_id === riskId)
+                .map((link) => link.goal_id);
+              const result = coordinator.updateRisk(
+                options.boardId,
+                {
+                  risk_id: riskId,
+                  goal_ids: goalIds,
+                  description: currentRisk.description,
+                  probability: currentRisk.probability,
+                  impact: currentRisk.impact,
+                  affected_surfaces: currentRisk.affected_surfaces,
+                  trigger: currentRisk.trigger,
+                  treatment: "mitigate",
+                  treatment_plan: currentRisk.treatment_plan || reason,
+                  blocking_mode: currentRisk.blocking_mode,
+                  revisit_condition: currentRisk.revisit_condition,
+                  owner: currentRisk.owner,
+                  action_goal_id: typeof body.goal_id === "string" ? body.goal_id : undefined,
+                  contract_revision: Number.isInteger(body.contract_revision) ? Number(body.contract_revision) : undefined,
+                  action_id: typeof body.action_id === "string" ? body.action_id : undefined,
+                  action_token: typeof body.action_token === "string" ? body.action_token : undefined,
+                },
+                { actor_id: "web-user", actor_kind: "user", idempotency_key: idempotencyKey, reason },
+              );
+              sendJson(response, 200, { ...result, decision: "rejected" });
+            } else {
+              const result = coordinator.setRiskState(
+                options.boardId,
+                {
+                  risk_id: riskId,
+                  state,
+                  reason,
+                  goal_id: typeof body.goal_id === "string" ? body.goal_id : undefined,
+                  contract_revision: Number.isInteger(body.contract_revision) ? Number(body.contract_revision) : undefined,
+                  action_id: typeof body.action_id === "string" ? body.action_id : undefined,
+                  action_token: typeof body.action_token === "string" ? body.action_token : undefined,
+                  ...(rawResolutionBasis == null
+                    ? {}
+                    : {
+                        resolution_basis: {
+                          summary: String(rawResolutionBasis.summary ?? ""),
+                          evidence_refs: Array.isArray(rawResolutionBasis.evidence_refs)
+                            ? rawResolutionBasis.evidence_refs.map(String)
+                            : [],
+                          residual_gaps: Array.isArray(rawResolutionBasis.residual_gaps)
+                            ? rawResolutionBasis.residual_gaps.map(String)
+                            : [],
+                        },
+                      }),
+                },
+                { actor_id: "web-user", actor_kind: "user", idempotency_key: idempotencyKey },
+              );
+              sendJson(response, 200, result);
+            }
           } catch (error) {
             sendJson(response, 400, {
               error: error instanceof Error ? error.message : String(error),
@@ -4045,15 +4354,12 @@ async function handleGoalBoardWebRequest(
         if (request.method === "POST" && humanReviewMatch) {
           const body = await readBody(request);
           const verdict = String(body.verdict ?? "");
-          if (!["pass", "fail", "needs_changes", "inconclusive"].includes(verdict)) {
+          if (!["pass", "needs_changes"].includes(verdict)) {
             sendJson(response, 400, {
-              error: "verdict 必须是 pass、fail、needs_changes 或 inconclusive",
+              error: "用户验收结论必须是 pass 或 needs_changes",
             });
             return;
           }
-          const evidenceRefs = Array.isArray(body.evidence_refs)
-            ? [...new Set(body.evidence_refs.map(String).map((item) => item.trim()).filter(Boolean))]
-            : [];
           try {
             const goalId = decodeURIComponent(humanReviewMatch[1]);
             const obligationId = decodeURIComponent(humanReviewMatch[2]);
@@ -4063,49 +4369,17 @@ async function handleGoalBoardWebRequest(
               body.idempotency_key ??
               (typeof headerIdempotencyKey === "string" ? headerIdempotencyKey : `web-human-review-${randomUUID()}`),
             );
-            const snapshot = store.snapshot(options.boardId);
-            const goal = snapshot.goals.find((item) => item.goal_id === goalId);
-            const obligation = snapshot.review_obligations.find(
-              (item) => item.goal_id === goalId && item.obligation_id === obligationId,
-            );
-            if (!goal || !obligation) throw new Error("找不到这项用户确认要求");
-            if (obligation.role !== "human_approver") throw new Error("这项 Review 不是用户确认事项");
-            const humanDecisionCriterionIds = obligation.criterion_scope.filter((criterionId) =>
-              goal.acceptance_criteria.some(
-                (criterion) => criterion.criterion_id === criterionId && criterion.decision_method === "human_decision",
-              ),
-            );
-            const result = store.immediate(() => {
-              const reviewResult = coordinator.submitReview({
-                board_id: options.boardId,
-                goal_id: goalId,
-                obligation_id: obligationId,
-                actor_id: "web-user",
-                actor_kind: "user",
-                verdict: verdict as "pass" | "fail" | "needs_changes" | "inconclusive",
-                evidence_refs: evidenceRefs,
-                reasoning,
-                idempotency_key: idempotencyKey,
-              });
-              const humanVerdictResult = verdict === "pass" && humanDecisionCriterionIds.length
-                ? coordinator.submitEvidence({
-                    board_id: options.boardId,
-                    goal_id: goalId,
-                    actor_id: "web-user",
-                    review_id: reviewResult.review.review_id,
-                    criterion_ids: humanDecisionCriterionIds,
-                    kind: "human_verdict",
-                    locator: `review://${reviewResult.review.review_id}`,
-                    digest: reasoning,
-                    result: "passed",
-                    idempotency_key: `${idempotencyKey}:human-verdict`,
-                  })
-                : null;
-              return {
-                ...reviewResult,
-                human_verdict_evidence: humanVerdictResult?.evidence ?? null,
-                observed_event_cursor: humanVerdictResult?.observed_event_cursor ?? reviewResult.observed_event_cursor,
-              };
+            const result = coordinator.submitHumanReviewFromDialogue({
+              board_id: options.boardId,
+              goal_id: goalId,
+              obligation_id: obligationId,
+              attention_token: String(body.attention_token ?? ""),
+              verdict: verdict === "pass" ? "approve" : "request_changes",
+              user_id: "web-user",
+              session_id: `web:${options.boardId}`,
+              message_id: idempotencyKey,
+              exact_user_quote: reasoning,
+              idempotency_key: idempotencyKey,
             });
             webViewCache.delete(options.databasePath);
             sendJson(response, 200, result);
@@ -4162,6 +4436,8 @@ async function handleGoalBoardWebRequest(
               locator_context: { project_root: options.projectRoot ?? null },
               digest: digest || null,
               result: result as Parameters<GoalBoardCoordinator["submitEvidence"]>[0]["result"],
+              contract_revision: Number.isInteger(body.contract_revision) ? Number(body.contract_revision) : undefined,
+              action_token: typeof body.action_token === "string" ? body.action_token : undefined,
               idempotency_key: String(body.idempotency_key ?? `web-evidence-${randomUUID()}`),
             });
             sendJson(response, 201, resultValue);

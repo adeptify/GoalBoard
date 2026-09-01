@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { GoalBoardProjectCatalog, type RuntimeWorkContext } from "../src/projects/catalog.js";
 
-test("a known workspace suggests a Project but never silently binds a fresh Runtime Session", async () => {
+test("one exact workspace Project reconnects a fresh Runtime Session without writing a binding", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "goalboard-workspace-suggestion-"));
   const home = path.join(directory, ".goalboard");
   const workspacePath = path.join(directory, "repository");
@@ -27,9 +27,10 @@ test("a known workspace suggests a Project but never silently binds a fresh Runt
     };
 
     const resolution = catalog.resolveRuntimeContext(context);
-    assert.equal(resolution.status, "suggested");
-    assert.equal(resolution.project, null);
-    assert.deepEqual(resolution.suggested_projects.map((item) => item.project_id), [project.project_id]);
+    assert.equal(resolution.status, "bound");
+    assert.equal(resolution.project?.project_id, project.project_id);
+    assert.equal(resolution.connection?.project_id, project.project_id);
+    assert.deepEqual(resolution.suggested_projects, []);
     assert.equal(catalog.listRuntimeContextBindings().length, 0);
     assert.equal(catalog.listWorkspaceMemberships().some((membership) => membership.is_default), false);
   } finally {

@@ -69,6 +69,9 @@ test("release version sources agree before packaging", () => {
 test("native Desktop identity self-heals before layout and survives full-page navigation", () => {
   assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /__TAURI_INTERNALS__\|\|globalThis\.__TAURI__/);
   assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /document\.documentElement\.dataset\.nativeDesktop="true"/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /--desktop-native-project-safe-inline-start","88px"/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /--desktop-native-settings-safe-inline-start","80px"/);
+  assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /--desktop-native-titlebar-control-offset-y","-8px"/);
   assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /next\.searchParams\.set\("desktop","1"\)/);
   assert.match(NATIVE_DESKTOP_BOOTSTRAP_SCRIPT, /location\.replace\(normalized\)/);
   assert.match(WEB_RENDER_SOURCE, /const THEME_BOOTSTRAP_SCRIPT = `\$\{BASE_THEME_BOOTSTRAP_SCRIPT\}\$\{NATIVE_DESKTOP_BOOTSTRAP_SCRIPT\}`/);
@@ -531,6 +534,17 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.doesNotMatch(browserMarkup, /data-native-desktop="true"|data-tauri-drag-region/);
     assert.match(browser, /class="desktop-project-switcher navigator-project-menu"/);
     assert.match(browser, /data-desktop-directory="root"/);
+    const rootDirectory = browser.match(/<section class="desktop-directory-panel desktop-directory-root"[\s\S]*?<\/section>/)?.[0];
+    assert.ok(rootDirectory);
+    for (const label of ["Inbox", "Goals", "Sessions", "Feed", "来源"]) {
+      assert.match(
+        rootDirectory,
+        new RegExp(`<strong>${label}</strong><small>[^<]*</small></span><svg aria-hidden="true"><use href="#icon-chevron-right"></use></svg></button>`),
+      );
+    }
+    assert.doesNotMatch(rootDirectory, /<strong>工作目录<\/strong>|data-directory-open="workspaces"/);
+    assert.doesNotMatch(rootDirectory, /<em>\d+<\/em>/);
+    assert.equal([...rootDirectory.matchAll(/<em>规划中<\/em>/g)].length, 2);
     assert.match(directGoal, /data-desktop-directory="goals"/);
     assert.match(directGoal, /data-directory-panel="goals">/);
     assert.match(browser, /class="desktop-workbench-bar"/);
@@ -569,7 +583,11 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.match(desktop, /\.tui-stage \{[^}]*padding: 10px 12px 12px/);
     assert.match(desktop, /grid-template-areas: "guard" "actions" "terminal"/);
     assert.match(desktop, /class="tui-owner"/);
+    assert.match(desktop, /class="tui-owner-copy"/);
+    assert.match(desktop, /class="tui-owner-actions"/);
     assert.match(desktop, /<strong data-tui-owner-title>/);
+    assert.match(desktop, /class="goal-status goal-status--[a-z_]+"[^>]*data-tui-owner-status/);
+    assert.doesNotMatch(desktop, /<small data-tui-owner-status/);
     assert.match(desktop, /<b>绑定到 Goal<\/b>/);
     assert.match(desktop, /class="tui-mode-label">终端<\/span>/);
     assert.doesNotMatch(desktop, /data-navigator-heading>目标导航/);
@@ -637,7 +655,7 @@ test("Web and Desktop share one project workbench; Desktop only adds native chro
     assert.match(desktop, /data-close-work-tab=/);
     assert.match(desktop, /workTabsStorageKey = "goalboard-work-tabs:"/);
     assert.match(desktop, /goalUiStorageKey \+ ":inbox"/);
-    assert.match(desktop, /const desktopNavigationStateVersion = 2/);
+    assert.match(desktop, /const desktopNavigationStateVersion = 3/);
     assert.match(desktop, /navigationVersion: desktopNavigationStateVersion/);
     assert.match(desktop, /const setDesktopWorkSurface = \(surface, persist = true, restoreScroll = true\) =>/);
     assert.match(desktop, /surfaceScroll: \{ \.\.\.desktopSurfaceScroll, \[activeDesktopSurface\]: documentPane\.scrollTop \}/);
@@ -681,14 +699,14 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
 
     const index = await webFetch(`${origin}/`);
     const indexHtml = await index.text();
-    assert.match(indexHtml, /每个项目管理自己的 Goals、Sessions 和工作目录/);
+    assert.match(indexHtml, /每个项目管理自己的 Goals 和 Sessions；工作目录在新建或关联 Session 时选择/);
     assert.match(indexHtml, new RegExp(`href="${prefix}"`));
     assert.doesNotMatch(indexHtml, /class="tui-pane"|pty-client\.js/);
 
     const desktopIndex = await webFetch(`${origin}/?desktop=1`);
     assert.equal(desktopIndex.headers.get("set-cookie"), null);
     const desktopIndexHtml = await desktopIndex.text();
-    assert.match(desktopIndexHtml, /每个项目管理自己的 Goals、Sessions 和工作目录/);
+    assert.match(desktopIndexHtml, /每个项目管理自己的 Goals 和 Sessions；工作目录在新建或关联 Session 时选择/);
     assert.match(desktopIndexHtml, new RegExp(`href="${prefix}\\?desktop=1"`));
 
     const cookieResponse = await webFetch(`${origin}${prefix}/goals/TUI-GOAL`, {
@@ -911,9 +929,12 @@ test("TUI client rejects cross-Goal and parent writes before touching the PTY ch
   assert.match(client, /mode === "start" \|\| mode === "reopen"/);
   assert.match(client, /panelLoadSequence/);
   assert.match(client, /parentReadOnly/);
+  assert.match(client, /className\.startsWith\("goal-status--"\)/);
+  assert.match(client, /ownerStatusEl\.classList\.add\(`goal-status--\$\{status\}`\)/);
+  assert.match(client, /detail\.statusIconMarkup/);
   assert.match(
     client,
-    /goalboard:goal-changed[\s\S]{0,900}panelLoadSequence \+= 1;[\s\S]{0,260}showTerminal\(null\)/,
+    /goalboard:goal-changed[\s\S]{0,1800}panelLoadSequence \+= 1;[\s\S]{0,260}showTerminal\(null\)/,
   );
   assert.match(
     client,
@@ -936,6 +957,15 @@ test("Feed processing opens Runtime and fills context without sending it", () =>
   assert.match(PTY_CLIENT_SOURCE, /data: send \? `\$\{fillText\}\\r` : fillText/);
   assert.match(PTY_CLIENT_SOURCE, /Item 上下文已填入，检查后再发送/);
   assert.doesNotMatch(PTY_CLIENT_SOURCE, /fillPendingFeedContext[\s\S]{0,1200}writePrompt\(true\)/);
+});
+
+test("Onboarding opens one Goal-bound TUI and fills the advance prompt without sending it", () => {
+  assert.match(PTY_CLIENT_SOURCE, /goalboard-onboarding-runtime-autofill:/);
+  assert.match(PTY_CLIENT_SOURCE, /await openPanel\(\{ runtime_kind: pending\.runtimeKind, cwd: pending\.workspacePath \}\)/);
+  assert.match(PTY_CLIENT_SOURCE, /await waitForTerminalOutput\(panel\.panel_id\)/);
+  assert.match(PTY_CLIENT_SOURCE, /await writePrompt\(false\)/);
+  assert.match(PTY_CLIENT_SOURCE, /初始化提示已填入，检查后再发送/);
+  assert.doesNotMatch(PTY_CLIENT_SOURCE, /fillPendingOnboardingContext[\s\S]{0,1800}writePrompt\(true\)/);
 });
 
 test("Feed Item actions create one bound Goal and expose its source context to Terminal", async () => {

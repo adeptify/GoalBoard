@@ -1,3 +1,5 @@
+import type { GoalDisplayStatus } from "../v1/types.js";
+
 export interface GoalMomentumEventInput {
   type: string;
   at: string;
@@ -8,6 +10,7 @@ export interface GoalMomentumGoalInput {
   title: string;
   status: string;
   work_state: string;
+  display_status: GoalDisplayStatus;
   priority: number;
   created_at: string;
   updated_at: string;
@@ -109,12 +112,6 @@ export interface GoalMomentumAction {
   unsatisfied_provider_goal_ids: string[];
 }
 
-const NON_STARTABLE_WORK_STATES = new Set([
-  "waiting_children",
-  "replaced",
-  "invalidated",
-]);
-
 export interface GoalMomentumIntegrity {
   dangling_relation_ids: string[];
   dependency_cycle_goal_ids: string[];
@@ -137,17 +134,6 @@ export interface GoalMomentumView {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_RISK_STATES = new Set(["open", "triggered"]);
 const PROGRESS_EVENT_PREFIXES = ["run.", "evidence.", "review.", "contract_", "relation."];
-const IN_PROGRESS_STATES = new Set([
-  "executing",
-  "completion_pending",
-  "completion_blocked",
-  "review_pending",
-  "reviewing",
-  "review_blocked",
-  "waiting_for_human",
-  "revalidating",
-]);
-
 function compareGoal(left: GoalMomentumGoalInput, right: GoalMomentumGoalInput): number {
   return left.title.localeCompare(right.title) || left.goal_id.localeCompare(right.goal_id);
 }
@@ -206,7 +192,7 @@ function firstBlockingAt(goal: GoalMomentumGoalInput): number | null {
       .filter((risk) => ACTIVE_RISK_STATES.has(risk.state) && risk.blocking_mode !== "none")
       .map((risk) => risk.risk_id),
   );
-  if (!activeBlockingRiskIds.size && !goal.work_state.includes("blocked")) return null;
+  if (goal.display_status !== "blocked") return null;
   const eventTimes = goal.events
     .filter((event) => ["risk.created", "risk.added", "risk.open", "risk.triggered"].includes(event.type))
     .map((event) => time(event.at))
@@ -282,6 +268,104 @@ function cadenceFor(
 function insertSorted(queue: string[], value: string, byId: ReadonlyMap<string, GoalMomentumGoalInput>): void {
   queue.push(value);
   queue.sort((left, right) => compareGoal(byId.get(left)!, byId.get(right)!));
+}
+
+function assignDependencyRows(
+  membersByLevel: Map<number, GoalMomentumGoalInput[]>,
+  providers: ReadonlyMap<string, readonly string[]>,
+  consumers: ReadonlyMap<string, readonly string[]>,
+): Map<string, number> {
+  const levels = [...membersByLevel.keys()].sort((left, right) => left - right);
+  const rowCount = Math.max(1, ...[...membersByLevel.values()].map((members) => members.length));
+  const rowByGoal = new Map<string, number>();
+  for (const members of membersByLevel.values()) {
+    const denominator = Math.max(1, members.length - 1);
+    members.forEach((member, index) => {
+      rowByGoal.set(
+        member.goal_id,
+        members.length === 1 ? 0 : Math.round(index / denominator * (rowCount - 1)),
+      );
+    });
+  }
+  if (levels.length < 2 || rowCount < 2) return rowByGoal;
+  const memberIds = new Set(
+    [...membersByLevel.values()].flatMap((members) => members.map((member) => member.goal_id)),
+  );
+
+  const nearestUniqueRows = (
+    members: readonly GoalMomentumGoalInput[],
+    targetFor: (goalId: string) => number,
+  ): Map<string, number> => {
+    const ordered = [...members].sort((left, right) =>
+      targetFor(left.goal_id) - targetFor(right.goal_id) || compareGoal(left, right)
+    );
+    const memberCount = ordered.length;
+    const costs: number[][] = Array.from({ length: memberCount }, () =>
+      Array.from({ length: rowCount }, () => Number.POSITIVE_INFINITY)
+    );
+    const previous: number[][] = Array.from({ length: memberCount }, () =>
+      Array.from({ length: rowCount }, () => -1)
+    );
+    for (let row = 0; row <= rowCount - memberCount; row += 1) {
+      costs[0]![row] = Math.abs(row - targetFor(ordered[0]!.goal_id));
+    }
+    for (let index = 1; index < memberCount; index += 1) {
+      let bestCost = Number.POSITIVE_INFINITY;
+      let bestRow = -1;
+      for (let row = index; row < rowCount; row += 1) {
+        const candidateRow = row - 1;
+        const candidateCost = costs[index - 1]![candidateRow]!;
+        if (candidateCost < bestCost) {
+          bestCost = candidateCost;
+          bestRow = candidateRow;
+        }
+        if (row > rowCount - (memberCount - index)) continue;
+        costs[index]![row] = bestCost + Math.abs(row - targetFor(ordered[index]!.goal_id));
+        previous[index]![row] = bestRow;
+      }
+    }
+    let finalRow = 0;
+    let finalCost = Number.POSITIVE_INFINITY;
+    for (let row = memberCount - 1; row < rowCount; row += 1) {
+      if (costs[memberCount - 1]![row]! < finalCost) {
+        finalCost = costs[memberCount - 1]![row]!;
+        finalRow = row;
+      }
+    }
+    const assigned = new Map<string, number>();
+    for (let index = memberCount - 1; index >= 0; index -= 1) {
+      assigned.set(ordered[index]!.goal_id, finalRow);
+      finalRow = previous[index]![finalRow] ?? -1;
+    }
+    return assigned;
+  };
+
+  const reorder = (
+    level: number,
+    neighbors: ReadonlyMap<string, readonly string[]>,
+  ) => {
+    const members = membersByLevel.get(level);
+    if (!members?.length) return;
+    const barycenter = (goalId: string): number => {
+      const positions = (neighbors.get(goalId) ?? [])
+        .filter((neighborId) => memberIds.has(neighborId))
+        .map((neighborId) => rowByGoal.get(neighborId))
+        .filter((value): value is number => value !== undefined);
+      if (!positions.length) return rowByGoal.get(goalId) ?? 0;
+      return positions.reduce((sum, value) => sum + value, 0) / positions.length;
+    };
+    for (const [goalId, row] of nearestUniqueRows(members, barycenter)) rowByGoal.set(goalId, row);
+  };
+
+  // Alternating provider and consumer sweeps share one absolute row grid across
+  // every level. Sparse levels keep intentional slots instead of being packed
+  // back to row zero, so the row coordinate used by a node also describes the
+  // dependency lines that enter and leave it.
+  for (let pass = 0; pass < 6; pass += 1) {
+    levels.slice(1).forEach((level) => reorder(level, providers));
+    [...levels].reverse().slice(1).forEach((level) => reorder(level, consumers));
+  }
+  return rowByGoal;
 }
 
 export function buildGoalMomentumView(
@@ -429,8 +513,9 @@ export function buildGoalMomentumView(
     }
     for (const levelMembers of membersByLevel.values()) levelMembers.sort(compareGoal);
     const rowCount = Math.max(1, ...[...membersByLevel.values()].map((levelMembers) => levelMembers.length));
-    for (const levelMembers of membersByLevel.values()) {
-      levelMembers.forEach((member, index) => rowByGoal.set(member.goal_id, rowCursor + index));
+    const alignedRows = assignDependencyRows(membersByLevel, providers, consumers);
+    for (const member of members) {
+      rowByGoal.set(member.goal_id, rowCursor + (alignedRows.get(member.goal_id) ?? 0));
     }
     const memberLevels = members.map((member) => levels.get(member.goal_id) ?? 0);
     groups.push({
@@ -453,10 +538,7 @@ export function buildGoalMomentumView(
     const unsatisfiedProviderGoalIds = providerGoalIds.filter((providerId) => !byId.get(providerId)?.completed);
     const downstreamGoalIds = downstreamFor(goal.goal_id);
     const downstreamOpenCount = downstreamGoalIds.filter((consumerId) => !byId.get(consumerId)?.completed).length;
-    const activeBlockingRisk = goal.risks.some(
-      (risk) => ACTIVE_RISK_STATES.has(risk.state) && risk.blocking_mode !== "none",
-    );
-    const blocked = goal.work_state.includes("blocked") || activeBlockingRisk;
+    const blocked = goal.display_status === "blocked";
     const activity = goalActivityTimes(goal);
     const historySufficient = activity.length > 0 || firstSatisfiedAt(goal) !== null || firstBlockingAt(goal) !== null;
     const createdAt = time(goal.created_at);
@@ -478,32 +560,27 @@ export function buildGoalMomentumView(
         ? Math.min(1, goal.passed_criteria_count / goal.acceptance_criteria_count)
         : goal.completed ? 1 : 0,
       blocked,
-      startable: !goal.completed &&
-        !blocked &&
-        !NON_STARTABLE_WORK_STATES.has(goal.work_state) &&
-        unsatisfiedProviderGoalIds.length === 0,
+      startable: !goal.completed && goal.display_status === "continue" && unsatisfiedProviderGoalIds.length === 0,
       stale,
       history_sufficient: historySufficient,
     };
   });
   const nodesById = new Map(nodes.map((node) => [node.goal_id, node]));
   const actions = nodes
-    .filter((node) => !node.completed && !NON_STARTABLE_WORK_STATES.has(node.work_state))
+    .filter((node) => !node.completed)
     .map((node): GoalMomentumAction => {
-      const waitingForHuman = node.work_state === "waiting_for_human" || node.reasons.some((reason) =>
-        reason.code.includes("user_confirmation") || reason.code.includes("human_approval")
-      );
-      const nearComplete = IN_PROGRESS_STATES.has(node.work_state) || node.completion_ratio >= .6;
-      if (waitingForHuman && node.downstream_open_count > 0) {
+      const waitingForHuman = node.display_status === "waiting_user";
+      const nearComplete = node.display_status === "in_progress" || node.completion_ratio >= .6;
+      if (waitingForHuman) {
         return { goal_id: node.goal_id, tier: 1, kind: "decide", downstream_open_count: node.downstream_open_count, unsatisfied_provider_goal_ids: node.unsatisfied_provider_goal_ids };
       }
-      if (nearComplete && node.downstream_open_count > 0) {
+      if (nearComplete && node.display_status !== "blocked" && node.display_status !== "waiting") {
         return { goal_id: node.goal_id, tier: 2, kind: "finish", downstream_open_count: node.downstream_open_count, unsatisfied_provider_goal_ids: node.unsatisfied_provider_goal_ids };
       }
       if (node.startable && node.downstream_open_count >= 2) {
         return { goal_id: node.goal_id, tier: 3, kind: "start_high_impact", downstream_open_count: node.downstream_open_count, unsatisfied_provider_goal_ids: [] };
       }
-      if (node.stale && node.downstream_open_count <= 1) {
+      if (node.stale && node.startable && node.downstream_open_count <= 1) {
         return { goal_id: node.goal_id, tier: 5, kind: "revive", downstream_open_count: node.downstream_open_count, unsatisfied_provider_goal_ids: node.unsatisfied_provider_goal_ids };
       }
       if (node.startable) {

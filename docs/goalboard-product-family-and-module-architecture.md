@@ -1,7 +1,7 @@
 # GoalBoard 产品族与模块架构草案
 
 状态：工作草案
-日期：2026-08-29
+日期：2026-09-01
 用途：记录 GoalBoard、Relay、Loreport 重组方向，作为后续模块 Contract、Desktop UI 和 Server 设计的共同输入。本文不是已经接受的实现 Contract；“已确认”与“开放问题”必须分开维护。
 
 ## 1. 为什么需要重新整理
@@ -73,6 +73,16 @@ Relay 不应被整体归入 Desktop 或 Server。它的 Connector、Source、同
 
 Relay 自己已有的 Team Workspace、Goal 相似状态和权限系统不应继续与 GoalBoard Server 平行扩张。
 
+### 2.8 团队共享上下文与个人任务上下文必须分开
+
+团队共同拥有已经接受的 Project Context：Goal、Decision、Evidence、Canonical Artifact、共享关系和可追溯历史。个人拥有自己正在完成某项 Task 的私人上下文：Prompt、草稿、失败尝试、临时笔记、详细 Run 记录和未完成判断。
+
+Task 的目标、负责人和公共状态可以对团队可见，但私人过程默认只对负责人及其明确授权的 Runtime 可见。结果和过程不会因 Run 完成、管理员身份或对象之间存在关系而自动共享。负责人必须主动选择仅结果、结果与证据、或选定的完整工作记录，再通过 Proposal 交给有权限的人复核。
+
+### 2.9 团队接受与实际落地是两个阶段
+
+Reviewer 接受 Proposal 表示团队做出了一个 Decision，并同意一组精确变更；它不证明 Artifact、Goal 和 Relation 已经全部更新。跨领域变更必须由可恢复的 Materialization Operation 逐项落地，保留 Revision、幂等身份、Receipt、冲突和未知结果。界面必须分别显示“决定已接受”“正在应用”“已成为共享真相”“失败”和“结果不确定”。
+
 ## 3. 产品族的当前假设
 
 ```text
@@ -82,6 +92,8 @@ GoalBoard
 │   ├── Personal Action
 │   ├── Attention & Workline
 │   ├── Personal / synced Goal
+│   ├── Private Task Context
+│   ├── Disclosure Builder
 │   ├── Local Relay Host
 │   └── Local Runtime / Run / Evidence
 │
@@ -92,8 +104,10 @@ GoalBoard
     ├── Feed Storage & Delivery
     ├── Goal Graph
     ├── Promotion & Review
+    ├── Sealed Disclosure Bundle
     ├── Handoff & Collaboration
-    └── Shared Decision / Artifact / Evidence
+    ├── Shared Decision / Artifact / Evidence
+    └── Context Ledger & Materialization
 ```
 
 这张图只表达产品边界，不等于代码仓库、进程或微服务边界。
@@ -209,7 +223,28 @@ Action 不是 Goal 的叶子副本。Goal 内部仍遵循“可执行叶子 Goal
 
 Plan 和 TaskBoard 继续作为 Goal Spine 的派生视图，不建立第二套可写的 Plan 或 Goal Task 真相。
 
-### 4.6 Work & Execution
+### 4.6 Private Work Context
+
+职责：在 accepted executable Goal、Action 或 Handoff 锚定的团队工作目标之下，保存负责人私有的工作过程，并生成执行输入与选择性发布候选。
+
+主要实体：
+
+- WorkContextProjection：锚点、负责人和公共状态的团队投影
+- PrivateTaskContext：负责人私有工作区
+- TaskInputSnapshot：供一次 Run 使用的不可变输入
+- WorkEntry：Prompt、草稿、笔记、失败尝试、选择的来源和 Run 观察
+- ExecutionScope：Runtime 可读输入、可写输出、禁用数据与时效边界
+- DisclosureCandidate：负责人准备发布的选择和排除摘要
+
+边界：
+
+- Work Context 不是第二套 Task backlog，不拥有 Goal Contract、Goal 完成、Claim 或 Run 状态；
+- Project admin 不因角色自动获得 PrivateTaskContext 内容读取权；
+- Runtime 只读 ExecutionScope 明确列出的输入，不能浏览完整私人上下文；
+- Run 完成和 Task 完成都不会自动发布内容；
+- 本模块只产生 DisclosureCandidate，Collaboration 负责封装、评审和团队决定。
+
+### 4.7 Work & Execution
 
 职责：记录谁以什么角色领取工作、一次执行如何进行、是否阻塞以及执行引擎的真实回执。
 
@@ -232,7 +267,7 @@ Goal ready → claim requested → claim active → run started
 
 Relay 的 Assignment 应适配为 Claim 或执行投递请求；Relay Job 应适配为 Run，不再形成另一套工作真相。
 
-### 4.7 Evidence & Artifact
+### 4.8 Evidence & Artifact
 
 职责：保存产出、证明、版本和验证结论。
 
@@ -240,19 +275,25 @@ Relay 的 Assignment 应适配为 Claim 或执行投递请求；Relay Job 应适
 
 - Artifact
 - ArtifactVersion
+- ContentReference
+- ArtifactProvenance
 - Evidence
 - EvidenceCorrection
 - ReviewObligation
 - VerificationReview
+- ExternalArtifactAction
 
 边界：
 
 - Artifact 是可持续引用和版本化的产出；
+- ArtifactVersion 内容不可原地修改，首版一个 Artifact 至多有一个 Canonical head；
+- ArtifactProvenance 连接 Signal、Goal、Task、Run、Proposal、Reviewer、Decision 与 Receipt；
 - Evidence 说明某个来源或 Artifact 如何证明某条 Criterion；
 - VerificationReview 判断 Goal 的完成条件是否成立；
+- 团队接受、Goal 验收和外部 Publish / Apply 是三种不同判断；
 - 原始 Evidence 不静默改写，通过 supersede / retract 纠正。
 
-### 4.8 Collaboration
+### 4.9 Collaboration
 
 职责：处理跨个人与团队边界的发布、评审、交接和共同决定。
 
@@ -262,8 +303,9 @@ Relay 的 Assignment 应适配为 Claim 或执行投递请求；Relay Job 应适
 - PromotionProposal
 - DisclosureBundle
 - ProposalDecision
+- ProjectDecision（在 Team Space 中显示为 Team Decision）
+- MaterializationIntent
 - Handoff
-- TeamDecision
 
 Proposal 需要类型化：
 
@@ -274,7 +316,16 @@ Proposal 需要类型化：
 
 ProposalDecision 与 VerificationReview 是两种不同判断，不能继续共用模糊的 Review 语义。
 
-### 4.9 Attention & Resumption
+私人工作发布还必须满足：
+
+- DisclosureBundle 固化一个精确私人来源版本，只包含负责人选中的内容；
+- 第一版支持仅结果、结果与证据、选定完整工作记录三种披露深度；
+- Reviewer 只能读取 Bundle、来源许可范围和目标模块生成的变更预览，不能沿引用进入 PrivateTaskContext；
+- Reject 和 Request revision 不产生 Canonical 变更；
+- Accept 创建不可变的 ProposalDecision、ProjectDecision 与 MaterializationIntent，随后由 Context Ledger & Materialization 负责落地；
+- ProjectDecision 的 effect_status 必须与评审 verdict 分开，直到所有必需变更被证明完成。
+
+### 4.10 Attention & Resumption
 
 职责：帮助个人决定此刻关注什么，减少切换成本，并能够从中断处继续。
 
@@ -294,7 +345,34 @@ ProposalDecision 与 VerificationReview 是两种不同判断，不能继续共�
 queued → focused → suspended / interrupted → resumed → closed
 ```
 
-### 4.10 Sync & Replication
+### 4.11 Context Ledger & Materialization
+
+职责：保存跨领域对象的中立索引、关系、共享事件、幂等记录和一次团队决定的跨领域落地进度。
+
+主要实体：
+
+- ContextRegistryEntry
+- Relation
+- ProjectEventRecord
+- IdempotencyRecord
+- MaterializationOperation
+- MaterializationStep
+- OperationReceipt
+
+该模块不拥有 Goal、Task、Run、Proposal 或 Artifact payload，也不是通用工作流引擎。它只接受已经授权的 MaterializationIntent，把每一步路由到唯一领域 owner，并如实记录 applied、no_change、retryable、failed、pending 或 uncertain。
+
+内部工作流：
+
+```text
+planned → running → completed
+             ├── blocked → running
+             ├── uncertain → running / completed / failed
+             └── failed
+```
+
+completed 只在所有必需步骤和最终 Project Event Journal 检查点完成后成立。重启和重复调用必须从同一 Operation 与幂等身份恢复，不能产生第二份 Canonical Artifact、Goal 变更或 Relation。
+
+### 4.12 Sync & Replication
 
 职责：在 Server、Desktop 和其他 Node 之间可靠复制允许共享的状态。
 
@@ -308,7 +386,7 @@ queued → focused → suspended / interrupted → resumed → closed
 - Conflict
 - SyncReceipt
 
-该模块不拥有业务对象。它只传播业务模块已经接受的变化，并保留幂等、顺序、恢复和审计所需的信息。
+该模块不拥有业务对象，也不决定一个 Proposal 是否已经落地。它只传播业务模块已经接受的变化，并保留设备复制所需的顺序、恢复和冲突信息；跨领域业务落地由 Context Ledger & Materialization 负责。
 
 ## 5. 核心对象流动原则
 
@@ -334,16 +412,19 @@ SourceEvent → Signal → FeedEntry
 - Source & Connector 拥有外部连接和同步游标；
 - Signal & Feed 拥有收到的内容和 Feed 处理状态；
 - Goal Core 拥有 Goal Contract 和 Goal Graph；
+- Private Work Context 拥有工作上下文公共投影、负责人私人过程、执行快照和披露候选；
 - Work & Execution 拥有 Claim / Run；
 - Evidence & Artifact 拥有产出和验证记录；
-- Collaboration 拥有跨空间发布与决定；
+- Collaboration 拥有 DisclosureBundle、跨空间发布、评审、Decision 和 MaterializationIntent；
 - Attention 只拥有个人关注顺序和恢复状态。
+- Context Ledger & Materialization 拥有跨对象关系、共享事件和落地进度；
+- Sync & Replication 只拥有设备副本、游标和复制冲突。
 
 ### 5.3 UI 可以组合，写入必须回到拥有模块
 
 个人工作台可以在同一屏显示 Feed、Action、Goal、Run 和 Decision，但操作必须调用各自模块的命令，不能让 UI 创建一份新的综合状态。
 
-## 6. 四条主工作流
+## 6. 五条主工作流
 
 ### 6.1 外部信息进入 Feed
 
@@ -377,7 +458,25 @@ FeedEntry / Action / Personal Goal
   → link original private object without broadening access
 ```
 
-### 6.4 Goal 执行与完成
+### 6.4 私人工作结果进入共享 Project Context
+
+```text
+Team Goal / accepted objective
+  → create team-visible Work Context projection + owner-private Task Context
+  → freeze TaskInputSnapshot and ExecutionScope
+  → Run
+  → private Draft Artifact
+  → choose disclosure depth
+  → seal DisclosureBundle
+  → Proposal / Review
+  → ProjectDecision with pending effect
+  → MaterializationOperation
+  → Canonical Artifact + Goal effect + Relations + Project Event Journal
+```
+
+这条流的关键不是“发一个结果”，而是未披露过程仍然私有、Reviewer 看到精确变更、Reject / Revise 不改变共享真相、重复 Accept 或重启后只落地一次，以及后来的成员不读原聊天也能恢复结果的来源和影响。
+
+### 6.5 Goal 执行与完成
 
 ```text
 accepted executable Goal
@@ -405,6 +504,7 @@ replication_policy  none | selected | full
 ### 7.1 当前倾向的 Desktop 职责
 
 - 个人工作台和注意力入口；
+- Private Task Context、TaskInputSnapshot 和 Disclosure Builder；
 - 本地 Connector 与系统 Keychain；
 - 本地文件、应用和 Runtime 接入；
 - 本地 Run、终端和详细执行状态；
@@ -417,7 +517,9 @@ replication_policy  none | selected | full
 - 云端 Source、持续同步和 Feed 存储；
 - Team Goal 和需要云同步的 Personal Goal；
 - Promotion、权限、交接和团队决定；
+- Sealed DisclosureBundle、Proposal Review 和 ProjectDecision；
 - 共享 Artifact / Evidence；
+- Context Registry、Relation、Project Event Journal 和 MaterializationOperation；
 - Device 增量同步、重放和恢复。
 
 ### 7.3 典型来源模式
@@ -454,6 +556,8 @@ authority 接受 Command
 5. 凭据不随 FeedItem 同步，Desktop 不需要获得云端 OAuth Token；
 6. 私人对象的同步不会自动扩大 visibility；
 7. 删除、撤回、断连和不确定写回都必须有可恢复状态。
+
+同步与 Materialization 是两套不同责任：Materialization 证明一次团队决定是否已经在各领域成为 Canonical；Sync 只把这些已接受变化可靠复制到其他 Node。设备已经收到更新不能反过来证明 Proposal 已经应用成功。
 
 ## 9. 三个现有项目的保留、替换与忽略
 
@@ -504,14 +608,17 @@ authority 接受 Command
 
 - Space、IAM、Authority、Proposal/Review；
 - 私人到共享的显式发布边界；
+- 工作上下文公共投影、负责人私有 Task Context、执行快照和三档披露；
+- Reviewer 只读 sealed DisclosureBundle，不获得源工作区访问；
 - Artifact、Decision、Relation、Event 和恢复设计；
+- Decision 与 effect 分离、MaterializationOperation、Revision、幂等和 uncertain 语义；
 - Web 多人 Team Space 的架构经验。
 
 替换：
 
 - 产品定位调整为 GoalBoard Server；
 - Signals 不再限定为 Server 内的第一入口，而是与统一 Signal & Feed 模块对齐；
-- Task Room 私人执行能力回到 GoalBoard Desktop；
+- Task Room 的产品语义并入 Private Work Context；内容可按策略留在 GoalBoard Desktop 或负责人私有 Server 空间，但不会退化成普通 Session 日志；
 - Execution/Relay 改成对 Relay Host 和 Desktop Node 的适配。
 
 忽略：
@@ -522,9 +629,11 @@ authority 接受 Command
 ## 10. 仓库策略草案
 
 - `goalboard`：继续承载现有 Goal Core 和 Desktop，近期先把 UI 转化为个人工作台；
-- `loreport`：候选 GoalBoard Server 仓库，正式执行前需要用新方向替换当前“独立产品 Host”的 accepted 决策；
+- `loreport`：保留为 GoalBoard Server / Team Context 的设计来源和候选实现仓库；正式执行前需要用新方向替换当前“独立产品 Host”的 accepted 决策；
 - `relay`：暂时保留为能力来源和真实实现，优先通过 adapter 验证边界，再决定提取 package 或迁移代码；
 - 不立即进行大规模物理合仓或仓库改名。
+
+Loreport 只有在 GoalBoard 的 accepted 模块 Contract 和可执行 spec 已接管其全部唯一语义、Loreport 文档全部被可追踪地 supersede，并分别确认本地目录与 GitHub 仓库处理方式后，才可归档或删除。未来规划中出现同名能力不等于迁移已经完成；是否已经实现则是另一项完成等级判断，不能与文档迁移混为一谈。
 
 ## 11. 近期执行顺序
 
@@ -538,11 +647,20 @@ authority 接受 Command
 
 ```text
 SourceEvent → Signal → FeedEntry → Action / Goal → Promotion
+
+Goal / Action / Handoff → WorkContextProjection + PrivateTaskContext
+                      → TaskInputSnapshot → Run → Draft Artifact
+                      → DisclosureCandidate → DisclosureBundle → Proposal / Review
 ```
 
 ### 第三阶段：部署与同步 Contract
 
-在实体所有权确定后，设计 Server/Desktop authority、存储策略、同步协议和隐私边界。
+在实体所有权确定后，分别设计：
+
+- Context Registry、Relation、Project Event Journal 和 MaterializationOperation；
+- Server/Desktop authority、存储策略、同步协议和隐私边界。
+
+两者不能共用“同步成功”这一状态代替业务落地结果。
 
 ### 第四阶段：第一个端到端真实闭环
 
@@ -558,6 +676,14 @@ Server RSS → Personal Feed → Desktop → Personal Goal → 本地 Run → Ev
 Personal Feed / Goal → Promotion → Team Goal → Handoff → Desktop 继续执行
 ```
 
+团队上下文闭环必须继续走完：
+
+```text
+Goal-anchored Work Context → Private Task Context → Run → Draft Artifact
+→ Disclosure Bundle → Review → Decision → Materialization
+→ Canonical Artifact / Goal effect / Relations
+```
+
 ## 12. 仍待决定的问题
 
 1. GoalBoard Personal 的首个 UI 切片是“只重组现有真实能力”，还是允许出现 Feed / Action 的可交互原型数据；
@@ -566,7 +692,10 @@ Personal Feed / Goal → Promotion → Team Goal → Handoff → Desktop 继续�
 4. Gmail 第一版默认使用云端持续同步还是仅本机同步；
 5. Team Promotion 的接受权限：有创建 Goal 权限即可接受，还是需要指定 reviewer；
 6. Relay 以 package、独立 daemon 还是 adapter 集合的形式被两端消费；
-7. Loreport 仓库何时正式改名和替换现有 SSOT。
+7. 第一版 Private Task Context 与现有 Session / Work Record 的关系，以及默认本地还是负责人私有 Server；
+8. 第一条 MaterializationOperation 具体落地哪些 Artifact、Goal 和 Relation 变化；
+9. Sealed DisclosureBundle 的内容存储、保留期和撤回边界；
+10. Loreport 仓库何时替换现有 SSOT，以及达到哪些迁移证据后归档或删除。
 
 ## 13. 当前事实来源
 

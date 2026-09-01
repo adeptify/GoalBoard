@@ -71,11 +71,11 @@ describe("mcp server", () => {
     assert.match(selectGoalTool?.description ?? "", /调用前.*goalboard_v1_contract.*当前请求.*Contract.*范围/s);
     assert.ok(names.includes("goalboard_v1_claim_renew"));
     const releaseTool = listedTools.find((tool) => tool.name === "goalboard_v1_release");
-    assert.match(releaseTool?.description ?? "", /成功响应.*handoff.*goalboard_v1_available/s);
+    assert.match(releaseTool?.description ?? "", /释放 Claim.*goalboard_v1_available/s);
     assert.match(releaseTool?.description ?? "", /不授权无关工作/);
     const runReportTool = listedTools.find((tool) => tool.name === "goalboard_v1_run_report");
-    assert.match(runReportTool?.description ?? "", /completed 不会自动释放 Claim/);
-    assert.match(runReportTool?.description ?? "", /goalboard_v1_release.*claim_id.*Available/s);
+    assert.match(runReportTool?.description ?? "", /completed.*Evidence 已齐会自动释放/s);
+    assert.match(runReportTool?.description ?? "", /尚缺依据.*Claim 保留.*补齐完成依据/s);
     assert.ok(names.includes("goalboard_v1_draft_dialogue_start"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_turn"));
     assert.ok(names.includes("goalboard_v1_draft_dialogue_resume"));
@@ -198,10 +198,9 @@ describe("mcp server", () => {
     assert.ok((payloadFor("dependency")?.examples?.length ?? 0) > 0);
     const availableTool = listedTools.find((tool) => tool.name === "goalboard_v1_available");
     assert.match(availableTool?.description ?? "", /暂选候选.*goalboard_v1_contract.*核对.*scope.*goalboard_v1_select_goal/s);
-    assert.match(availableTool?.description ?? "", /blocked_overview.*明确 owner.*explain.*相邻 Goal/s);
-    assert.match(availableTool?.description ?? "", /next_action=complete/);
-    assert.match(availableTool?.description ?? "", /不需要 Claim 或 Run/);
-    assert.match(availableTool?.description ?? "", /默认.*紧凑摘要/);
+    assert.match(availableTool?.description ?? "", /action_projections.*多个动作.*稳定 primary_action/s);
+    assert.match(availableTool?.description ?? "", /action_id \+ action_token/);
+    assert.match(availableTool?.description ?? "", /自动释放和完成.*不再手动 complete/s);
     assert.deepEqual(
       (availableTool?.inputSchema.properties?.detail_level as { enum?: string[] } | undefined)?.enum,
       ["summary", "full"],
@@ -348,8 +347,9 @@ describe("mcp server", () => {
     assert.deepEqual(trashListTool?.inputSchema.properties?.payload.required, []);
     const treeDecisionTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_decide");
     const treeCheckTool = listedTools.find((tool) => tool.name === "goalboard_v1_goal_tree_check");
-    assert.match(treeCheckTool?.description ?? "", /successor_outline/);
-    assert.match(treeCheckTool?.description ?? "", /relation_migration_candidates/);
+    assert.match(treeCheckTool?.description ?? "", /同一 Goal ID/);
+    assert.match(treeCheckTool?.description ?? "", /native contract-update revision/);
+    assert.doesNotMatch(treeCheckTool?.description ?? "", /successor_outline|relation_migration_candidates/);
     assert.match(treeDecisionTool?.description ?? "", /Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract/);
     assert.match(treeDecisionTool?.description ?? "", /confirm_all_pending 全有或全无/);
     assert.match(treeDecisionTool?.description ?? "", /native 或 legacy handle 都可直接使用/);
@@ -578,8 +578,8 @@ describe("mcp server", () => {
     assert.match(skill, /active_claim_lease/);
     assert.match(skill, /goalboard_v1_claim_renew/);
     assert.match(skill, /structured owner\/retry hint/);
-    assert.match(skill, /waiting_for_human/);
-    assert.match(skill, /do not select another Runtime Review/i);
+    assert.match(skill, /`等你`/);
+    assert.match(skill, /stop Runtime review work/i);
   });
 
   it("Runtime Skill keeps one concise entry and routes conditional work progressively", () => {
@@ -621,19 +621,19 @@ describe("mcp server", () => {
     assert.match(skill, /never create an empty “temporary Goal”/);
     assert.match(references.planning, /same Proposal must include both/);
     assert.match(references.planning, /executor may then submit a same-root Proposal containing only the resulting Risk lifecycle item/);
-    assert.match(references.execution, /submit Evidence from the active executor Run/);
+    assert.match(references.execution, /submit Evidence from the scoped active executor Run/);
     assert.match(
       references.execution,
-      /tentative candidate.*goalboard_v1_contract.*in_scope.*out_of_scope.*goalboard_v1_select_goal/s,
+      /tentatively choose.*Contract.*in_scope.*out_of_scope.*goalboard_v1_select_goal/s,
     );
     assert.match(references.execution, /no canonical owner.*no Claim or Run should be created/s);
     assert.match(references.execution, /blocked_overview.*goalboard_v1_explain.*nearest eligible Goal/s);
-    assert.match(references.execution, /completed.*does not auto-release.*goalboard_v1_release.*claim_id/s);
-    assert.match(references.execution, /release the executor Claim.*select the pending independent reviewer/s);
+    assert.match(references.execution, /completed.*Claim stays active.*补齐完成依据/s);
+    assert.match(references.execution, /auto-releases the executor.*select the pending independent reviewer action/s);
     assert.match(references.planning, /confirm_all_pending.*all-or-nothing/);
     assert.match(references.planning, /failed whole change set.*implicit partial application/);
-    assert.match(references.planning, /accepted Goal.*successor_outline.*relation_migration_candidates/s);
-    assert.match(references.planning, /do not guess or silently migrate relations/i);
+    assert.match(references.planning, /same Goal ID.*Metadata-only.*revalidation.*rework/s);
+    assert.match(references.planning, /Relation, Impact and Risk changes remain explicit Proposal items/s);
     assert.match(references.execution, /GoalBoard does not dispatch one mandatory next task/);
     assert.match(references.execution, /An observed mismatch is Goal information/);
     assert.match(references.execution, /repeated project-wide rule may be proposed as project guidance/);
@@ -756,7 +756,7 @@ describe("mcp server", () => {
     assert.match(planning, /replan the affected subgraph/);
     assert.match(planning, /structural_validation=passed.*does not mean/s);
     assert.match(planning, /proposal\.decision\.semantic_review/);
-    assert.match(execution, /Work only inside the selected accepted leaf Contract/);
+    assert.match(execution, /Treat the accepted Contract as the boundary/);
     assert.match(execution, /evidence_submit mapped to acceptance criterion IDs/);
     assert.match(execution, /A required human approval cannot be replaced by a Runtime review/);
     assert.match(execution, /Do not continue unrelated work while a completion-blocking problem lacks a visible owner/);
@@ -1163,6 +1163,10 @@ describe("mcp server", () => {
         }>;
         available: Array<{
           goal: Record<string, unknown> & { goal_id: string; title: string };
+          action_id: string | null;
+          action_token: string;
+          action_kind: string | null;
+          action_target_id: string | null;
           next_action: string;
           role: string;
           priority_hint: number;
@@ -1197,6 +1201,10 @@ describe("mcp server", () => {
         ["goal/with space", "execute", "executor"],
         ["parallel-guide", "execute", "executor"],
       ]);
+      assert.ok(available.available.every((item) => item.action_id?.startsWith("action-")));
+      assert.ok(available.available.every((item) => item.action_token.length === 32));
+      assert.ok(available.available.every((item) => item.action_kind === item.next_action));
+      assert.ok(available.available.every((item) => item.action_target_id === item.goal.goal_id));
       assert.deepEqual(available.parallel_suggestion, {
         kind: "safe_parallel_execution",
         advisory_only: true,
@@ -1371,31 +1379,16 @@ describe("mcp server", () => {
       });
       assert.equal(completedResponse.result.isError, false, completedResponse.result.content[0]?.text);
       const completed = JSON.parse(completedResponse.result.content[0]?.text ?? "{}") as {
-        handoff: {
-          action: string;
-          tool: string;
-          claim_id: string;
-          run_id: string;
-          actor_id: string;
-          release_reason_suggestion: string;
-          after_release: { tool: string };
+        transition: {
+          projection: {
+            display_status: string;
+            primary_action: { kind: string; status: string } | null;
+          };
         };
       };
-      assert.deepEqual(completed.handoff, {
-        action: "release_claim",
-        tool: "goalboard_v1_release",
-        goal_id: "goal/with space",
-        run_id: selected.run!.run_id,
-        claim_id: selected.claim!.claim_id,
-        actor_id: "runtime-a",
-        release_reason_suggestion: "本阶段结果与记录已提交，释放当前工作进入下一步",
-        after_release: {
-          action: "read_available",
-          tool: "goalboard_v1_available",
-          read_requires_user_confirmation: false,
-          continuation_scope: "current_user_authority",
-        },
-      });
+      assert.equal(completed.transition.projection.display_status, "in_progress");
+      assert.equal(completed.transition.projection.primary_action?.kind, "submit_evidence");
+      assert.equal(completed.transition.projection.primary_action?.status, "active");
 
       const evidenceResponse = await call(runtime, "goalboard_v1_evidence_submit", {
         board_id: "mcp-board",
@@ -1417,25 +1410,25 @@ describe("mcp server", () => {
       assert.equal(evidence.evidence.locator_status, "unverified");
       assert.match(evidence.evidence.locator_validation_reason, /不会发起网络请求/);
 
-      const handoffContractResponse = await call(runtime, "goalboard_v1_contract", {
+      const reviewContractResponse = await call(runtime, "goalboard_v1_contract", {
         board_id: "mcp-board",
         goal_id: "goal/with space",
       });
       assert.equal(
-        handoffContractResponse.result.isError,
+        reviewContractResponse.result.isError,
         false,
-        handoffContractResponse.result.content[0]?.text,
+        reviewContractResponse.result.content[0]?.text,
       );
-      const handoffContract = JSON.parse(handoffContractResponse.result.content[0]?.text ?? "{}") as {
-        work_state: {
-          work_state: string;
-          reasons: Array<{ code: string; facts?: { claim_id?: string; tool?: string }; remediation?: string }>;
+      const reviewContract = JSON.parse(reviewContractResponse.result.content[0]?.text ?? "{}") as {
+        work_state: { work_state: string };
+        action_projection: {
+          display_status: string;
+          primary_action: { kind: string } | null;
         };
       };
-      assert.equal(handoffContract.work_state.work_state, "review_blocked");
-      assert.equal(handoffContract.work_state.reasons[0]?.facts?.claim_id, selected.claim!.claim_id);
-      assert.equal(handoffContract.work_state.reasons[0]?.facts?.tool, "goalboard_v1_release");
-      assert.match(handoffContract.work_state.reasons[0]?.remediation ?? "", /goalboard_v1_release/);
+      assert.equal(reviewContract.work_state.work_state, "review_pending");
+      assert.equal(reviewContract.action_projection.display_status, "continue");
+      assert.equal(reviewContract.action_projection.primary_action?.kind, "review");
 
       const handoffAvailableResponse = await call(runtime, "goalboard_v1_available", {
         board_id: "mcp-board",
@@ -1458,25 +1451,12 @@ describe("mcp server", () => {
         handoffAvailable.available.some(
           (item) => item.goal.goal_id === "goal/with space" && item.role === "self_verifier",
         ),
-        false,
+        true,
       );
       const handoffOverview = handoffAvailable.blocked_overview.find(
         (item) => item.goal.goal_id === "goal/with space",
       );
-      assert.equal(handoffOverview?.next_action, "release");
-      assert.equal(handoffOverview?.reasons[0]?.facts?.claim_id, selected.claim!.claim_id);
-      assert.equal(handoffOverview?.reasons[0]?.facts?.tool, "goalboard_v1_release");
-
-      const handoffReleaseResponse = await call(runtime, "goalboard_v1_release", {
-        board_id: "mcp-board",
-        payload: {
-          claim_id: selected.claim!.claim_id,
-          actor_id: "runtime-a",
-          reason: completed.handoff.release_reason_suggestion,
-          idempotency_key: "mcp-release-completed-run-for-review",
-        },
-      });
-      assert.equal(handoffReleaseResponse.result.isError, false, handoffReleaseResponse.result.content[0]?.text);
+      assert.equal(handoffOverview, undefined);
       const reviewAvailableResponse = await call(runtime, "goalboard_v1_available", {
         board_id: "mcp-board",
         actor_id: "runtime-independent-reviewer",
@@ -1983,6 +1963,17 @@ describe("mcp server", () => {
       assert.match(criterionCheckText, /tree-error-criterion-owner/);
       assert.match(criterionCheckText, /use_unique_criterion_id/);
 
+      const resumedForItem = await call("goalboard_v1_draft_dialogue_resume", {
+        board_id: "tree-error-board",
+        goal_id: "tree-error-root",
+        actor_id: "runtime-tree-errors",
+        idempotency_key: "tree-error-resume-for-item-id",
+      });
+      assert.equal(resumedForItem.result.isError, false, resumedForItem.result.content[0]?.text);
+      const itemRunId = (JSON.parse(resumedForItem.result.content[0]!.text) as {
+        run: { run_id: string };
+      }).run.run_id;
+
       const reusableItem = (goalId: string) => ({
         item_id: "tree-error-reused-item-id",
         kind: "goal",
@@ -2002,18 +1993,29 @@ describe("mcp server", () => {
       const firstItemProposal = await call("goalboard_v1_goal_tree_propose", {
         board_id: "tree-error-board",
         actor_id: "runtime-tree-errors",
-        discovered_in_run_id: runId,
+        discovered_in_run_id: itemRunId,
         root_goal_id: "tree-error-root",
         summary: "第一份提案使用稳定 item ID。",
         items: [reusableItem("tree-error-first-item-goal")],
         idempotency_key: "tree-error-first-item-proposal",
       });
       assert.equal(firstItemProposal.result.isError, false, firstItemProposal.result.content[0]?.text);
+      const secondItemDialogue = await call("goalboard_v1_draft_dialogue_start", {
+        board_id: "tree-error-board",
+        actor_id: "runtime-tree-errors",
+        rough_idea: "从另一条独立 Goal 验证 item ID 在 Board 内全局唯一。",
+        goal_id: "tree-error-second-item-root",
+        idempotency_key: "tree-error-second-item-dialogue",
+      });
+      assert.equal(secondItemDialogue.result.isError, false, secondItemDialogue.result.content[0]?.text);
+      const secondItemRunId = (JSON.parse(secondItemDialogue.result.content[0]!.text) as {
+        run: { run_id: string };
+      }).run.run_id;
       const reusedItemProposal = await call("goalboard_v1_goal_tree_propose", {
         board_id: "tree-error-board",
         actor_id: "runtime-tree-errors",
-        discovered_in_run_id: runId,
-        root_goal_id: "tree-error-root",
+        discovered_in_run_id: secondItemRunId,
+        root_goal_id: "tree-error-second-item-root",
         summary: "第二份提案错误复用稳定 item ID。",
         items: [reusableItem("tree-error-second-item-goal")],
         idempotency_key: "tree-error-second-item-proposal",
@@ -2101,11 +2103,26 @@ describe("mcp server", () => {
       const proposal = JSON.parse(proposedResponse.result.content[0]?.text ?? "{}") as {
         proposal: { proposal_id: string };
       };
+      const unrelatedDialogueResponse = await call(runtime, "goalboard_v1_draft_dialogue_start", {
+        board_id: "tree-decision-board",
+        actor_id: "runtime-current-session",
+        goal_id: "mcp-tree-unrelated-context",
+        rough_idea: "在另一条独立 Goal 上保留一份以后再确认的 Proposal。",
+        idempotency_key: "mcp-tree-unrelated-dialogue",
+      });
+      assert.equal(
+        unrelatedDialogueResponse.result.isError,
+        false,
+        unrelatedDialogueResponse.result.content[0]?.text,
+      );
+      const unrelatedRunId = (JSON.parse(unrelatedDialogueResponse.result.content[0]?.text ?? "{}") as {
+        run: { run_id: string };
+      }).run.run_id;
       const unrelatedProposalResponse = await call(runtime, "goalboard_v1_goal_tree_propose", {
         board_id: "tree-decision-board",
         actor_id: "runtime-current-session",
-        discovered_in_run_id: dialogue.run?.run_id,
-        root_goal_id: "mcp-tree-root",
+        discovered_in_run_id: unrelatedRunId,
+        root_goal_id: "mcp-tree-unrelated-context",
         summary: "另一份无关 Proposal 继续等待以后单独确认。",
         items: [
           {
@@ -2609,12 +2626,25 @@ describe("mcp server", () => {
         connection: { project_id: string; board_id: string; project_url: string };
         project_guidance: { entries: Array<{ content: string }> };
         runtime_prompt_prefix: string;
+        resume: {
+          focus: {
+            goal_id: string;
+            source: string;
+            projection: { display_status: string; primary_action: { kind: string } | null };
+          } | null;
+          auto_claimed: boolean;
+        };
       };
       assert.equal(restored.status, "bound");
       assert.equal(restored.connection.project_id, first.project_id);
       assert.equal(restored.connection.board_id, first.board_id);
       assert.equal(restored.project_guidance.entries[0]?.content, "发布前必须验证升级和回滚路径。");
       assert.match(restored.runtime_prompt_prefix, /发布前必须验证升级和回滚路径/);
+      assert.equal(restored.resume.focus?.goal_id, "project scoped goal");
+      assert.equal(restored.resume.focus?.source, "session_focus");
+      assert.equal(restored.resume.focus?.projection.display_status, "in_progress");
+      assert.equal(restored.resume.focus?.projection.primary_action?.kind, "execute");
+      assert.equal(restored.resume.auto_claimed, false);
       assert.equal(
         restored.connection.project_url,
         `https://goalboard.example/projects/${encodeURIComponent(first.project_id)}`,
@@ -2683,7 +2713,7 @@ describe("mcp server", () => {
     }
   });
 
-  it("always asks again from workspace history and keeps Session overrides local", async () => {
+  it("auto-connects one exact workspace project and keeps ambiguous Session overrides local", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "goalboard-mcp-workspace-routing-"));
     const home = path.join(directory, "home", ".goalboard");
     const workspace = path.join(directory, "ordinary-workspace");
@@ -2723,10 +2753,12 @@ describe("mcp server", () => {
       const historyCandidate = await call(restarted, "goalboard_v1_context_resolve", {});
       const candidatePayload = JSON.parse(historyCandidate.result.content[0]?.text ?? "{}") as {
         status: string;
+        connection: { project_id: string } | null;
         suggested_projects: Array<{ project_id: string }>;
       };
-      assert.equal(candidatePayload.status, "suggested");
-      assert.deepEqual(candidatePayload.suggested_projects.map((project) => project.project_id), [first.project_id]);
+      assert.equal(candidatePayload.status, "bound");
+      assert.equal(candidatePayload.connection?.project_id, first.project_id);
+      assert.deepEqual(candidatePayload.suggested_projects, []);
 
       const explicitDefault = await call(restarted, "goalboard_v1_context_bind", {
         project_id: first.project_id,
@@ -2740,10 +2772,12 @@ describe("mcp server", () => {
       const restored = await call(afterDefaultRestart, "goalboard_v1_context_resolve", {});
       const restoredPayload = JSON.parse(restored.result.content[0]?.text ?? "{}") as {
         status: string;
+        connection: { project_id: string } | null;
         suggested_projects: Array<{ project_id: string }>;
       };
-      assert.equal(restoredPayload.status, "suggested");
-      assert.deepEqual(restoredPayload.suggested_projects.map((project) => project.project_id), [first.project_id]);
+      assert.equal(restoredPayload.status, "bound");
+      assert.equal(restoredPayload.connection?.project_id, first.project_id);
+      assert.deepEqual(restoredPayload.suggested_projects, []);
 
       const sessionA = { threadId: "codex-thread-a" };
       const sessionB = { threadId: "codex-thread-b" };

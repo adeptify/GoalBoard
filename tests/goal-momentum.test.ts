@@ -19,6 +19,7 @@ function goal(
     title: goalId,
     status: "execution_pending",
     work_state: "execution_pending",
+    display_status: "continue",
     priority: 0,
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
@@ -95,6 +96,37 @@ test("momentum topology keeps multi-provider DAG structure and counts transitive
   assert.equal(nodes.get("FOUNDATION")?.downstream_open_count, 4);
 });
 
+test("momentum topology aligns adjacent dependency rows instead of preserving crossing title order", () => {
+  const goals = [goal("A"), goal("B"), goal("X"), goal("Y")];
+  const relations = [
+    relation("x-b", "X", "B"),
+    relation("y-a", "Y", "A"),
+  ];
+  const first = buildGoalMomentumView(goals, relations, undefined, NOW);
+  const second = buildGoalMomentumView(goals, relations, undefined, NOW);
+  const rows = new Map(first.nodes.map((node) => [node.goal_id, node.row]));
+
+  assert.ok(rows.get("A")! < rows.get("B")!);
+  assert.ok(rows.get("Y")! < rows.get("X")!);
+  assert.deepEqual(
+    second.nodes.map((node) => [node.goal_id, node.row]),
+    first.nodes.map((node) => [node.goal_id, node.row]),
+  );
+});
+
+test("sparse levels share absolute rows with their dependency neighbors", () => {
+  const view = buildGoalMomentumView(
+    [goal("A"), goal("B"), goal("C"), goal("D"), goal("X")],
+    [relation("x-c", "X", "C")],
+    undefined,
+    NOW,
+  );
+  const rows = new Map(view.nodes.map((node) => [node.goal_id, node.row]));
+
+  assert.equal(rows.get("X"), rows.get("C"));
+  assert.equal(new Set([rows.get("A"), rows.get("B"), rows.get("C"), rows.get("D")]).size, 4);
+});
+
 test("part_of becomes deterministic group bands rather than topology edges", () => {
   const view = buildGoalMomentumView(
     [goal("PROGRAM"), goal("WORK"), goal("LEAF"), goal("SOLO")],
@@ -145,10 +177,12 @@ test("cadence uses first executor start, satisfaction and blocking facts without
         completed: true,
         status: "satisfied",
         work_state: "satisfied",
+        display_status: "completed",
         events: [{ type: "goal.satisfied", at: "2026-08-29T11:00:00.000Z" }],
       }),
       goal("BLOCKED", {
         work_state: "completion_blocked",
+        display_status: "blocked",
         risks: [{
           risk_id: "risk-1",
           state: "open",
@@ -185,14 +219,14 @@ test("cadence uses first executor start, satisfaction and blocking facts without
 test("action queue explains decision, finish, high-impact start, ordinary start and stale tiers", () => {
   const view = buildGoalMomentumView(
     [
-      goal("DECIDE", { work_state: "waiting_for_human", reasons: [{ code: "rewire.user_confirmation_required" }] }),
+      goal("DECIDE", { work_state: "waiting_for_human", display_status: "waiting_user", reasons: [{ code: "rewire.user_confirmation_required" }] }),
       goal("FINISH", { work_state: "review_pending", passed_criteria_count: 1 }),
       goal("HIGH", { priority: 4 }),
       goal("START", { priority: 2 }),
       goal("STALE", {
         runs: [{ role: "executor", state: "completed", started_at: "2026-08-01T08:00:00.000Z", ended_at: "2026-08-01T09:00:00.000Z" }],
       }),
-      goal("COMPOUND", { work_state: "waiting_children", priority: 9 }),
+      goal("COMPOUND", { work_state: "waiting_children", display_status: "waiting", priority: 9 }),
       goal("D1"), goal("D2"), goal("D3"), goal("D4"), goal("D5"),
     ],
     [
@@ -212,7 +246,7 @@ test("action queue explains decision, finish, high-impact start, ordinary start 
   assert.deepEqual([actions.get("START")?.tier, actions.get("START")?.kind], [4, "start"]);
   assert.deepEqual([actions.get("STALE")?.tier, actions.get("STALE")?.kind], [5, "revive"]);
   assert.equal(view.nodes.find((node) => node.goal_id === "COMPOUND")?.startable, false);
-  assert.equal(actions.has("COMPOUND"), false);
+  assert.deepEqual([actions.get("COMPOUND")?.tier, actions.get("COMPOUND")?.kind], [5, "waiting"]);
   assert.deepEqual(view.actions.slice(0, 4).map((action) => action.goal_id), ["DECIDE", "FINISH", "HIGH", "START"]);
 });
 

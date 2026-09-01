@@ -1740,15 +1740,18 @@
             <p>验证私人工作进入团队真相</p>
           </div>
           <div class="flow-steps" aria-label="团队协作闭环步骤">
-            <span class="flow-step">Personal Goal</span><span class="flow-arrow">→</span>
-            <span class="flow-step">Promotion</span><span class="flow-arrow">→</span>
             <span class="flow-step">Team Goal</span><span class="flow-arrow">→</span>
-            <span class="flow-step">Handoff</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Work Context</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Private Task Context</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Run</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Disclosure Bundle</span><span class="flow-arrow">→</span>
             <span class="flow-step">Proposal</span><span class="flow-arrow">→</span>
             <span class="flow-step">Review</span><span class="flow-arrow">→</span>
-            <span class="flow-step">Artifact</span>
+            <span class="flow-step">Decision</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Materialization</span><span class="flow-arrow">→</span>
+            <span class="flow-step">Canonical Context</span>
           </div>
-          <div class="flow-result">两名真实成员完成分工、执行和复核，未披露的私人过程不会进入团队空间。</div>
+          <div class="flow-result">两名真实成员完成私有执行、选择性披露和复核；未披露过程不会进入团队空间，重复接受或重启只落地一次。</div>
         </article>
 
         <article class="flow">
@@ -1874,7 +1877,18 @@
         purpose: "保存团队真正要实现的结果，以及执行、复核和完成的共同状态。",
         dependencies: "账号权限、持久化和最小事件能力",
         parallel: "Relay、消息和 Web 可针对 Goal Command Fixture 开发",
-        scope: ["Goal Contract 和 Goal Tree", "依赖、风险和验收标准", "Personal Goal 和 Team Goal", "Claim、分工和 Run", "Evidence、Review 和 Decision", "Promotion 和 Proposal", "Handoff 和接续", "Activity 和变更历史"]
+        scope: ["Goal Contract 和 Goal Tree", "依赖、风险和验收标准", "Personal Goal 和 Team Goal", "Claim、分工和 Run", "Goal Evidence、Review 和 Decision", "Goal 变更和完成 Proposal", "Handoff 和接续", "Activity 和变更历史"]
+      },
+      {
+        id: "private-context",
+        title: "私有工作上下文与选择性发布",
+        group: "团队上下文",
+        priority: "P0",
+        phase: "团队闭环",
+        purpose: "让个人和 Agent 保留完整私人过程，只把负责人明确选择的结果、证据或工作记录带入团队。",
+        dependencies: "账号权限、Task/Run/Artifact 引用和 Proposal Review Contract",
+        parallel: "可先用两名 Actor、真实权限 Fixture 和密封内容快照完成垂直原型",
+        scope: ["Goal / Action / Handoff 锚定", "团队可见 Work Context 投影", "负责人私有 Task Context", "不可变 Task Input Snapshot", "有时效 Execution Scope", "Prompt、草稿和失败尝试默认私有", "三档 Disclosure Bundle", "不建立第二套 Task 真相"]
       },
       {
         id: "feed",
@@ -1915,10 +1929,21 @@
         group: "运行基础",
         priority: "P0",
         phase: "个人闭环",
-        purpose: "让本地工作、云端状态和多设备在断网与重连后仍保持一致。",
+        purpose: "让允许复制的本地工作、云端状态和多设备在断网与重连后仍保持一致。",
         dependencies: "设备身份、对象 Revision 和服务端变更日志",
         parallel: "Desktop 可针对固定变更流 Fixture 提前开发",
-        scope: ["设备注册、配对和撤销", "Goal、Feed、Artifact 本地副本", "增量同步、游标和 ACK", "断网恢复", "多设备和版本冲突", "本地文件、终端和 Runtime", "本地结果上传", "SQLite 升级和 Desktop 回滚"]
+        scope: ["设备注册、配对和撤销", "Goal、Feed、Artifact 本地副本", "增量同步、游标和 ACK", "断网恢复", "多设备和版本冲突", "本地文件、终端和 Runtime", "选择性同步私有上下文", "SQLite 升级和 Desktop 回滚"]
+      },
+      {
+        id: "context-ledger",
+        title: "共享上下文账本与落地恢复",
+        group: "运行基础",
+        priority: "P0",
+        phase: "团队闭环",
+        purpose: "让一次团队决定跨 Goal、Artifact 和关系可靠落地，并在重启、冲突或未知结果后恢复。",
+        dependencies: "账号权限、各领域 Command/Revision、持久化事件和 Receipt",
+        parallel: "可用 Goal、Artifact 与 Relation 的固定 Contract 和故障注入先证明恢复语义",
+        scope: ["中立对象索引", "Relation 与 Project Event Journal", "Revision 和 Idempotency", "Correlation 与 Authority", "ProjectDecision 与 effect 分离", "Materialization Operation / Step", "pending、failed 和 uncertain", "重启续跑与防重复 Canonical 结果"]
       },
       {
         id: "web",
@@ -1929,7 +1954,7 @@
         purpose: "让用户可以理解和操作 GoalBoard 的个人、团队和管理工作区。",
         dependencies: "消费各功能域的查询和命令接口",
         parallel: "使用真实数据 Fixture 开发，不等待全部后端实现",
-        scope: ["首次使用和空间创建", "Personal 和 Team Workspace", "Goal Graph 和详情", "Feed、Inbox 和 Action", "Review 与 Decision Center", "Artifact、Evidence 和 Activity", "团队、Connector 和 Runtime 设置", "异常恢复、响应式和无障碍"]
+        scope: ["首次使用和空间创建", "Personal 和 Team Workspace", "Goal Graph 和详情", "Feed、Inbox 和 Action", "Private Task Context 与披露预览", "Review 与 Decision / Effect 状态", "Artifact lineage 和 Activity", "异常恢复、响应式和无障碍"]
       },
       {
         id: "ai",
@@ -1957,12 +1982,12 @@
         id: "knowledge",
         title: "Artifact、知识与搜索",
         group: "项目记忆",
-        priority: "P1",
-        phase: "内部完整",
+        priority: "P0",
+        phase: "团队闭环",
         purpose: "让产出、证据和决定成为可追溯、可复用、可检索的项目记忆。",
         dependencies: "对象存储、权限、Goal/Run 关系和内容索引",
         parallel: "Artifact 元数据和搜索 Projection 可以分开实现",
-        scope: ["Artifact 类型和版本", "Canonical 版本", "Goal、Decision、Signal、Run 关系", "预览、下载和权限", "全文搜索和权限过滤", "相似 Goal 和关联材料", "过期与重新验证提示", "Markdown、PDF、JSON 和项目包导出"]
+        scope: ["稳定 Artifact 身份和不可变版本", "唯一 Canonical head", "Signal、Goal、Task、Run、Proposal、Reviewer、Decision lineage", "Draft / locked / canonical / superseded", "元数据与内容权限分离", "外部 Publish / Apply 单独记录", "P1 全文搜索和关联材料", "P1 导出与过期提示"]
       },
       {
         id: "automation",
@@ -2007,6 +2032,8 @@
       { id: "first-message", title: "第一条消息闭环", prompt: "在 Slack、飞书中选择最先完成双向真实链路的平台。" },
       { id: "first-runtime", title: "第一条 Agent 执行闭环", prompt: "选择首个 Runtime，并明确提交、观察、补充输入和回传边界。" },
       { id: "migration", title: "本地数据迁移边界", prompt: "确认哪些 SQLite 数据迁移、哪些只留本地、失败如何回滚。" },
+      { id: "private-context", title: "私人 Task Context 首版边界", prompt: "确认它与现有 Session / Work Record 的关系、默认存放位置和允许同步的范围。" },
+      { id: "materialization", title: "首条跨领域落地", prompt: "确认第一条 Materialization 同时更新哪些 Artifact、Goal 和 Relation，以及失败后的恢复语义。" },
       { id: "billing", title: "Team Beta 前的额度与付费", prompt: "确认是否只做用量计量，还是同时引入套餐和支付。" }
     ];
 

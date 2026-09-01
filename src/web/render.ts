@@ -9,6 +9,8 @@ import type {
   DependencyProposal,
   DecisionReason,
   EvidenceRecord,
+  GoalActionProjection,
+  GoalDisplayStatus,
   GoalPolicy,
   GoalRecord,
   GoalRelationRecord,
@@ -97,6 +99,11 @@ import {
   renderProjectOperations,
   type ProjectOperationsData,
 } from "./project-session-workspaces.js";
+import { feedPlainText, renderFeedRichText } from "./feed-rich-content.js";
+import {
+  GOAL_DISPLAY_STATUSES,
+  goalDisplayStatusLabel,
+} from "./action-presentation.js";
 
 const THEME_BOOTSTRAP_SCRIPT = `${BASE_THEME_BOOTSTRAP_SCRIPT}${NATIVE_DESKTOP_BOOTSTRAP_SCRIPT}`;
 
@@ -106,7 +113,6 @@ export const WEB_GOAL_STATUSES: readonly WebGoalStatus[] = [
   "clarification_pending",
   "clarification_decision_pending",
   "compound_closure_pending",
-  "handoff_pending",
   "clarifying",
   "clarification_blocked",
   "waiting_children",
@@ -184,8 +190,12 @@ export interface WebRiskRecord extends RiskRecord {
 export interface WebGoalView {
   goal: GoalRecord;
   status: WebGoalStatus;
+  action_projection: GoalActionProjection;
+  display_status: GoalDisplayStatus;
   work_state: GoalWorkState;
   status_label: string;
+  main_action_label: string;
+  action_summary: string;
   reasons: DecisionReason[];
   active_claim_actor: string | null;
   active_claim: ClaimRecord | null;
@@ -270,7 +280,6 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   clarification_pending: "waiting",
   clarification_decision_pending: "user",
   compound_closure_pending: "tree",
-  handoff_pending: "refresh",
   clarifying: "play",
   clarification_blocked: "blocked",
   waiting_children: "tree",
@@ -291,6 +300,15 @@ const STATUS_ICONS: Record<WebGoalStatus, GoalBoardIcon> = {
   satisfied: "completed",
   trashed: "archive",
   archived: "archive",
+};
+
+const DISPLAY_STATUS_ICONS: Record<GoalDisplayStatus, GoalBoardIcon> = {
+  continue: "ready",
+  in_progress: "play",
+  waiting_user: "user",
+  waiting: "waiting",
+  blocked: "blocked",
+  completed: "completed",
 };
 
 const RELATION_LABELS: Record<string, { out: string; in: string }> = {
@@ -353,18 +371,16 @@ function controlTokenMeta(controlToken: string): string {
 
 function dataJson(view: GoalBoardWebView): string {
   const summarize = (items: WebGoalView[]) => items.map((item) => {
-    const explanation = explainWorkState(item.status);
     const children = partOfChildViews(item.goal.goal_id, view).map((child) => {
-      const childExplanation = explainWorkState(child.status);
       return {
         goal: {
           goal_id: child.goal.goal_id,
           title: child.goal.title,
         },
-        status: child.status,
-        status_label: childExplanation.label,
-        status_meaning: childExplanation.meaning,
-        next_action: childExplanation.nextAction,
+        status: visibleGoalStatus(child),
+        status_label: child.status_label,
+        status_meaning: child.action_summary,
+        next_action: child.main_action_label,
       };
     });
     return {
@@ -372,10 +388,11 @@ function dataJson(view: GoalBoardWebView): string {
         goal_id: item.goal.goal_id,
         title: item.goal.title,
       },
-      status: item.status,
-      status_label: explanation.label,
-      status_meaning: explanation.meaning,
-      is_waiting_parent: item.status === "waiting_children",
+      status: visibleGoalStatus(item),
+      status_label: item.status_label,
+      status_meaning: item.action_summary,
+      status_icon: visibleGoalStatusIcon(item),
+      is_waiting_parent: item.display_status === "waiting",
       is_compound_parent: item.goal.decomposition_state === "closed_compound",
       children,
     };
@@ -435,9 +452,41 @@ function renderList(values: string[], empty: string): string {
   return `<ul class="doc-list">${values.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
 }
 
-function renderStatus(status: WebGoalStatus): string {
+function renderStatus(status: WebGoalStatus, attributes = "", labelAttributes = ""): string {
   const explanation = explainWorkState(status);
-  return `<span class="goal-status goal-status--${status}" title="${escapeHtml(explanation.meaning)}">${icon(STATUS_ICONS[status])}<span>${escapeHtml(explanation.label)}</span></span>`;
+  return `<span class="goal-status goal-status--${status}"${attributes ? ` ${attributes}` : ""} title="${escapeHtml(explanation.meaning)}">${icon(STATUS_ICONS[status])}<span${labelAttributes ? ` ${labelAttributes}` : ""}>${escapeHtml(explanation.label)}</span></span>`;
+}
+
+function renderActionStatus(status: GoalDisplayStatus, attributes = "", labelAttributes = ""): string {
+  const label = goalDisplayStatusLabel(status);
+  return `<span class="goal-status goal-status--${status}"${attributes ? ` ${attributes}` : ""} title="${escapeHtml(label)}">${icon(DISPLAY_STATUS_ICONS[status])}<span${labelAttributes ? ` ${labelAttributes}` : ""}>${escapeHtml(label)}</span></span>`;
+}
+
+type GoalVisibleStatus = GoalDisplayStatus | "replaced" | "archived" | "trashed";
+
+function visibleGoalStatus(item: WebGoalView): GoalVisibleStatus {
+  if (item.status === "replaced" || item.status === "archived" || item.status === "trashed") {
+    return item.status;
+  }
+  return item.display_status;
+}
+
+function renderVisibleGoalStatus(
+  item: WebGoalView,
+  attributes = "",
+  labelAttributes = "",
+): string {
+  const status = visibleGoalStatus(item);
+  return status === "replaced" || status === "archived" || status === "trashed"
+    ? renderStatus(status, attributes, labelAttributes)
+    : renderActionStatus(status, attributes, labelAttributes);
+}
+
+function visibleGoalStatusIcon(item: WebGoalView): string {
+  const status = visibleGoalStatus(item);
+  return icon(status === "replaced" || status === "archived" || status === "trashed"
+    ? STATUS_ICONS[status]
+    : DISPLAY_STATUS_ICONS[status]);
 }
 
 /** Goal Tree sibling order: work you can pick up, then in-flight, then blocked, then parked. */
@@ -445,7 +494,6 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "completion_pending",
   "execution_pending",
   "executing",
-  "handoff_pending",
   "review_pending",
   "reviewing",
   "waiting_for_human",
@@ -468,17 +516,37 @@ export const GOAL_TREE_STATUS_ORDER: readonly WebGoalStatus[] = [
   "trashed",
 ];
 
+const GOAL_TREE_DISPLAY_STATUS_ORDER: readonly GoalDisplayStatus[] = [
+  "continue",
+  "in_progress",
+  "waiting_user",
+  "blocked",
+  "waiting",
+  "completed",
+];
+
 function goalTreeStatusRank(status: string): number {
   const index = (GOAL_TREE_STATUS_ORDER as readonly string[]).indexOf(status);
   return index < 0 ? GOAL_TREE_STATUS_ORDER.length : index;
 }
 
-export function sortGoalTreeItems<T extends { status: WebGoalStatus; goal: { priority: number; created_at: string } }>(
+export function sortGoalTreeItems<T extends {
+  status: WebGoalStatus;
+  display_status?: GoalDisplayStatus;
+  goal: { priority: number; created_at: string };
+}>(
   items: T[],
 ): T[] {
+  const rank = (item: T): number => {
+    if (item.display_status) {
+      const index = GOAL_TREE_DISPLAY_STATUS_ORDER.indexOf(item.display_status);
+      if (index >= 0) return index;
+    }
+    return goalTreeStatusRank(item.status);
+  };
   return [...items].sort(
     (left, right) =>
-      goalTreeStatusRank(left.status) - goalTreeStatusRank(right.status) ||
+      rank(left) - rank(right) ||
       right.goal.priority - left.goal.priority ||
       left.goal.created_at.localeCompare(right.goal.created_at),
   );
@@ -499,8 +567,7 @@ export function activeOutgoingDependsOn(item: WebGoalView): GoalRelationRecord[]
 
 export function goalWorkSatisfied(item: WebGoalView): boolean {
   return (
-    item.status === "satisfied" ||
-    item.status === "archived" ||
+    item.display_status === "completed" ||
     item.goal.fulfillment_state === "satisfied"
   );
 }
@@ -730,7 +797,7 @@ function renderGoalTree(
     const reference = referenceLabel == null
       ? ""
       : `<small title="Goal ID: ${escapeHtml(item.goal.goal_id)}" aria-label="${L("Goal 编号")} ${escapeHtml(referenceLabel)}">${escapeHtml(referenceLabel)}</small>`;
-    return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}">
+    return `<li class="tree-item${depth > 0 ? "" : " tree-item--root"}" data-tree-item data-goal-id="${escapeHtml(item.goal.goal_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(visibleGoalStatus(item))}">
       <div class="tree-row">
         ${
           hasChildren
@@ -741,7 +808,7 @@ function renderGoalTree(
           <button class="tree-node${selected ? " is-selected" : ""}" type="button" data-select-goal="${escapeHtml(item.goal.goal_id)}" aria-pressed="${selected}">
             <span class="tree-copy"><span class="tree-title-line"><strong title="${escapeHtml(item.goal.title)}">${escapeHtml(item.goal.title)}</strong></span>${reference}</span>
           </button>
-          <span class="directory-row-state">${renderStatus(item.status)}</span>
+          <span class="directory-row-state">${renderVisibleGoalStatus(item)}</span>
           <span class="tree-meta-line">${renderTreeChildProgress(nodeChildren)}${renderTreeDependencies(item, view)}</span>
         </div>
       </div>
@@ -757,14 +824,18 @@ function renderGoalTree(
 }
 
 function renderTreeStatusFilter(items: readonly WebGoalView[]): string {
-  const counts = new Map<WebGoalStatus, number>();
-  for (const item of items) counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
-  const options = WEB_GOAL_STATUSES.filter((status) => (counts.get(status) ?? 0) > 0);
+  const counts = new Map<GoalVisibleStatus, number>();
+  for (const item of items) {
+    const status = visibleGoalStatus(item);
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  const options = [...GOAL_DISPLAY_STATUSES, "replaced", "archived", "trashed"]
+    .filter((status): status is GoalVisibleStatus => (counts.get(status as GoalVisibleStatus) ?? 0) > 0);
   return `<section class="tree-filter" id="tree-status-filter" data-tree-filter hidden aria-label="${L("按状态筛选")}">
     <header><strong>${L("按状态筛选")}</strong><button type="button" data-clear-status-filter disabled>${L("清除")}</button></header>
     <p>${L("可同时选择多个状态；会与关键词搜索一起生效。")}</p>
     <div class="tree-filter-options" role="group" aria-label="${L("Goal 状态")}">
-      ${options.length ? options.map((status) => `<label class="tree-filter-option"><input type="checkbox" value="${status}" data-status-filter><span>${renderStatus(status)}</span><small>${counts.get(status)}</small></label>`).join("") : `<p class="empty-row">${L("当前没有可筛选的 Goal。")}</p>`}
+      ${options.length ? options.map((status) => `<label class="tree-filter-option"><input type="checkbox" value="${status}" data-status-filter><span>${status === "replaced" || status === "archived" || status === "trashed" ? renderStatus(status) : renderActionStatus(status)}</span><small>${counts.get(status)}</small></label>`).join("") : `<p class="empty-row">${L("当前没有可筛选的 Goal。")}</p>`}
     </div>
     <p class="tree-filter-summary" data-tree-filter-summary aria-live="polite">${L("显示全部状态")}</p>
   </section>`;
@@ -874,6 +945,7 @@ function renderGoalMomentum(
       title: item.goal.title,
       status: item.status,
       work_state: item.work_state,
+      display_status: item.display_status,
       priority: item.goal.priority,
       created_at: item.goal.created_at,
       updated_at: item.goal.updated_at,
@@ -927,8 +999,8 @@ function renderGoalMomentum(
     ].filter(Boolean).join(" · ");
     const bottleneck = !node.completed && node.downstream_open_count > 0 && (node.blocked || node.stale);
     const startsGroup = groupFirstRowById.get(node.group_id) === node.row;
-    return `<button class="momentum-node momentum-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}${node.completed ? " is-complete" : ""}${bottleneck ? " is-bottleneck" : ""}${startsGroup ? " is-group-first-row" : ""}" type="button" data-graph-node data-momentum-node data-goal-id="${escapeHtml(node.goal_id)}" data-momentum-group-id="${escapeHtml(node.group_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(item.status)}" data-goal-completed="${node.completed}" aria-pressed="${selected}" style="--momentum-column:${node.level + 1};--momentum-row:${node.row + 1}">
-      <span class="momentum-node-kicker"><b>L${node.level}</b>${renderStatus(item.status)}</span>
+    return `<button class="momentum-node momentum-node--${escapeHtml(item.status)}${selected ? " is-selected" : ""}${node.completed ? " is-complete" : ""}${bottleneck ? " is-bottleneck" : ""}${startsGroup ? " is-group-first-row" : ""}" type="button" data-graph-node data-momentum-node data-goal-id="${escapeHtml(node.goal_id)}" data-momentum-group-id="${escapeHtml(node.group_id)}" data-goal-search="${escapeHtml(searchValue)}" data-goal-status="${escapeHtml(visibleGoalStatus(item))}" data-goal-completed="${node.completed}" aria-pressed="${selected}" style="--momentum-column:${node.level + 1};--momentum-row:${node.row + 1}">
+      <span class="momentum-node-kicker"><b>L${node.level}</b>${renderVisibleGoalStatus(item)}</span>
       <strong>${escapeHtml(node.title)}</strong>
       <small>${escapeHtml(flags || node.goal_id)}</small>
     </button>`;
@@ -945,7 +1017,7 @@ function renderGoalMomentum(
   const queue = momentum.actions.map((action, index) => {
     const item = byId.get(action.goal_id)!;
     const selected = action.goal_id === momentum.selected_goal_id;
-    return `<li><button type="button" class="momentum-queue-item${selected ? " is-selected" : ""}" data-momentum-select="${escapeHtml(action.goal_id)}" data-momentum-action-kind="${action.kind}" aria-pressed="${selected}"><b>${String(index + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(momentumActionReason(action, byId))}</small></span>${renderStatus(item.status)}</button></li>`;
+    return `<li><button type="button" class="momentum-queue-item${selected ? " is-selected" : ""}" data-momentum-select="${escapeHtml(action.goal_id)}" data-momentum-action-kind="${action.kind}" aria-pressed="${selected}"><b>${String(index + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(item.goal.title)}</strong><small>${escapeHtml(momentumActionReason(action, byId))}</small></span>${renderVisibleGoalStatus(item)}</button></li>`;
   }).join("");
   const details = momentum.nodes.map((node) => {
     const item = byId.get(node.goal_id)!;
@@ -959,7 +1031,7 @@ function renderGoalMomentum(
     ];
     return `<article class="momentum-selection" data-momentum-detail="${escapeHtml(node.goal_id)}"${node.goal_id === momentum.selected_goal_id ? "" : " hidden"}>
       <p class="momentum-section-label">${L("当前选择")}</p>
-      <div class="momentum-selection-title"><div><h3>${escapeHtml(item.goal.title)}</h3><small>${escapeHtml(item.goal.goal_id)}</small></div>${renderStatus(item.status)}</div>
+      <div class="momentum-selection-title"><div><h3>${escapeHtml(item.goal.title)}</h3><small>${escapeHtml(item.goal.goal_id)}</small></div>${renderVisibleGoalStatus(item)}</div>
       <dl><div><dt>${L("拓扑层级")}</dt><dd>L${node.level}</dd></div><div><dt>${L("完成标准")}</dt><dd>${node.passed_criteria_count}/${node.acceptance_criteria_count}</dd></div><div><dt>${L("下游影响")}</dt><dd>${node.downstream_open_count}</dd></div></dl>
       <ul>${facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>
       <a class="button-primary" href="/goals/${encodeURIComponent(node.goal_id)}">${L("打开 Goal")}${icon("arrow")}</a>
@@ -1209,7 +1281,7 @@ function renderEvidenceForm(item: WebGoalView, variant: "full" | "quick"): strin
   const resultChoices = (Object.entries(EVIDENCE_RESULT_LABELS) as Array<[EvidenceRecord["result"], string]>)
     .map(([result, label]) => `<option value="${result}"${result === "passed" ? " selected" : ""}>${escapeHtml(L(label))}</option>`)
     .join("");
-  return `<form class="${variant === "quick" ? "quick-record-form" : ""}" data-evidence-form data-live-form="evidence-${variant}-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}">
+  return `<form class="${variant === "quick" ? "quick-record-form" : ""}" data-evidence-form data-live-form="evidence-${variant}-${escapeHtml(item.goal.goal_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-action-token="${escapeHtml(item.action_projection.action_token)}" data-contract-revision="${item.goal.current_contract_revision}">
       <fieldset class="evidence-criteria"><legend>${L("对应哪条完成标准")}</legend><div>${criterionChoices}</div></fieldset>
       <div class="evidence-form-row"><label><span>${L("依据是什么")}</span><select name="kind">${kindChoices}</select></label><label><span>${L("这份依据说明什么")}</span><select name="result">${resultChoices}</select></label></div>
       <label><span>${L("依据位置")}</span><textarea name="locator" rows="2" required placeholder="${L("填写链接、项目内文件路径或可复核的文字说明")}"></textarea><small>${L("链接和安全的项目内路径可以直接打开；其他内容会保留为可复制文本。")}</small></label>
@@ -1270,9 +1342,7 @@ function renderAcceptance(item: WebGoalView): string {
 }
 
 function renderReasons(item: WebGoalView): string {
-  const blockers = item.reasons.filter(
-    (reason) => reason.severity === "blocker" && reason.code !== "work.handoff_pending",
-  );
+  const blockers = item.reasons.filter((reason) => reason.severity === "blocker");
   if (!blockers.length) {
     return `<p class="clear-row"><span class="check-box is-checked">${icon("check")}</span>${L("当前没有阻塞项")}</p>`;
   }
@@ -1396,13 +1466,6 @@ function riskSelectOptions<T extends string>(
     : options;
 }
 
-function riskOpenDecisionLabel(blockingMode: RiskRecord["blocking_mode"]): string {
-  if (blockingMode === "claim") return "保持待处理，继续阻止领取";
-  if (blockingMode === "completion") return "保持待处理，继续阻塞完成";
-  if (blockingMode === "invalidate_on_trigger") return "保持待处理，触发后会使 Goal 失效";
-  return "保持待处理，继续跟踪";
-}
-
 function renderRiskGoalPicker(
   view: GoalBoardWebView,
   selectedGoalIds: string[],
@@ -1489,7 +1552,7 @@ function renderRiskRecord(
           <footer class="risk-form-wide"><span>${L("修改风险事实不会同时改变处理状态。")}</span><button class="button-primary" type="submit">${L("保存风险信息")}</button></footer>
         </form>
       </details>
-      ${riskNeedsDecision(risk) ? `<a class="risk-decision-link" href="/decisions#decision-goal-${encodeURIComponent(item.goal.goal_id)}">${icon("user")}<span><strong>${L("去待决定处理这个风险")}</strong><small>${L("风险处理会改变相关 Goal 能否领取或完成，所以统一在待决定中记录。")}</small></span>${icon("chevron-right")}</a>` : ""}
+      ${riskHasUserAction(risk, view) ? `<a class="risk-decision-link" href="/decisions#decision-goal-${encodeURIComponent(item.goal.goal_id)}">${icon("user")}<span><strong>${L("去待决定处理这个风险")}</strong><small>${L("只有必须由你接受或拒绝的风险才会出现在待决定中。")}</small></span>${icon("chevron-right")}</a>` : ""}
     </div>`}
   </article>`;
 }
@@ -1970,9 +2033,12 @@ function renderHumanReview(item: WebGoalView, view: GoalBoardWebView): string {
       (obligation) => {
         const prefill = humanVerdictPrefill(item, obligation);
         const preselectedEvidence = prefill ? new Set([prefill.evidence_id]) : new Set<string>();
-        return `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}" novalidate>
+        const attentionToken = item.action_projection.actions
+          .find((action) => action.actor === "user" && action.target_id === obligation.obligation_id)
+          ?.reasons[0]?.facts?.attention_token ?? "";
+        return `<form class="human-review-form" data-human-review-form data-live-form="human-review-${escapeHtml(obligation.obligation_id)}" data-goal-id="${escapeHtml(item.goal.goal_id)}" data-obligation-id="${escapeHtml(obligation.obligation_id)}" data-attention-token="${escapeHtml(attentionToken)}" data-contract-revision="${item.goal.current_contract_revision}" novalidate>
         ${prefill ? renderHumanVerdictPrefill(prefill) : ""}
-        <label class="review-verdict"><span>${L("你的结论")}</span><select name="verdict"><option value=""${prefill ? "" : " selected"} disabled>${L("请选择结论")}</option><option value="pass"${prefill ? " selected" : ""}>${L("通过")}</option><option value="needs_changes">${L("需要修改")}</option><option value="fail">${L("不通过")}</option><option value="inconclusive">${L("证据不足")}</option></select></label>
+        <label class="review-verdict"><span>${L("你的结论")}</span><select name="verdict"><option value=""${prefill ? "" : " selected"} disabled>${L("请选择结论")}</option><option value="pass"${prefill ? " selected" : ""}>${L("通过")}</option><option value="needs_changes">${L("需要修改")}</option></select></label>
         <fieldset><legend>${L("选择支持结论的已有依据")}</legend><div class="evidence-choice-list">${renderEvidenceChoices(preselectedEvidence)}</div></fieldset>
         <label><span>${L("补充依据链接")} <small>${L("可选，每行一条")}</small></span><textarea name="evidence_refs_extra" rows="2" placeholder="${L("https://… 或项目内文件引用")}"></textarea></label>
         <label><span>${L("判断理由")}（${L("必填")}）</span><textarea name="reasoning" rows="3" required placeholder="${L("说明为什么给出这个结论，以及哪些依据支撑判断")}">${escapeHtml(prefill?.digest ?? "")}</textarea></label>
@@ -2421,8 +2487,12 @@ function goalTreeProposalOwnerGoalId(proposal: GoalTreeProposalRecord, view: Goa
   return null;
 }
 
-function riskNeedsDecision(risk: RiskRecord): boolean {
-  return risk.state === "open" || risk.state === "triggered";
+function riskHasUserAction(risk: RiskRecord, view: GoalBoardWebView): boolean {
+  return allGoalViews(view).some((item) =>
+    item.action_projection.actions.some((action) =>
+      action.actor === "user" && action.target_type === "risk" && action.target_id === risk.risk_id
+    )
+  );
 }
 
 function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
@@ -2457,11 +2527,13 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
     .filter((rewire) => rewire.state === "pending")
     .forEach((rewire) => ensure(rewireOwnerGoalId(rewire, view)).rewires.push(rewire));
   for (const item of allGoalViews(view)) {
-    if (item.review_obligations.some((obligation) => obligation.role === "human_approver" && obligation.state === "pending")) {
+    if (item.action_projection.actions.some((action) =>
+      action.actor === "user" && action.kind === "review" && action.target_type === "review_obligation"
+    )) {
       ensure(item.goal.goal_id).humanReview = true;
     }
   }
-  for (const risk of view.snapshot.risks.filter(riskNeedsDecision)) {
+  for (const risk of view.snapshot.risks.filter((risk) => riskHasUserAction(risk, view))) {
     const owners = allGoalViews(view).filter((item) => item.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
     ensure(owners.length === 1 ? owners[0]!.goal.goal_id : null).risks.push(risk);
   }
@@ -2475,13 +2547,15 @@ function buildDecisionGroups(view: GoalBoardWebView): DecisionGoalGroup[] {
 
 function pendingDecisionCount(view: GoalBoardWebView): number {
   const riskIds = new Set(
-    allGoalViews(view).flatMap((item) => item.risks.filter(riskNeedsDecision).map((risk) => risk.risk_id)),
+    allGoalViews(view).flatMap((item) => item.risks.filter((risk) => riskHasUserAction(risk, view)).map((risk) => risk.risk_id)),
   );
   return view.snapshot.goal_tree_proposals.filter((item) => item.origin === "native" && goalTreeProposalNeedsDecision(item)).length +
     view.snapshot.contract_proposals.filter((item) => item.state === "pending").length +
     view.snapshot.candidates.filter((item) => item.state === "pending").length +
     view.snapshot.rewires.filter((item) => item.state === "pending").length +
-    view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length +
+    allGoalViews(view).filter((item) => item.action_projection.actions.some((action) =>
+      action.actor === "user" && action.kind === "review" && action.target_type === "review_obligation"
+    )).length +
     riskIds.size;
 }
 
@@ -3250,11 +3324,14 @@ function renderRiskDecision(risk: RiskRecord, item: WebGoalView | null, view: Go
   const copy = explainDecision("risk");
   const href = item ? `${item.goal.archived_at ? "/archive/goals/" : "/goals/"}${encodeURIComponent(item.goal.goal_id)}#risk-${encodeURIComponent(risk.risk_id)}` : "#";
   const affectedGoals = allGoalViews(view).filter((goalView) => goalView.risks.some((itemRisk) => itemRisk.risk_id === risk.risk_id));
-  const stateOptions = `<option value="" selected disabled>${L("请选择处理结果")}</option>${riskSelectOptions(
-    [["open", riskOpenDecisionLabel(risk.blocking_mode)], ["triggered", "标记为已经发生"], ["resolved", "已处理，不再阻塞"], ["accepted", "接受影响，不再阻塞"], ["expired", "已经过期，不再跟踪"]],
-    null,
-  )}`;
-  return `<form class="decision-record risk-decision" data-risk-state-form data-live-form="risk-decision-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}" novalidate>
+  const riskOwner = affectedGoals.find((goalView) => goalView.action_projection.actions.some((action) =>
+    action.actor === "user" && action.target_type === "risk" && action.target_id === risk.risk_id
+  )) ?? item;
+  const riskAction = riskOwner?.action_projection.actions.find((action) =>
+    action.actor === "user" && action.target_type === "risk" && action.target_id === risk.risk_id
+  );
+  const stateOptions = `<option value="" selected disabled>${L("请选择处理结果")}</option><option value="accepted">${L("接受这项风险")}</option><option value="rejected">${L("不接受，改为继续处理")}</option>`;
+  return `<form class="decision-record risk-decision" data-risk-state-form data-live-form="risk-decision-${escapeHtml(risk.risk_id)}" data-risk-id="${escapeHtml(risk.risk_id)}" data-risk-blocking="${escapeHtml(risk.blocking_mode)}" data-goal-id="${escapeHtml(riskOwner?.goal.goal_id ?? "")}" data-action-id="${escapeHtml(riskAction?.action_id ?? "")}" data-action-token="${escapeHtml(riskOwner?.action_projection.action_token ?? "")}" data-contract-revision="${riskOwner?.goal.current_contract_revision ?? 1}" novalidate>
     <header class="decision-record-heading"><span class="decision-kind decision-kind--risk">${icon("risk")} ${L("风险处理")}${renderNewDecisionBadge(riskDecisionCreatedAt(risk, view), view, "risk", risk.risk_id)}</span><span class="risk-state risk-state--${escapeHtml(risk.state)}">${escapeHtml(L(RISK_STATE_LABELS[risk.state]))}</span></header>
     <div class="decision-record-body"><h3>${escapeHtml(copy.question)}</h3><p>${escapeHtml(copy.purpose)}</p><div class="risk-decision-fact"><strong>${escapeHtml(risk.description)}</strong><p>${L("发生概率：")}${escapeHtml(risk.probability)} · ${L("影响程度：")}${escapeHtml(risk.impact)}</p><small>${L("当前计划：")}${escapeHtml(L(RISK_TREATMENT_LABELS[risk.treatment]))}；${L("负责人：")}${escapeHtml(risk.owner)}</small></div>${renderDecisionGuidance({
       whyNow: riskStateEffect(risk.blocking_mode, risk.state),
@@ -3353,7 +3430,7 @@ function recentDecisionResults(view: GoalBoardWebView): RecentDecisionResult[] {
         kindLabel: L("风险处理"),
         state: L(RISK_STATE_LABELS[risk.state]),
         title: risk.description,
-        effects: [riskNeedsDecision(risk)
+        effects: [riskHasUserAction(risk, view)
           ? L("当前结果：{state}，仍会留在待决定中。{effect}", {
               state: L(RISK_STATE_LABELS[risk.state]),
               effect: stateEffect,
@@ -3555,7 +3632,7 @@ export function renderDecisionCenter(view: GoalBoardWebView, desktopInbox = fals
     candidates: view.snapshot.candidates.filter((item) => item.state === "pending").length,
     rewires: view.snapshot.rewires.filter((item) => item.state === "pending").length,
     reviews: view.snapshot.review_obligations.filter((item) => item.role === "human_approver" && item.state === "pending").length,
-    risks: view.snapshot.risks.filter(riskNeedsDecision).length,
+    risks: view.snapshot.risks.filter((risk) => riskHasUserAction(risk, view)).length,
   };
   const groupKinds = (group: DecisionGoalGroup) => [
     { count: group.goalTreeProposals.length + group.contractProposals.length, label: L("目标说明"), icon: "clipboard" as GoalBoardIcon },
@@ -3883,7 +3960,7 @@ function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
     sourceLabel: item.source_label || item.source_kind,
     disposition: item.disposition === "inbox" && !inboxActive ? "feed" : item.disposition,
     title: item.title,
-    summary: item.summary || item.body || L("没有附加摘要"),
+    summary: feedPlainText(item.summary || item.body) || L("没有附加摘要"),
     updatedAt: item.source_updated_at || item.updated_at,
     icon: "activity",
     item,
@@ -3909,7 +3986,7 @@ function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
           sourceLabel: item?.source_label || item?.source_kind || "Feed",
           disposition,
           title: item?.title || L("原 Feed Item 已不可用"),
-          summary: item?.summary || item?.body || L("引用仍保留，但原消息已被删除。"),
+          summary: feedPlainText(item?.summary || item?.body) || L("引用仍保留，但原消息已被删除。"),
           updatedAt: entry.updated_at,
           icon: item ? "input" : "alert",
           item,
@@ -3981,7 +4058,7 @@ function feedDirectoryEntries(view: GoalBoardWebView): FeedDirectoryEntry[] {
         sourceLabel: item.source_label || item.source_kind,
         disposition: "inbox",
         title: item.title,
-        summary: item.summary || item.body || L("没有附加摘要"),
+        summary: feedPlainText(item.summary || item.body) || L("没有附加摘要"),
         updatedAt: item.source_updated_at || item.updated_at,
         icon: "input",
         item,
@@ -4561,6 +4638,8 @@ function renderInboxReferenceDetail(entry: FeedDirectoryEntry, selected: boolean
 
 function renderPersistedFeedDetail(entry: FeedDirectoryEntry, selected: boolean, routePrefix: string): string {
   const item = entry.item!;
+  const summary = feedPlainText(item.summary, 420);
+  const body = renderFeedRichText(item.body || item.summary || L("这条消息没有可显示的正文。"));
   const itemUrl = safeExternalHref(item.url);
   const isInboxMessage = item.item_type === "inbox_message";
   const inboxEntry = entry.inboxEntry ?? null;
@@ -4597,9 +4676,9 @@ function renderPersistedFeedDetail(entry: FeedDirectoryEntry, selected: boolean,
       ? `<button class="button-primary" type="button" data-feed-action="start" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("play")}${item.disposition === "processing" ? L("继续处理") : L("开始处理")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${L("归档")}</button>`
       : `<button class="button-primary" type="button" data-feed-action="inbox" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${entry.inboxActive ? " disabled" : ""}>${icon("input")}${entry.inboxActive ? L("已加入 Inbox") : L("加入 Inbox")}</button><button type="button" data-feed-action="save" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}"${item.disposition === "saved" ? " disabled" : ""}>${item.disposition === "saved" ? L("已保存为资料") : L("保存为资料")}</button><button type="button" data-feed-action="promote" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${icon("target")}${item.linked_goal_id ? L("查看 Goal") : L("升格为 Goal")}</button><button class="feed-action-subtle" type="button" data-feed-action="archive" data-feed-item-id="${escapeHtml(item.item_id)}" data-feed-revision="${item.revision}">${L("忽略")}</button>`;
   return `<article class="feed-detail${inboxEntry ? " feed-detail--attention" : ""}" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-feed-detail-read="${item.read_at ? "read" : "unread"}"${selected ? "" : " hidden"}>
-    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span>${item.item_type === "feed" ? `<span data-feed-read-state>${item.read_at ? L("已读") : L("未读")}</span>` : ""}<span>${escapeHtml(feedDispositionLabel(effectiveDisposition, item.item_type))}</span></div><h1>${escapeHtml(item.title || L("未命名消息"))}</h1>${item.summary ? `<p>${escapeHtml(item.summary)}</p>` : ""}<div class="feed-detail-meta">${item.author ? `<span>${icon("user")}${escapeHtml(item.author)}</span>` : ""}<time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time>${item.source_id ? `<button type="button" data-open-source-record="${escapeHtml(item.source_id)}">${icon("settings")}${L("查看来源")}</button>` : ""}${itemUrl ? `<a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer">${L("打开原文")}${icon("arrow")}</a>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${activeActions}${linkedGoal}</div><p class="feed-action-status" data-feed-action-status role="status" hidden></p></header>
+    <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span>${item.item_type === "feed" ? `<span data-feed-read-state>${item.read_at ? L("已读") : L("未读")}</span>` : ""}<span>${escapeHtml(feedDispositionLabel(effectiveDisposition, item.item_type))}</span></div><h1>${escapeHtml(item.title || L("未命名消息"))}</h1>${summary ? `<p>${escapeHtml(summary)}</p>` : ""}<div class="feed-detail-meta">${item.author ? `<span>${icon("user")}${escapeHtml(item.author)}</span>` : ""}<time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time>${item.source_id ? `<button type="button" data-open-source-record="${escapeHtml(item.source_id)}">${icon("settings")}${L("查看来源")}</button>` : ""}${itemUrl ? `<a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer">${L("打开原文")}${icon("arrow")}</a>` : ""}</div><div class="feed-detail-actions" data-feed-actions>${activeActions}${linkedGoal}</div><p class="feed-action-status" data-feed-action-status role="status" hidden></p></header>
     ${inboxEntry ? `<section class="inbox-attention-context" aria-label="${L("处理上下文")}"><dl><div><dt>${L("为什么进入 Inbox")}</dt><dd>${escapeHtml(inboxEntryReasonLabel(inboxEntry.reason))}</dd></div><div><dt>${L("关联对象")}</dt><dd>${escapeHtml(`${item.source_label || item.source_kind} · ${item.title}`)}</dd></div><div><dt>${L("当前状态")}</dt><dd>${escapeHtml(inboxEntryStatusLabel(inboxEntry.status))}</dd></div><div><dt>${L("下一步")}</dt><dd>${escapeHtml(inboxEntry.status === "done" || inboxEntry.status === "dismissed" ? L("可以重新打开，原消息仍保留在 Feed。") : L("查看原消息并处理，或直接完成 / 忽略这条注意力引用。"))}</dd></div></dl><p class="prototype-honesty-note">${icon("link")}${L("Inbox 只保存这条引用和进入原因；这里展示的是原 Feed Item，内容没有复制进 Inbox。")}</p></section>` : !isInboxMessage ? `<section class="feed-destination-strip" data-destination-state="${escapeHtml(effectiveDisposition)}"><span>${icon("activity")}${L("当前去向")}</span><strong>${escapeHtml(destinationCopy[0])}</strong><small>${escapeHtml(destinationCopy[1])}</small></section>` : ""}
-    <section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body || item.summary || L("这条消息没有可显示的正文。"))}</div></section>
+    <section class="feed-detail-body"><h2>${L("内容")}</h2><div class="feed-rich-content">${body}</div></section>
     ${item.tags.length ? `<section class="feed-detail-tags" aria-label="${L("标签")}">${item.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</section>` : ""}
     <section class="feed-materials"><header><div><span>${L("资料")}</span><h2>${L("随 Item 一起保存的来源")}</h2></div><small>${L("{count} 项", { count: item.materials.length })}</small></header><ul>${materialRows}</ul></section>
   </article>`;
@@ -4624,7 +4703,7 @@ function renderPrototypeFeedDetail(entry: FeedDirectoryEntry, selected: boolean)
   return `<article class="feed-detail feed-detail--prototype${isInbox ? " feed-detail--attention" : ""}" data-feed-detail="${escapeHtml(entry.id)}" data-feed-detail-item-type="${item.item_type}" data-prototype-feed-detail${selected ? "" : " hidden"}>
     <header class="feed-detail-header"><div class="feed-detail-kicker"><span>${escapeHtml(entry.kindLabel)}</span><span>${escapeHtml(entry.sourceLabel)}</span><span>${L("仅本页演示")}</span></div><h1>${escapeHtml(item.title)}</h1><p>${escapeHtml(item.summary)}</p><div class="feed-detail-meta"><span>${icon("link")}${escapeHtml(prototype.relation)}</span><time datetime="${escapeHtml(item.source_updated_at)}">${formatDate(item.source_updated_at)}</time></div><div class="feed-detail-actions" data-feed-actions>${primaryAction}${secondaryActions}</div><p class="feed-action-status" data-prototype-action-status role="status" hidden></p></header>
     ${isInbox ? `<section class="inbox-attention-context" aria-label="${L("处理上下文")}"><dl><div><dt>${L("为什么进入 Inbox")}</dt><dd>${escapeHtml(prototype.reason)}</dd></div><div><dt>${L("关联对象")}</dt><dd>${escapeHtml(prototype.relation)}</dd></div><div><dt>${L("下一步")}</dt><dd>${escapeHtml(prototype.nextAction)}</dd></div></dl></section>` : `<section class="feed-destination-strip" data-prototype-destination><span>${icon("activity")}${L("当前去向")}</span><strong>${L("仅保留在 Feed")}</strong><small>${L("尚未占用你的 Inbox")}</small></section>`}
-    <section class="feed-detail-body"><h2>${L("内容")}</h2><div>${escapeHtml(item.body ?? "")}</div></section>
+    <section class="feed-detail-body"><h2>${L("内容")}</h2><div class="feed-rich-content">${renderFeedRichText(item.body)}</div></section>
     <section class="feed-detail-tags" aria-label="${L("标签")}">${item.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</section>
     <p class="prototype-honesty-note">${icon("alert")}${L("演示动作只改变当前页面状态，不会连接账号、写入数据库或启动后台任务。")}</p>
   </article>`;
@@ -4645,7 +4724,7 @@ export function renderPersistedFeedItemDetail(
     sourceLabel: item.source_label || item.source_kind,
     disposition: item.disposition,
     title: item.title,
-    summary: item.summary || item.body || L("没有附加摘要"),
+    summary: feedPlainText(item.summary || item.body) || L("没有附加摘要"),
     updatedAt: item.source_updated_at || item.updated_at,
     icon: item.item_type === "feed" ? "activity" : "input",
     item,
@@ -4707,28 +4786,6 @@ export function countGoalDecisions(view: GoalBoardWebView, goalId: string): numb
   const group = buildDecisionGroups(view).find((item) => item.item?.goal.goal_id === goalId);
   if (!group) return 0;
   return group.goalTreeProposals.length + group.contractProposals.length + group.candidates.length + group.rewires.length + group.risks.length + (group.humanReview ? 1 : 0);
-}
-
-function goalDecisionsTakePriority(item: WebGoalView, view: GoalBoardWebView): boolean {
-  const group = buildDecisionGroups(view).find((candidate) => candidate.item?.goal.goal_id === item.goal.goal_id);
-  const hasNonRiskDecision = Boolean(group && (
-    group.goalTreeProposals.length ||
-    group.contractProposals.length ||
-    group.candidates.length ||
-    group.rewires.length ||
-    group.humanReview
-  ));
-  if (hasNonRiskDecision) return true;
-  return new Set<GoalPresentationState>([
-    "clarification_decision_pending",
-    "clarification_blocked",
-    "execution_blocked",
-    "completion_blocked",
-    "review_blocked",
-    "waiting_for_human",
-    "revalidation_blocked",
-    "invalidated",
-  ]).has(item.status);
 }
 
 function renderDraftGaps(item: WebGoalView): string {
@@ -4892,60 +4949,38 @@ function renderFocusSectionDeck(cards: FocusSectionCardOptions[], label: string,
 
 function renderGoalPrimaryAction(item: WebGoalView, view: GoalBoardWebView): string {
   const goalId = item.goal.goal_id;
+  const action = item.action_projection.primary_action;
   const decisions = countGoalDecisions(view, goalId);
-  if (decisions > 0 && goalDecisionsTakePriority(item, view)) {
-    return `<a class="goal-primary-action" href="/decisions#decision-goal-${encodeURIComponent(goalId)}">${icon("user")}<span>${L("处理 {count} 项决定", { count: decisions })}</span></a>`;
-  }
-  const explanation = explainWorkState(item.status);
-  if (explanation.actionKind === "none") return "";
-  if (explanation.actionKind === "clarify") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-edit aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("clipboard")}<span>${L("开始澄清")}</span></button>`;
-  }
-  if (explanation.actionKind === "close_parent") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-tui aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("terminal")}<span>${L("查看完成结果")}</span></button>`;
-  }
-  if (explanation.actionKind === "choose_child") {
-    const children = sortGoals(partOfChildViews(goalId, view));
-    const target = children.find((child) => !goalWorkSatisfied(child)) ?? children[0];
-    return target
-      ? `<a class="goal-primary-action" href="/goals/${encodeURIComponent(target.goal.goal_id)}" aria-label="${escapeHtml(L("进入子 Goal「{title}」", { title: target.goal.title }))}" title="${escapeHtml(target.goal.title)}">${icon("tree")}<span>${L("进入子 Goal")}</span></a>`
-      : `<a class="goal-primary-action" href="#completion-${escapeHtml(goalId)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("tree")}<span>${L("查看完整要求与边界")}</span></a>`;
-  }
-  if (explanation.actionKind === "start") {
-    return `<button class="goal-primary-action" type="button" data-open-goal-tui aria-label="${L("在这条 Goal 下打开终端")}" title="${L("在这条 Goal 下打开终端")}">${icon("terminal")}<span>${L("打开 Runtime")}</span></button>`;
-  }
-  if (explanation.actionKind === "archive" && !item.goal.archived_at) {
+  if (!action && item.display_status === "completed" && !item.goal.archived_at) {
     return `<button class="goal-primary-action" type="button" data-goal-archive="true" data-goal-id="${escapeHtml(goalId)}" aria-label="${L("归档这条已完成的 Goal")}" title="${L("归档这条已完成的 Goal")}">${icon("archive")}<span>${L("归档 Goal")}</span></button>`;
   }
-  if (item.status === "waiting_for_human") {
-    return `<a class="goal-primary-action" href="#acceptance-${escapeHtml(goalId)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon("user")}<span>${L("完成验收")}</span></a>`;
+  if (!action) return "";
+  if (action.actor === "user") {
+    const href = decisions > 0
+      ? `/decisions#decision-goal-${encodeURIComponent(goalId)}`
+      : `#acceptance-${encodeURIComponent(goalId)}`;
+    return `<a class="goal-primary-action" href="${href}" aria-label="${escapeHtml(item.main_action_label)}" title="${escapeHtml(item.main_action_label)}">${icon("user")}<span>${escapeHtml(item.main_action_label)}</span></a>`;
   }
-  const target = explanation.actionKind === "resolve_blocker" || explanation.actionKind === "view_progress" || explanation.actionKind === "review" || explanation.actionKind === "revalidate"
-    ? `#progress-${goalId}`
-    : `#completion-${goalId}`;
-  const actionLabel = explanation.actionKind === "review" || explanation.actionKind === "revalidate" ? L("开始检查") : L("查看进展");
-  return `<a class="goal-primary-action" href="${escapeHtml(target)}" aria-label="${escapeHtml(explanation.nextAction)}" title="${escapeHtml(explanation.nextAction)}">${icon(explanation.actionKind === "resolve_blocker" ? "blocked" : "arrow")}<span>${actionLabel}</span></a>`;
+  if (action.status === "blocked" || action.kind === "wait") {
+    return `<a class="goal-primary-action" href="#progress-${encodeURIComponent(goalId)}" aria-label="${escapeHtml(item.main_action_label)}" title="${escapeHtml(item.main_action_label)}">${icon(action.kind === "wait" ? "waiting" : "blocked")}<span>${escapeHtml(item.main_action_label)}</span></a>`;
+  }
+  if (action.kind === "clarify") {
+    return `<button class="goal-primary-action" type="button" data-open-goal-edit aria-label="${escapeHtml(item.main_action_label)}" title="${escapeHtml(item.main_action_label)}">${icon("clipboard")}<span>${escapeHtml(item.main_action_label)}</span></button>`;
+  }
+  return `<button class="goal-primary-action" type="button" data-open-goal-tui aria-label="${escapeHtml(item.main_action_label)}" title="${escapeHtml(item.main_action_label)}">${icon("terminal")}<span>${escapeHtml(item.main_action_label)}</span></button>`;
 }
 
 function renderGoalNow(item: WebGoalView, view: GoalBoardWebView): string {
-  const explanation = explainWorkState(item.status);
-  const handoff = item.reasons.find((reason) => reason.code === "work.handoff_pending");
-  const blockers = item.reasons.filter(
-    (reason) => reason.severity === "blocker" && reason.code !== "work.handoff_pending",
-  );
-  const decisions = countGoalDecisions(view, item.goal.goal_id);
-  const decisionsFirst = decisions > 0 && goalDecisionsTakePriority(item, view);
-  const primaryText = handoff?.message ?? (item.status === "clarification_decision_pending" ? explanation.nextAction : decisionsFirst ? L("先完成等待你的决定") : explanation.nextAction);
-  const guidance = handoff
-    ? explanation.howToContinue
-    : item.status === "clarification_decision_pending"
-      ? explanation.howToContinue
-      : decisionsFirst
-        ? L("打开这条 Goal 的待决定事项，逐项查看依据和选择后果。")
-        : explanation.howToContinue;
+  const action = item.action_projection.primary_action;
+  const blockers = action?.reasons.filter((reason) => reason.severity === "blocker") ?? [];
+  const guidance = action?.actor === "user"
+    ? L("完成这一个决定后，页面会直接显示新的下一步。")
+    : action?.status === "blocked" || action?.kind === "wait"
+      ? L("满足这里列出的恢复条件后，状态会自动重新计算。")
+      : L("从主按钮继续；已有 Run、Evidence 和 Review 都会保留。")
   return `<section class="goal-now" data-goal-section="now" aria-labelledby="goal-now-${escapeHtml(item.goal.goal_id)}">
     <header><h2 id="goal-now-${escapeHtml(item.goal.goal_id)}">${L("下一步")}</h2></header>
-    <div class="goal-now-body"><div><strong>${escapeHtml(primaryText)}</strong><p>${escapeHtml(explanation.meaning)}</p><small><b>${handoff ? L("接下来：") : L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
+    <div class="goal-now-body"><div><strong>${escapeHtml(item.main_action_label)}</strong><p>${escapeHtml(item.action_summary)}</p><small><b>${L("怎么做：")}</b>${escapeHtml(guidance)}</small></div>${renderGoalPrimaryAction(item, view)}</div>
     ${blockers.length
       ? `<div class="goal-now-blockers"><strong>${L("当前阻塞")}</strong><ul>${blockers.map((reason) => `<li>${escapeHtml(reason.message)}${reason.remediation ? `<small>${L("可以这样处理：")}${escapeHtml(reason.remediation)}</small>` : ""}</li>`).join("")}</ul></div>`
       : ""}
@@ -5327,7 +5362,7 @@ unreviewed and undocumented is unfinished; this build ends with the finish revie
 --><article class="goal-document" data-goal-view="${escapeHtml(goal.goal_id)}"${selected ? "" : " hidden"}>
     <section class="goal-hero" aria-labelledby="goal-title-${goalId}">
       <header class="goal-header">
-        <div class="goal-title-kicker">${renderStatus(item.status)}<div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
+        <div class="goal-title-kicker">${renderVisibleGoalStatus(item)}<div class="goal-title-facts"><span>${icon("user")}${escapeHtml(owner)}</span><span>${L("优先级")} ${goal.priority}</span><span>${L("最近更新")} ${formatDate(goal.updated_at)}</span></div></div>
         <div class="goal-title-row"><div class="goal-title-copy"><h1 id="goal-title-${goalId}">${escapeHtml(goal.title)}</h1><p class="goal-title-outcome">${escapeHtml(goal.outcome || L("还没有写清预期结果。"))}</p></div><div class="goal-title-actions">${goalModeSwitch}${quickRecordAction}${moreActions}</div></div>
       </header>
       ${goalBrief}
@@ -5637,12 +5672,12 @@ const STYLES = `
   .tree-dep.is-blocked em { color: var(--red); }
   .goal-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; font-weight: 650; }
   .goal-status svg { font-size: 13px; }
-  .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating { color: var(--blue); }
-  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--handoff_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--waiting_for_human, .goal-status--revalidation_pending { color: #1768bf; }
-  .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated { color: var(--red); }
+  .goal-status--clarifying, .goal-status--executing, .goal-status--reviewing, .goal-status--revalidating, .goal-status--in_progress { color: var(--blue); }
+  .goal-status--clarification_pending, .goal-status--clarification_decision_pending, .goal-status--compound_closure_pending, .goal-status--execution_pending, .goal-status--completion_pending, .goal-status--review_pending, .goal-status--waiting_for_human, .goal-status--revalidation_pending, .goal-status--continue, .goal-status--waiting_user { color: #1768bf; }
+  .goal-status--clarification_blocked, .goal-status--execution_blocked, .goal-status--completion_blocked, .goal-status--review_blocked, .goal-status--revalidation_blocked, .goal-status--invalidated, .goal-status--blocked { color: var(--red); }
   .goal-status--replaced { color: var(--muted); }
-  .goal-status--waiting_children { color: #5c6570; }
-  .goal-status--satisfied { color: var(--green); }
+  .goal-status--waiting_children, .goal-status--waiting { color: #5c6570; }
+  .goal-status--satisfied, .goal-status--completed { color: var(--green); }
   .goal-status--trashed, .goal-status--archived { color: #626b76; }
   .tree-node.is-selected .goal-status { color: #fff; }
   .tree-footer { padding: 0 22px; border-top: 1px solid var(--line); display: flex; align-items: center; color: #3c434d; background: color-mix(in srgb, var(--rail) 55%, #fff); }
@@ -5705,8 +5740,8 @@ const STYLES = `
   .tui-chrome button:hover:not(:disabled) { border-color: #b8d3f5; background: var(--blue-soft); color: var(--blue-dark); }
   .tui-chrome button:active:not(:disabled) { transform: scale(.98); }
   .tui-chrome button:disabled { color: var(--faint); cursor: default; }
-  .tui-chrome .tui-advance { border-color: var(--blue); color: #fff; background: var(--blue); }
-  .tui-chrome .tui-advance:hover:not(:disabled) { background: var(--blue-dark); color: #fff; }
+  .tui-chrome .tui-advance { border-color: var(--action); color: var(--action-ink); background: var(--action); }
+  .tui-chrome .tui-advance:hover:not(:disabled) { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); color: var(--action-ink); }
   .tui-status { margin: 0 0 0 auto; min-width: 8rem; flex: 1 1 12rem; color: var(--muted); font-size: 11px; font-weight: 650; display: flex; align-items: center; gap: 6px; line-height: 1.4; }
   .tui-status:empty { display: none; }
   .tui-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
@@ -5736,7 +5771,7 @@ const STYLES = `
   .tui-menu-missing { padding: 7px 9px; border-radius: 5px; background: var(--amber-soft); color: #7a5b12; }
   .tui-menu-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .tui-menu-actions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; font-weight: 650; }
-  .tui-menu-actions button[type="submit"] { border-color: var(--blue); color: #fff; background: var(--blue); }
+  .tui-menu-actions button[type="submit"] { border-color: var(--action); color: var(--action-ink); background: var(--action); }
   @container (max-width: 380px) {
     .tui-add span, .tui-chrome [data-tui-copy] span { display: none; }
     .tui-add, .tui-chrome [data-tui-copy] { width: 28px; padding: 0; justify-content: center; }
@@ -5755,7 +5790,7 @@ const STYLES = `
   .document-action--quiet:hover { color: var(--blue-dark); background: var(--blue-soft); }
   .document-action--current { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); cursor: default; }
   .document-action--quick { color: var(--blue-dark); border-color: #bcd4f2; background: var(--blue-soft); font-weight: 650; }
-  .document-action--quick:hover { color: #fff; border-color: var(--blue); background: var(--blue); }
+  .document-action--quick:hover { color: var(--blue-dark); border-color: var(--blue); background: var(--blue-soft); }
   .document-action--danger { color: #a52e2e; }
   .document-action--danger:hover { color: #a52e2e; border-color: #dfbaba; background: var(--red-soft); }
   .document-action:disabled { opacity: .55; cursor: wait; }
@@ -5824,8 +5859,8 @@ const STYLES = `
   .goal-now-body p { max-width: 68ch; margin: 0; color: #343b46; }
   .goal-now-body small { color: var(--muted); }
   .goal-now-body small b { margin-right: 4px; color: var(--ink); }
-  .goal-primary-action { min-height: 40px; padding: 0 15px; border: 1px solid var(--blue); border-radius: 5px; background: var(--blue); color: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 700; text-decoration: none; cursor: pointer; white-space: nowrap; }
-  .goal-primary-action:hover { border-color: var(--blue-dark); background: var(--blue-dark); color: #fff; }
+  .goal-primary-action { min-height: 40px; padding: 0 15px; border: 1px solid var(--action); border-radius: 5px; background: var(--action); color: var(--action-ink); display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 700; text-decoration: none; cursor: pointer; white-space: nowrap; }
+  .goal-primary-action:hover { border-color: var(--action); background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); color: var(--action-ink); }
   .goal-primary-action:disabled { opacity: .6; cursor: wait; }
   .goal-now-blockers { margin-top: 14px; padding-top: 12px; border-top: 1px solid #c9dff7; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; }
   .goal-now-blockers > strong { color: var(--red); font-size: 12px; }
@@ -5965,7 +6000,7 @@ const STYLES = `
   .blocker-list span, .check-list li > span:last-child { display: grid; }
   .blocker-list small, .check-list small { color: var(--muted); }
   .check-box { flex: 0 0 15px; width: 15px; height: 15px; margin-top: 3px; border: 1px solid #aeb5bf; display: grid; place-items: center; }
-  .check-box.is-checked { color: #fff; border-color: var(--blue); background: var(--blue); }
+  .check-box.is-checked { color: var(--action-ink); border-color: var(--action); background: var(--action); }
   .check-box svg { font-size: 12px; stroke-width: 3; }
 `;
 
@@ -6028,12 +6063,12 @@ const MORE_STYLES = `
   .human-review-list { margin-top: 12px; border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
   .human-review-list > header { padding: 11px 0; display: flex; align-items: baseline; gap: 12px; }
   .human-review-list > header p { margin: 0; color: var(--muted); font-size: 12px; }
-  .human-review-jump { width: min(100%, 360px); min-height: 44px; margin: 12px 0 2px; padding: 7px 10px 7px 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
-  .human-review-jump:hover { background: var(--blue-dark); }
+  .human-review-jump { width: min(100%, 360px); min-height: 44px; margin: 12px 0 2px; padding: 7px 10px 7px 12px; border: 1px solid var(--action); border-radius: 7px; background: var(--action); color: var(--action-ink); display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
+  .human-review-jump:hover { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); }
   .human-review-jump:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue), #fff 36%); outline-offset: 2px; }
   .human-review-jump span { min-width: 0; display: grid; gap: 1px; }
   .human-review-jump strong { font-size: 13px; }
-  .human-review-jump small { color: color-mix(in srgb, #fff, var(--blue) 18%); font-size: 11px; font-weight: 500; }
+  .human-review-jump small { color: color-mix(in srgb, var(--action-ink) 82%, var(--action)); font-size: 11px; font-weight: 500; }
   .human-review-jump svg { flex: 0 0 auto; }
   .human-review-form { padding: 14px 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
   .human-verdict-prefill { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
@@ -6095,7 +6130,8 @@ const MORE_STYLES = `
   .relation-deactivate-form textarea { width: 100%; min-height: 56px; padding: 7px 8px; border: 1px solid #dfbaba; border-radius: 4px; background: var(--paper); color: var(--ink); resize: vertical; }
   .relation-deactivate-form footer { display: flex; justify-content: flex-end; gap: 7px; }
   .relation-deactivate-form footer button { padding: 6px 10px; }
-  .button-danger { border-color: var(--red) !important; color: #fff !important; background: var(--red) !important; }
+  .button-danger { border-color: var(--danger-action) !important; color: var(--danger-action-ink) !important; background: var(--danger-action) !important; }
+  .button-danger:hover { background: color-mix(in srgb, var(--danger-action) 90%, var(--danger-action-ink)) !important; }
   .relation-editor { margin-top: 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fbfcfd; overflow: hidden; }
   .relation-editor > summary, .relation-inactive-history > summary { min-height: 54px; padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 9px; list-style: none; cursor: pointer; }
   .relation-editor > summary::-webkit-details-marker, .relation-inactive-history > summary::-webkit-details-marker { display: none; }
@@ -6167,7 +6203,7 @@ const MORE_STYLES = `
   .dependency-history > h3 span { color: var(--muted); font-weight: 500; }
   .dependency-history > p { margin: 2px 0 8px; color: var(--muted); font-size: 12px; }
   .dependency-proposal-list { width: 100%; min-width: 0; margin-top: 8px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
-  .dependency-proposal { min-width: 0; padding: 11px 13px; border-bottom: 1px solid var(--line); background: #fff; }
+  .dependency-proposal { min-width: 0; padding: 11px 13px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--ink); }
   .dependency-proposal:last-child { border-bottom: 0; }
   .dependency-proposal > header { display: flex; align-items: center; gap: 8px; }
   .dependency-action, .dependency-state { font-size: 11px; font-weight: 650; }
@@ -6185,10 +6221,10 @@ const MORE_STYLES = `
   .dependency-goal strong, .dependency-goal small { white-space: normal; overflow-wrap: anywhere; }
   .dependency-goal small { color: var(--muted); font-size: 10px; }
   .dependency-rationale { margin: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; }
-  .dependency-rationale div { min-width: 0; padding: 7px 0; border-top: 1px solid #edf0f3; }
+  .dependency-rationale div { min-width: 0; padding: 7px 0; border-top: 1px solid var(--line); }
   .dependency-rationale dt { color: var(--muted); font-size: 11px; }
   .dependency-rationale dd { margin: 1px 0 0; overflow-wrap: anywhere; }
-  .dependency-evidence { min-width: 0; padding-top: 7px; border-top: 1px solid #edf0f3; display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: start; gap: 6px 12px; }
+  .dependency-evidence { min-width: 0; padding-top: 7px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: start; gap: 6px 12px; }
   .dependency-evidence > strong { color: var(--muted); font-size: 11px; }
   .dependency-evidence .inline-ref, .dependency-evidence > .empty-row { min-width: 0; width: 100%; max-width: 100%; grid-column: 2; margin: 0; align-items: flex-start; text-align: left; }
   .dependency-evidence .inline-ref span { min-width: 0; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
@@ -6702,8 +6738,8 @@ const MORE_STYLES = `
   .decision-record > footer.decision-actions { padding: 11px 15px 12px; border-top: 1px solid var(--line); justify-content: flex-end; background: #fbfcfd; }
   .decision-actions { display: flex; gap: 7px; }
   .decision-actions button, .create-dialog footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; cursor: pointer; }
-  .button-primary { color: #fff !important; border-color: var(--blue) !important; background: var(--blue) !important; }
-  .button-primary:hover { background: var(--blue-dark) !important; }
+  .button-primary { color: var(--action-ink) !important; border-color: var(--action) !important; background: var(--action) !important; }
+  .button-primary:hover { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)) !important; }
   .decision-actions button:disabled { color: var(--muted) !important; border-color: var(--line) !important; background: #eef0f3 !important; cursor: not-allowed; }
   .risk-state { color: var(--amber); font-size: 11px; font-weight: 700; }
   .risk-state--triggered { color: var(--red); }
@@ -7119,7 +7155,7 @@ const PROJECT_INDEX_STYLES = `
   .project-primary-directories a { height: 28px; padding: 0 10px; border-radius: 7px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-decoration: none; }
   .project-primary-directories a[aria-current=page] { color: var(--ink); background: var(--paper); box-shadow: 0 2px 9px rgba(34, 48, 64, .08); }
   .project-index { min-height: calc(100dvh - 58px); padding: clamp(28px, 5vh, 52px) clamp(22px, 5vw, 72px) 64px; display: grid; place-items: start center; }
-  .project-index-panel { width: min(100%, 920px); background: transparent; }
+  .project-index-panel { width: min(100%, 1040px); background: transparent; }
   .project-index-heading { padding: 0 0 18px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
   .project-index-heading h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -.04em; }
   .project-index-heading p { max-width: 64ch; margin: 9px 0 0; color: var(--muted); }
@@ -7127,28 +7163,31 @@ const PROJECT_INDEX_STYLES = `
   .project-index-search { position: relative; display: flex; align-items: center; }
   .project-index-search svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
   .project-index-search input { width: 190px; min-height: 34px; padding: 0 10px 0 31px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--paper); }
-  .project-index-search-empty { margin: 0; padding: 30px 10px; border-bottom: 1px solid var(--line-strong); color: var(--muted); text-align: center; }
-  .project-index-create { min-height: 34px; padding: 0 12px; border-radius: 7px; color: #fff; background: var(--ink); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-decoration: none; white-space: nowrap; }
-  .project-directory-list { border-block: 1px solid var(--line-strong); }
-  .project-directory-row { min-height: 72px; padding: 10px 8px; color: inherit; display: grid; grid-template-columns: 36px minmax(0, 1fr) 110px 74px; align-items: center; gap: 12px; text-decoration: none; }
-  .project-directory-row + .project-directory-row { border-top: 1px solid var(--line); }
-  .project-directory-row:hover { background: color-mix(in srgb, var(--blue-soft) 42%, transparent); }
-  .project-directory-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 56%, transparent); outline-offset: 2px; }
-  .project-directory-icon { width: 34px; height: 34px; border-radius: 9px; color: var(--ink-soft); background: var(--paper); display: grid; place-items: center; box-shadow: 0 4px 14px rgba(34, 48, 64, .06); }
-  .project-directory-copy { min-width: 0; display: grid; gap: 2px; }
-  .project-directory-copy strong, .project-directory-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .project-directory-copy strong { font-size: 14px; }
-  .project-directory-copy small, .project-directory-kind { color: var(--muted); font-size: 10px; }
-  .project-directory-kind { justify-self: start; padding: 3px 6px; border-radius: 5px; background: var(--rail); }
-  .project-directory-open { color: var(--ink-soft); display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 10px; font-weight: 700; }
-  .project-directory-open svg { width: 13px; height: 13px; transform: rotate(180deg); }
+  .project-index-search-empty { margin: 12px 0 0; padding: 24px 10px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--muted); text-align: center; }
+  .project-index-create { min-height: 34px; padding: 0 12px; border: 1px solid var(--action); border-radius: 7px; color: var(--action-ink); background: var(--action); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+  .project-index-create:hover { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); }
+  .project-card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .project-card { min-width: 0; min-height: 138px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; color: inherit; background: var(--paper); box-shadow: var(--shadow-soft); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 13px; text-decoration: none; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+  .project-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-raised); transform: translateY(-1px); }
+  .project-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 62%, transparent); outline-offset: 3px; }
+  .project-card > header, .project-card > footer { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .project-card > div { min-width: 0; }
+  .project-card-icon { width: 28px; height: 28px; border-radius: 8px; color: var(--ink-soft); background: var(--rail); display: grid; place-items: center; }
+  .project-card-icon svg { width: 15px; height: 15px; }
+  .project-card-kind { min-width: 0; overflow: hidden; color: var(--faint); font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  .project-card h2 { margin: 0; overflow: hidden; font-size: 14px; letter-spacing: -.014em; text-overflow: ellipsis; white-space: nowrap; }
+  .project-card p { margin: 4px 0 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+  .project-card footer { color: var(--ink-soft); font-size: 10px; font-weight: 680; }
+  .project-card footer svg { width: 13px; height: 13px; transform: rotate(180deg); transition: transform .16s ease; }
+  .project-card:hover footer svg { transform: rotate(180deg) translateX(-2px); }
   .project-index-empty { padding: 42px 30px 46px; color: var(--muted); }
   .project-index-empty h2 { margin: 0 0 7px; color: var(--ink); font-size: 18px; }
   .project-index-empty p { max-width: 48ch; margin: 0; }
   .project-index-start { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 9px; }
   .project-index-start a { min-height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--blue-dark); background: var(--paper); display: inline-flex; align-items: center; font-weight: 650; text-decoration: none; }
-  .project-index-start a:first-child { border-color: var(--blue); color: #fff; background: var(--blue); }
+  .project-index-start a:first-child { border-color: var(--action); color: var(--action-ink); background: var(--action); }
   .project-index-start a:hover { border-color: color-mix(in srgb, var(--blue), var(--line) 58%); background: var(--blue-soft); color: var(--blue-dark); }
+  .project-index-start a:first-child:hover { border-color: var(--action); color: var(--action-ink); background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); }
   .project-index-migration { margin-top: 28px; padding: 18px 20px; border: 0; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 18px; background: color-mix(in srgb, var(--rail) 78%, var(--page)); }
   .project-index-migration > div { min-width: 0; }
   .project-index-migration strong { display: block; font-size: 13px; }
@@ -7172,14 +7211,18 @@ const PROJECT_INDEX_STYLES = `
   .project-migration-error { margin: 0; color: var(--red); font-size: 13px; }
   .project-migration-form > footer { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 9px; background: var(--rail); }
   .project-migration-form > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--paper); color: var(--ink); cursor: pointer; }
-  .project-migration-form > footer .project-migration-submit { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
-  .project-migration-form > footer .project-migration-submit:hover { background: var(--blue-dark); }
+  .project-migration-form > footer .project-migration-submit { border-color: var(--action); color: var(--action-ink); background: var(--action); font-weight: 650; }
+  .project-migration-form > footer .project-migration-submit:hover { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); }
   .project-migration-form > footer .project-migration-submit:disabled { opacity: .58; cursor: wait; }
   .project-index-note { margin: 10px 0 0; padding: 0 2px; border: 0; color: var(--muted); font-size: 11px; background: transparent; }
   @media (max-width: 760px) {
     .project-index-page > .topbar { height: 52px; }
     .project-index { min-height: calc(100dvh - 52px); }
     .project-index-page .project-context small { display: none; }
+    .project-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 1100px) and (min-width: 761px) {
+    .project-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
   @media (max-width: 620px) {
     .project-index { padding: 28px 14px; place-items: start stretch; }
@@ -7190,12 +7233,13 @@ const PROJECT_INDEX_STYLES = `
     .project-index-search { flex: 1; }
     .project-index-search input { width: 100%; min-height: 44px; }
     .project-index-create { min-height: 44px; align-self: stretch; }
-    .project-directory-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
-    .project-directory-kind { display: none; }
     .project-index-migration { padding-inline: 20px; align-items: stretch; flex-direction: column; }
     .project-index-migrate { align-self: flex-start; }
     .project-index-note { padding-inline: 20px; }
     .project-migration-form > header, .project-migration-form > .project-migration-body, .project-migration-form > footer { padding-inline: 18px; }
+  }
+  @media (max-width: 520px) {
+    .project-card-grid { grid-template-columns: minmax(0, 1fr); }
   }
 `;
 
@@ -7209,6 +7253,177 @@ const CONTROL_CLIENT_SCRIPT = `
       "x-goalboard-idempotency-key": requestKey,
     };
   };
+`;
+
+const ONBOARDING_CLIENT_SCRIPT = `
+  (() => {
+    const form = document.querySelector("[data-onboarding-form]");
+    const globalError = document.querySelector("[data-onboarding-error]");
+    const dismissButtons = [...document.querySelectorAll("[data-onboarding-dismiss]")];
+    const setGlobalError = (message) => {
+      if (!globalError) return;
+      globalError.textContent = message || "";
+      globalError.hidden = !message;
+    };
+    const dismiss = async (kind) => {
+      const mode = document.body.dataset.onboardingMode || "update";
+      if (mode === "new_project") {
+        location.assign("/");
+        return;
+      }
+      dismissButtons.forEach((button) => { button.disabled = true; });
+      setGlobalError("");
+      try {
+        const response = await fetch("/api/onboarding/dismiss", {
+          method: "POST",
+          headers: globalThis.goalboardControlHeaders(),
+          body: JSON.stringify({ kind, user_confirmed: true }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "无法保存引导状态");
+        location.assign("/");
+      } catch (error) {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+        dismissButtons.forEach((button) => { button.disabled = false; });
+      }
+    };
+    dismissButtons.forEach((button) => button.addEventListener("click", () => void dismiss(button.dataset.onboardingDismiss || "first_run")));
+    if (!form) return;
+
+    const steps = [...form.querySelectorAll("[data-onboarding-step]")];
+    const progress = form.querySelector("[data-onboarding-progress]");
+    const back = form.querySelector("[data-onboarding-back]");
+    const next = form.querySelector("[data-onboarding-next]");
+    const submit = form.querySelector("[data-onboarding-submit]");
+    let currentStep = 0;
+    const meaningful = (value) => /\\p{L}/u.test(String(value || "").trim());
+    const values = () => {
+      const data = new FormData(form);
+      return {
+        outcome: String(data.get("outcome") || "").trim(),
+        projectName: String(data.get("project_name") || "").trim(),
+        workspacePath: String(data.get("workspace_path") || "").trim(),
+        runtimeKind: String(data.get("runtime_kind") || "").trim(),
+        confirmed: data.get("user_confirmed") === "on",
+      };
+    };
+    const fieldError = (step, message) => {
+      const error = form.querySelector('[data-step-error="' + step + '"]');
+      if (error) {
+        error.textContent = message || "";
+        error.hidden = !message;
+      }
+      const input = step === 0
+        ? form.elements.outcome
+        : step === 1
+          ? form.elements.project_name
+          : step === 2
+            ? form.elements.workspace_path
+            : form.elements.user_confirmed;
+      input?.setAttribute("aria-invalid", message ? "true" : "false");
+    };
+    const validate = (step) => {
+      const data = values();
+      fieldError(step, "");
+      if (step === 0 && !meaningful(data.outcome)) {
+        fieldError(step, "请用一句包含文字的话描述你想看到的结果。");
+        return false;
+      }
+      if (step === 1 && !meaningful(data.projectName)) {
+        fieldError(step, "请填写一个你之后认得出的项目名称。");
+        return false;
+      }
+      if (step === 2 && data.runtimeKind && !data.workspacePath) {
+        fieldError(step, "打开 TUI 需要一个存在的绝对工作目录；也可以先选择‘先不开 TUI’。");
+        return false;
+      }
+      if (step === 3 && !data.confirmed) {
+        fieldError(step, "请先确认这次真实写入，或返回修改内容。");
+        return false;
+      }
+      return true;
+    };
+    const updateReview = () => {
+      const data = values();
+      form.querySelectorAll("[data-onboarding-outcome]").forEach((node) => { node.textContent = data.outcome; });
+      form.querySelectorAll("[data-onboarding-project]").forEach((node) => { node.textContent = data.projectName; });
+      const runtime = form.querySelector('input[name="runtime_kind"]:checked')?.closest("label")?.querySelector("strong")?.textContent || "先不开 TUI";
+      const assignments = [
+        ["[data-review-project]", data.projectName],
+        ["[data-review-outcome]", data.outcome],
+        ["[data-review-workspace]", data.workspacePath || "暂不关联"],
+        ["[data-review-runtime]", data.runtimeKind ? runtime + " · 填入提示后等待你发送" : "进入 Goal 工作台，稍后再打开 TUI"],
+      ];
+      assignments.forEach(([selector, value]) => {
+        const node = form.querySelector(selector);
+        if (node) node.textContent = value;
+      });
+    };
+    const showStep = (step) => {
+      currentStep = Math.max(0, Math.min(steps.length - 1, step));
+      steps.forEach((section, index) => {
+        section.hidden = index !== currentStep;
+        section.classList.toggle("is-current", index === currentStep);
+      });
+      if (progress) progress.textContent = String(currentStep + 1) + " / " + String(steps.length);
+      if (back) back.hidden = currentStep === 0;
+      if (next) next.hidden = currentStep === steps.length - 1;
+      if (submit) submit.hidden = currentStep !== steps.length - 1;
+      if (currentStep === steps.length - 1) updateReview();
+      requestAnimationFrame(() => steps[currentStep]?.querySelector("h1")?.focus({ preventScroll: true }));
+    };
+    next?.addEventListener("click", () => {
+      if (!validate(currentStep)) return;
+      updateReview();
+      showStep(currentStep + 1);
+    });
+    back?.addEventListener("click", () => showStep(currentStep - 1));
+    form.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.target instanceof HTMLTextAreaElement) return;
+      if (currentStep >= steps.length - 1) return;
+      event.preventDefault();
+      next?.click();
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!validate(3)) return;
+      const data = values();
+      setGlobalError("");
+      submit.disabled = true;
+      submit.textContent = "正在建立…";
+      try {
+        const response = await fetch("/api/onboarding/initialize", {
+          method: "POST",
+          headers: globalThis.goalboardControlHeaders(),
+          body: JSON.stringify({
+            project_name: data.projectName,
+            outcome: data.outcome,
+            workspace_path: data.workspacePath || null,
+            runtime_kind: data.runtimeKind || null,
+            user_confirmed: true,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "项目初始化失败");
+        if (data.runtimeKind && payload.goal_id) {
+          sessionStorage.setItem("goalboard-onboarding-runtime-autofill:" + payload.goal_id, JSON.stringify({
+            runtimeKind: data.runtimeKind,
+            workspacePath: data.workspacePath,
+            at: Date.now(),
+          }));
+        }
+        const destination = new URL(payload.goal_path || payload.project_path || "/", location.origin);
+        destination.searchParams.set("onboarding", "1");
+        if (document.body.hasAttribute("data-native-desktop")) destination.searchParams.set("desktop", "1");
+        location.assign(destination.pathname + destination.search + destination.hash);
+      } catch (error) {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+        submit.disabled = false;
+        submit.textContent = "创建项目";
+      }
+    });
+    showStep(0);
+  })();
 `;
 
 const PROJECT_INDEX_CLIENT_SCRIPT = `
@@ -7436,7 +7651,7 @@ const SETTINGS_STYLES = `
   .settings-import-row { border-top: 1px solid var(--line-strong); margin-top: 24px; }
   .settings-import-row > button { justify-self: end; }
   .diagnostics-summary { padding: 25px 0; border-bottom: 1px solid var(--line-strong); }
-  .diagnostics-summary > div { display: flex; justify-content: space-between; gap: 20px; }
+  .diagnostics-summary > div:first-child { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
   .diagnostics-summary dl { margin: 19px 0 0; display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
   .diagnostics-summary dl > div { min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; }
   .diagnostics-summary dl > div:nth-child(odd) { padding-right: 22px; }
@@ -7466,7 +7681,7 @@ const SETTINGS_STYLES = `
   .runtime-plan-confirm input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }
   .runtime-plan-shell > footer { padding: 14px 24px; border-top: 1px solid var(--line); background: var(--rail); display: flex; justify-content: flex-end; gap: 9px; }
   .runtime-plan-shell > footer button { min-height: 34px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--paper); cursor: pointer; }
-  .runtime-plan-shell > footer .runtime-plan-apply { border-color: var(--blue); color: #fff; background: var(--blue); font-weight: 650; }
+  .runtime-plan-shell > footer .runtime-plan-apply { border-color: var(--action); color: var(--action-ink); background: var(--action); font-weight: 650; }
   .runtime-plan-shell > footer .runtime-plan-apply:disabled { opacity: .55; cursor: not-allowed; }
   .settings-page .toast { position: fixed; right: 22px; bottom: 22px; z-index: 30; }
   @media (max-width: 760px) {
@@ -7476,6 +7691,10 @@ const SETTINGS_STYLES = `
     .settings-page .project-context small { display: none; }
     .settings-shell { height: calc(100dvh - 52px); grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .settings-navigation { overflow-x: auto; overflow-y: hidden; padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--line-strong); flex-direction: row; }
+    .settings-desktop-project,
+    .settings-desktop-heading,
+    .settings-navigation > .personal-sidebar-footer { display: none !important; }
+    .settings-nav-body { display: contents; }
     .settings-nav-group { display: contents; }
     .settings-nav-label { display: none; }
     .settings-navigation a { min-width: max-content; min-height: 40px; grid-template-columns: 18px auto; }
@@ -7507,6 +7726,9 @@ const SETTINGS_STYLES = `
     .launcher-section li > span:first-child { grid-template-columns: 20px 42px minmax(0, 1fr); }
     .inline-settings-form input[type=text], .project-record-tools input { font-size: 16px; }
   }
+  @media (max-width: 520px) {
+    .preference-options--density { grid-template-columns: 1fr; }
+  }
 `;
 
 const PROJECT_GUIDANCE_SETTINGS_STYLES = `
@@ -7516,8 +7738,8 @@ const PROJECT_GUIDANCE_SETTINGS_STYLES = `
   .guidance-page-header h1 { margin: 0; color: var(--ink); font-size: 30px; letter-spacing: -.026em; }
   .guidance-page-header p { max-width: 68ch; margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
   .guidance-primary-action, .guidance-secondary-action { min-height: 36px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ink-soft); background: var(--paper); font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
-  .guidance-primary-action { border-color: var(--blue); color: #fff; background: var(--blue); }
-  .guidance-primary-action:hover { background: var(--blue-dark); }
+  .guidance-primary-action { border-color: var(--action); color: var(--action-ink); background: var(--action); }
+  .guidance-primary-action:hover { background: color-mix(in srgb, var(--action) 90%, var(--action-ink)); }
   .guidance-secondary-action:hover { border-color: var(--blue); color: var(--blue-dark); }
   .guidance-primary-action:focus-visible, .guidance-secondary-action:focus-visible, .guidance-text-action:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
   .guidance-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 56px; align-items: start; }
@@ -7600,10 +7822,6 @@ const PROJECT_GUIDANCE_SETTINGS_STYLES = `
     .guidance-aside { position: static; padding-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
   }
   @media (max-width: 760px) {
-    .project-guidance-page .settings-desktop-project,
-    .project-guidance-page .settings-desktop-heading,
-    .project-guidance-page .settings-navigation > .personal-sidebar-footer { display: none !important; }
-    .project-guidance-page .settings-nav-body { display: contents; }
     .guidance-document { padding: 25px 18px 48px; }
     .guidance-page-header { align-items: stretch; flex-direction: column; gap: 18px; }
     .guidance-page-header h1 { font-size: 26px; }
@@ -8133,6 +8351,30 @@ const PROJECT_GUIDANCE_CLIENT_SCRIPT = `
   })();
 `;
 
+export const WORK_TAB_VISIBILITY_CLIENT_SCRIPT = String.raw`
+    let workTabsVisibilityFrame = 0;
+    const ensureActiveWorkTabVisible = () => {
+      if (!workTabs) return;
+      if (workTabsVisibilityFrame) cancelAnimationFrame(workTabsVisibilityFrame);
+      workTabsVisibilityFrame = requestAnimationFrame(() => {
+        workTabsVisibilityFrame = 0;
+        const activeTabShell = workTabs.querySelector(".desktop-work-tab.is-selected");
+        if (!activeTabShell) return;
+        const railRect = workTabs.getBoundingClientRect();
+        const tabRect = activeTabShell.getBoundingClientRect();
+        if (tabRect.left < railRect.left) {
+          workTabs.scrollLeft -= railRect.left - tabRect.left;
+        } else if (tabRect.right > railRect.right) {
+          workTabs.scrollLeft += tabRect.right - railRect.right;
+        }
+      });
+    };
+    const workTabsResizeObserver = workTabs && typeof ResizeObserver === "function"
+      ? new ResizeObserver(ensureActiveWorkTabVisible)
+      : null;
+    workTabsResizeObserver?.observe(workTabs);
+`;
+
 const CLIENT_SCRIPT = `
   (() => {
     let state = JSON.parse(document.querySelector("#goalboard-data").textContent);
@@ -8271,7 +8513,7 @@ const CLIENT_SCRIPT = `
           : currentGoalUiStorageKey;
     const goalMoveReceiptKey = "goalboard-goal-move-receipt:" + (state.project?.project_id || state.snapshot.board.board_id);
     const workTabsStorageKey = "goalboard-work-tabs:" + (state.project?.project_id || state.snapshot.board.board_id);
-    const desktopNavigationStateVersion = 2;
+    const desktopNavigationStateVersion = 3;
     let desktopDirectoryOrigin = null;
     let activeDesktopSurface = decisionView ? "feed" : "goal";
     let activeFeedPreset = feedDirectory?.dataset.feedPreset || "inbox_message";
@@ -8344,6 +8586,8 @@ const CLIENT_SCRIPT = `
       try { localStorage.setItem(workTabsStorageKey, JSON.stringify(openWorkTabs)); } catch {}
     };
 
+${WORK_TAB_VISIBILITY_CLIENT_SCRIPT}
+
     const renderWorkTabs = () => {
       if (!workTabs) return;
       const byId = new Map(visibleGoals().map((item) => [item.goal.goal_id, item]));
@@ -8405,6 +8649,7 @@ const CLIENT_SCRIPT = `
       else if (activeUtilityTab?.id) documentPane.setAttribute("aria-labelledby", activeUtilityTab.id);
       else documentPane.removeAttribute("aria-labelledby");
       persistWorkTabs();
+      ensureActiveWorkTabVisible();
     };
 
     const ensureWorkTab = (goalId) => {
@@ -8466,10 +8711,8 @@ const CLIENT_SCRIPT = `
           ? L("来源")
           : surface === "sessions"
             ? "Sessions"
-            : surface === "workspaces"
-              ? L("工作目录")
-              : defaultMobileTreeLabel;
-      if (mobileDocumentTab) mobileDocumentTab.textContent = surface === "feed" || surface === "sources" || surface === "sessions" || surface === "workspaces"
+            : defaultMobileTreeLabel;
+      if (mobileDocumentTab) mobileDocumentTab.textContent = surface === "feed" || surface === "sources" || surface === "sessions"
         ? L("详情")
         : defaultMobileDocumentLabel;
       desktopWorkSurfaces.forEach((candidate) => {
@@ -8784,8 +9027,8 @@ const CLIENT_SCRIPT = `
       };
       rows.sort(compare).forEach((row) => feedList.insertBefore(row, feedEmpty));
       if (feedResultCount) feedResultCount.textContent = L("{count} 个 Item", { count: visible.length });
+      const filteredEmpty = visible.length === 0 && presetRows.length > 0;
       if (feedEmpty) {
-        const filteredEmpty = visible.length === 0 && presetRows.length > 0;
         const emptyTitle = feedEmpty.querySelector("[data-feed-empty-title]");
         const emptyCopy = feedEmpty.querySelector("[data-feed-empty-copy]");
         const clearFilters = feedEmpty.querySelector("[data-feed-clear-filters]");
@@ -8810,7 +9053,12 @@ const CLIENT_SCRIPT = `
           row.tabIndex = -1;
         });
         feedWorkbench?.querySelectorAll("[data-feed-detail]").forEach((detail) => { detail.hidden = true; });
-        if (feedDetailEmpty) feedDetailEmpty.hidden = false;
+        setFeedDetailPlaceholder(
+          filteredEmpty ? L("没有符合当前条件的 Item") : L("这里还没有 Item"),
+          filteredEmpty
+            ? L("换一个关键词或清除筛选，原来的 Item 仍然保留。")
+            : L("接入来源后，消息和 Feed 会出现在这里。"),
+        );
       }
       queueSave();
     };
@@ -9349,9 +9597,19 @@ const CLIENT_SCRIPT = `
       if (!graph?.querySelector('[data-momentum-node][data-goal-id="' + CSS.escape(goalId || "") + '"]')) return;
       momentumSelected = goalId;
       const relatedGoalIds = new Set([goalId]);
+      const defaultMarker = graph.querySelector("#momentum-arrow");
+      if (defaultMarker && !graph.querySelector("#momentum-arrow-selected")) {
+        const selectedMarker = defaultMarker.cloneNode(true);
+        selectedMarker.id = "momentum-arrow-selected";
+        defaultMarker.after(selectedMarker);
+      }
       graph.querySelectorAll("[data-graph-edge]").forEach((edge) => {
         const related = edge.dataset.edgeFrom === goalId || edge.dataset.edgeTo === goalId;
         edge.classList.toggle("is-selected-path", related);
+        edge.querySelector("path")?.setAttribute(
+          "marker-end",
+          related ? "url(#momentum-arrow-selected)" : "url(#momentum-arrow)",
+        );
         if (related && edge.dataset.edgeFrom) relatedGoalIds.add(edge.dataset.edgeFrom);
         if (related && edge.dataset.edgeTo) relatedGoalIds.add(edge.dataset.edgeTo);
       });
@@ -10165,8 +10423,10 @@ const CLIENT_SCRIPT = `
       document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: {
         goalId,
         goalTitle: item.goal.title,
+        status: item.status,
         statusLabel: item.status_label,
         statusMeaning: item.status_meaning,
+        statusIconMarkup: item.status_icon,
         parentReadOnly: Boolean(item.is_compound_parent),
         children: item.children || [],
       } }));
@@ -10336,12 +10596,25 @@ const CLIENT_SCRIPT = `
 
     const liveUiInteractionActive = () => {
       const active = document.activeElement;
-      if (!active) return false;
-      if (active.closest?.("[data-live-form]")) return true;
-      return active.matches?.('input, textarea, select, [contenteditable="true"]') && Boolean(
+      if (active?.closest?.("[data-live-form]")) return true;
+      const dirtyVisibleForm = [...document.querySelectorAll('[data-live-form][data-live-dirty="true"]')]
+        .some((form) => form.getClientRects().length > 0);
+      if (dirtyVisibleForm) return true;
+      return active?.matches?.('input, textarea, select, [contenteditable="true"]') && Boolean(
         active.closest?.('[data-directory-panel="feed"], [data-directory-panel="sources"], [data-work-surface="feed"], [data-work-surface="sources"]'),
       );
     };
+
+    document.addEventListener("input", (event) => {
+      event.target?.closest?.("[data-live-form]")?.setAttribute("data-live-dirty", "true");
+    });
+    document.addEventListener("change", (event) => {
+      event.target?.closest?.("[data-live-form]")?.setAttribute("data-live-dirty", "true");
+    });
+    document.addEventListener("reset", (event) => {
+      const form = event.target?.closest?.("[data-live-form]");
+      if (form) requestAnimationFrame(() => form.removeAttribute("data-live-dirty"));
+    });
 
     const scheduleDeferredRefresh = () => {
       clearTimeout(deferredRefreshTimer);
@@ -10376,11 +10649,6 @@ const CLIENT_SCRIPT = `
           return;
         }
         if (!force && liveUiInteractionActive()) return;
-        if (decisionView) {
-          saveUiState();
-          location.reload();
-          return "reloading";
-        }
         const refreshGoalId = selected;
         const pageBase = goalPageBase();
         const collectionPath = trashView ? "/trash" : archiveView ? "/archive" : "/";
@@ -10407,6 +10675,35 @@ const CLIENT_SCRIPT = `
         const nextStateNode = parsed.querySelector("#goalboard-data");
         if (!nextStateNode) throw new Error("页面状态不完整");
         const nextState = JSON.parse(nextStateNode.textContent);
+        if (decisionView) {
+          const nextFeedList = parsed.querySelector("[data-feed-list]");
+          const nextFeedWorkbench = parsed.querySelector("[data-feed-workbench]");
+          const nextFeedDetailEmpty = nextFeedWorkbench?.querySelector("[data-feed-detail-empty]");
+          if (!feedList || !feedWorkbench || !feedEmpty || !feedDetailEmpty || !nextFeedList || !nextFeedWorkbench || !nextFeedDetailEmpty) {
+            throw new Error("待决定页面数据不完整");
+          }
+          const scrollTop = window.scrollY;
+          const nextRows = [...nextFeedList.querySelectorAll("[data-feed-entry-id]")];
+          feedList.querySelectorAll("[data-feed-entry-id]").forEach((row) => row.remove());
+          nextRows.forEach((row) => feedList.insertBefore(row, feedEmpty));
+          feedWorkbench.querySelectorAll("[data-feed-detail]").forEach((detail) => detail.remove());
+          [...nextFeedWorkbench.querySelectorAll("[data-feed-detail]")]
+            .forEach((detail) => feedWorkbench.insertBefore(detail, feedDetailEmpty));
+          feedDetailEmpty.innerHTML = nextFeedDetailEmpty.innerHTML;
+          feedDetailEmpty.hidden = nextFeedDetailEmpty.hidden;
+          feedWorkbench.dataset.loaded = nextFeedWorkbench.dataset.loaded || "true";
+          feedWorkbench.dataset.loadedPreset = nextFeedWorkbench.dataset.loadedPreset || "inbox_message";
+          state = nextState;
+          document.querySelector("#goalboard-data").textContent = JSON.stringify(nextState).replaceAll("<", "\\u003c");
+          const deepLinkedEntry = decisionFeedEntryFromHash();
+          if (deepLinkedEntry && !nextRows.some((row) => row.dataset.feedEntryId === deepLinkedEntry)) {
+            history.replaceState(null, "", location.pathname + location.search);
+          }
+          selectedFeedItem = nextRows.find((row) => row.classList.contains("is-selected"))?.dataset.feedEntryId || "";
+          filterFeedItems(false);
+          window.scrollTo({ top: scrollTop, behavior: "instant" });
+          return;
+        }
         const nextGoals = visibleGoals(nextState);
         const renderedGoalId = parsed.querySelector("[data-goal-view]")?.dataset.goalView || "";
         const goalStillExists = nextGoals.some((item) => item.goal.goal_id === refreshGoalId);
@@ -10518,11 +10815,13 @@ const CLIENT_SCRIPT = `
 
     const showDecisionReceipt = (message, context) => {
       const center = document.querySelector("[data-decision-center]");
-      if (!center) {
+      const activeFeedDetail = feedWorkbench?.querySelector('[data-feed-detail]:not([hidden])');
+      const receiptHost = center || activeFeedDetail;
+      if (!receiptHost) {
         showToast(message);
         return;
       }
-      center.querySelector("[data-decision-receipt]")?.remove();
+      receiptHost.querySelector("[data-decision-receipt]")?.remove();
       const receipt = document.createElement("aside");
       receipt.className = "decision-receipt";
       receipt.dataset.decisionReceipt = "true";
@@ -10532,7 +10831,7 @@ const CLIENT_SCRIPT = `
       const title = document.createElement("strong");
       title.textContent = L("已记录你的决定");
       const detail = document.createElement("span");
-      detail.textContent = message + " " + (center.querySelector(".decision-record") ? L("下一步：继续处理下面的待决定事项。") : L("下一步：返回 Goal 查看结果。"));
+      detail.textContent = message + " " + (receiptHost.querySelector(".decision-record") ? L("下一步：继续处理下面的待决定事项。") : L("下一步：返回 Goal 查看结果。"));
       copy.append(title, detail);
       receipt.append(copy);
       if (context?.goalHref) {
@@ -10541,7 +10840,9 @@ const CLIENT_SCRIPT = `
         link.textContent = context.goalTitle ? L("返回「{title}」", { title: context.goalTitle }) : L("返回 Goal");
         receipt.append(link);
       }
-      center.querySelector(".decision-center-header")?.after(receipt);
+      const receiptAnchor = receiptHost.querySelector(".decision-center-header, .feed-detail-header");
+      if (receiptAnchor) receiptAnchor.after(receipt);
+      else receiptHost.prepend(receipt);
       receipt.focus({ preventScroll: true });
     };
 
@@ -11512,7 +11813,7 @@ const CLIENT_SCRIPT = `
         }
         setDesktopDirectory(surface === "goal"
           ? "goals"
-          : surface === "feed" || surface === "sources" || surface === "sessions" || surface === "workspaces"
+          : surface === "feed" || surface === "sources" || surface === "sessions"
             ? surface
             : "root", true, true, surfaceOpen);
         setDesktopWorkSurface(surface, true, true);
@@ -12297,6 +12598,10 @@ const CLIENT_SCRIPT = `
             body: JSON.stringify({
               state: values.get("state"),
               reason: String(values.get("reason") || "").trim(),
+              goal_id: riskStateForm.dataset.goalId,
+              action_id: riskStateForm.dataset.actionId,
+              action_token: riskStateForm.dataset.actionToken,
+              contract_revision: Number(riskStateForm.dataset.contractRevision),
               ...(values.get("state") === "resolved" ? {
                 resolution_basis: {
                   summary: String(values.get("resolution_summary") || "").trim(),
@@ -12308,13 +12613,14 @@ const CLIENT_SCRIPT = `
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Risk 状态更新失败");
-          const resultState = result?.risk?.state;
+          const resultState = result?.decision || result?.risk?.state;
           const resultMessages = {
             open: L("风险保持待处理，仍会留在待决定中，并继续按当前规则影响关联 Goal。"),
             triggered: L("风险已标记为发生，仍会留在待决定中，并继续按当前规则影响关联 Goal。"),
             resolved: L("风险已标记为解决，不再阻止关联 Goal。"),
             accepted: L("风险已接受，不再阻止关联 Goal。"),
             expired: L("风险已过期，不再继续跟踪或阻止关联 Goal。"),
+            rejected: L("你没有接受这项风险，已改为由 Runtime 继续处理。"),
           };
           await refreshBoardWithDecisionReceipt(
             resultMessages[resultState] || L("风险处理方式已记录。"),
@@ -12457,12 +12763,14 @@ const CLIENT_SCRIPT = `
               result: values.get("result"),
               locator: String(values.get("locator") || "").trim(),
               digest: String(values.get("digest") || "").trim(),
+              action_token: evidenceForm.dataset.actionToken,
+              contract_revision: Number(evidenceForm.dataset.contractRevision),
             }),
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || L("完成依据记录失败"));
           await refreshBoard(true);
-          showToast(L("完成依据已记录，并已绑定到当前 Goal"));
+          showToast(result?.transition?.summary || L("完成依据已记录，并已绑定到当前 Goal"));
         } catch (error) {
           errorBox.textContent = error.message || L("完成依据记录失败，请检查输入后重试");
           errorBox.hidden = false;
@@ -12585,6 +12893,8 @@ const CLIENT_SCRIPT = `
                 verdict: values.get("verdict"),
                 evidence_refs: evidenceRefs,
                 reasoning: String(values.get("reasoning") || "").trim(),
+                attention_token: reviewForm.dataset.attentionToken,
+                contract_revision: Number(reviewForm.dataset.contractRevision),
               }),
             },
           );
@@ -12596,7 +12906,9 @@ const CLIENT_SCRIPT = `
             fail: L("结果已确认未通过；你的理由和依据已保留。"),
             inconclusive: L("结果暂未判断；请补充与完成标准对应的依据。"),
           };
-          const receiptMessage = resultMessages[result?.review?.verdict] || L("结果确认已记录。");
+          const nextAction = result?.transition?.projection?.primary_action;
+          const receiptMessage = (resultMessages[result?.review?.verdict] || L("结果确认已记录。")) +
+            (nextAction ? L(" 下一步：{action}。", { action: result.transition.summary || nextAction.kind }) : "");
           await refreshBoardWithDecisionReceipt(receiptMessage, receiptContext);
         } catch (error) {
           errorBox.textContent = humanDecisionError(error.message, "结果确认保存失败，请检查输入后重试");
@@ -12835,8 +13147,10 @@ const CLIENT_SCRIPT = `
       document.dispatchEvent(new CustomEvent("goalboard:goal-changed", { detail: {
         goalId: selected,
         goalTitle: selectedItem?.goal.title || selected,
+        status: selectedItem?.status || "",
         statusLabel: selectedItem?.status_label || "",
         statusMeaning: selectedItem?.status_meaning || "",
+        statusIconMarkup: selectedItem?.status_icon || "",
         parentReadOnly: Boolean(selectedItem?.is_compound_parent),
         children: selectedItem?.children || [],
       } }));
@@ -12868,15 +13182,142 @@ function renderProjectMigrationDialog(): string {
 </dialog>`;
 }
 
+export interface GoalBoardOnboardingRenderOptions {
+  mode: "first_run" | "new_project" | "update";
+  currentVersion: string | null;
+  controlToken?: string;
+  desktopShell?: boolean;
+  cliAvailability?: Record<string, boolean>;
+}
+
+const ONBOARDING_RUNTIME_CHOICES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "codex", label: "Codex" },
+  { id: "claude-code", label: "Claude Code" },
+  { id: "opencode", label: "OpenCode" },
+  { id: "pi-agent", label: "Pi Agent" },
+  { id: "grok-build", label: "Grok Build" },
+];
+
+export function renderGoalBoardOnboarding(options: GoalBoardOnboardingRenderOptions): string {
+  const desktopShell = Boolean(options.desktopShell);
+  const href = (target: string) => desktopShell ? withDesktopQuery(target) : target;
+  if (options.mode === "update") {
+    const version = options.currentVersion ? ` ${escapeHtml(options.currentVersion)}` : "";
+    return `<!doctype html>
+<html lang="${htmlLang()}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${controlTokenMeta(options.controlToken ?? "")}
+  <title>${L("GoalBoard 已更新")}</title>
+  <link rel="stylesheet" href="/assets/goalboard-onboarding.css">
+</head>
+<body class="onboarding-page onboarding-page--update"${desktopShell ? ' data-native-desktop="true"' : ""}>
+  <main class="onboarding-update" aria-labelledby="onboarding-update-title">
+    <span class="onboarding-brand">GoalBoard</span>
+    <div class="onboarding-update-copy">
+      <h1 id="onboarding-update-title">${L("GoalBoard 已更新")}${version}</h1>
+      <p>${L("你的 Project、Goal 和工作记录仍保存在本机。更新不会替你接受 Goal，也不会自动修改 Runtime 配置。")}</p>
+      <ul>
+        <li><strong>${L("新项目可以从一个真实结果开始")}</strong><span>${L("创建 Project 时同时建立根 Draft Goal，后续从同一份事实继续。")}</span></li>
+        <li><strong>${L("初始化可以直接交给 TUI")}</strong><span>${L("选择工作目录和 Runtime 后，提示会填入终端，但仍由你检查并发送。")}</span></li>
+      </ul>
+    </div>
+    <div class="onboarding-update-actions">
+      <button type="button" data-onboarding-dismiss="update">${L("继续使用 GoalBoard")}</button>
+      <a href="${href("/settings/projects")}">${L("查看项目设置")}</a>
+    </div>
+    <p class="onboarding-error" data-onboarding-error role="alert" hidden></p>
+  </main>
+  <script>${CONTROL_CLIENT_SCRIPT}</script>
+  <script>${ONBOARDING_CLIENT_SCRIPT}</script>
+</body>
+</html>`;
+  }
+
+  const runtimeAvailability = options.cliAvailability ?? {};
+  const availableRuntimes = ONBOARDING_RUNTIME_CHOICES.filter(({ id }) => runtimeAvailability[id] === true);
+  const runtimeChoices = [
+    `<label class="onboarding-runtime-choice"><input type="radio" name="runtime_kind" value="" checked><span><strong>${L("先不开 TUI")}</strong><small>${L("项目和根 Goal 仍会真实创建")}</small></span></label>`,
+    ...ONBOARDING_RUNTIME_CHOICES.map(({ id, label }) => {
+      const available = runtimeAvailability[id] === true;
+      return `<label class="onboarding-runtime-choice${available ? "" : " is-unavailable"}"><input type="radio" name="runtime_kind" value="${id}"${available ? "" : " disabled"}><span><strong>${escapeHtml(label)}</strong><small>${available ? L("本机可用") : L("未检测到 CLI")}</small></span></label>`;
+    }),
+  ].join("");
+  const runtimeHint = availableRuntimes.length
+    ? L("选择 Runtime 时需要同时提供工作目录；GoalBoard 会打开新终端并填入提示，但不会发送。")
+    : L("当前没有检测到可用 Runtime。你可以先创建项目，稍后从 Goal 工作台打开 TUI。");
+  const title = options.mode === "first_run" ? L("开始使用 GoalBoard") : L("建立一个新项目");
+  return `<!doctype html>
+<html lang="${htmlLang()}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${controlTokenMeta(options.controlToken ?? "")}
+  <title>${title}</title>
+  <link rel="stylesheet" href="/assets/goalboard-onboarding.css">
+</head>
+<body class="onboarding-page" data-onboarding-mode="${options.mode}"${desktopShell ? ' data-native-desktop="true"' : ""}>
+  <header class="onboarding-topbar">
+    <a class="onboarding-brand" href="${href("/")}">GoalBoard</a>
+    <div class="onboarding-topbar-actions"><a href="${href("/settings/projects")}">${L("迁移已有数据")}</a><button type="button" data-onboarding-dismiss="first_run">${options.mode === "first_run" ? L("跳过") : L("返回项目目录")}</button></div>
+  </header>
+  <main class="onboarding-room">
+    <form class="onboarding-flow" data-onboarding-form novalidate>
+      <p class="onboarding-progress" data-onboarding-progress aria-live="polite">1 / 4</p>
+      <section class="onboarding-step is-current" data-onboarding-step="0" aria-labelledby="onboarding-question-0">
+        <h1 id="onboarding-question-0" tabindex="-1">${L("你好，我们今天做点什么？")}</h1>
+        <label class="onboarding-answer"><span>${L("我想")}</span><textarea name="outcome" rows="2" maxlength="2000" autocomplete="off" aria-describedby="onboarding-error-0" placeholder="${L("例如：让第一次使用 GoalBoard 的人顺利建立自己的目标树")}" required></textarea></label>
+        <p class="onboarding-field-error" id="onboarding-error-0" data-step-error="0" role="alert" hidden></p>
+      </section>
+      <section class="onboarding-step" data-onboarding-step="1" aria-labelledby="onboarding-question-1" hidden>
+        <p class="onboarding-echo" data-onboarding-outcome></p>
+        <h1 id="onboarding-question-1" tabindex="-1">${L("给这个项目一个你认得出的名字。")}</h1>
+        <label class="onboarding-answer onboarding-answer--single"><span>${L("项目叫")}</span><input name="project_name" type="text" maxlength="160" autocomplete="off" aria-describedby="onboarding-error-1" placeholder="${L("例如：GoalBoard Onboarding")}" required></label>
+        <p class="onboarding-field-error" id="onboarding-error-1" data-step-error="1" role="alert" hidden></p>
+      </section>
+      <section class="onboarding-step" data-onboarding-step="2" aria-labelledby="onboarding-question-2" hidden>
+        <p class="onboarding-echo"><span data-onboarding-project></span> · <span data-onboarding-outcome></span></p>
+        <h1 id="onboarding-question-2" tabindex="-1">${L("要从哪个工作现场继续？")}</h1>
+        <label class="onboarding-workspace"><span>${L("工作目录（可选）")}</span><input name="workspace_path" type="text" autocomplete="off" placeholder="/absolute/path/to/project" aria-describedby="onboarding-runtime-hint onboarding-error-2"></label>
+        <fieldset class="onboarding-runtime"><legend>${L("Runtime")}</legend>${runtimeChoices}</fieldset>
+        <p class="onboarding-hint" id="onboarding-runtime-hint">${runtimeHint}</p>
+        <p class="onboarding-field-error" id="onboarding-error-2" data-step-error="2" role="alert" hidden></p>
+      </section>
+      <section class="onboarding-step onboarding-step--review" data-onboarding-step="3" aria-labelledby="onboarding-question-3" hidden>
+        <h1 id="onboarding-question-3" tabindex="-1">${L("检查一下，然后把它交给 GoalBoard。")}</h1>
+        <dl class="onboarding-review">
+          <div><dt>${L("Project")}</dt><dd data-review-project></dd></div>
+          <div><dt>${L("根 Goal")}</dt><dd data-review-outcome></dd></div>
+          <div><dt>${L("工作目录")}</dt><dd data-review-workspace></dd></div>
+          <div><dt>${L("下一步")}</dt><dd data-review-runtime></dd></div>
+        </dl>
+        <label class="onboarding-confirm"><input type="checkbox" name="user_confirmed"><span>${L("我确认创建这个 Project 和根 Draft Goal；若选择 Runtime，只填入提示，不自动发送。")}</span></label>
+        <p class="onboarding-field-error" id="onboarding-error-3" data-step-error="3" role="alert" hidden></p>
+      </section>
+      <footer class="onboarding-actions">
+        <button class="onboarding-back" type="button" data-onboarding-back hidden>${L("返回")}</button>
+        <button class="onboarding-next" type="button" data-onboarding-next>${L("继续")}</button>
+        <button class="onboarding-submit" type="submit" data-onboarding-submit hidden>${L("创建项目")}</button>
+      </footer>
+      <p class="onboarding-error" data-onboarding-error role="alert" hidden></p>
+    </form>
+  </main>
+  <script>${CONTROL_CLIENT_SCRIPT}</script>
+  <script>${ONBOARDING_CLIENT_SCRIPT}</script>
+</body>
+</html>`;
+}
+
 export function renderGoalBoardProjectIndex(
   projects: readonly WebProjectNavigation[],
   controlToken = "",
   desktopShell = false,
 ): string {
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
-  const projectRows = projects
+  const projectCards = projects
     .map(
-      (project) => `<a class="project-directory-row" href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}" data-project-search-row="${escapeHtml(`${project.display_name} ${project.data_class}`.toLocaleLowerCase())}"><span class="project-directory-icon">${icon("database")}</span><span class="project-directory-copy"><strong>${escapeHtml(project.display_name)}</strong><small>${L("Goals、Sessions 与工作目录")}</small></span><span class="project-directory-kind">${project.data_class === "regenerable_demo" ? L("演示数据") : project.data_class === "migrated_user" ? L("已迁移") : L("本地项目")}</span><span class="project-directory-open">${L("打开")}${icon("arrow")}</span></a>`,
+      (project) => `<a class="project-card" role="listitem" href="${href(`/projects/${encodeURIComponent(project.project_id)}`)}" data-project-search-row="${escapeHtml(`${project.display_name} ${project.data_class}`.toLocaleLowerCase())}"><header><span class="project-card-icon">${icon("database")}</span><span class="project-card-kind">${project.data_class === "regenerable_demo" ? L("演示数据") : project.data_class === "migrated_user" ? L("已迁移") : L("本地项目")}</span></header><div><h2>${escapeHtml(project.display_name)}</h2><p>${L("Goals 与 Sessions")}</p></div><footer><span>${L("打开项目")}</span>${icon("arrow")}</footer></a>`,
     )
     .join("");
   return `<!doctype html>
@@ -12898,10 +13339,10 @@ export function renderGoalBoardProjectIndex(
   </header>
   <main class="project-index">
     <section class="project-index-panel" aria-labelledby="project-index-title">
-      <header class="project-index-heading"><div><h1 id="project-index-title">${L("选择一个项目")}</h1><p>${L("每个项目管理自己的 Goals、Sessions 和工作目录；打开项目不会自动绑定或切换正在对话的 Runtime Session。")}</p></div><div class="project-index-actions">${projects.length ? `<label class="project-index-search">${icon("search")}<input type="search" data-project-search placeholder="${L("搜索项目")}" aria-label="${L("搜索项目")}"></label>` : ""}<a class="project-index-create" href="${href("/settings/projects")}">${icon("plus")}${L("新建项目")}</a></div></header>
+      <header class="project-index-heading"><div><h1 id="project-index-title">${L("选择一个项目")}</h1><p>${L("每个项目管理自己的 Goals 和 Sessions；工作目录在新建或关联 Session 时选择。")}</p></div><div class="project-index-actions">${projects.length ? `<label class="project-index-search">${icon("search")}<input type="search" data-project-search placeholder="${L("搜索项目")}" aria-label="${L("搜索项目")}"></label>` : ""}<a class="project-index-create" href="${href("/onboarding")}">${icon("plus")}${L("引导创建项目")}</a></div></header>
       ${projects.length
-        ? `<div class="project-directory-list" role="list">${projectRows}</div><p class="project-index-search-empty" data-project-search-empty hidden>${L("没有匹配的项目，换一个关键词。")}</p>`
-        : `<div class="project-index-empty"><h2>${L("从一个真实项目开始")}</h2><p>${L("你可以直接在网页创建项目，也可以先接入当前设备上的 Runtime。两步都可跳过，GoalBoard 不会自动修改任何配置。")}</p><div class="project-index-start"><a href="${href("/settings/projects")}">${L("创建第一个项目")}</a><a href="${href("/settings/runtimes")}">${L("设置 Runtime 接入")}</a></div></div>`}
+        ? `<div class="project-card-grid" role="list">${projectCards}</div><p class="project-index-search-empty" data-project-search-empty hidden>${L("没有匹配的项目，换一个关键词。")}</p>`
+        : `<div class="project-index-empty"><h2>${L("从一个真实项目开始")}</h2><p>${L("通过逐步引导建立 Project 和第一条根 Goal；是否关联工作目录、是否打开 Runtime 都由你确认。")}</p><div class="project-index-start"><a href="${href("/onboarding")}">${L("开始建立第一个项目")}</a><a href="${href("/settings/projects")}">${L("直接进入项目设置")}</a></div></div>`}
       <section class="project-index-migration"><div><strong>${L("已有一份旧的 GoalBoard DB？")}</strong><small>${L("只有你明确选择并确认后，才会迁移它并保留已有历史。")}</small></div><button class="project-index-migrate" type="button" data-open-project-migration>${L("迁移已有 GoalBoard 数据")}</button></section>
       <p class="project-index-note">${L("选择项目只影响这次网页浏览；正在对话的 Runtime Session 保持原来的项目关系。")}</p>
     </section>
@@ -12986,7 +13427,7 @@ function renderRuntimeSettings(view: GoalBoardSettingsView): string {
   return `<section class="settings-document" aria-labelledby="settings-title">
     <header class="settings-heading"><h1 id="settings-title">${L("AI 与执行工具")}</h1><p>${L("不接入也能正常使用 Goal Tree、待决定和记录。只有想让 AI 工具直接读取或推进 Goal 时才需要连接；每次修改前都会先展示变化并由你确认。")}</p></header>
     <div class="settings-record-list">${rows || `<div class="settings-empty"><h2>${L("没有可探测的 Runtime")}</h2><p>${L("GoalBoard 本体仍可使用；稍后安装 Runtime 后再回来检查。")}</p></div>`}</div>
-    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。Session 与工作目录关系请进入对应项目管理。")}</p>
+    <p class="settings-footnote">${L("当前自动适配 Codex、Claude Code、OpenCode、Pi Agent 和 Grok Build。每次确认只对应当前 Runtime 和当前预览；配置在预览后变化时会要求重新生成。Session 与运行位置请进入对应项目的 Sessions 管理。")}</p>
   </section>`;
 }
 
@@ -13061,7 +13502,6 @@ function renderTuiPane(
   cliAvailability: Record<string, boolean> = {},
 ): string {
   const selectedGoalId = selected?.goal.goal_id ?? "";
-  const explanation = selected ? explainWorkState(selected.status) : null;
   const compoundParent = selected?.goal.decomposition_state === "closed_compound";
   const compoundParentComplete = compoundParent && selected?.goal.fulfillment_state === "satisfied";
   const children = selected ? sortGoals(partOfChildViews(selected.goal.goal_id, view)) : [];
@@ -13093,10 +13533,16 @@ function renderTuiPane(
       <div class="tui-resizer" role="separator" aria-label="${L("调整终端宽度，双击收起")}" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="720" aria-valuenow="480" tabindex="0" data-tui-resizer></div>
       <aside class="tui-pane" id="goal-tui-pane" data-tui-pane data-goal-id="${escapeHtml(selectedGoalId)}" data-tui-parent-read-only="${compoundParent}"${compoundParent ? ' data-tui-read-only="true"' : ""} aria-label="${L("终端面板")}">
         <div class="tui-owner" data-tui-owner>
-          <strong data-tui-owner-title>${escapeHtml(selected?.goal.title ?? L("还没有选择 Goal"))}</strong>
-          <small data-tui-owner-status title="${escapeHtml(explanation?.meaning ?? "")}">${escapeHtml(explanation?.label ?? "")}</small>
-          <span><i aria-hidden="true"></i><b>${L("绑定到 Goal")}</b></span>
-          <button class="tui-focus-return" type="button" data-tui-focus-return>${icon("target")}<span>${L("返回聚焦")}</span></button>
+          <div class="tui-owner-copy">
+            <strong data-tui-owner-title>${escapeHtml(selected?.goal.title ?? L("还没有选择 Goal"))}</strong>
+            <span class="tui-owner-binding"><i aria-hidden="true"></i><b>${L("绑定到 Goal")}</b></span>
+          </div>
+          <div class="tui-owner-actions">
+            ${selected
+              ? renderVisibleGoalStatus(selected, "data-tui-owner-status", "data-tui-owner-status-label")
+              : `<span class="goal-status" data-tui-owner-status hidden><span data-tui-owner-status-label></span></span>`}
+            <button class="tui-focus-return" type="button" data-tui-focus-return>${icon("target")}<span>${L("返回聚焦")}</span></button>
+          </div>
         </div>
         <div class="tui-tabs">
           <span class="tui-mode-label">${L("终端")}</span>
@@ -13177,6 +13623,28 @@ function renderProjectSwitcher(
   return `<details class="${className} navigator-project-menu" data-project-menu><summary class="navigator-project-selector" aria-label="${L("切换项目")}">${icon("database")}<strong title="${escapeHtml(currentName)}">${escapeHtml(currentName)}</strong>${icon("chevron-down")}</summary><div class="navigator-project-menu-popover"><span>${L("切换项目")}</span><nav>${options.map((project) => `<a class="navigator-project-option${project.project_id === currentProject?.project_id ? " is-current" : ""}" href="${href(`/projects/${encodeURIComponent(project.project_id)}/`)}"${project.project_id === currentProject?.project_id ? ' aria-current="page"' : ""}><span>${icon("database")}<strong>${escapeHtml(project.display_name)}</strong></span>${project.project_id === currentProject?.project_id ? icon("check") : ""}</a>`).join("")}</nav><a class="navigator-project-manage" href="${desktopShell ? withDesktopQuery(manageHref) : manageHref}">${icon("settings")}<span>${L("管理项目")}</span></a></div></details>`;
 }
 
+function renderDesktopProjectChrome(
+  currentProject: WebProjectNavigation | null,
+  projects: readonly WebProjectNavigation[],
+  desktopShell: boolean,
+  settingsHref: string | null,
+  options: {
+    switcherClass?: string;
+    manageHref?: string;
+    settingsCurrent?: boolean;
+    directoryToggle?: boolean;
+  } = {},
+): string {
+  const dragAttribute = desktopShell ? " data-tauri-drag-region" : "";
+  const directoryToggle = options.directoryToggle
+    ? `<button class="navigator-directory-toggle" type="button" data-directory-toggle aria-expanded="true" aria-label="${L("收起目录")}" title="${L("收起目录")}">${icon("panel")}</button>`
+    : "";
+  const settings = settingsHref
+    ? `<a class="navigator-project-settings" href="${settingsHref}"${options.settingsCurrent ? ' aria-current="page"' : ""} aria-label="${options.settingsCurrent ? L("当前项目设置") : L("打开当前项目设置")}" title="${L("项目设置")}">${icon("settings")}</a>`
+    : "";
+  return `<div class="navigator-native-row">${directoryToggle}<div class="desktop-titlebar-drag desktop-titlebar-drag--left"${dragAttribute} aria-hidden="true"></div></div><div class="navigator-project-primary">${renderProjectSwitcher(currentProject, projects, desktopShell, options.switcherClass, options.manageHref)}<button class="navigator-project-notifications" type="button" disabled aria-label="${L("通知，暂不可用")}" title="${L("通知功能即将开放")}">${icon("bell")}</button>${settings}</div>`;
+}
+
 function renderSettingsNavigation(
   active: SettingsNavigationActive,
   project: WebProjectNavigation | null,
@@ -13188,7 +13656,7 @@ function renderSettingsNavigation(
   const current = (section: SettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
   const projectHome = project ? `/projects/${encodeURIComponent(project.project_id)}/` : "/";
   const projectSettings = project ? `/projects/${encodeURIComponent(project.project_id)}/settings/guidance` : "/settings/projects";
-  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${desktopShell ? withDesktopQuery(projectSettings) : projectSettings}" aria-label="${project ? L("打开当前项目设置") : L("项目设置")}">${icon("settings")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${desktopShell ? withDesktopQuery(projectHome) : projectHome}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>`;
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderDesktopProjectChrome(project, projects, desktopShell, desktopShell ? withDesktopQuery(projectSettings) : projectSettings, { switcherClass: "settings-project-switcher" })}</div><header class="settings-desktop-heading"><a href="${desktopShell ? withDesktopQuery(projectHome) : projectHome}" aria-label="${L("返回项目")}">${icon("arrow")}</a><span><strong>${L("全局设置")}</strong><small>${L("只影响当前设备")}</small></span></header>`;
   const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalHref("/settings/appearance")}" aria-current="page" aria-label="${L("全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation" aria-label="${L("系统设置")}">
     ${desktopProjectContext}<div class="settings-nav-body"><section class="settings-nav-group" aria-labelledby="settings-global-group"><div class="settings-nav-label" id="settings-global-group"><span>${L("全局设置")}</span><small>${L("只影响当前设备")}</small></div>
@@ -13209,7 +13677,7 @@ function renderProjectSettingsNavigation(
   const routePrefix = `/projects/${encodeURIComponent(project.project_id)}`;
   const href = (path: string) => desktopShell ? withDesktopQuery(path) : path;
   const current = (section: ProjectSettingsNavigationActive) => active === section ? ' aria-current="page"' : "";
-  const desktopProjectContext = `<div class="settings-desktop-project">${renderProjectSwitcher(project, projects, desktopShell, "settings-project-switcher")}<a class="navigator-project-settings" href="${href(`${routePrefix}/settings/guidance`)}" aria-current="page" aria-label="${L("当前项目设置")}">${icon("settings")}</a><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div></div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>`;
+  const desktopProjectContext = `<div class="settings-desktop-project">${renderDesktopProjectChrome(project, projects, desktopShell, href(`${routePrefix}/settings/guidance`), { switcherClass: "settings-project-switcher", settingsCurrent: true })}</div><header class="settings-desktop-heading"><a href="${href(`${routePrefix}/`)}" aria-label="${L("返回 Goal Tree")}">${icon("arrow")}</a><span><strong>${L("项目设置")}</strong><small>${escapeHtml(project.display_name)}</small></span></header>`;
   const globalSettingsHref = settingsContextHref("/settings/appearance", project, desktopShell);
   const desktopFooter = `<footer class="personal-sidebar-footer"><a class="personal-account" href="${globalSettingsHref}" aria-label="${L("打开全局设置")}"><span class="personal-account-avatar" aria-hidden="true">${icon("user")}</span><span class="personal-account-copy"><strong>${L("一骏")}</strong><small>${L("本地空间")}</small></span><span class="personal-account-settings" aria-hidden="true">${icon("settings")}</span></a></footer>`;
   return `<nav class="settings-navigation project-settings-navigation" aria-label="${L("项目设置")}">
@@ -13323,7 +13791,7 @@ const PLANNING_SETTINGS_STYLES = `
   .planning-back svg{transform:rotate(180deg)}
   .planning-page .settings-content{max-width:none}.planning-catalog,.planning-detail,.planning-edit,.work-planning{width:min(100%,1120px);margin:0 auto;padding:36px 38px 56px}
   .planning-page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:26px}.planning-page-header>div{min-width:0}.planning-page-header h1{margin:0;color:var(--ink);font-size:28px;letter-spacing:-.028em}.planning-page-header p{max-width:68ch;margin:9px 0 0;color:var(--muted);font-size:13px;line-height:1.65}
-  .planning-primary-action,.planning-secondary-action{min-height:36px;padding:0 13px;border:1px solid var(--line-strong);border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:7px;color:var(--ink-soft);background:var(--paper);font-size:12px;font-weight:680;text-decoration:none;white-space:nowrap;cursor:pointer}.planning-primary-action{border-color:var(--blue);color:#fff;background:var(--blue)}.planning-primary-action:hover{background:var(--blue-dark)}.planning-secondary-action:hover{border-color:var(--blue);color:var(--blue-dark)}
+  .planning-primary-action,.planning-secondary-action{min-height:36px;padding:0 13px;border:1px solid var(--line-strong);border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:7px;color:var(--ink-soft);background:var(--paper);font-size:12px;font-weight:680;text-decoration:none;white-space:nowrap;cursor:pointer}.planning-primary-action{border-color:var(--action);color:var(--action-ink);background:var(--action)}.planning-primary-action:hover{background:color-mix(in srgb,var(--action) 90%,var(--action-ink))}.planning-secondary-action:hover{border-color:var(--blue);color:var(--blue-dark)}
   .planning-library-note{margin-bottom:22px;padding:14px 16px;border:1px solid color-mix(in srgb,var(--blue) 24%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--blue-soft) 52%,var(--paper));display:flex;align-items:flex-start;gap:11px}.planning-library-note>svg{flex:0 0 auto;margin-top:1px;color:var(--blue-dark)}.planning-library-note strong{display:block;font-size:12px}.planning-library-note p{margin:3px 0 0;color:var(--ink-soft);font-size:12px;line-height:1.55}
   .planning-library-tools{margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:14px}.planning-filters{min-width:0;display:flex;gap:5px;overflow-x:auto}.planning-filters button{min-height:32px;padding:0 11px;border:0;border-radius:8px;color:var(--muted);background:transparent;font-size:11px;font-weight:680;white-space:nowrap;cursor:pointer}.planning-filters button:hover,.planning-filters button[aria-pressed=true]{color:var(--blue-dark);background:var(--blue-soft)}
   .planning-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.planning-card{min-height:220px;padding:18px;border:1px solid var(--line);border-radius:14px;color:inherit;background:var(--paper);display:flex;flex-direction:column;gap:14px;text-decoration:none;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}.planning-card:hover{border-color:color-mix(in srgb,var(--blue) 54%,var(--line));box-shadow:0 10px 30px color-mix(in srgb,var(--ink) 9%,transparent);transform:translateY(-2px)}.planning-card:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
@@ -13335,7 +13803,7 @@ const PLANNING_SETTINGS_STYLES = `
   .planning-save-context{margin-bottom:24px;padding:13px 15px;border:1px solid color-mix(in srgb,var(--blue) 26%,var(--line));border-radius:11px;background:color-mix(in srgb,var(--blue-soft) 44%,var(--paper));display:flex;align-items:flex-start;gap:10px}.planning-save-context svg{color:var(--blue-dark)}.planning-save-context strong{display:block;font-size:12px}.planning-save-context p{margin:3px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
   .planning-edit-form{display:grid}.planning-edit-section{padding:28px 0;border-bottom:1px solid var(--line)}.planning-edit-section>header{margin-bottom:18px}.planning-edit-section h2{margin:0;color:var(--ink);font-size:17px}.planning-edit-section header p{max-width:66ch;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.55}.planning-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.planning-edit-form label{min-width:0;display:grid;gap:6px;color:var(--ink-soft);font-size:11px;font-weight:680}.planning-edit-form label>small{color:var(--muted);font-size:10px;font-weight:400;line-height:1.45}.planning-edit-form input,.planning-edit-form select,.planning-edit-form textarea{width:100%;border:1px solid var(--line-strong);border-radius:8px;color:var(--ink);background:var(--paper);font:inherit}.planning-edit-form input,.planning-edit-form select{min-height:38px;padding:0 10px}.planning-edit-form textarea{min-height:68px;padding:9px 10px;resize:vertical;line-height:1.5}.planning-edit-form input:focus,.planning-edit-form select:focus,.planning-edit-form textarea:focus{border-color:var(--blue);outline:2px solid color-mix(in srgb,var(--blue),transparent 80%);outline-offset:1px}
   .planning-row-list{display:grid;gap:9px}.planning-edit-row{padding:12px;border-radius:11px;background:var(--rail);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.planning-edit-row--structured{grid-template-columns:minmax(150px,.42fr) minmax(0,1fr) auto}.planning-remove-row{width:32px;height:32px;border:0;border-radius:7px;color:var(--muted);background:transparent;cursor:pointer}.planning-remove-row:hover{color:var(--red);background:var(--red-soft)}.planning-add-row{margin-top:10px;min-height:34px;padding:0 11px;border:1px dashed var(--line-strong);border-radius:8px;color:var(--blue-dark);background:transparent;font-size:11px;font-weight:680;cursor:pointer}.planning-add-row:hover{border-style:solid;background:var(--blue-soft)}
-  .planning-advanced{margin-top:24px;border:1px solid var(--line);border-radius:11px}.planning-advanced>summary{min-height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--ink-soft);font-size:11px;font-weight:680;cursor:pointer;list-style:none}.planning-advanced>summary::-webkit-details-marker{display:none}.planning-advanced>summary svg{color:var(--faint);transition:transform .16s ease}.planning-advanced[open]>summary svg{transform:rotate(180deg)}.planning-advanced-body{padding:16px;border-top:1px solid var(--line);display:grid;gap:14px}.planning-enabled{margin-top:16px;display:flex!important;align-items:center;gap:8px!important}.planning-enabled input{width:16px;min-height:16px;accent-color:var(--blue)}.planning-form-error{margin:18px 0 0;padding:10px 12px;border-radius:8px;color:var(--red);background:var(--red-soft);font-size:11px}.planning-edit-footer{padding-top:22px;display:flex;align-items:center;justify-content:flex-end;gap:10px}.planning-edit-footer button{min-height:38px;padding:0 15px;border:1px solid var(--blue);border-radius:8px;color:#fff;background:var(--blue);font-weight:700;cursor:pointer}
+  .planning-advanced{margin-top:24px;border:1px solid var(--line);border-radius:11px}.planning-advanced>summary{min-height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--ink-soft);font-size:11px;font-weight:680;cursor:pointer;list-style:none}.planning-advanced>summary::-webkit-details-marker{display:none}.planning-advanced>summary svg{color:var(--faint);transition:transform .16s ease}.planning-advanced[open]>summary svg{transform:rotate(180deg)}.planning-advanced-body{padding:16px;border-top:1px solid var(--line);display:grid;gap:14px}.planning-enabled{margin-top:16px;display:flex!important;align-items:center;gap:8px!important}.planning-enabled input{width:16px;min-height:16px;accent-color:var(--blue)}.planning-form-error{margin:18px 0 0;padding:10px 12px;border-radius:8px;color:var(--red);background:var(--red-soft);font-size:11px}.planning-edit-footer{padding-top:22px;display:flex;align-items:center;justify-content:flex-end;gap:10px}.planning-edit-footer button{min-height:38px;padding:0 15px;border:1px solid var(--action);border-radius:8px;color:var(--action-ink);background:var(--action);font-weight:700;cursor:pointer}.planning-edit-footer button:hover{background:color-mix(in srgb,var(--action) 90%,var(--action-ink))}
   .work-planning-section-header{margin:0 0 16px}.work-planning-section-header h2{margin:0;color:var(--ink);font-size:17px}.work-planning-section-header p{max-width:72ch;margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.55}.work-planning-empty{padding:28px;border:1px dashed var(--line-strong);border-radius:14px;text-align:center}.work-planning-empty h3{margin:0;color:var(--ink);font-size:14px}.work-planning-empty p{max-width:64ch;margin:7px auto 0;color:var(--muted);font-size:11px;line-height:1.6}
   .planning-composition-section{margin-bottom:36px;padding-bottom:34px;border-bottom:1px solid var(--line)}.planning-composition-overview{padding:16px 18px;border:1px solid color-mix(in srgb,var(--blue) 24%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--blue-soft) 34%,var(--paper));display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px}.planning-composition-overview strong{display:block;color:var(--ink);font-size:13px}.planning-composition-overview p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.55}.planning-composition-facts{display:flex;align-items:center;gap:14px;color:var(--ink-soft);font-size:10px;white-space:nowrap}.planning-composition-facts span+span{padding-left:14px;border-left:1px solid var(--line-strong)}.planning-composition-list{margin-top:12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.planning-composition-row{min-height:70px;padding:11px 4px;display:grid;grid-template-columns:86px minmax(0,1fr) auto;align-items:center;gap:14px;color:inherit;text-decoration:none}.planning-composition-row+.planning-composition-row{border-top:1px solid var(--line)}.planning-composition-row:hover{background:color-mix(in srgb,var(--blue-soft) 32%,transparent)}.planning-composition-row-copy{min-width:0;display:grid;gap:3px}.planning-composition-row-copy strong{color:var(--ink);font-size:13px}.planning-composition-row-copy small{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.planning-composition-row-meta{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:9px;white-space:nowrap}.planning-composition-row-meta svg{color:var(--blue-dark)}.planning-inactive-section{margin-top:34px;padding-top:30px;border-top:1px solid var(--line)}
   .planning-adoption-section{margin-bottom:36px;padding-bottom:34px;border-bottom:1px solid var(--line)}.planning-adoption-tools{margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:14px}.planning-adoption-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.planning-adoption-card{min-height:168px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--paper);display:flex;flex-direction:column;gap:10px}.planning-adoption-card header{display:flex;align-items:center;justify-content:space-between;gap:8px}.planning-adoption-card h3{margin:0;font-size:14px;letter-spacing:-.012em}.planning-adoption-card h3 a{color:var(--ink);text-decoration:none}.planning-adoption-card h3 a:hover{color:var(--blue-dark)}.planning-adoption-card>p{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.planning-adoption-card footer{margin-top:auto;padding-top:10px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}.planning-adoption-card footer span{color:var(--faint);font-size:9px}.planning-adoption-card button{min-height:30px;padding:0 10px;border:1px solid var(--line-strong);border-radius:7px;color:var(--blue-dark);background:var(--paper);font-size:10px;font-weight:700;cursor:pointer}.planning-adoption-card button:hover{border-color:var(--blue);background:var(--blue-soft)}.planning-adoption-card button:disabled{cursor:wait;opacity:.62}.planning-adoption-error{margin:12px 0 0;padding:10px 12px;border-radius:8px;color:var(--red);background:var(--red-soft);font-size:11px}
@@ -13613,6 +14081,187 @@ export function renderGoalBoardWorkbenchStylesheet(): string {
   return `${STYLES}${MORE_STYLES}${RESPONSIVE_STYLES}${VISUAL_FOUNDATION_STYLES}${TRASH_GOAL_STYLES}${PROJECT_OPERATIONS_STYLES}.document-pane.is-syncing .goal-document { animation: none; }`;
 }
 
+/** Full-screen first-run and update journey. */
+export function renderGoalBoardOnboardingStylesheet(): string {
+  return `
+  :root {
+    color-scheme: dark;
+    font-family: Manrope, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: #090b0d;
+    color: #f2f3f1;
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; margin: 0; }
+  body { min-height: 100dvh; background: #090b0d; color: #f2f3f1; }
+  button, input, textarea { font: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  ::selection { background: #8298e8; color: #080a0d; }
+  :focus-visible { outline: 2px solid #91a7f2; outline-offset: 4px; }
+  .onboarding-page::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: rgba(116, 137, 163, .045);
+    opacity: 0;
+    animation: onboarding-dawn 1100ms 320ms cubic-bezier(.16, 1, .3, 1) forwards;
+  }
+  .onboarding-topbar {
+    position: fixed;
+    z-index: 2;
+    inset: 0 0 auto;
+    min-height: 56px;
+    padding: 18px clamp(24px, 4vw, 64px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .onboarding-brand { color: #a9adae; font-size: 13px; font-weight: 650; letter-spacing: .02em; text-decoration: none; }
+  .onboarding-topbar-actions { display: flex; align-items: center; gap: 24px; }
+  .onboarding-topbar-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #7f8588; text-decoration: none; transition: color 140ms ease, transform 140ms ease; }
+  .onboarding-topbar-actions a:hover { color: #eef0ee; transform: translateY(-1px); }
+  .onboarding-topbar button {
+    min-height: 44px;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: #9ca1a3;
+    cursor: pointer;
+    transition: color 140ms ease, transform 140ms ease;
+  }
+  .onboarding-topbar button:hover { color: #f2f3f1; transform: translateY(-1px); }
+  .onboarding-room { min-height: 100dvh; display: grid; place-items: center; padding: 96px clamp(24px, 7vw, 112px) 70px; }
+  .onboarding-flow { width: min(100%, 980px); }
+  .onboarding-progress { margin: 0 0 38px; color: #666c70; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .onboarding-step { animation: onboarding-question 440ms cubic-bezier(.16, 1, .3, 1) both; }
+  .onboarding-step h1, .onboarding-update h1 {
+    max-width: 18ch;
+    margin: 0 0 42px;
+    color: #f4f4f2;
+    font-size: clamp(34px, 5vw, 68px);
+    font-weight: 440;
+    letter-spacing: -.035em;
+    line-height: 1.12;
+    text-wrap: balance;
+  }
+  .onboarding-step h1:focus { outline: none; }
+  .onboarding-answer { display: flex; align-items: baseline; gap: 16px; color: #858b8e; font-size: clamp(22px, 3vw, 38px); }
+  .onboarding-answer > span { flex: none; }
+  .onboarding-answer textarea,
+  .onboarding-answer input,
+  .onboarding-workspace input {
+    width: 100%;
+    padding: 8px 0 10px;
+    border: 0;
+    border-radius: 0;
+    outline: 0;
+    background: transparent;
+    color: #f4f4f2;
+    caret-color: #91a7f2;
+  }
+  .onboarding-answer textarea { min-height: 82px; resize: vertical; line-height: 1.38; }
+  .onboarding-answer input { font-size: inherit; }
+  .onboarding-answer textarea::placeholder,
+  .onboarding-answer input::placeholder,
+  .onboarding-workspace input::placeholder { color: #6f7578; opacity: 1; }
+  .onboarding-answer:focus-within { color: #b7bdc1; }
+  .onboarding-field-error, .onboarding-error { max-width: 70ch; margin: 18px 0 0; color: #ffb2aa; line-height: 1.5; }
+  .onboarding-echo { max-width: 70ch; margin: 0 0 28px; color: #858b8e; line-height: 1.55; overflow-wrap: anywhere; }
+  .onboarding-workspace { display: grid; gap: 10px; max-width: 740px; color: #aeb3b5; }
+  .onboarding-workspace input { min-height: 52px; font-size: 18px; }
+  .onboarding-runtime { max-width: 820px; margin: 38px 0 0; padding: 0; border: 0; }
+  .onboarding-runtime legend { margin-bottom: 15px; color: #868c8f; font-size: 13px; }
+  .onboarding-runtime { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+  .onboarding-runtime legend { grid-column: 1 / -1; }
+  .onboarding-runtime-choice { position: relative; min-width: 0; cursor: pointer; }
+  .onboarding-runtime-choice input { position: absolute; opacity: 0; pointer-events: none; }
+  .onboarding-runtime-choice > span {
+    min-height: 70px;
+    padding: 14px 16px;
+    display: grid;
+    align-content: center;
+    gap: 3px;
+    border-radius: 13px;
+    background: #121518;
+    color: #aeb4b6;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
+    transition: background 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+  }
+  .onboarding-runtime-choice small { color: #747b7e; }
+  .onboarding-runtime-choice:hover > span { background: #171b1f; color: #f1f2f0; transform: translateY(-2px); }
+  .onboarding-runtime-choice input:checked + span { background: #e8ebef; color: #15191d; box-shadow: 0 14px 34px rgba(0, 0, 0, .3); }
+  .onboarding-runtime-choice input:checked + span small { color: #4f5961; }
+  .onboarding-runtime-choice input:focus-visible + span { outline: 2px solid #91a7f2; outline-offset: 3px; }
+  .onboarding-runtime-choice.is-unavailable { cursor: not-allowed; }
+  .onboarding-runtime-choice.is-unavailable > span { opacity: .45; box-shadow: none; }
+  .onboarding-hint { max-width: 70ch; margin: 18px 0 0; color: #8d9396; line-height: 1.55; }
+  .onboarding-review { max-width: 850px; margin: 0; display: grid; gap: 7px; }
+  .onboarding-review div { padding: 15px 17px; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 18px; border-radius: 12px; background: #121518; }
+  .onboarding-review dt { color: #777e81; }
+  .onboarding-review dd { margin: 0; color: #e7e9e7; line-height: 1.55; overflow-wrap: anywhere; }
+  .onboarding-confirm { max-width: 780px; margin-top: 24px; display: flex; align-items: flex-start; gap: 12px; color: #adb2b4; line-height: 1.55; cursor: pointer; }
+  .onboarding-confirm input { width: 19px; height: 19px; margin: 2px 0 0; accent-color: #91a7f2; }
+  .onboarding-actions { min-height: 50px; margin-top: 42px; display: flex; align-items: center; gap: 18px; }
+  .onboarding-actions button,
+  .onboarding-update-actions button {
+    min-height: 46px;
+    padding: 0 22px;
+    border: 0;
+    border-radius: 10px;
+    background: #eef0f3;
+    color: #111417;
+    font-weight: 680;
+    cursor: pointer;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .24);
+    transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  }
+  .onboarding-actions button:hover,
+  .onboarding-update-actions button:hover { transform: translateY(-2px); background: #fff; box-shadow: 0 16px 36px rgba(0, 0, 0, .32); }
+  .onboarding-actions button:disabled,
+  .onboarding-update-actions button:disabled { opacity: .55; cursor: wait; transform: none; }
+  .onboarding-actions .onboarding-back { padding-inline: 4px; background: transparent; color: #989ea0; box-shadow: none; }
+  .onboarding-actions .onboarding-back:hover { background: transparent; color: #f1f2f0; box-shadow: none; }
+  .onboarding-page--update { background: #e8eaeb; color: #171a1d; }
+  .onboarding-page--update::before { background: rgba(96, 112, 128, .035); }
+  .onboarding-update { width: min(100% - 48px, 900px); min-height: 100dvh; margin: 0 auto; padding: clamp(72px, 11vh, 124px) 0; display: grid; align-content: center; gap: 44px; }
+  .onboarding-update .onboarding-brand { color: #686f73; }
+  .onboarding-update h1 { max-width: none; margin: 0 0 24px; color: #15191c; }
+  .onboarding-update-copy > p { max-width: 68ch; margin: 0; color: #50585d; font-size: 18px; line-height: 1.65; }
+  .onboarding-update ul { max-width: 760px; margin: 38px 0 0; padding: 0; display: grid; gap: 24px; list-style: none; }
+  .onboarding-update li { display: grid; gap: 5px; }
+  .onboarding-update li strong { font-size: 18px; }
+  .onboarding-update li span { color: #586166; line-height: 1.55; }
+  .onboarding-update-actions { display: flex; align-items: center; gap: 22px; }
+  .onboarding-update-actions button { background: #171b1f; color: #f5f6f4; }
+  .onboarding-update-actions button:hover { background: #090b0d; }
+  .onboarding-update-actions a { min-height: 44px; display: inline-flex; align-items: center; color: #50585d; text-underline-offset: 4px; }
+  .onboarding-update .onboarding-error { color: #a33b32; }
+  @keyframes onboarding-dawn { to { opacity: 1; } }
+  @keyframes onboarding-question {
+    from { opacity: 0; transform: translateY(14px); filter: blur(5px); }
+    to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  }
+  @media (max-width: 760px) {
+    .onboarding-topbar { padding-inline: 24px; }
+    .onboarding-room { place-items: center stretch; padding-inline: 24px; }
+    .onboarding-progress { margin-bottom: 28px; }
+    .onboarding-step h1 { margin-bottom: 32px; }
+    .onboarding-answer { display: grid; gap: 7px; }
+    .onboarding-runtime { grid-template-columns: minmax(0, 1fr); }
+    .onboarding-runtime-choice > span { min-height: 60px; }
+    .onboarding-review div { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+    .onboarding-actions { margin-top: 32px; }
+    .onboarding-actions button:not(.onboarding-back) { min-height: 48px; flex: 1; }
+    .onboarding-update { width: min(100% - 48px, 900px); padding-block: 76px 48px; align-content: start; }
+    .onboarding-update-actions { align-items: stretch; flex-direction: column; }
+    .onboarding-update-actions button, .onboarding-update-actions a { justify-content: center; min-height: 48px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  }
+  `;
+}
+
 /** Shared project index presentation. */
 export function renderGoalBoardProjectIndexStylesheet(): string {
   return `${STYLES}${PROJECT_INDEX_STYLES}${VISUAL_FOUNDATION_STYLES}`;
@@ -13741,14 +14390,6 @@ export function renderGoalBoardWeb(
       ? L("在已归档 Goal 中搜索")
       : L("在当前 Goal Tree 内搜索");
   const searchLabel = trashView ? L("搜索回收站") : archiveView ? L("搜索已归档 Goal") : L("搜索 Goal");
-  const directoryEntries = feedDirectoryEntries(view);
-  const inboxFeedCount = directoryEntries.filter((item) =>
-    item.itemType === "inbox_message" && (item.disposition === "inbox" || item.disposition === "processing")
-  ).length;
-  const feedCount = directoryEntries.filter((item) =>
-    item.itemType === "feed" && item.disposition !== "archived"
-  ).length;
-  const sourceCount = sourceWorkbenchEntries(view).length;
   const initialFeedPreset: FeedItemType = "inbox_message";
   const initialDesktopDirectory: string = decisionView ? "feed" : requestedGoalId ? "goals" : "root";
   const projectOptions = view.projects.length ? view.projects : view.project ? [view.project] : [];
@@ -13764,11 +14405,11 @@ export function renderGoalBoardWeb(
   </footer>`;
   const desktopRootDirectory = `<section class="desktop-directory-panel desktop-directory-root" data-directory-panel="root"${initialDesktopDirectory === "root" ? "" : " hidden"}>
     <nav class="desktop-module-list" aria-label="${L("工作台目录")}">
-      <button class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("只处理需要你介入的事情")}</small></span><em>${inboxFeedCount}</em></button>
+      <button class="desktop-module-item desktop-module-item--inbox${decisionView ? " is-current" : ""}" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="inbox_message"${decisionView ? ' aria-current="page"' : ""}>${icon("input")}<span><strong>Inbox</strong><small>${L("只处理需要你介入的事情")}</small></span>${icon("chevron-right")}</button>
       <button class="desktop-module-item${!decisionView ? " is-current" : ""}" type="button" data-directory-open="goals" data-work-surface-open="goal"${!decisionView ? ' aria-current="page"' : ""}>${icon("target")}<span><strong>Goals</strong><small>${L("{count} 个 Goal", { count: visibleGoals.length })}</small></span>${icon("chevron-right")}</button>
       ${projectOperations.rootItems}
-      <button class="desktop-module-item" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("所有来源消息，完整保留")}</small></span><em>${feedCount}</em></button>
-      <button class="desktop-module-item" type="button" data-directory-open="sources" data-work-surface-open="sources">${icon("settings")}<span><strong>${L("来源")}</strong><small>${L("账号、接入源与拉取计划")}</small></span><em>${sourceCount}</em></button>
+      <button class="desktop-module-item" type="button" data-directory-open="feed" data-work-surface-open="feed" data-feed-preset="feed">${icon("activity")}<span><strong>Feed</strong><small>${L("所有来源消息，完整保留")}</small></span>${icon("chevron-right")}</button>
+      <button class="desktop-module-item" type="button" data-directory-open="sources" data-work-surface-open="sources">${icon("settings")}<span><strong>${L("来源")}</strong><small>${L("账号、接入源与拉取计划")}</small></span>${icon("chevron-right")}</button>
       <button class="desktop-module-item" type="button" data-work-surface-open="promotion">${icon("arrow")}<span><strong>Promotion</strong><small>${L("把内容升格为 Goal")}</small></span><em>${L("规划中")}</em></button>
       <button class="desktop-module-item" type="button" data-work-surface-open="visual">${icon("workflow")}<span><strong>${L("可视化工作区")}</strong><small>${L("Goal 关系与规划画布")}</small></span><em>${L("规划中")}</em></button>
     </nav>
@@ -13777,11 +14418,7 @@ export function renderGoalBoardWeb(
     <div class="desktop-utility-heading">${icon(iconName)}<div><h1>${escapeHtml(label)}</h1><p>${note}</p></div><span>${L("规划中")}</span></div>
     <div class="desktop-utility-note"><strong>${L("工作面已经留好")}</strong><p>${detail}</p></div>
   </section>`;
-  const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">
-    <div class="navigator-project-primary">
-      ${renderProjectSwitcher(view.project ?? null, projectOptions, desktopShell, "desktop-project-switcher", "__PROJECT_INDEX__")}${view.project ? `<a class="navigator-project-settings" href="__PROJECT_SETTINGS__" aria-label="${L("打开当前项目设置")}" title="${L("项目设置")}">${icon("settings")}</a>` : ""}<button class="navigator-directory-toggle" type="button" data-directory-toggle aria-expanded="true" aria-label="${L("收起目录")}" title="${L("收起目录")}">${icon("panel")}</button><div class="desktop-titlebar-drag desktop-titlebar-drag--left"${desktopShell ? " data-tauri-drag-region" : ""} aria-hidden="true"></div>
-    </div>
-  </section>`;
+  const projectNavigatorLayer = `<section class="navigator-project" aria-label="${L("当前项目")}">${renderDesktopProjectChrome(view.project ?? null, projectOptions, desktopShell, view.project ? "__PROJECT_SETTINGS__" : null, { switcherClass: "desktop-project-switcher", manageHref: "__PROJECT_INDEX__", directoryToggle: true })}</section>`;
   const showTui = !decisionView && !archiveView && !trashView;
   const desktopUtilityTitle = decisionView ? "Inbox" : collectionTitle;
   const desktopTabsLabel = decisionView ? "Inbox" : L("已打开的 Goal");

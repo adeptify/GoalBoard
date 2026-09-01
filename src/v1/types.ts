@@ -37,6 +37,23 @@ export type GoalWorkState =
   | "trashed"
   | "archived";
 export type ClaimState = "active" | "released" | "expired" | "revoked";
+export type GoalActionActor = "runtime" | "user";
+export type GoalActionKind =
+  | "clarify"
+  | "execute"
+  | "submit_evidence"
+  | "revise"
+  | "review"
+  | "revalidate"
+  | "mitigate_risk"
+  | "accept_risk"
+  | "release"
+  | "renew"
+  | "repair"
+  | "wait";
+export type GoalActionStatus = "ready" | "active" | "blocked";
+export type GoalActionProgress = "not_started" | "in_progress" | "work_recorded" | "verified";
+export type GoalDisplayStatus = "continue" | "in_progress" | "waiting_user" | "waiting" | "blocked" | "completed";
 export type ImpactAccess = "read" | "write" | "decide" | "exclusive";
 export type RiskBlockingMode =
   | "none"
@@ -165,6 +182,8 @@ export interface GoalRecord {
   decomposition_state: DecompositionState;
   validity_state: ValidityState;
   fulfillment_state: FulfillmentState;
+  /** Monotonic accepted Contract identity. Work facts are always scoped to one revision. */
+  current_contract_revision: number;
   /** A recoverable deletion state. It is distinct from completed-Goal archival. */
   trashed_at: string | null;
   trashed_by: string | null;
@@ -295,13 +314,13 @@ export interface DecompositionReview {
     promised_outputs: Array<{
       parent_promised_output: string;
       status: "complete" | "partial" | "integration_required" | "uncovered";
-      child_outputs: Array<{ goal_id: string; promised_output: string }>;
+      child_outputs: Array<{ goal_id: string; promised_output: string; contract_revision?: number }>;
       reason: string;
     }>;
     acceptance_criteria: Array<{
       parent_criterion_id: string;
       status: "complete" | "partial" | "integration_required" | "uncovered";
-      child_criteria: Array<{ goal_id: string; criterion_id: string }>;
+      child_criteria: Array<{ goal_id: string; criterion_id: string; contract_revision?: number }>;
       reason: string;
     }>;
   };
@@ -340,6 +359,9 @@ export interface ClaimRecord {
   goal_id: string;
   actor_id: string;
   role: ClaimRole;
+  contract_revision: number;
+  action_kind: GoalActionKind | null;
+  action_target_id: string | null;
   state: ClaimState;
   capabilities: string[];
   goal_mode_attestation: boolean;
@@ -370,6 +392,7 @@ export interface EvidenceRecord {
   evidence_id: string;
   board_id: string;
   goal_id: string;
+  contract_revision: number;
   criterion_ids: string[];
   producer_actor_id: string;
   run_id: string | null;
@@ -387,6 +410,8 @@ export interface EvidenceRecord {
   /** Derived from the immutable correction ledger; the Evidence row itself is never rewritten. */
   lifecycle_state: "effective" | "superseded" | "retracted";
   correction: EvidenceCorrectionRecord | null;
+  /** Old rows that cannot be safely attributed remain readable but do not satisfy a current revision. */
+  historical_unmapped: boolean;
 }
 
 export interface EvidenceCorrectionRecord {
@@ -405,6 +430,7 @@ export interface ReviewObligationRecord {
   obligation_id: string;
   board_id: string;
   goal_id: string;
+  contract_revision: number;
   role: "self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver";
   required_count: number;
   independence_rule: string;
@@ -424,6 +450,80 @@ export interface ReviewRecord {
   evidence_refs: string[];
   reasoning: string;
   submitted_at: string;
+}
+
+export type ContractRevisionEffect = "metadata" | "revalidate" | "rework";
+
+export interface GoalContractRevisionRecord {
+  goal_id: string;
+  board_id: string;
+  revision: number;
+  contract: CreateGoalInput;
+  effect: ContractRevisionEffect;
+  source_proposal_id: string | null;
+  changed_by: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface GoalRiskLinkRecord {
+  goal_id: string;
+  risk_id: string;
+}
+
+export interface CoverageContractRevisionRecord {
+  parent_goal_id: string;
+  child_goal_id: string;
+  parent_contract_revision: number;
+  child_contract_revision: number;
+  recorded_at: string;
+}
+
+export interface GoalLifecycleEventRecord {
+  seq: number;
+  type: string;
+  object_type: string;
+  object_id: string;
+  payload: Record<string, unknown>;
+  at: string;
+}
+
+export interface GoalAction {
+  action_id: string;
+  actor: GoalActionActor;
+  kind: GoalActionKind;
+  status: GoalActionStatus;
+  target_type: string;
+  target_id: string;
+  reasons: DecisionReason[];
+}
+
+export interface GoalActionProjection {
+  goal_id: string;
+  contract_revision: number;
+  progress: GoalActionProgress;
+  primary_action: GoalAction | null;
+  actions: GoalAction[];
+  action_token: string;
+  display_status: GoalDisplayStatus;
+}
+
+export interface CompactGoalActionProjection {
+  goal_id: string;
+  contract_revision: number;
+  progress: GoalActionProgress;
+  primary_action: GoalAction | null;
+  action_token: string;
+  display_status: GoalDisplayStatus;
+}
+
+export interface ActionTransitionReceipt {
+  goal_id: string;
+  previous_action_token: string;
+  projection: GoalActionProjection;
+  affected_goals: CompactGoalActionProjection[];
+  summary: string;
+  observed_event_cursor: number;
 }
 
 export type DependencyProposalBasis =
@@ -857,6 +957,12 @@ export interface GoalWorkStateView {
 }
 
 export interface AvailableGoal extends Omit<ReadyGoal, "role"> {
+  /** Exact canonical action to submit to select_goal. Null only for a legacy repair action. */
+  action_id: string | null;
+  action_token: string;
+  action_kind: GoalActionKind | null;
+  action_target_type: string | null;
+  action_target_id: string | null;
   /** Null means this action does not require a new Claim or Run. */
   role: ClaimRole | null;
   work_state: GoalWorkState;
@@ -925,12 +1031,16 @@ export interface BoardSnapshot {
   relations: GoalRelationRecord[];
   impacts: ImpactBindingRecord[];
   risks: RiskRecord[];
+  goal_risks: GoalRiskLinkRecord[];
   claims: ClaimRecord[];
   runs: RunRecord[];
   evidence: EvidenceRecord[];
   evidence_corrections: EvidenceCorrectionRecord[];
   review_obligations: ReviewObligationRecord[];
   reviews: ReviewRecord[];
+  goal_contract_revisions: GoalContractRevisionRecord[];
+  coverage_contract_revisions: CoverageContractRevisionRecord[];
+  lifecycle_events: GoalLifecycleEventRecord[];
   candidates: CandidateGoalRecord[];
   contract_proposals: ContractProposalRecord[];
   rewires: RewireRecord[];
@@ -954,6 +1064,7 @@ export interface GoalContractView {
     acceptance_criteria: NonNullable<DecompositionReview["contract_coverage"]>["acceptance_criteria"];
   }>;
   work_state: GoalWorkStateView;
+  action_projection: GoalActionProjection;
   relations: GoalRelationRecord[];
   impacts: ImpactBindingRecord[];
   risks: RiskRecord[];
@@ -1004,6 +1115,8 @@ export interface CreateGoalInput {
 export interface ClaimRequest {
   board_id: string;
   goal_id: string;
+  action_id?: string;
+  action_token?: string;
   actor_id: string;
   role?: ClaimRole;
   capabilities?: string[];
@@ -1025,6 +1138,7 @@ export interface ClaimRenewResult {
   claim: ClaimRecord;
   replayed: boolean;
   observed_event_cursor: number;
+  transition: ActionTransitionReceipt;
 }
 
 export interface ClaimDecision {
@@ -1042,6 +1156,8 @@ export interface ClaimRunDecision {
   claim: ClaimRecord | null;
   run: RunRecord | null;
   work_state: GoalWorkStateView | null;
+  projection?: GoalActionProjection | null;
+  transition?: ActionTransitionReceipt | null;
   replayed: boolean;
 }
 
@@ -1107,6 +1223,7 @@ export interface RevalidationDecision {
   observed_event_cursor: number;
   reasons: DecisionReason[];
   replayed: boolean;
+  transition?: ActionTransitionReceipt;
 }
 
 export const DEFAULT_GOAL_POLICY: GoalPolicy = {

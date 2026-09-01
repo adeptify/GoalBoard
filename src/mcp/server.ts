@@ -31,6 +31,7 @@ import type {
   ClarificationTurnRecord,
   CreateGoalInput,
   DraftDialogueView,
+  GoalActionProjection,
   GoalTrashResult,
 } from "../v1/types.js";
 import { importV3Board, type LegacyV3ImportInput } from "../v1/migration.js";
@@ -127,6 +128,11 @@ function availableResponse(
     observed_event_cursor: result.observed_event_cursor,
     available: result.available.map((item) => ({
       goal: { goal_id: item.goal.goal_id, title: item.goal.title },
+      action_id: item.action_id,
+      action_token: item.action_token,
+      action_kind: item.action_kind,
+      action_target_type: item.action_target_type,
+      action_target_id: item.action_target_id,
       role: item.role,
       work_state: item.work_state,
       next_action: item.next_action,
@@ -974,7 +980,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_available",
     description:
-      "返回当前 Runtime 可推进的统一 Available 集合，覆盖澄清、执行、复核、重新验证和直接完成。默认 detail_level=summary，只返回选择下一项所需的紧凑摘要；把条目作为暂选候选后，先用 goalboard_v1_contract 核对当前请求与 Contract scope，核对通过后才调用 goalboard_v1_select_goal。普通依赖、Review 或重新验证门禁不会塞入完整 blocked 详情，而会在 blocked_overview 中用 Goal 标题、状态和原因摘要保持可发现；当前请求已有明确 owner 时，先对该 Goal 调用 explain，不要顺手领取相邻 Goal。只有确需一次展开所有候选详情时才传 detail_level=full。初次执行仍可能在 completion Risk 开放时领取，但执行、Evidence 和 Review 已完成后不会再伪装成 executor 工作，而会出现在 blocked 中并附具体原因。next_action=complete 的条目不需要 Claim 或 Run，必须直接调用 complete。需要用户确认是否收口的父 Goal 会明确标记并排在普通工作前。多个 executor Goal 具有已确认且互不冲突的 Impact 时，会附带 advisory_only 的 parallel_suggestion 供 Runtime 主动提议分工，但不会启动 Runtime、领取 Goal 或派发唯一下一份。",
+      "返回统一动作投影。action_projections 是当前权威入口：每个 Goal 可有多个动作，但只有一个稳定 primary_action。Runtime 先暂选候选，再读 goalboard_v1_contract 核对当前请求是否仍在 scope 内，最后用 goalboard_v1_select_goal 提交 action_id + action_token。执行、Evidence、Review 与 Risk 门禁满足后会自动释放和完成，不再手动 complete。旧 Available 字段仅作边界兼容。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1075,6 +1081,8 @@ const V1_TOOLS: McpToolDefinition[] = [
         goal_mode_attestation: { type: "boolean" },
         lease_seconds: V1_LEASE_SECONDS,
         strengthen_policy: { type: "object" },
+        action_id: V1_STRING,
+        action_token: V1_STRING,
         idempotency_key: { type: "string" },
       },
       required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
@@ -1083,7 +1091,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_select_goal",
     description:
-      "当前 Runtime 从 Available 集合选择一项后，原子创建 Claim 和工作 Run；调用前必须先用 goalboard_v1_contract 核对当前请求在 Contract 范围内，且未命中 out_of_scope；成功后返回唯一 work_state。",
+      "调用前先读 goalboard_v1_contract，确认当前请求仍在 accepted Contract 的范围内；再按 Available 返回的 action_id + action_token 原子创建 Claim 和 Run，并立即返回新动作投影。旧 goal/role 调用只在唯一动作匹配时兼容。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1095,6 +1103,8 @@ const V1_TOOLS: McpToolDefinition[] = [
         goal_mode_attestation: { type: "boolean" },
         lease_seconds: V1_LEASE_SECONDS,
         strengthen_policy: { type: "object" },
+        action_id: V1_STRING,
+        action_token: V1_STRING,
         idempotency_key: { type: "string" },
       },
       required: ["board_id", "goal_id", "actor_id", "idempotency_key"],
@@ -1244,7 +1254,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   {
     name: "goalboard_v1_goal_tree_check",
     description:
-      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；原生 Goal Tree Proposal 和 legacy Contract Proposal 均可使用，后者可传原始 raw ID 或读取结果中的映射 ID。某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。已接受 Goal 的 Contract 变化需要 replacement 时，冲突会返回可复用的 successor_outline 与逐条 relation_migration_candidates；消费者必须复核后再形成新提案，不能自动迁移。",
+      "按每个条目真正依赖的 canonical 事实检查并发变化，并在可回滚预检中运行与决定阶段相同的物化不变量；原生 Goal Tree Proposal 和 legacy Contract Proposal 均可使用，后者可传原始 raw ID 或读取结果中的映射 ID。某个条目冲突不会改写 canonical Goal Tree，也不会隐藏其他条目的检查结果。已接受 Goal 的需求变化使用同一 Goal ID 的 native contract-update revision；Relation、Impact 和 Risk 变化必须另列显式条目。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1413,6 +1423,10 @@ const V1_TOOLS: McpToolDefinition[] = [
             },
             required: ["summary", "evidence_refs", "residual_gaps"],
           },
+          goal_id: V1_STRING,
+          contract_revision: { type: "integer", minimum: 1 },
+          action_id: V1_STRING,
+          action_token: V1_STRING,
         },
         required: ["risk_id", "state", "reason"],
       },
@@ -1478,6 +1492,8 @@ const V1_TOOLS: McpToolDefinition[] = [
       actor_id: V1_STRING,
       reason: V1_STRING,
       evidence_refs: V1_STRING_ARRAY,
+      contract_revision: { type: "integer", minimum: 1 },
+      action_token: V1_STRING,
       idempotency_key: V1_STRING,
     },
     ["goal_id", "run_id", "actor_id", "reason", "evidence_refs", "idempotency_key"],
@@ -1497,7 +1513,7 @@ const V1_TOOLS: McpToolDefinition[] = [
   ),
   v1PayloadTool(
     "goalboard_v1_run_report",
-    "报告 Run 阻塞或终态。completed 不会自动释放 Claim，因为同一执行者仍可补齐 Evidence；成功响应会返回 handoff，明确 goalboard_v1_release、claim_id、建议理由，以及释放后重新读取 Available 的动作。",
+    "报告 Run 阻塞或终态并立即返回新动作投影。completed 后若 Evidence 已齐会自动释放；若尚缺依据，Claim 保留且主动作变为补齐完成依据。",
     {
       run_id: V1_STRING,
       actor_id: V1_STRING,
@@ -1505,6 +1521,8 @@ const V1_TOOLS: McpToolDefinition[] = [
       block_reason: { type: ["string", "null"] },
       output_refs: V1_STRING_ARRAY,
       discovery_refs: V1_STRING_ARRAY,
+      contract_revision: { type: "integer", minimum: 1 },
+      action_token: V1_STRING,
       idempotency_key: V1_STRING,
     },
     ["run_id", "actor_id", "state", "idempotency_key"],
@@ -1526,6 +1544,8 @@ const V1_TOOLS: McpToolDefinition[] = [
       },
       digest: { type: ["string", "null"] },
       result: { type: "string", enum: ["passed", "failed", "inconclusive"] },
+      contract_revision: { type: "integer", minimum: 1 },
+      action_token: V1_STRING,
       idempotency_key: V1_STRING,
     },
     ["goal_id", "actor_id", "criterion_ids", "kind", "locator", "result", "idempotency_key"],
@@ -1555,13 +1575,15 @@ const V1_TOOLS: McpToolDefinition[] = [
       verdict: { type: "string", enum: ["pass", "fail", "needs_changes", "inconclusive"] },
       evidence_refs: V1_STRING_ARRAY,
       reasoning: V1_STRING,
+      contract_revision: { type: "integer", minimum: 1 },
+      action_token: V1_STRING,
       idempotency_key: V1_STRING,
     },
     ["goal_id", "obligation_id", "actor_id", "verdict", "reasoning", "idempotency_key"],
   ),
   v1PayloadTool(
     "goalboard_v1_complete",
-    "重新检查验收、依赖、风险、Candidate/Rewire 与 Review 后尝试完成叶子 Goal。",
+    "兼容与异常修复入口：重新检查并修复 Goal 完成状态。正常链路会自动完成，不应常规调用。",
     { goal_id: V1_STRING, actor_id: V1_STRING, idempotency_key: V1_STRING },
     ["goal_id", "actor_id", "idempotency_key"],
   ),
@@ -1932,6 +1954,16 @@ function runtimeToolDefinition(tool: McpToolDefinition): McpToolDefinition {
       "在当前 Runtime 对话中执行用户已经明确表达的 Goal Tree 决定。goal_tree_read 返回的 native 或 legacy handle 都可直接使用。必须传 user_confirmed=true 和确认摘要；confirm_all_pending 全有或全无，并要求上一问明确点名本次 proposal_id，其他无关 pending Proposal 不制造歧义。逐项 decisions 才允许独立安全条目分别落地。成功应用后 semantic_review 会把结构校验通过与仍需复核的祖先、下游消费者、相邻上游依赖分开；Runtime 必须完成受影响子图复核，后续 canonical 调整仍需新 Proposal 和用户确认。Draft 上的 Risk 生命周期条目不能脱离同一轮确认中的完整 Goal Contract 单独落地；两者任一冲突时 canonical Goal 与 Risk 都不改变。GoalBoard 结合 MCP 宿主会话元数据记录审计来源，不把 Runtime 声明伪装成密码学证明。";
     return clone;
   }
+  if (tool.name === "goalboard_v1_evidence_submit") {
+    const payload = inputProperties.payload as { properties: Record<string, unknown> };
+    payload.properties.kind = {
+      type: "string",
+      enum: ["test", "measurement", "artifact", "inspection", "attestation"],
+      description: "Runtime MCP 不能写入 human_verdict；人工结论必须来自可信用户入口。",
+    };
+    clone.description = "提交当前 Contract revision 的 Runtime Evidence，并立即返回新动作投影。项目文件和 Markdown anchor 会做有界只读预检；外部、不透明或超限 locator 明确保留为 UNVERIFIED。人工验收不在 Runtime MCP 中开放。";
+    return clone;
+  }
   if (tool.name !== "goalboard_v1_review_submit") return clone;
   const payload = inputProperties.payload as { properties: Record<string, unknown> };
   payload.properties.actor_kind = {
@@ -2004,6 +2036,69 @@ function sessionSignalsForHost(host: GoalBoardRuntimeContextHost): RuntimeSessio
     goal_id: host.goalId?.trim() || null,
     runtime_context: host.runtimeContext,
     project_suggestion_clues: [...(host.projectSuggestionClues ?? [])],
+  };
+}
+
+function runtimeResumeView(
+  coordinator: GoalBoardCoordinator,
+  boardId: string,
+  explicitGoalId: string | null,
+  sessionGoalId: string | null,
+): Record<string, unknown> {
+  const snapshot = coordinator.store.snapshot(boardId);
+  const goalsById = new Map(snapshot.goals.map((goal) => [goal.goal_id, goal]));
+  const projections = coordinator.getGoalActionProjections({ board_id: boardId, snapshot });
+  const projectionsById = new Map(projections.map((projection) => [projection.goal_id, projection]));
+  const preferred = [
+    { goal_id: explicitGoalId, source: "host_focus" },
+    { goal_id: sessionGoalId, source: "session_focus" },
+  ].find((candidate) => candidate.goal_id && projectionsById.has(candidate.goal_id));
+  const fallbackOrder: Record<GoalActionProjection["display_status"], number> = {
+    in_progress: 0,
+    waiting_user: 1,
+    continue: 3,
+    waiting: 4,
+    blocked: 5,
+    completed: 6,
+  };
+  const ordered = projections
+    .filter((projection) => !goalsById.get(projection.goal_id)?.trashed_at)
+    .sort((left, right) => {
+      const leftWorkRecorded = left.progress === "work_recorded" && left.display_status !== "completed" ? 2 : null;
+      const rightWorkRecorded = right.progress === "work_recorded" && right.display_status !== "completed" ? 2 : null;
+      const leftOrder = leftWorkRecorded ?? fallbackOrder[left.display_status];
+      const rightOrder = rightWorkRecorded ?? fallbackOrder[right.display_status];
+      const leftGoal = goalsById.get(left.goal_id);
+      const rightGoal = goalsById.get(right.goal_id);
+      return leftOrder - rightOrder
+        || (rightGoal?.updated_at ?? "").localeCompare(leftGoal?.updated_at ?? "")
+        || (rightGoal?.priority ?? 0) - (leftGoal?.priority ?? 0)
+        || left.goal_id.localeCompare(right.goal_id);
+    });
+  const focusedProjection = preferred
+    ? projectionsById.get(preferred.goal_id!)!
+    : ordered[0] ?? null;
+  const focusedGoal = focusedProjection ? goalsById.get(focusedProjection.goal_id) ?? null : null;
+  const source = preferred?.source ?? (focusedProjection ? "project_recovery_order" : null);
+  const nextGoals = ordered
+    .filter((projection) => projection.goal_id !== focusedProjection?.goal_id && projection.display_status !== "completed")
+    .slice(0, 5)
+    .map((projection) => ({
+      goal_id: projection.goal_id,
+      title: goalsById.get(projection.goal_id)?.title ?? projection.goal_id,
+      projection,
+    }));
+  return {
+    focus: focusedProjection
+      ? {
+          goal_id: focusedProjection.goal_id,
+          title: focusedGoal?.title ?? focusedProjection.goal_id,
+          source,
+          projection: focusedProjection,
+        }
+      : null,
+    next_goals: nextGoals,
+    auto_claimed: false,
   };
 }
 
@@ -2526,16 +2621,22 @@ export class GoalBoardServer {
       ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
     let projectGuidance: ReturnType<GoalBoardCoordinator["readProjectGuidance"]> | null = null;
+    let coordinatorForResume: GoalBoardCoordinator | null = null;
+    let resumeStore: SqliteGoalBoardStore | null = null;
     if (connection) {
-      const store = new SqliteGoalBoardStore(path.resolve(connection.database_path));
+      resumeStore = new SqliteGoalBoardStore(path.resolve(connection.database_path));
       try {
-        projectGuidance = new GoalBoardCoordinator(
-          store,
+        coordinatorForResume = new GoalBoardCoordinator(
+          resumeStore,
           () => new Date(),
           readPersonalPlanningMethodPacks(host.homeDirectory),
-        ).readProjectGuidance(connection.board_id);
-      } finally {
-        store.close();
+        );
+        projectGuidance = coordinatorForResume.readProjectGuidance(connection.board_id);
+      } catch (error) {
+        resumeStore.close();
+        resumeStore = null;
+        coordinatorForResume = null;
+        throw error;
       }
     }
     this.runtimeConnectionRefreshContextKey = null;
@@ -2552,6 +2653,7 @@ export class GoalBoardServer {
       this.runtimeConnectionContextKey = null;
     }
     let sessionRegistry: Record<string, unknown>;
+    let sessionGoalId: string | null = null;
     if (this.sessionFoundationError) {
       sessionRegistry = { status: "unavailable", message: this.sessionFoundationError, session: null };
     } else {
@@ -2564,6 +2666,7 @@ export class GoalBoardServer {
             });
           }
           const session = findSessionForHostSignals(registry, sessionSignalsForHost(host));
+          sessionGoalId = session?.current_goal_id ?? null;
           sessionRegistry = {
             status: "ready",
             session: session
@@ -2591,12 +2694,26 @@ export class GoalBoardServer {
         };
       }
     }
+    let resume: Record<string, unknown> = { focus: null, next_goals: [], auto_claimed: false };
+    try {
+      if (connection && coordinatorForResume) {
+        resume = runtimeResumeView(
+          coordinatorForResume,
+          connection.board_id,
+          host.goalId?.trim() || null,
+          sessionGoalId,
+        );
+      }
+    } finally {
+      resumeStore?.close();
+    }
     return JSON.stringify({
       ...resolution,
       connection,
       session_registry: sessionRegistry,
       project_guidance: projectGuidance,
       runtime_prompt_prefix: projectGuidance?.runtime_prompt_prefix ?? null,
+      resume,
     }, null, 2);
   }
 
@@ -2633,7 +2750,9 @@ export class GoalBoardServer {
     const coordinator = new GoalBoardCoordinator(
       store,
       () => new Date(),
-      readPersonalPlanningMethodPacks(this.runtimeContextHost?.homeDirectory),
+      this.runtimeContextHost?.homeDirectory
+        ? readPersonalPlanningMethodPacks(this.runtimeContextHost.homeDirectory)
+        : [],
     );
     try {
       let result: unknown;
@@ -2738,12 +2857,18 @@ export class GoalBoardServer {
               { field: "detail_level", received_value: detailLevel, allowed_values: ["summary", "full"] },
             );
           }
-          result = availableResponse(coordinator.queryAvailable({
+          const legacyAvailable = availableResponse(coordinator.queryAvailable({
             board_id: String(arguments_.board_id),
             actor_id: String(arguments_.actor_id),
             capabilities: (arguments_.capabilities as string[]) ?? [],
             goal_mode_attestation: Boolean(arguments_.goal_mode_attestation),
           }), detailLevel);
+          result = {
+            ...legacyAvailable,
+            action_projections: coordinator.getGoalActionProjections({
+              board_id: String(arguments_.board_id),
+            }),
+          };
           prettyPrint = detailLevel === "full";
           break;
         }
@@ -2957,7 +3082,11 @@ export class GoalBoardServer {
             actor_id: string;
             idempotency_key: string;
           }>(arguments_);
-          result = coordinator.setRiskState(payload.board_id, payload.risk, payload);
+          result = coordinator.setRiskState(payload.board_id, payload.risk, {
+            actor_id: payload.actor_id,
+            actor_kind: this.audience === "runtime" ? "runtime" : "user",
+            idempotency_key: payload.idempotency_key,
+          });
           break;
         }
         case "goalboard_v1_active_goal": {

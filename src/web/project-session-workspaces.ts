@@ -110,47 +110,29 @@ function renderSessionRow(item: ProjectSessionRecord, selected: boolean): string
   </button>`;
 }
 
-function renderWorkspaceRow(item: ProjectWorkspaceRecord, selected: boolean): string {
-  const search = [item.name, item.path, item.runtimes, workspaceStateLabel(item.state), item.projectLinked ? "已关联" : "Session 使用中"].join(" ").toLocaleLowerCase();
-  const updatedAt = Number.isFinite(Date.parse(item.updatedAt || "")) ? Date.parse(item.updatedAt!) : 0;
-  return `<button class="project-record-row directory-list-row${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" data-operation-row="workspace" data-operation-select="${escapeHtml(item.id)}" data-record-id="${escapeHtml(item.id)}" data-record-filter-value="${escapeHtml(item.state)}" data-record-updated="${updatedAt}" data-record-session-count="${item.sessionCount}" data-record-title="${escapeHtml(item.name.toLocaleLowerCase())}" data-record-search="${escapeHtml(search)}">
-    <span class="project-record-select">
-      <span><strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.path)}</small></span>
-    </span>
-    <span class="directory-row-state project-record-state--${escapeHtml(item.state)}">${escapeHtml(workspaceStateLabel(item.state))}</span>
-    <span class="project-record-meta"><span>${item.sessionCount} 个 Sessions / ${escapeHtml(item.runtimes)}</span><time>${escapeHtml(item.updated)}</time></span>
-  </button>`;
-}
-
 function renderDirectory(
-  kind: "sessions" | "workspaces",
-  title: string,
-  note: string,
-  records: readonly (ProjectSessionRecord | ProjectWorkspaceRecord)[],
+  records: readonly ProjectSessionRecord[],
   hasData: boolean,
 ): string {
-  const isSessions = kind === "sessions";
   const rows = hasData
-    ? records.map((item, index) => isSessions
-      ? renderSessionRow(item as ProjectSessionRecord, index === 0)
-      : renderWorkspaceRow(item as ProjectWorkspaceRecord, index === 0)).join("")
+    ? records.map((item, index) => renderSessionRow(item, index === 0)).join("")
     : "";
-  return `<section class="desktop-directory-panel project-record-directory" data-directory-panel="${kind}" data-operation-directory="${kind}" hidden>
-    <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="返回上一级">${icon("back")}</button><span><strong>${title}</strong><small>${note}</small></span>${isSessions ? `<button class="directory-heading-action" type="button" data-open-session-add aria-label="添加 Session" title="添加 Session">${icon("plus")}</button>` : `<button class="directory-heading-action" type="button" data-open-workspace-add aria-label="添加工作目录" title="添加工作目录">${icon("plus")}</button>`}</header>
+  return `<section class="desktop-directory-panel project-record-directory" data-directory-panel="sessions" data-operation-directory="sessions" hidden>
+    <header class="desktop-directory-heading"><button type="button" data-directory-back aria-label="返回上一级">${icon("back")}</button><span><strong>Sessions</strong><small>执行与内容</small></span><button class="directory-heading-action" type="button" data-open-session-add aria-label="新建 Session" title="新建 Session">${icon("plus")}</button></header>
     <header class="project-record-tools">
-      <label class="tree-search">${icon("search")}<input type="search" data-operation-search="${kind}" placeholder="搜索${isSessions ? "标题、ID、Goal" : "名称、路径、Runtime"}" aria-label="搜索${title}"><kbd>⌘F</kbd></label>
-      ${isSessions ? `<details class="project-record-filter-menu"><summary aria-label="筛选与排序">${icon("filter")}<span>筛选</span></summary><div><label>Runtime<select data-session-runtime-filter><option value="all">全部 Runtime</option></select></label><label>状态<select data-session-status-filter><option value="all">全部状态</option><option value="idle">可查看</option><option value="archived">已归档</option></select></label><label>内容<select data-operation-filter="${kind}"><option value="all">全部内容</option><option value="native">原生内容</option><option value="fallback">GoalBoard 记录</option><option value="unavailable">不可读取</option></select></label><label>排序<select data-session-sort><option value="updated-desc">最近更新</option><option value="updated-asc">最早更新</option><option value="title-asc">标题 A–Z</option></select></label></div></details><button class="project-record-add-compact" type="button" data-open-session-add aria-label="添加 Session">${icon("plus")}</button>` : `<details class="project-record-filter-menu"><summary aria-label="筛选与排序">${icon("filter")}<span>筛选</span></summary><div><label>状态<select data-operation-filter="${kind}"><option value="all">全部状态</option><option value="healthy">路径正常</option><option value="missing">路径缺失</option><option value="conflict">关联冲突</option></select></label><label>排序<select data-workspace-sort><option value="updated-desc">最近更新</option><option value="title-asc">名称 A–Z</option><option value="sessions-desc">Sessions 最多</option></select></label></div></details><button class="project-record-add-compact" type="button" data-open-workspace-add aria-label="添加工作目录">${icon("plus")}</button>`}
+      <label class="tree-search">${icon("search")}<input type="search" data-operation-search="sessions" placeholder="搜索标题、ID、Goal" aria-label="搜索 Sessions"><kbd>⌘F</kbd></label>
+      <details class="project-record-filter-menu"><summary aria-label="筛选与排序">${icon("filter")}<span>筛选</span></summary><div><label>Runtime<select data-session-runtime-filter><option value="all">全部 Runtime</option></select></label><label>状态<select data-session-status-filter><option value="all">全部状态</option><option value="idle">可查看</option><option value="archived">已归档</option></select></label><label>内容<select data-operation-filter="sessions"><option value="all">全部内容</option><option value="native">原生内容</option><option value="fallback">GoalBoard 记录</option><option value="unavailable">不可读取</option></select></label><label>排序<select data-session-sort><option value="updated-desc">最近更新</option><option value="updated-asc">最早更新</option><option value="title-asc">标题 A–Z</option></select></label></div></details><button class="project-record-add-compact" type="button" data-open-session-add aria-label="新建 Session">${icon("plus")}</button>
     </header>
-    <div class="project-record-scroll" role="listbox" aria-label="${title}列表" data-operation-list="${kind}">${rows}</div>
-    <div class="project-record-empty" data-operation-empty="${kind}"${hasData ? " hidden" : ""}>${icon(isSessions ? "terminal" : "folder")}<strong>${hasData ? "没有匹配结果" : `这个项目还没有${isSessions ? " Session" : "工作目录"}`}</strong><p>${hasData ? "清除搜索或更改筛选条件。" : isSessions ? "创建或显式关联后，Session 才会出现在这里。" : "从 Runtime 启动或显式关联后，路径才会出现在这里。"}</p><button type="button" data-operation-clear="${kind}"${hasData ? "" : " hidden"}>清除筛选</button></div>
-    <footer class="tree-footer"><span>共 <strong data-operation-count="${kind}">${hasData ? records.length : 0}</strong> 条</span><small>${escapeHtml(note)}</small></footer>
+    <div class="project-record-scroll" role="listbox" aria-label="Sessions 列表" data-operation-list="sessions">${rows}</div>
+    <div class="project-record-empty" data-operation-empty="sessions"${hasData ? " hidden" : ""}>${icon("terminal")}<strong>${hasData ? "没有匹配结果" : "这个项目还没有 Session"}</strong><p>${hasData ? "清除搜索或更改筛选条件。" : "从这里启动新工作，或关联已有 Runtime Session。"}</p><button type="button" data-operation-clear="sessions"${hasData ? "" : " hidden"}>清除筛选</button></div>
+    <footer class="tree-footer"><span>共 <strong data-operation-count="sessions">${hasData ? records.length : 0}</strong> 条</span><small>执行与内容</small></footer>
   </section>`;
 }
 
 function renderSessionContent(item: ProjectSessionRecord): string {
   if (item.contentMode === "native" || item.contentMode === "fallback") {
     const native = item.contentMode === "native";
-    return `<div class="session-content-state" data-session-content-list>${icon("activity")}<div><h3>${native ? "按需读取执行内容" : "读取 GoalBoard 执行记录"}</h3><p>${native ? "进入这条 Session 后，GoalBoard 会合并原 Runtime 历史与本地 TUI 记录。" : "只读取 GoalBoard 已持久化并能证明的 TUI 与执行事实。"}</p><button class="document-action" type="button" data-session-content-load>读取内容</button></div></div>`;
+    return `<div class="session-content-state" data-session-content-list>${icon("activity")}<div><h3>${native ? "按需读取最近执行" : "读取 GoalBoard 执行记录"}</h3><p>${native ? "GoalBoard 会分页读取原 Runtime 的最近摘要，并合并本地 TUI 记录；超大历史不会整条载入。" : "只读取 GoalBoard 已持久化并能证明的 TUI 与执行事实。"}</p><button class="document-action" type="button" data-session-content-load>读取内容</button></div></div>`;
   }
   return `<div class="session-content-state" data-session-content-list>${icon("lock")}<div><h3>这个 Runtime 不能读取 Session 内容</h3><p>GoalBoard 只显示已确认的 Session ID、项目、Goal 和工作目录，不猜测执行过程。</p></div></div>`;
 }
@@ -176,12 +158,12 @@ function renderSessionDetail(item: ProjectSessionRecord, selected: boolean, proj
     <div class="goal-focus-layout project-operation-layout">
       <div class="goal-focus-main">
         <section class="goal-focus-criteria session-execution" aria-labelledby="session-content-${escapeHtml(item.id)}">
-          <header><div><h2 id="session-content-${escapeHtml(item.id)}">${item.contentMode === "fallback" ? "GoalBoard 执行记录" : "执行内容"}</h2><p>${item.contentMode === "native" ? "按需合并原 Runtime 历史与 GoalBoard TUI 记录，每段都标明来源。" : item.contentMode === "fallback" ? "只显示 GoalBoard 已持久化并能证明的记录。" : "当前适配器没有内容读取能力。"}</p></div><label class="operation-content-search">${icon("search")}<input type="search" data-session-content-search placeholder="搜索本次执行" aria-label="搜索当前 Session 内容"${item.contentMode === "unavailable" ? " disabled" : ""}></label></header>
+          <header><div><h2 id="session-content-${escapeHtml(item.id)}">${item.contentMode === "fallback" ? "GoalBoard 执行记录" : "执行内容"}</h2><p>${item.contentMode === "unavailable" ? "当前适配器没有内容读取能力。" : "按时间查看最近的用户、Runtime 与工具记录。"}</p></div><div class="operation-content-controls"><label class="operation-content-search">${icon("search")}<input type="search" data-session-content-search placeholder="搜索本次执行" aria-label="搜索当前 Session 内容"${item.contentMode === "unavailable" ? " disabled" : ""}></label><label class="operation-content-filter"><span>事件</span><select data-session-content-filter aria-label="筛选执行事件"${item.contentMode === "unavailable" ? " disabled" : ""}><option value="all">全部事件</option><option value="conversation">对话</option><option value="tool">工具与审批</option><option value="status">状态</option><option value="artifact">产物</option><option value="terminal">终端</option></select></label></div></header>
           <div class="session-content-body">${renderSessionContent(item)}<p class="operation-search-empty" data-session-content-empty hidden>当前内容中没有匹配结果。</p></div>
         </section>
       </div>
       <aside class="goal-focus-aside" aria-label="Session 上下文">
-        <section class="goal-focus-context operation-current-context"><header><div><h2>当前关系</h2><p>续跑使用这些已确认事实。</p></div><button type="button" data-open-session-relations>管理关系</button></header><dl><div><dt>项目</dt><dd>${escapeHtml(projectName)}</dd></div><div><dt>当前 Goal</dt><dd><span data-current-goal-value>${escapeHtml(item.currentGoal || "未选择")}</span><button type="button" data-work-surface-open="goal" data-directory-open="goals">去 Goals</button></dd></div><div><dt>工作目录</dt><dd><code>${escapeHtml(item.workspace)}</code><button type="button" data-work-surface-open="workspaces" data-directory-open="workspaces">管理</button></dd></div><div><dt>内容来源</dt><dd>${escapeHtml(contentModeLabel(item.contentMode))}</dd></div></dl></section>
+        <section class="goal-focus-context operation-current-context"><header><div><h2>当前关系</h2><p>续跑使用这些已确认事实。</p></div><button type="button" data-open-session-relations>管理关系</button></header><dl><div><dt>项目</dt><dd>${escapeHtml(projectName)}</dd></div><div><dt>当前 Goal</dt><dd><span data-current-goal-value>${escapeHtml(item.currentGoal || "未选择")}</span><button type="button" data-work-surface-open="goal" data-directory-open="goals">去 Goals</button></dd></div><div><dt>工作目录</dt><dd><code>${escapeHtml(item.workspace)}</code></dd></div><div><dt>内容来源</dt><dd>${escapeHtml(contentModeLabel(item.contentMode))}</dd></div></dl></section>
         <section class="companion-runtime operation-goal-history"><header><div><small>Goal</small><h2>关联历史</h2></div><span data-goal-history-count>${item.goalHistory.length + (item.currentGoal ? 1 : 0)} 次</span></header>${renderGoalHistory(item)}</section>
         <details class="operation-identity"><summary>${icon("info")}身份与能力边界</summary><dl><div><dt>Session ID</dt><dd>${escapeHtml(item.id)}</dd></div><div><dt>Runtime</dt><dd>${escapeHtml(item.runtime)}</dd></div><div><dt>原生内容</dt><dd>${escapeHtml(contentModeLabel(item.contentMode))}</dd></div><div><dt>Panel ID</dt><dd>只负责 PTY 所有权</dd></div><div><dt>Work Context ID</dt><dd>只用于弱能力兼容</dd></div></dl></details>
         <button class="document-action operation-archive" type="button" data-session-archive="${item.state !== "archived"}">${icon(item.state === "archived" ? "refresh" : "archive")}<span>${item.state === "archived" ? "恢复记录" : "归档记录"}</span></button>
@@ -196,31 +178,6 @@ function renderSessionSurface(records: readonly ProjectSessionRecord[], hasData:
     : `<div class="archive-empty project-operation-surface-empty">${icon("terminal")}<h1>这个项目还没有 Session</h1><p>创建或显式关联后，执行内容和 Goal 历史会出现在这里。</p></div>`}</section>`;
 }
 
-function renderWorkspaceSessions(item: ProjectWorkspaceRecord): string {
-  return item.sessions?.length
-    ? `<ul class="workspace-session-list">${item.sessions.map((session) => `<li>${icon("terminal")}<span><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(session.runtime)} / ${escapeHtml(session.updated)}</small></span><em>${escapeHtml(session.state)}</em></li>`).join("")}</ul>`
-    : `<div class="operation-aside-empty">${icon("info")}<strong>还没有 Session</strong><small>启动后才会出现，不根据路径猜测关系。</small></div>`;
-}
-
-function renderWorkspaceDetail(item: ProjectWorkspaceRecord, selected: boolean, projectName: string): string {
-  const canLaunch = item.state === "healthy";
-  const canRepair = item.state === "missing" || item.state === "conflict";
-  const relationLabel = item.projectLinked ? "已显式关联" : "Session 使用中";
-  return `<article class="goal-document project-operation-document project-workspace-document" data-operation-detail="workspace" data-detail-id="${escapeHtml(item.id)}" data-workspace-path="${escapeHtml(item.path)}" data-workspace-linked="${item.projectLinked === true}" data-workspace-session-count="${item.sessionCount}"${selected ? "" : " hidden"}>
-    <section class="goal-hero project-operation-hero" aria-labelledby="workspace-title-${escapeHtml(item.id)}"><header class="goal-header"><div class="goal-title-kicker"><span class="project-record-state project-record-state--${escapeHtml(item.state)}">${escapeHtml(workspaceStateLabel(item.state))}</span><div class="goal-title-facts"><span>${escapeHtml(projectName)}</span><span>${item.sessionCount} 个 Sessions</span><span>${escapeHtml(relationLabel)}</span><span>最近更新 ${escapeHtml(item.updated)}</span></div></div><div class="goal-title-row"><div class="goal-title-copy"><h1 id="workspace-title-${escapeHtml(item.id)}">${escapeHtml(item.name)}</h1><p class="goal-title-outcome">${escapeHtml(item.summary)}</p></div><div class="goal-title-actions"><button class="goal-primary-action" type="button" data-open-session-launch${canLaunch ? "" : " disabled"}>${icon("plus")}<span>启动新 Session</span></button><button class="document-action" type="button" data-open-path-repair>${icon("refresh")}<span>${canRepair ? "修复路径" : "更改路径"}</span></button></div></div><p class="operation-action-status" data-workspace-action-status role="status" hidden></p></header></section>
-    <div class="goal-focus-layout project-operation-layout">
-      <div class="goal-focus-main"><section class="goal-focus-criteria workspace-main-surface"><header><div><h2>路径与已知 Sessions</h2><p>路径只是启动位置，Session 关系来自明确记录。</p></div></header><div class="workspace-path-fact"><span>${icon(item.state === "healthy" ? "check" : "alert")}</span><div><strong>${escapeHtml(workspaceStateLabel(item.state))}</strong><code data-workspace-path>${escapeHtml(item.path)}</code><p>${item.state === "healthy" ? "目录可访问。GoalBoard 不取得目录所有权。" : item.state === "missing" ? "路径不可访问，修复记录前不能启动 Runtime。" : "两个记录指向同一路径，继续前需要明确保留哪一条。"}</p></div></div><section class="workspace-known-sessions"><header><h3>已知 Sessions</h3><button type="button" data-work-surface-open="sessions" data-directory-open="sessions">打开 Sessions</button></header>${renderWorkspaceSessions(item)}</section></section></div>
-      <aside class="goal-focus-aside" aria-label="工作目录上下文"><section class="goal-focus-context workspace-context"><header><h2>启动条件</h2><p>每次创建都重新确认，不沿用旧 Session。</p></header><ol class="workspace-launch-checks"><li><span>${icon(item.state === "healthy" ? "check" : "alert")}</span><div><strong>目录可用</strong><small>${item.state === "healthy" ? "已确认" : "需要处理"}</small></div></li><li><span>${icon("terminal")}</span><div><strong>选择 Runtime</strong><small>${escapeHtml(item.runtimes)}</small></div></li><li><span>${icon("target")}</span><div><strong>选择 Goal</strong><small>由用户在启动前确认</small></div></li></ol></section><section class="companion-runtime workspace-project-relation"><header><div><small>Project</small><h2>项目关系</h2></div><span>${escapeHtml(relationLabel)}</span></header><p>${escapeHtml(projectName)}</p><dl><div><dt>已知 Sessions</dt><dd>${item.sessionCount}</dd></div><div><dt>其他 Project</dt><dd>${Math.max(0, (item.projectCount ?? 0) - 1)}</dd></div><div><dt>最近检查</dt><dd>${escapeHtml(item.updated)}</dd></div></dl>${item.projectLinked ? `<button type="button" data-open-workspace-unlink>解除并移出当前项目${icon("chevron-right")}</button>` : `<button type="button" data-workspace-link>显式关联当前项目${icon("chevron-right")}</button>`}</section></aside>
-    </div>
-  </article>`;
-}
-
-function renderWorkspaceSurface(records: readonly ProjectWorkspaceRecord[], hasData: boolean, projectName: string): string {
-  return `<section class="desktop-work-surface project-operation-surface" data-work-surface="workspaces" data-work-surface-label="工作目录" hidden>${hasData
-    ? records.map((item, index) => renderWorkspaceDetail(item, index === 0, projectName)).join("")
-    : `<div class="archive-empty project-operation-surface-empty">${icon("folder")}<h1>这个项目还没有工作目录</h1><p>从 Runtime 启动或显式关联后，路径才会出现在这里。</p></div>`}</section>`;
-}
-
 function renderOverlays(data: ProjectOperationsData | undefined, project: ProjectOperationsProject | null): string {
   const runtimes = data?.runtimes ?? [
     { runtime_id: "codex", display_name: "Codex", capabilities: null },
@@ -233,22 +190,37 @@ function renderOverlays(data: ProjectOperationsData | undefined, project: Projec
   const goalOptions = (data?.goals ?? []).map((goal) => `<option value="${escapeHtml(goal.goal_id)}">${escapeHtml(goal.title)}</option>`).join("");
   const projects = data?.projects ?? (project ? [project] : []);
   const projectOptions = projects.map((item) => `<option value="${escapeHtml(item.project_id)}"${item.project_id === project?.project_id ? " selected" : ""}>${escapeHtml(item.display_name)}</option>`).join("");
-  return `<dialog class="project-operation-dialog" data-session-add-dialog><form method="dialog" data-session-add-form><header><div><h2>添加 Session</h2><p>加入已有 Runtime Session，或明确创建一条新的 Session。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section>
-    <label>添加方式<select data-session-add-action><option value="link">加入已有 Session</option><option value="create">创建新 Session</option></select></label>
-    <label>Runtime<select data-session-add-runtime>${runtimeOptions}</select></label>
-    <div class="session-add-native" data-session-add-native><label>Runtime 原生 Session ID<input data-session-native-id list="session-discovery-options" autocomplete="off" placeholder="输入 ID，或先同步可发现记录" required></label><datalist id="session-discovery-options" data-session-discovery-options></datalist><button class="document-action" type="button" data-session-discover>${icon("refresh")}<span>同步可发现记录</span></button></div>
-    <label>标题<input data-session-add-title maxlength="160" placeholder="可选；留空使用 Runtime 标题"></label>
-    <label>当前 Goal<select data-session-add-goal><option value="">暂不关联 Goal</option>${goalOptions}</select></label>
-    <label>工作目录<input data-session-add-workspace placeholder="可选；请输入绝对路径"></label>
+  const workspaces = data?.workspaces ?? [];
+  const defaultWorkspace = workspaces.find((workspace) => workspace.state === "healthy") ?? null;
+  const workspaceChoices = workspaces.length
+    ? workspaces.map((workspace) => `<button type="button" data-session-workspace-option data-workspace-id="${escapeHtml(workspace.id)}" data-workspace-path="${escapeHtml(workspace.path)}" data-workspace-name="${escapeHtml(workspace.name)}"${workspace.state === "healthy" ? "" : " disabled"}><span>${icon("folder")}<span><strong>${escapeHtml(workspace.name)}</strong><small>${escapeHtml(workspace.path)}</small></span></span><em class="workspace-choice-state workspace-choice-state--${escapeHtml(workspace.state)}">${escapeHtml(workspaceStateLabel(workspace.state))}</em></button>`).join("")
+    : `<p class="session-workspace-empty">这个项目还没有已知运行位置。</p>`;
+  const workspacePathOptions = workspaces.map((workspace) => `<option value="${escapeHtml(workspace.path)}">${escapeHtml(workspace.name)}</option>`).join("");
+  const workspacePicker = `<div class="session-workspace-field">
+    <span class="operation-field-label">工作目录 <small>Session 的运行位置</small></span>
+    <input type="hidden" data-session-add-workspace-id value="${escapeHtml(defaultWorkspace?.id || "")}">
+    <input type="hidden" data-session-add-workspace value="${escapeHtml(defaultWorkspace?.path || "")}">
+    <details class="session-workspace-picker" data-session-workspace-menu>
+      <summary><span>${icon("folder")}<span><strong data-session-workspace-name>${escapeHtml(defaultWorkspace?.name || "不关联工作目录")}</strong><small data-session-workspace-path>${escapeHtml(defaultWorkspace?.path || "运行时不绑定本地路径")}</small></span></span>${icon("chevron-down")}</summary>
+      <div class="session-workspace-options" role="listbox" aria-label="选择工作目录">${workspaceChoices}<button type="button" data-session-workspace-none><span>${icon("minus")}<span><strong>不关联工作目录</strong><small>仍可创建 Session，之后再补充关系</small></span></span></button><button type="button" data-session-workspace-custom><span>${icon("plus")}<span><strong>选择其他目录</strong><small>输入这台电脑上的绝对路径</small></span></span></button></div>
+    </details>
+    <label class="session-workspace-custom" data-session-workspace-custom-panel hidden>其他目录<input data-session-workspace-custom-input autocomplete="off" placeholder="/Users/name/code/project"></label>
+  </div>`;
+  return `<datalist id="project-workspace-path-options">${workspacePathOptions}</datalist><dialog class="project-operation-dialog session-add-dialog" data-session-add-dialog><form method="dialog" data-session-add-form><header><div class="session-add-heading"><div class="session-add-heading-row"><h2 data-session-add-dialog-title>新建 Session</h2><button type="button" data-session-add-toggle>关联已有 Session</button></div><p data-session-add-dialog-copy>从当前项目启动一条新的 Runtime Session。</p><strong data-session-add-mode hidden>创建新的 Runtime Session</strong></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section>
+    <input type="hidden" data-session-add-action value="create">
+    <div class="session-add-field-grid"><label>Runtime<select data-session-add-runtime>${runtimeOptions}</select></label><label>当前 Goal<select data-session-add-goal><option value="">暂不关联 Goal</option>${goalOptions}</select></label></div>
+    <label>Session 标题<input data-session-add-title maxlength="160" placeholder="可选；留空使用 Goal 或 Runtime 标题"></label>
+    <div class="session-add-native" data-session-add-native hidden><label>Runtime 原生 Session ID<input data-session-native-id list="session-discovery-options" autocomplete="off" placeholder="输入 ID，或先同步可发现记录"></label><datalist id="session-discovery-options" data-session-discovery-options></datalist><button class="document-action" type="button" data-session-discover>${icon("refresh")}<span>同步可发现记录</span></button></div>
+    ${workspacePicker}
     <p class="operation-capability-note" data-session-add-capability></p>
-    <label class="operation-confirm-check"><input type="checkbox" data-session-add-confirm><span>确认只为这条 Session 写入当前 Project、Goal 和工作目录关系。</span></label>
+    <label class="operation-confirm-check session-add-confirm"><input type="checkbox" data-session-add-confirm><span data-session-add-confirm-copy>确认使用以上 Goal、Runtime 和工作目录启动新 Session。</span></label>
     <p class="operation-dialog-status" data-session-add-status role="status" hidden></p>
-  </section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-session-add-submit disabled>加入 Session</button></footer></form></dialog>
+  </section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-session-add-submit disabled>启动 Session</button></footer></form></dialog>
   <dialog class="project-operation-dialog" data-session-relations-dialog data-current-project-id="${escapeHtml(project?.project_id || "")}"><form method="dialog" data-session-relations-form><header><div><h2>管理 Session 关系</h2><p>每条 Session 同时只有一个 Project 和一个当前 Goal。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section>
     <dl class="operation-confirm-facts"><div><dt>Session</dt><dd data-session-relations-name></dd></div><div><dt>当前 Project</dt><dd>${escapeHtml(project?.display_name || "当前项目")}</dd></div></dl>
     <label>目标 Project<select data-session-relations-project>${projectOptions}<option value="">移出当前 Project</option></select></label>
     <label>当前 Goal<select data-session-relations-goal><option value="">不设置当前 Goal</option>${goalOptions}</select></label>
-    <label>工作目录<input data-session-relations-workspace placeholder="留空表示解除工作目录关系"></label>
+    <label>工作目录<input data-session-relations-workspace list="project-workspace-path-options" placeholder="留空表示解除工作目录关系"></label>
     <p class="operation-capability-note" data-session-relations-note>切换 Goal 会保留旧 Goal 历史；转移或移出 Project 会清空当前 Goal。</p>
     <label class="operation-confirm-check"><input type="checkbox" data-session-relations-confirm><span>确认只更新这条 Session 的关系。</span></label>
     <p class="operation-dialog-status" data-session-relations-status role="status" hidden></p>
@@ -257,7 +229,7 @@ function renderOverlays(data: ProjectOperationsData | undefined, project: Projec
     <aside class="session-handoff-controls" aria-label="Handoff 目标">
       <dl class="operation-confirm-facts"><div><dt>来源 Session</dt><dd data-handoff-source-session></dd></div><div><dt>Project</dt><dd>${escapeHtml(project?.display_name || "当前项目")}</dd></div><div><dt>当前 Goal</dt><dd data-handoff-goal></dd></div></dl>
       <label>目标 Runtime<select data-handoff-runtime>${runtimeOptions}</select></label>
-      <label>目标工作目录<input data-handoff-workspace autocomplete="off" placeholder="可选；请输入绝对路径"></label>
+      <label>目标工作目录<input data-handoff-workspace list="project-workspace-path-options" autocomplete="off" placeholder="可选；请输入绝对路径"></label>
       <p class="operation-capability-note" data-handoff-capability></p>
       <label class="operation-confirm-check"><input type="checkbox" data-handoff-confirm><span>确认使用上面的 Runtime、Project、Goal 和工作目录创建新 Session，并发送右侧内容。</span></label>
       <p class="operation-dialog-status" data-handoff-status role="status" hidden></p>
@@ -265,11 +237,7 @@ function renderOverlays(data: ProjectOperationsData | undefined, project: Projec
     </aside>
     <div class="session-handoff-editor"><header><div><h3>交接内容</h3><p>内容由当前 Goal Contract 与最小 Session 上下文生成，可以直接修改。</p></div><span data-handoff-state>草稿</span></header><textarea data-handoff-content aria-label="可编辑的 Handoff package" spellcheck="false" placeholder="正在生成 Handoff package..."></textarea></div>
   </section><footer><button type="button" data-dialog-close>稍后继续</button><button type="button" data-handoff-save disabled>保存草稿</button><button class="button-primary" type="submit" data-handoff-send disabled>创建并发送</button></footer></form></dialog>
-  <dialog class="project-operation-dialog project-operation-confirm-dialog" data-session-archive-dialog><form method="dialog" data-session-archive-form><header><div><h2 data-session-archive-title>归档 Session 记录</h2><p>只整理 GoalBoard 记录，不删除或关闭 Runtime 原生内容。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>Session</dt><dd data-session-archive-name></dd></div><div><dt>影响</dt><dd data-session-archive-impact></dd></div></dl><label class="operation-confirm-check"><input type="checkbox" data-session-archive-confirm><span data-session-archive-confirm-copy></span></label><p class="operation-dialog-status" data-session-archive-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-session-archive-submit disabled>确认</button></footer></form></dialog>
-  <dialog class="project-operation-dialog" data-workspace-add-dialog><form method="dialog" data-workspace-add-form><header><div><h2>添加工作目录</h2><p>把一个绝对路径显式关联到当前 Project。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>Project</dt><dd>${escapeHtml(project?.display_name || "当前项目")}</dd></div><div><dt>默认关系</dt><dd>不会创建</dd></div></dl><label>绝对路径<input data-workspace-add-path autocomplete="off" placeholder="/Users/name/code/project" required></label><p class="operation-capability-note">GoalBoard 会规范化路径身份；不会扫描、创建或取得文件夹所有权。</p><label class="operation-confirm-check"><input type="checkbox" data-workspace-add-confirm><span>确认把这条路径关联到当前 Project。</span></label><p class="operation-dialog-status" data-workspace-add-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-workspace-add-submit disabled>添加工作目录</button></footer></form></dialog>
-  <dialog class="project-operation-dialog" data-launch-dialog><form method="dialog" data-launch-form><header><div><h2>启动新 Session</h2><p>从这个工作目录创建一条新的 Runtime Session。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>Project</dt><dd>${escapeHtml(project?.display_name || "当前项目")}</dd></div><div><dt>工作目录</dt><dd data-launch-workspace></dd></div></dl><label>Runtime<select data-launch-runtime>${runtimeOptions}</select></label><label>当前 Goal<select data-launch-goal><option value="">暂不关联 Goal</option>${goalOptions}</select></label><label>Session 标题<input data-launch-title maxlength="160" placeholder="可选；留空使用 Goal 或 Runtime 标题"></label><p class="operation-capability-note" data-launch-capability></p><label class="operation-confirm-check"><input type="checkbox" data-launch-confirm><span>确认使用上面的 Runtime、Project、Goal 和工作目录创建新 Session。</span></label><p class="operation-dialog-status" data-launch-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-launch-submit disabled>启动 Session</button></footer></form></dialog>
-  <dialog class="project-operation-dialog" data-repair-dialog><form method="dialog" data-repair-form><header><div><h2>修复工作目录记录</h2><p>只更新 GoalBoard 记录，不移动、创建或删除文件。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>原路径</dt><dd data-repair-previous></dd></div><div><dt>相关 Sessions</dt><dd data-repair-session-count></dd></div></dl><label>新的绝对路径<input data-repair-path autocomplete="off" required></label><label class="operation-confirm-check"><input type="checkbox" data-repair-confirm><span>确认更新当前 Project 的目录记录和匹配 Session；不会操作文件系统。</span></label><p class="operation-dialog-status" data-repair-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-repair-submit disabled>保存路径</button></footer></form></dialog>
-  <dialog class="project-operation-dialog project-operation-confirm-dialog" data-workspace-unlink-dialog><form method="dialog" data-workspace-unlink-form><header><div><h2>解除工作目录关系</h2><p>目录会从当前 Project 移除，真实文件夹不会变化。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>工作目录</dt><dd data-workspace-unlink-path></dd></div><div><dt>相关 Sessions</dt><dd data-workspace-unlink-sessions></dd></div><div><dt>不受影响</dt><dd>其他 Project、Goal 历史、Runtime 内容与真实文件</dd></div></dl><label class="operation-confirm-check"><input type="checkbox" data-workspace-unlink-confirm><span>确认解除当前 Project 关系，并清除匹配 Session 的工作目录关系。</span></label><p class="operation-dialog-status" data-workspace-unlink-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-workspace-unlink-submit disabled>解除关系</button></footer></form></dialog>`;
+  <dialog class="project-operation-dialog project-operation-confirm-dialog" data-session-archive-dialog><form method="dialog" data-session-archive-form><header><div><h2 data-session-archive-title>归档 Session 记录</h2><p>只整理 GoalBoard 记录，不删除或关闭 Runtime 原生内容。</p></div><button type="button" data-dialog-close aria-label="关闭">${icon("x")}</button></header><section><dl class="operation-confirm-facts"><div><dt>Session</dt><dd data-session-archive-name></dd></div><div><dt>影响</dt><dd data-session-archive-impact></dd></div></dl><label class="operation-confirm-check"><input type="checkbox" data-session-archive-confirm><span data-session-archive-confirm-copy></span></label><p class="operation-dialog-status" data-session-archive-status role="status" hidden></p></section><footer><button type="button" data-dialog-close>取消</button><button class="button-primary" type="submit" data-session-archive-submit disabled>确认</button></footer></form></dialog>`;
 }
 
 export function renderProjectOperations(
@@ -277,20 +245,39 @@ export function renderProjectOperations(
   data?: ProjectOperationsData,
 ): ProjectOperationsSlice {
   const sessionRecords = data?.sessions ?? [];
-  const workspaceRecords = data?.workspaces ?? [];
   const hasSessionData = sessionRecords.length > 0;
-  const hasWorkspaceData = workspaceRecords.length > 0;
   const projectName = project?.display_name || "当前项目";
   return {
-    rootItems: `<button class="desktop-module-item" type="button" data-directory-open="sessions" data-work-surface-open="sessions">${icon("terminal")}<span><strong>Sessions</strong><small>执行内容、Goal 历史与续跑</small></span><em>${hasSessionData ? sessionRecords.length : 0}</em></button><button class="desktop-module-item" type="button" data-directory-open="workspaces" data-work-surface-open="workspaces">${icon("folder")}<span><strong>工作目录</strong><small>路径、已知 Sessions 与启动</small></span><em>${hasWorkspaceData ? workspaceRecords.length : 0}</em></button>`,
-    directories: `${renderDirectory("sessions", "Sessions", "执行与内容", sessionRecords, hasSessionData)}${renderDirectory("workspaces", "工作目录", "路径与启动", workspaceRecords, hasWorkspaceData)}`,
-    surfaces: `${renderSessionSurface(sessionRecords, hasSessionData, projectName)}${renderWorkspaceSurface(workspaceRecords, hasWorkspaceData, projectName)}`,
+    rootItems: `<button class="desktop-module-item" type="button" data-directory-open="sessions" data-work-surface-open="sessions">${icon("terminal")}<span><strong>Sessions</strong><small>执行内容、运行位置与续跑</small></span>${icon("chevron-right")}</button>`,
+    directories: renderDirectory(sessionRecords, hasSessionData),
+    surfaces: renderSessionSurface(sessionRecords, hasSessionData, projectName),
     overlays: renderOverlays(data, project),
   };
 }
 
 export const PROJECT_OPERATIONS_STYLES = `
-  .project-record-directory { min-height: 0; grid-template-rows: 40px 82px minmax(0, 1fr) 46px; }
+  @media (min-width: 761px) {
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] {
+      --desktop-project-header-height: var(--desktop-titlebar-height);
+    }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .navigator-project {
+      height: var(--desktop-titlebar-height);
+      min-height: var(--desktop-titlebar-height);
+      grid-template-rows: var(--desktop-titlebar-height);
+    }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .navigator-native-row { display: none; }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .navigator-project-primary {
+      height: var(--desktop-titlebar-height);
+      min-height: var(--desktop-titlebar-height);
+      padding-inline: var(--desktop-project-safe-inline-start) 8px;
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+      grid-template-columns: minmax(0, 1fr) var(--desktop-titlebar-control-height);
+    }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .navigator-project-notifications { display: none; }
+  }
+
+  .project-record-directory { min-height: 0; grid-template-rows: 72px 115px minmax(0, 1fr) 46px; }
+  .project-record-directory:not([hidden]) { display: grid; }
   body[data-desktop-shell="true"] .project-record-directory .desktop-directory-heading { grid-template-columns: 24px minmax(0, 1fr) 24px; }
   .directory-heading-action { grid-column: 3; }
   .project-record-tools { min-width: 0; padding: 5px 6px 5px; display: grid; grid-template-columns: minmax(0, 1fr) 86px; align-items: center; gap: 5px; }
@@ -308,18 +295,18 @@ export const PROJECT_OPERATIONS_STYLES = `
   .project-record-add-compact { display: none; }
   .project-record-scroll { min-height: 0; overflow: auto; padding: 4px 7px 12px; scrollbar-width: none; }
   .project-record-scroll::-webkit-scrollbar { display: none; }
-  .project-record-row { width: 100%; min-width: 0; min-height: 56px; padding: 8px; border: 0; border-radius: 8px; color: var(--ink-soft); background: transparent; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(22px, auto) 18px; column-gap: 8px; align-items: center; text-align: left; cursor: pointer; }
+  .project-record-row { width: 100%; min-width: 0; min-height: 92px; padding: 12px 9px; border: 0; border-radius: 9px; color: var(--ink-soft); background: transparent; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(42px, auto) 22px; column-gap: 9px; align-items: center; text-align: left; cursor: pointer; }
   body[data-desktop-shell="true"] .project-record-directory .project-record-row:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 5%, transparent); }
   body[data-desktop-shell="true"] .project-record-directory .project-record-row.is-selected { color: var(--ink); background: var(--paper); box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-color) 28%, transparent); }
   .project-record-select { min-width: 0; min-height: 22px; color: inherit; display: block; }
-  .project-record-select > span { min-width: 0; display: grid; gap: 1px; }
+  .project-record-select > span { min-width: 0; display: grid; gap: 3px; }
   .project-record-select strong, .project-record-select small, .project-record-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .project-record-select strong { color: inherit; font-size: 11.5px; font-weight: 620; }
+  .project-record-select strong { color: inherit; font-size: 12px; font-weight: 640; line-height: 1.35; }
   .project-record-row.is-selected .project-record-select strong { font-weight: 690; }
-  .project-record-select small { color: var(--faint); font-size: 9.5px; }
+  .project-record-select small { color: var(--faint); font-size: 9.5px; line-height: 1.35; }
   body[data-desktop-shell="true"] .project-record-directory .project-record-state--healthy { color: var(--green); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
   body[data-desktop-shell="true"] .project-record-directory :is(.project-record-state--missing, .project-record-state--conflict) { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: var(--red-soft); }
-  .project-record-meta { grid-column: 1 / -1; min-width: 0; color: var(--faint); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; font-size: 9px; }
+  .project-record-meta { grid-column: 1 / -1; min-width: 0; color: var(--faint); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; font-size: 9.5px; line-height: 1.35; }
   .project-record-meta time { font-variant-numeric: tabular-nums; white-space: nowrap; }
   body[data-desktop-shell="true"] .project-record-directory .project-record-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 72%, transparent); outline-offset: -2px; box-shadow: none; }
   html[data-resolved-theme="light"] body[data-desktop-shell="true"] .project-record-directory .project-record-row.is-selected { background: color-mix(in srgb, var(--blue) 8%, transparent); box-shadow: none; }
@@ -331,9 +318,9 @@ export const PROJECT_OPERATIONS_STYLES = `
   .project-record-directory .tree-footer strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 
   .project-operation-surface { min-height: 100%; }
-  .project-operation-document { width: 100%; gap: 10px; }
-  .project-operation-hero { padding-bottom: 0; }
-  .project-operation-hero .goal-header { padding-bottom: 14px; }
+  body[data-desktop-shell="true"][data-desktop-surface="sessions"] .project-operation-document { width: min(calc(100% - 8px), 1104px); margin: 0 auto 0 8px; padding: 0; box-sizing: border-box; gap: 10px; }
+  .project-operation-hero { min-height: 141px; padding-bottom: 0; }
+  .project-operation-hero .goal-header { padding: 24px 0 14px; }
   .project-operation-hero .goal-title-facts { flex-wrap: wrap; }
   .project-operation-hero .goal-title-actions { flex-wrap: wrap; }
   .project-operation-hero .goal-title-actions .goal-primary-action,
@@ -341,33 +328,65 @@ export const PROJECT_OPERATIONS_STYLES = `
   .project-operation-hero .goal-title-actions button:disabled { opacity: .42; cursor: not-allowed; }
   .operation-action-status { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
   .operation-action-status.is-error { color: var(--red); }
-  .project-operation-layout { padding-inline: 0; }
-  .session-execution, .workspace-main-surface { min-width: 0; min-height: 560px; }
-  .session-execution > header, .workspace-main-surface > header { align-items: center; }
+  body[data-desktop-shell="true"][data-desktop-surface="sessions"] .project-operation-layout { padding-inline: 0; grid-template-columns: minmax(0, 1fr) minmax(270px, 303px); align-items: start; gap: 18px; }
+  body[data-desktop-shell="true"][data-desktop-surface="sessions"] .project-operation-layout .goal-focus-aside { margin: 0; padding: 0; border: 0; display: grid; align-content: start; gap: 14px; }
+  body[data-desktop-shell="true"][data-desktop-surface="sessions"] .session-execution { min-width: 0; min-height: 560px; padding: 21px 20px 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-soft); }
+  .session-execution > header { align-items: center; gap: 18px; }
+  .session-execution > header > div:first-child { min-width: 72px; }
+  .session-execution > header h2 { white-space: nowrap; }
+  .operation-content-controls { min-width: min(100%, 360px); display: flex; justify-content: flex-end; gap: 7px; }
   .operation-content-search { position: relative; min-width: 184px; display: flex; align-items: center; }
   .operation-content-search svg { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
-  .operation-content-search input { width: 100%; height: 32px; padding: 0 9px 0 28px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--page); font-size: 10px; }
-  .operation-content-search input:focus { border-color: var(--blue); }
-  .session-content-body { min-width: 0; padding-top: 2px; }
-  .session-transcript { width: 100%; max-width: 74ch; min-width: 0; margin: 0 auto; }
-  .session-content-warning { margin: 0 0 8px; padding: 9px 11px; border-radius: 7px; color: var(--red); background: color-mix(in srgb, var(--red) 8%, var(--paper)); font-size: 10px; line-height: 1.55; }
-  .session-turn { padding: 15px 0; border-bottom: 1px solid var(--line); }
-  .session-turn header { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
-  .session-turn header strong { min-width: 0; overflow-wrap: anywhere; font-size: 10px; }
-  .session-turn time { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-  .session-turn p { margin: 5px 0 0; color: var(--ink-soft); overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; }
-  .session-turn details { margin-top: 7px; }
-  .session-turn details summary { color: var(--blue-dark); font-size: 10px; cursor: pointer; }
-  .session-turn details pre { margin: 8px 0 0; padding: 10px 11px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-soft); background: var(--page); white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .session-turn--user { margin: 7px 0; padding: 12px 13px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--blue-soft) 55%, var(--paper)); }
-  .session-turn--event { color: var(--muted); }
-  .session-turn--event p { font-size: 10.5px; }
-  .session-event-ledger { max-width: 74ch; margin: 0 auto; padding: 0; list-style: none; }
-  .session-event-ledger li { padding: 15px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 42px 24px minmax(0, 1fr); gap: 9px; }
-  .session-event-ledger time, .session-event-ledger small { color: var(--faint); font-size: 9.5px; }
-  .session-event-ledger > li > svg { color: var(--muted); font-size: 16px; }
-  .session-event-ledger strong { font-size: 11px; }
-  .session-event-ledger p { margin: 3px 0; color: var(--ink-soft); font-size: 11px; }
+  .operation-content-search input { width: 100%; height: 34px; padding: 0 9px 0 28px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--page); font-size: 11px; }
+  .operation-content-search input:focus, .operation-content-filter select:focus { border-color: var(--blue); outline: none; }
+  .operation-content-filter { position: relative; }
+  .operation-content-filter > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .operation-content-filter select { width: 112px; height: 34px; padding: 0 28px 0 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: var(--page); font-size: 10.5px; }
+  .session-content-body { min-width: 0; padding-top: 53px; }
+  .session-transcript { width: 100%; max-width: none; min-width: 0; margin: 0; }
+  .session-content-warning { margin: 0 0 18px 76px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--red) 24%, var(--line)); border-radius: 8px; color: var(--red); background: color-mix(in srgb, var(--red) 7%, transparent); font-size: 11px; line-height: 1.55; }
+  .session-content-summary { margin: 0 0 18px 76px; padding: 9px 12px; border-radius: 8px; color: var(--ink-soft); background: color-mix(in srgb, var(--accent) 7%, var(--rail)); font-size: 11px; line-height: 1.55; }
+  .session-day-group + .session-day-group { margin-top: 28px; }
+  .session-day-heading { min-height: 34px; margin: 0; display: grid; grid-template-columns: 58px 26px minmax(0, 1fr); gap: 12px; align-items: center; }
+  .session-day-heading::after { content: ""; grid-column: 3; grid-row: 1; width: 100%; height: 1px; background: var(--line); }
+  .session-day-heading time { z-index: 1; grid-column: 3; grid-row: 1; justify-self: start; width: max-content; padding: 4px 11px; border-radius: 999px; color: var(--muted); background: var(--rail); font-size: 10.5px; font-weight: 680; letter-spacing: .01em; }
+  .session-timeline-event { min-width: 0; display: grid; grid-template-columns: 58px 26px minmax(0, 1fr); gap: 12px; align-items: stretch; }
+  .session-timeline-event + .session-timeline-event { margin-top: 0; }
+  .session-event-time { padding-top: 17px; color: var(--faint); text-align: right; font-size: 10px; font-variant-numeric: tabular-nums; }
+  .session-event-track { position: relative; display: flex; justify-content: center; }
+  .session-event-track::before { content: ""; position: absolute; inset: 0 auto 0 50%; width: 1px; background: var(--line); transform: translateX(-50%); }
+  .session-event-track > span { position: relative; z-index: 1; width: 22px; height: 22px; margin-top: 11px; border: 1px solid currentColor; border-radius: 50%; color: var(--muted); background: var(--paper); display: grid; place-items: center; box-shadow: 0 0 0 3px var(--paper); }
+  .session-event-track > span svg { width: 12px; height: 12px; stroke-width: 2; }
+  .session-event--user_message .session-event-track > span { color: var(--blue-dark); background: var(--blue-soft); }
+  .session-event--runtime_message .session-event-track > span { color: color-mix(in srgb, var(--blue) 76%, var(--green)); background: color-mix(in srgb, var(--blue-soft) 68%, var(--paper)); }
+  .session-event--tool .session-event-track > span, .session-event--approval .session-event-track > span { color: var(--amber); background: var(--amber-soft); }
+  .session-event--artifact .session-event-track > span { color: var(--blue-dark); background: var(--blue-soft); }
+  .session-event--terminal_output .session-event-track > span { color: var(--muted); background: var(--rail); }
+  .session-event--status .session-event-track > span { color: var(--green); background: var(--green-soft); }
+  .session-event-card { min-width: 0; padding: 13px 16px 15px; border: 1px solid transparent; border-radius: 10px; }
+  .session-event-card > header { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .session-event-identity { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+  .session-event-identity strong { min-width: 0; color: var(--ink); overflow-wrap: anywhere; font-size: 11.5px; font-weight: 720; }
+  .session-event-identity small, .session-event-meta { color: var(--faint); font-size: 9.5px; }
+  .session-event-card > p { max-width: 68ch; margin: 7px 0 0; color: var(--ink-soft); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+  .session-event--user_message .session-event-card { padding: 10px 16px 12px; border-color: color-mix(in srgb, var(--blue) 17%, transparent); background: color-mix(in srgb, var(--blue-soft) 54%, transparent); }
+  .session-event--runtime_message .session-event-card { padding-top: 11px; padding-bottom: 15px; }
+  .session-event--runtime_message .session-event-card > p { color: var(--ink); font-size: 13.2px; line-height: 1.62; }
+  .session-event-card--technical { margin: 0; padding: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+  .session-event-card--technical details { min-width: 0; }
+  .session-event-card--technical summary { min-height: 44px; padding: 5px 1px; color: var(--ink-soft); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 9px 13px; align-items: center; list-style: none; cursor: pointer; }
+  .session-event-card--technical summary::-webkit-details-marker { display: none; }
+  .session-event-summary { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 10px; }
+  .session-event-summary strong { color: var(--ink); overflow-wrap: anywhere; font-size: 11.5px; }
+  .session-event-summary small { color: var(--faint); font-size: 9.5px; }
+  .session-event-status { color: var(--green); font-size: 9.5px; font-weight: 690; white-space: nowrap; }
+  .session-event-status.is-error { color: var(--red); }
+  .session-event-disclosure { color: var(--blue-dark); display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 650; white-space: nowrap; }
+  .session-event-disclosure svg { width: 11px; height: 11px; transition: transform .16s cubic-bezier(.16, 1, .3, 1); }
+  .session-event-card--technical details[open] .session-event-disclosure svg { transform: rotate(180deg); }
+  .session-event-card--technical pre { max-height: 420px; margin: 0 0 12px; padding: 13px 14px 16px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: var(--page); white-space: pre-wrap; overflow-wrap: anywhere; font: 10.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .session-event-card--compact { margin: 0; padding: 10px 1px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+  .session-event-card--compact > p { margin-top: 4px; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
   .session-content-state { min-height: 360px; padding: 50px 24px; color: var(--muted); display: grid; grid-template-columns: 28px minmax(0, 420px); justify-content: center; align-content: center; gap: 12px; }
   .session-content-state > svg { font-size: 24px; }
   .session-content-state > div:only-child { grid-column: 1 / -1; width: min(100%, 420px); }
@@ -375,12 +394,14 @@ export const PROJECT_OPERATIONS_STYLES = `
   .session-content-state p { margin: 5px 0 0; font-size: 11px; line-height: 1.6; }
   .session-content-state button { margin-top: 12px; }
   .operation-search-empty { margin: 30px 0; color: var(--muted); text-align: center; }
+  .operation-current-context { min-height: 350px; padding: 20px 18px; border: 0; border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-soft); }
   .operation-current-context dd { align-items: start; gap: 6px; }
+  .operation-current-context > header p { display: none; }
   .operation-current-context > header { align-items: start; display: flex; justify-content: space-between; gap: 10px; }
   .operation-current-context > header button { min-height: 28px; padding: 0; border: 0; color: var(--blue-dark); background: transparent; font-size: 9.5px; white-space: nowrap; }
   .operation-current-context dd button { min-height: 24px; padding: 0; border: 0; color: var(--blue-dark); background: transparent; font-size: 9.5px; justify-self: start; }
   .operation-current-context code { overflow-wrap: anywhere; font: 9.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .operation-goal-history { min-height: 0; }
+  .operation-goal-history { min-height: 358px; margin: 0; padding: 20px 18px; border: 0; border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-soft); }
   .operation-goal-history > header > span { color: var(--muted); font-size: 9.5px; }
   .operation-history { margin: 0; padding: 0; list-style: none; }
   .operation-history li { padding: 9px 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; }
@@ -400,30 +421,6 @@ export const PROJECT_OPERATIONS_STYLES = `
   .operation-identity dt { color: var(--muted); }
   .operation-identity dd { margin: 0; overflow-wrap: anywhere; }
   .operation-archive { width: 100%; min-height: 34px; justify-content: center; }
-
-  .workspace-path-fact { margin: 2px 0 20px; padding: 15px 0 17px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; }
-  .workspace-path-fact > span { color: var(--muted); font-size: 18px; }
-  .workspace-path-fact strong { display: block; color: var(--ink); font-size: 11px; }
-  .workspace-path-fact code { display: block; margin-top: 4px; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .workspace-path-fact p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
-  .workspace-known-sessions > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .workspace-known-sessions h3 { margin: 0; font-size: 11px; }
-  .workspace-known-sessions header button { min-height: 28px; padding: 0; border: 0; color: var(--blue-dark); background: transparent; font-size: 9.5px; }
-  .workspace-session-list { margin: 8px 0 0; padding: 0; list-style: none; }
-  .workspace-session-list li { padding: 11px 0; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; }
-  .workspace-session-list li + li { border-top: 1px solid var(--line); }
-  .workspace-session-list svg { color: var(--muted); font-size: 15px; }
-  .workspace-session-list span { min-width: 0; display: grid; }
-  .workspace-session-list strong { font-size: 10.5px; }
-  .workspace-session-list small, .workspace-session-list em { color: var(--faint); font-size: 9.5px; font-style: normal; }
-  .workspace-launch-checks { margin: 0; padding: 0; list-style: none; }
-  .workspace-launch-checks li { padding: 9px 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; }
-  .workspace-launch-checks li + li { border-top: 1px solid var(--line); }
-  .workspace-launch-checks svg { color: var(--muted); }
-  .workspace-launch-checks div { display: grid; }
-  .workspace-launch-checks strong { font-size: 10px; }
-  .workspace-launch-checks small { color: var(--faint); font-size: 9px; }
-  .workspace-project-relation > p { color: var(--ink); }
 
   .project-operation-dialog { width: min(520px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); padding: 0; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper); box-shadow: 0 22px 72px rgba(10, 15, 22, .3); }
   .project-operation-dialog::backdrop { background: rgba(12, 16, 22, .52); }
@@ -467,11 +464,56 @@ export const PROJECT_OPERATIONS_STYLES = `
   .session-add-native { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
   .session-add-native > label { min-width: 0; }
   .session-add-native > button { min-height: 36px; margin: 0; white-space: nowrap; }
+  .session-add-dialog { width: min(540px, calc(100vw - 28px)); transform: translateX(68px); }
+  .session-add-dialog form > header { padding: 19px 21px 10px; border-bottom: 0; align-items: start; }
+  .session-add-dialog form > header > button { width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 10px; }
+  .session-add-heading { min-width: 0; flex: 1; }
+  .session-add-heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+  .session-add-heading-row [data-session-add-toggle] { min-height: 28px; padding: 0; border: 0; color: var(--blue-dark); background: transparent; font-size: 10px; white-space: nowrap; }
+  .session-add-dialog form > section { padding: 10px 21px 14px; gap: 11px; }
+  .session-add-field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .operation-field-label { color: var(--muted); display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 10px; }
+  .operation-field-label small { color: var(--faint); font-size: 9px; }
+  .session-workspace-field { min-width: 0; display: grid; gap: 5px; }
+  .session-workspace-picker { position: relative; }
+  .session-workspace-picker > summary { min-height: 52px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--page); display: flex; align-items: center; justify-content: space-between; gap: 10px; list-style: none; cursor: pointer; }
+  .session-workspace-picker > summary::-webkit-details-marker { display: none; }
+  .session-workspace-picker > summary > span { min-width: 0; display: flex; align-items: center; gap: 9px; }
+  .session-workspace-picker > summary > span > svg { flex: none; color: var(--muted); }
+  .session-workspace-picker > summary > span > span { min-width: 0; display: grid; gap: 2px; }
+  .session-workspace-picker > summary strong, .session-workspace-picker > summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-workspace-picker > summary strong { font-size: 11px; }
+  .session-workspace-picker > summary small { color: var(--faint); font: 9.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .session-workspace-picker > summary > svg { flex: none; color: var(--faint); }
+  .session-workspace-picker[open] > summary { border-color: color-mix(in srgb, var(--blue) 58%, var(--line)); }
+  .session-workspace-options { position: static; z-index: 90; width: min(304px, 100%); max-height: min(260px, calc(100dvh - 442px)); margin-top: 5px; overflow: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); box-shadow: 0 15px 40px rgba(10, 15, 22, .2); }
+  .session-workspace-options button { width: 100%; min-height: 48px; padding: 7px 8px; border: 0; border-radius: 7px; color: var(--ink-soft); background: transparent; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; }
+  .session-workspace-options button:hover:not(:disabled), .session-workspace-options button:focus-visible { color: var(--ink); background: color-mix(in srgb, var(--blue) 8%, transparent); }
+  .session-workspace-options button:disabled { opacity: .48; cursor: not-allowed; }
+  .session-workspace-options button > span { min-width: 0; display: flex; align-items: center; gap: 9px; }
+  .session-workspace-options button > span > svg { flex: none; color: var(--muted); }
+  .session-workspace-options button > span > span { min-width: 0; display: grid; gap: 1px; }
+  .session-workspace-options strong, .session-workspace-options small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-workspace-options strong { font-size: 10.5px; }
+  .session-workspace-options small { color: var(--faint); font: 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .workspace-choice-state { flex: none; color: var(--green); font-size: 9px; font-style: normal; }
+  .workspace-choice-state--missing, .workspace-choice-state--conflict { color: var(--red); }
+  .session-workspace-options [data-session-workspace-none], .session-workspace-options [data-session-workspace-custom] { border-top: 1px solid var(--line); border-radius: 0; }
+  .session-workspace-empty { margin: 0; padding: 12px 9px; color: var(--muted); font-size: 10px; }
+  .session-workspace-custom { margin-top: 2px; }
+  .session-add-confirm { padding-top: 2px; }
   .operation-capability-note, .operation-dialog-status { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
   .operation-dialog-status.is-error { color: var(--red); }
   .project-operation-confirm-dialog { width: min(460px, calc(100vw - 28px)); }
 
+  @media (min-width: 761px) and (max-width: 1180px) {
+    .session-execution > header { align-items: stretch; flex-direction: column; gap: 12px; }
+    .operation-content-controls { width: 100%; min-width: 0; justify-content: stretch; }
+    .operation-content-search { min-width: 0; flex: 1 1 auto; }
+  }
+
   @media (max-width: 760px) {
+    .project-record-directory, .project-record-scroll { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; overflow-x: hidden; }
     .project-record-directory { grid-template-rows: 54px minmax(0, 1fr) 42px; }
     .project-record-directory .desktop-directory-heading { display: none !important; }
     .project-record-tools { padding: 5px 8px; grid-template-columns: minmax(0, 1fr) 44px 44px; }
@@ -481,31 +523,46 @@ export const PROJECT_OPERATIONS_STYLES = `
     .project-record-filter-menu > div { position: fixed; z-index: 80; top: auto; right: 10px; bottom: 64px; left: 10px; width: auto; grid-template-columns: 1fr 1fr; }
     .project-record-add-compact { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 7px; color: var(--ink); background: var(--paper); display: grid; place-items: center; }
     .project-record-tools .tree-search input, .project-record-filter select { height: 44px; }
-    .project-record-row { min-height: 64px; padding: 7px 8px; }
+    .project-record-row { width: 100%; min-width: 0; max-width: 100%; min-height: 64px; padding: 7px 8px; box-sizing: border-box; overflow: hidden; }
+    .project-record-select, .project-record-meta { max-width: 100%; overflow: hidden; }
     .project-record-select strong { font-size: 12px; }
     .project-record-select small, .project-record-meta { font-size: 9.5px; }
-    .project-operation-document { padding: 18px 14px 40px; }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .project-operation-document { width: 100%; margin: 0; padding: 18px 14px 40px; }
+    .project-operation-document, .project-operation-hero, .project-operation-layout, .project-operation-layout .goal-focus-main { max-width: 100%; box-sizing: border-box; }
+    .project-operation-hero .goal-title-copy, .project-operation-hero .goal-title-copy h1, .project-operation-hero .goal-title-outcome { min-width: 0; max-width: 100%; }
+    body[data-desktop-shell="true"] .project-operation-hero .goal-title-copy h1 { white-space: normal; overflow-wrap: anywhere; font-size: clamp(30px, 9vw, 38px); line-height: 1.16; }
+    .project-operation-hero .goal-title-facts span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     body[data-desktop-shell="true"] .project-operation-hero .goal-title-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
     body[data-desktop-shell="true"] .project-operation-hero .goal-title-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .project-operation-hero .goal-title-actions .goal-primary-action, .project-operation-hero .goal-title-actions .document-action { min-height: 44px; justify-content: center; }
-    .project-operation-layout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .project-operation-layout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .project-operation-layout, .project-operation-layout .goal-focus-main, .session-execution, .session-content-body, .session-transcript { width: 100%; min-width: 0; max-width: 100%; }
     .project-operation-layout .goal-focus-main { order: 1; }
     .project-operation-layout .goal-focus-aside { order: 2; }
     .project-session-document .goal-focus-aside { display: contents; }
-    .project-session-document .operation-goal-history { order: 1; }
-    .project-session-document .goal-focus-main { order: 2; }
-    .project-session-document .operation-current-context { order: 3; }
+    .project-session-document .goal-focus-main { order: 1; }
+    .project-session-document .operation-current-context { order: 2; }
+    .project-session-document .operation-goal-history { order: 3; }
     .project-session-document .operation-identity { order: 4; }
     .project-session-document .operation-archive { order: 5; }
-    .session-execution, .workspace-main-surface { min-height: 0; }
+    body[data-desktop-shell="true"][data-desktop-surface="sessions"] .session-execution { min-height: 0; padding: 18px 14px 24px; }
     .session-execution > header { align-items: stretch; flex-direction: column; }
-    .operation-content-search { width: 100%; }
-    .operation-content-search input { min-height: 44px; }
-    .session-turn p { font-size: 11.5px; }
+    .operation-content-controls { width: 100%; min-width: 0; }
+    .operation-content-search { width: 100%; min-width: 0; }
+    .operation-content-search input, .operation-content-filter select { min-height: 44px; }
+    .operation-content-filter select { width: 108px; }
+    .session-content-warning { margin-left: 0; }
+    .session-content-summary { margin-left: 0; }
+    .session-day-heading, .session-timeline-event { grid-template-columns: 42px 16px minmax(0, 1fr); gap: 7px; }
+    .session-event-card { padding: 12px 12px 14px; }
+    .session-event-card > p, .session-event--runtime_message .session-event-card > p { font-size: 13px; }
+    .session-event-card--technical, .session-event-card--compact { padding: 0; }
+    .session-event-card--compact { padding: 9px 10px; }
+    .session-event-time { padding-top: 14px; font-size: 9px; }
     .session-content-state { min-height: 280px; padding: 34px 16px; }
-    .operation-current-context dd button, .workspace-known-sessions header button, .operation-archive { min-height: 44px; }
+    .operation-current-context dd button, .operation-archive { min-height: 44px; }
     .project-operation-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; border: 0; border-radius: 0; }
+    .session-add-dialog { transform: none; }
     .project-operation-dialog form > section { max-height: calc(100dvh - 132px); overflow: auto; }
     .session-handoff-dialog form { height: 100dvh; }
     .session-handoff-dialog form > section.session-handoff-review { max-height: none; overflow: auto; grid-template-columns: minmax(0, 1fr); }
@@ -515,6 +572,9 @@ export const PROJECT_OPERATIONS_STYLES = `
     .session-handoff-dialog footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .session-handoff-dialog footer .button-primary { grid-column: 1 / -1; grid-row: 1; }
     .project-operation-dialog header button, .project-operation-dialog footer button { min-width: 44px; min-height: 44px; }
+    .session-add-field-grid { grid-template-columns: minmax(0, 1fr); }
+    .session-add-heading-row { align-items: start; }
+    .session-workspace-options { position: static; max-height: 240px; margin-top: 5px; box-shadow: none; }
     .session-add-native { grid-template-columns: minmax(0, 1fr); }
     .session-add-native > button { min-height: 44px; justify-content: center; }
   }
@@ -570,10 +630,61 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
     state.append(copy);
     body.append(state);
   };
+  const eventFilterGroup = (kind) => ["user_message", "runtime_message"].includes(kind)
+    ? "conversation"
+    : ["tool", "approval"].includes(kind)
+      ? "tool"
+      : kind === "artifact"
+        ? "artifact"
+        : kind === "terminal_output"
+        ? "terminal"
+          : "status";
+  const timelineIconName = (kind) => ({
+    user_message: "user",
+    runtime_message: "target",
+    tool: "terminal",
+    approval: "shield",
+    status: "completed",
+    artifact: "file",
+    terminal_output: "code",
+  }[kind] || "info");
+  const createTimelineIcon = (kind) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#icon-" + timelineIconName(kind));
+    svg.append(use);
+    return svg;
+  };
+  const formatSessionDay = (date) => {
+    if (Number.isNaN(date.getTime())) return { key: "unknown", label: "时间未知" };
+    const key = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+    const weekday = date.toLocaleDateString("zh-CN", { weekday: "long" });
+    return { key, label: (date.getMonth() + 1) + " 月 " + date.getDate() + " 日 · " + weekday };
+  };
+  const applySessionContentFilters = (detail) => {
+    if (!detail) return;
+    const query = String(detail.querySelector("[data-session-content-search]")?.value || "").trim().toLocaleLowerCase();
+    const filter = String(detail.querySelector("[data-session-content-filter]")?.value || "all");
+    let shown = 0;
+    detail.querySelectorAll(".session-timeline-event").forEach((item) => {
+      const matchesQuery = !query || String(item.dataset.eventSearch || item.textContent || "").toLocaleLowerCase().includes(query);
+      const matchesFilter = filter === "all" || item.dataset.eventFilterGroup === filter;
+      item.hidden = !matchesQuery || !matchesFilter;
+      if (!item.hidden) shown += 1;
+    });
+    detail.querySelectorAll(".session-day-group").forEach((group) => {
+      group.hidden = !group.querySelector(".session-timeline-event:not([hidden])");
+    });
+    const empty = detail.querySelector("[data-session-content-empty]");
+    if (empty) empty.hidden = shown > 0;
+  };
   const renderSessionTimeline = (detail, payload) => {
     const body = detail.querySelector(".session-content-body");
     body.replaceChildren();
-    const events = Array.isArray(payload.events) ? payload.events : [];
+    const events = Array.isArray(payload.events)
+      ? payload.events.filter((event) => String(event.content || "").replace(/[\s\u200B-\u200D\uFEFF]/g, "") || ["tool", "artifact", "terminal_output"].includes(event.kind))
+      : [];
     if (!events.length) {
       const title = payload.content_mode === "failed" ? "Runtime 内容读取失败" : "还没有可显示的执行内容";
       const message = payload.native_error?.message || (payload.content_mode === "unavailable"
@@ -592,34 +703,122 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
       warning.textContent = payload.native_error.message;
       list.append(warning);
     }
+    if (payload.native_history?.mode === "summary") {
+      const summary = document.createElement("p");
+      summary.className = "session-content-summary";
+      summary.setAttribute("role", "status");
+      const count = Number(payload.native_history.turn_count || 0);
+      summary.textContent = payload.native_history.has_earlier
+        ? "为保证稳定性，这里显示最近 " + count + " 轮的摘要；更早记录仍保留在原 Runtime。"
+        : "已安全读取这条 Session 的 " + count + " 轮摘要；大体积工具输出会由原 Runtime 收拢。";
+      list.append(summary);
+    }
+    const dayGroups = new Map();
     events.forEach((event) => {
+      const occurredAt = new Date(event.occurred_at);
+      const day = formatSessionDay(occurredAt);
+      let group = dayGroups.get(day.key);
+      if (!group) {
+        group = document.createElement("section");
+        group.className = "session-day-group";
+        group.dataset.sessionDay = day.key;
+        const dayHeading = document.createElement("header");
+        dayHeading.className = "session-day-heading";
+        const dayLabel = document.createElement("time");
+        dayLabel.dateTime = day.key === "unknown" ? "" : day.key;
+        dayLabel.textContent = day.label;
+        dayHeading.append(dayLabel);
+        group.append(dayHeading);
+        dayGroups.set(day.key, group);
+        list.append(group);
+      }
       const article = document.createElement("article");
-      article.className = "session-turn" + (event.kind === "user_message" ? " session-turn--user" : ["tool", "status", "approval", "artifact", "terminal_output"].includes(event.kind) ? " session-turn--event" : "");
-      const header = document.createElement("header");
-      const label = document.createElement("strong");
-      label.textContent = event.label || "执行事件";
-      const source = document.createElement("small");
-      source.textContent = sourceLabel(event.source);
-      const time = document.createElement("time");
-      const date = new Date(event.occurred_at);
-      time.textContent = Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-      header.append(label, source, time);
-      const eventContent = event.content || "";
-      const collapseTechnicalContent = ["tool", "artifact", "terminal_output"].includes(event.kind) && eventContent.length > 1200;
-      if (collapseTechnicalContent) {
+      article.className = "session-timeline-event session-event--" + (event.kind || "status");
+      article.dataset.eventKind = event.kind || "status";
+      article.dataset.eventFilterGroup = eventFilterGroup(event.kind);
+      article.dataset.eventSearch = [event.label, event.content, sourceLabel(event.source), event.metadata?.status].filter(Boolean).join(" ").toLocaleLowerCase();
+      const timeRail = document.createElement("time");
+      timeRail.className = "session-event-time";
+      timeRail.dateTime = event.occurred_at || "";
+      timeRail.textContent = Number.isNaN(occurredAt.getTime()) ? "—" : occurredAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+      const track = document.createElement("div");
+      track.className = "session-event-track";
+      const node = document.createElement("span");
+      node.setAttribute("aria-hidden", "true");
+      node.append(createTimelineIcon(event.kind));
+      track.append(node);
+      const card = document.createElement("div");
+      card.className = "session-event-card";
+      const eventContent = String(event.content || "");
+      const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+      const metaParts = [
+        sourceLabel(event.source),
+        metadata.duration_ms != null && Number.isFinite(Number(metadata.duration_ms)) ? Math.max(0, Math.round(Number(metadata.duration_ms))) + " ms" : "",
+        metadata.exit_code != null ? "退出码 " + metadata.exit_code : "",
+      ].filter(Boolean);
+      const rawStatus = typeof metadata.status === "string" ? metadata.status : "";
+      const statusText = rawStatus
+        ? ({ completed: "已完成", failed: "失败", running: "进行中", pending: "等待中", approved: "已批准", denied: "已拒绝" }[rawStatus] || rawStatus)
+        : metadata.exit_code === 0
+          ? "已完成"
+          : metadata.exit_code != null
+            ? "已结束"
+            : "";
+      const technical = ["tool", "artifact", "terminal_output"].includes(event.kind);
+      const compact = ["status", "approval"].includes(event.kind);
+      if (technical) {
+        card.classList.add("session-event-card--technical");
         const details = document.createElement("details");
         const summary = document.createElement("summary");
-        summary.textContent = "查看完整记录 · " + eventContent.length.toLocaleString() + " 字";
+        const summaryCopy = document.createElement("span");
+        summaryCopy.className = "session-event-summary";
+        const label = document.createElement("strong");
+        label.textContent = event.label || "执行事件";
+        const meta = document.createElement("small");
+        meta.textContent = metaParts.join(" · ");
+        summaryCopy.append(label, meta);
+        if (statusText) {
+          const status = document.createElement("span");
+          status.className = "session-event-status";
+          status.textContent = statusText;
+          if (["failed", "denied"].includes(rawStatus)) status.classList.add("is-error");
+          summary.append(summaryCopy, status);
+        } else {
+          summary.append(summaryCopy);
+        }
+        const disclosure = document.createElement("span");
+        disclosure.className = "session-event-disclosure";
+        disclosure.append(document.createTextNode(event.kind === "artifact"
+          ? "查看变更"
+          : event.kind === "terminal_output"
+            ? "展开输出"
+            : "查看详情"), createTimelineIcon("disclosure"));
+        disclosure.querySelector("use")?.setAttribute("href", "#icon-chevron-down");
+        summary.append(disclosure);
         const content = document.createElement("pre");
-        content.textContent = eventContent;
+        content.textContent = eventContent || "没有附加输出。";
         details.append(summary, content);
-        article.append(header, details);
+        card.append(details);
       } else {
+        if (compact) card.classList.add("session-event-card--compact");
+        const header = document.createElement("header");
+        const identity = document.createElement("span");
+        identity.className = "session-event-identity";
+        const label = document.createElement("strong");
+        label.textContent = event.label || (event.kind === "runtime_message" ? "Runtime" : "执行事件");
+        const source = document.createElement("small");
+        source.textContent = sourceLabel(event.source);
+        identity.append(label, source);
+        const meta = document.createElement("span");
+        meta.className = "session-event-meta";
+        meta.textContent = metaParts.slice(1).join(" · ");
+        header.append(identity, meta);
         const content = document.createElement("p");
         content.textContent = eventContent;
-        article.append(header, content);
+        card.append(header, content);
       }
-      list.append(article);
+      article.append(timeRail, track, card);
+      group.append(article);
     });
     const empty = document.createElement("p");
     empty.className = "operation-search-empty";
@@ -627,6 +826,7 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
     empty.hidden = true;
     empty.textContent = "当前内容中没有匹配结果。";
     body.append(list, empty);
+    applySessionContentFilters(detail);
   };
   const loadSessionContent = async (detail, force = false) => {
     if (!detail?.dataset.detailId) return;
@@ -672,14 +872,12 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
     if (!directory || !surface) return;
     const query = String(directory.querySelector("[data-operation-search]")?.value || "").trim().toLocaleLowerCase();
     const filter = String(directory.querySelector("[data-operation-filter]")?.value || "all");
-    const runtime = kind === "sessions" ? String(directory.querySelector("[data-session-runtime-filter]")?.value || "all") : "all";
-    const status = kind === "sessions" ? String(directory.querySelector("[data-session-status-filter]")?.value || "all") : "all";
-    const sort = kind === "sessions"
-      ? String(directory.querySelector("[data-session-sort]")?.value || "updated-desc")
-      : String(directory.querySelector("[data-workspace-sort]")?.value || "updated-desc");
+    const runtime = String(directory.querySelector("[data-session-runtime-filter]")?.value || "all");
+    const status = String(directory.querySelector("[data-session-status-filter]")?.value || "all");
+    const sort = String(directory.querySelector("[data-session-sort]")?.value || "updated-desc");
     const rows = [...directory.querySelectorAll("[data-operation-row]")];
     const visible = rows.filter((row) => {
-      const contentMatches = kind === "sessions" ? row.dataset.recordContent === filter : row.dataset.recordFilterValue === filter;
+      const contentMatches = row.dataset.recordContent === filter;
       const shown = (!query || String(row.dataset.recordSearch || "").includes(query))
         && (filter === "all" || contentMatches)
         && (runtime === "all" || row.dataset.recordRuntime === runtime)
@@ -691,9 +889,7 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
       ? String(left.dataset.recordTitle || left.dataset.recordSearch || "").localeCompare(String(right.dataset.recordTitle || right.dataset.recordSearch || ""))
       : sort === "updated-asc"
         ? Number(left.dataset.recordUpdated || 0) - Number(right.dataset.recordUpdated || 0)
-        : sort === "sessions-desc"
-          ? Number(right.dataset.recordSessionCount || 0) - Number(left.dataset.recordSessionCount || 0)
-          : Number(right.dataset.recordUpdated || 0) - Number(left.dataset.recordUpdated || 0));
+        : Number(right.dataset.recordUpdated || 0) - Number(left.dataset.recordUpdated || 0));
     const list = directory.querySelector("[data-operation-list]");
     rows.forEach((row) => list?.append(row));
     const empty = directory.querySelector("[data-operation-empty]");
@@ -727,7 +923,6 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
     directory.querySelector("[data-session-runtime-filter]")?.addEventListener("change", () => filterRecords(kind));
     directory.querySelector("[data-session-status-filter]")?.addEventListener("change", () => filterRecords(kind));
     directory.querySelector("[data-session-sort]")?.addEventListener("change", () => filterRecords(kind));
-    directory.querySelector("[data-workspace-sort]")?.addEventListener("change", () => filterRecords(kind));
     directory.querySelector("[data-operation-clear]")?.addEventListener("click", () => {
       const search = directory.querySelector("[data-operation-search]");
       const filter = directory.querySelector("[data-operation-filter]");
@@ -763,14 +958,10 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
     search.focus();
   });
   document.addEventListener("input", (event) => {
-    if (!event.target.matches("[data-session-content-search]")) return;
-    const detail = event.target.closest("[data-operation-detail]");
-    const query = event.target.value.trim().toLocaleLowerCase();
-    const items = [...detail.querySelectorAll(".session-turn,.session-event-ledger li,.session-content-state")];
-    let shown = 0;
-    items.forEach((item) => { item.hidden = Boolean(query) && !item.textContent.toLocaleLowerCase().includes(query); if (!item.hidden) shown += 1; });
-    const empty = detail.querySelector("[data-session-content-empty]");
-    if (empty) empty.hidden = shown > 0;
+    if (event.target.matches("[data-session-content-search]")) applySessionContentFilters(event.target.closest("[data-operation-detail]"));
+  });
+  document.addEventListener("change", (event) => {
+    if (event.target.matches("[data-session-content-filter]")) applySessionContentFilters(event.target.closest("[data-operation-detail]"));
   });
   document.addEventListener("click", (event) => {
     const load = event.target.closest("[data-session-content-load]");
@@ -819,13 +1010,46 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
   const sessionAddConfirm = sessionAddForm?.querySelector("[data-session-add-confirm]");
   const sessionAddSubmit = sessionAddForm?.querySelector("[data-session-add-submit]");
   const sessionAddStatus = sessionAddForm?.querySelector("[data-session-add-status]");
+  const sessionAddWorkspaceId = sessionAddForm?.querySelector("[data-session-add-workspace-id]");
+  const sessionAddWorkspace = sessionAddForm?.querySelector("[data-session-add-workspace]");
+  const sessionAddWorkspaceName = sessionAddForm?.querySelector("[data-session-workspace-name]");
+  const sessionAddWorkspacePath = sessionAddForm?.querySelector("[data-session-workspace-path]");
+  const sessionAddWorkspaceMenu = sessionAddForm?.querySelector("[data-session-workspace-menu]");
+  const sessionAddWorkspaceCustomPanel = sessionAddForm?.querySelector("[data-session-workspace-custom-panel]");
+  const sessionAddWorkspaceCustomInput = sessionAddForm?.querySelector("[data-session-workspace-custom-input]");
+  const initialSessionWorkspace = {
+    id: sessionAddWorkspaceId?.defaultValue || "",
+    path: sessionAddWorkspace?.defaultValue || "",
+    name: sessionAddWorkspaceName?.textContent || "不关联工作目录",
+  };
+  const setSessionWorkspace = ({ id = "", path = "", name = "不关联工作目录", custom = false }) => {
+    if (sessionAddWorkspaceId) sessionAddWorkspaceId.value = id;
+    if (sessionAddWorkspace) sessionAddWorkspace.value = path;
+    if (sessionAddWorkspaceName) sessionAddWorkspaceName.textContent = name;
+    if (sessionAddWorkspacePath) sessionAddWorkspacePath.textContent = path || (custom ? "请输入这台电脑上的绝对路径" : "运行时不绑定本地路径");
+    if (sessionAddWorkspaceCustomPanel) sessionAddWorkspaceCustomPanel.hidden = !custom;
+    if (sessionAddWorkspaceMenu) sessionAddWorkspaceMenu.open = false;
+    if (custom) queueMicrotask(() => sessionAddWorkspaceCustomInput?.focus());
+  };
   const updateSessionAddForm = () => {
-    const action = sessionAddAction?.value || "link";
+    const action = sessionAddAction?.value || "create";
     const option = sessionAddRuntime?.selectedOptions?.[0];
     const createMode = option?.dataset.createMode || "registry";
     const discoverMode = option?.dataset.discoverMode || "unsupported";
     if (sessionAddNative) sessionAddNative.hidden = action !== "link";
     if (sessionAddNativeInput) sessionAddNativeInput.required = action === "link";
+    const dialogTitle = sessionAddForm?.querySelector("[data-session-add-dialog-title]");
+    const dialogCopy = sessionAddForm?.querySelector("[data-session-add-dialog-copy]");
+    const mode = sessionAddForm?.querySelector("[data-session-add-mode]");
+    const toggle = sessionAddForm?.querySelector("[data-session-add-toggle]");
+    const confirmCopy = sessionAddForm?.querySelector("[data-session-add-confirm-copy]");
+    if (dialogTitle) dialogTitle.textContent = action === "create" ? "新建 Session" : "关联已有 Session";
+    if (dialogCopy) dialogCopy.textContent = action === "create" ? "从当前项目启动一条新的 Runtime Session。" : "把一条已存在的 Runtime Session 收入当前项目。";
+    if (mode) mode.textContent = action === "create" ? "创建新的 Runtime Session" : "关联已有 Runtime Session";
+    if (toggle) toggle.textContent = action === "create" ? "关联已有 Session" : "改为启动新 Session";
+    if (confirmCopy) confirmCopy.textContent = action === "create"
+      ? "确认使用以上 Goal、Runtime 和工作目录启动新 Session。"
+      : "确认只为已有 Session 写入当前 Project、Goal 和工作目录关系。";
     const capability = sessionAddForm?.querySelector("[data-session-add-capability]");
     if (capability) capability.textContent = action === "create"
       ? createMode === "native"
@@ -835,17 +1059,37 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
         ? "可以先同步 Runtime 元数据；只有提交后才会关联当前 Project。"
         : "这个 Runtime 不支持发现列表，请粘贴原生 Session ID；GoalBoard 不读取正文。";
     if (sessionAddSubmit) {
-      sessionAddSubmit.textContent = action === "create" ? "创建 Session" : "加入 Session";
+      sessionAddSubmit.textContent = action === "create" ? "启动 Session" : "关联 Session";
       sessionAddSubmit.disabled = !sessionAddConfirm?.checked || (action === "link" && !sessionAddNativeInput?.value.trim());
     }
   };
   document.querySelectorAll("[data-open-session-add]").forEach((button) => button.addEventListener("click", () => {
     sessionAddForm?.reset();
+    if (sessionAddAction) sessionAddAction.value = "create";
+    setSessionWorkspace(initialSessionWorkspace);
     if (sessionAddStatus) sessionAddStatus.hidden = true;
     updateSessionAddForm();
     sessionAddDialog?.showModal();
   }));
-  sessionAddAction?.addEventListener("change", updateSessionAddForm);
+  sessionAddForm?.querySelector("[data-session-add-toggle]")?.addEventListener("click", () => {
+    if (sessionAddAction) sessionAddAction.value = sessionAddAction.value === "create" ? "link" : "create";
+    if (sessionAddConfirm) sessionAddConfirm.checked = false;
+    updateSessionAddForm();
+  });
+  sessionAddForm?.querySelectorAll("[data-session-workspace-option]").forEach((button) => button.addEventListener("click", () => {
+    setSessionWorkspace({ id: button.dataset.workspaceId || "", path: button.dataset.workspacePath || "", name: button.dataset.workspaceName || "工作目录" });
+  }));
+  sessionAddForm?.querySelector("[data-session-workspace-none]")?.addEventListener("click", () => setSessionWorkspace({}));
+  sessionAddForm?.querySelector("[data-session-workspace-custom]")?.addEventListener("click", () => setSessionWorkspace({
+    path: sessionAddWorkspaceCustomInput?.value.trim() || "",
+    name: "其他目录",
+    custom: true,
+  }));
+  sessionAddWorkspaceCustomInput?.addEventListener("input", () => {
+    const path = sessionAddWorkspaceCustomInput.value.trim();
+    if (sessionAddWorkspace) sessionAddWorkspace.value = path;
+    if (sessionAddWorkspacePath) sessionAddWorkspacePath.textContent = path || "请输入这台电脑上的绝对路径";
+  });
   sessionAddRuntime?.addEventListener("change", updateSessionAddForm);
   sessionAddNativeInput?.addEventListener("input", updateSessionAddForm);
   sessionAddConfirm?.addEventListener("change", updateSessionAddForm);
@@ -897,6 +1141,7 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
           native_runtime_session_id: sessionAddNativeInput?.value.trim() || null,
           title: sessionAddForm.querySelector("[data-session-add-title]")?.value.trim() || null,
           current_goal_id: sessionAddForm.querySelector("[data-session-add-goal]")?.value || null,
+          workspace_id: sessionAddWorkspaceId?.value || null,
           workspace_path: sessionAddForm.querySelector("[data-session-add-workspace]")?.value.trim() || null,
           user_confirmed: true,
         }),
@@ -1192,186 +1437,14 @@ export const PROJECT_OPERATIONS_CLIENT_SCRIPT = `
       archiveSubmit.disabled = false;
     }
   });
-  const workspaceAddDialog = document.querySelector("[data-workspace-add-dialog]");
-  const workspaceAddForm = workspaceAddDialog?.querySelector("[data-workspace-add-form]");
-  const workspaceAddPath = workspaceAddForm?.querySelector("[data-workspace-add-path]");
-  const workspaceAddConfirm = workspaceAddForm?.querySelector("[data-workspace-add-confirm]");
-  const workspaceAddSubmit = workspaceAddForm?.querySelector("[data-workspace-add-submit]");
-  const workspaceAddStatus = workspaceAddForm?.querySelector("[data-workspace-add-status]");
-  const updateWorkspaceAdd = () => {
-    if (workspaceAddSubmit) workspaceAddSubmit.disabled = !workspaceAddConfirm?.checked || !workspaceAddPath?.value.trim();
-  };
-  const openWorkspaceAdd = (workspacePath = "") => {
-    workspaceAddForm?.reset();
-    if (workspaceAddPath) {
-      workspaceAddPath.value = workspacePath;
-      workspaceAddPath.readOnly = Boolean(workspacePath);
-    }
-    if (workspaceAddStatus) workspaceAddStatus.hidden = true;
-    updateWorkspaceAdd();
-    workspaceAddDialog?.showModal();
-  };
-  document.querySelectorAll("[data-open-workspace-add]").forEach((button) => button.addEventListener("click", () => openWorkspaceAdd()));
-  document.querySelectorAll("[data-workspace-link]").forEach((button) => button.addEventListener("click", () => {
-    const detail = button.closest("[data-operation-detail]");
-    openWorkspaceAdd(detail?.dataset.workspacePath || "");
-  }));
-  workspaceAddPath?.addEventListener("input", updateWorkspaceAdd);
-  workspaceAddConfirm?.addEventListener("change", updateWorkspaceAdd);
-  workspaceAddForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!workspaceAddConfirm?.checked || !workspaceAddPath?.value.trim()) return;
-    workspaceAddSubmit.disabled = true;
-    showDialogStatus(workspaceAddStatus, "正在规范化路径并关联当前 Project...", false);
-    try {
-      await parseActionResponse(await fetch(route("/api/workspaces"), {
-        method: "POST",
-        headers: window.goalboardControlHeaders?.() || {},
-        body: JSON.stringify({ workspace_path: workspaceAddPath.value.trim(), user_confirmed: true }),
-      }));
-      workspaceAddDialog.close();
-      location.hash = "workspaces";
-      location.reload();
-    } catch (error) {
-      showDialogStatus(workspaceAddStatus, error instanceof Error ? error.message : String(error), true);
-      workspaceAddSubmit.disabled = false;
-    }
-  });
-  const launchDialog = document.querySelector("[data-launch-dialog]");
-  const launchForm = launchDialog?.querySelector("[data-launch-form]");
-  const launchRuntime = launchForm?.querySelector("[data-launch-runtime]");
-  const launchConfirm = launchForm?.querySelector("[data-launch-confirm]");
-  const launchSubmit = launchForm?.querySelector("[data-launch-submit]");
-  const launchStatus = launchForm?.querySelector("[data-launch-status]");
-  let launchDetail = null;
-  const updateLaunchCapability = () => {
-    const mode = launchRuntime?.selectedOptions?.[0]?.dataset.createMode || "registry";
-    const note = launchForm?.querySelector("[data-launch-capability]");
-    if (note) note.textContent = mode === "native"
-      ? "会请求所选 Runtime 创建新的原生 Session；不会复用现有 Session ID。"
-      : "所选 Runtime 没有原生创建接口，将建立 GoalBoard 托管记录，不伪装成已启动 Runtime。";
-    if (launchSubmit) launchSubmit.disabled = !launchConfirm?.checked;
-  };
-  document.querySelectorAll("[data-open-session-launch]").forEach((button) => button.addEventListener("click", () => {
-    launchDetail = button.closest("[data-operation-detail]");
-    launchForm?.reset();
-    const workspace = launchForm?.querySelector("[data-launch-workspace]");
-    if (workspace) workspace.textContent = launchDetail?.dataset.workspacePath || "";
-    if (launchStatus) launchStatus.hidden = true;
-    updateLaunchCapability();
-    launchDialog?.showModal();
-  }));
-  launchRuntime?.addEventListener("change", updateLaunchCapability);
-  launchConfirm?.addEventListener("change", updateLaunchCapability);
-  launchForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!launchDetail?.dataset.detailId || !launchConfirm?.checked) return;
-    launchSubmit.disabled = true;
-    showDialogStatus(launchStatus, "正在创建新的 Session...", false);
-    try {
-      await parseActionResponse(await fetch(route("/api/workspaces/" + encodeURIComponent(launchDetail.dataset.detailId) + "/sessions"), {
-        method: "POST",
-        headers: window.goalboardControlHeaders?.() || {},
-        body: JSON.stringify({
-          runtime_id: launchRuntime?.value,
-          current_goal_id: launchForm?.querySelector("[data-launch-goal]")?.value || null,
-          title: launchForm?.querySelector("[data-launch-title]")?.value.trim() || null,
-          user_confirmed: true,
-        }),
-      }));
-      launchDialog.close();
-      location.hash = "sessions";
-      location.reload();
-    } catch (error) {
-      showDialogStatus(launchStatus, error instanceof Error ? error.message : String(error), true);
-      launchSubmit.disabled = false;
-    }
-  });
-
-  const repairDialog = document.querySelector("[data-repair-dialog]");
-  const repairForm = repairDialog?.querySelector("[data-repair-form]");
-  const repairPath = repairForm?.querySelector("[data-repair-path]");
-  const repairConfirm = repairForm?.querySelector("[data-repair-confirm]");
-  const repairSubmit = repairForm?.querySelector("[data-repair-submit]");
-  const repairStatus = repairForm?.querySelector("[data-repair-status]");
-  let repairingDetail = null;
-  const updateRepair = () => {
-    if (repairSubmit) repairSubmit.disabled = !repairConfirm?.checked || !repairPath?.value.trim();
-  };
-  document.querySelectorAll("[data-open-path-repair]").forEach((button) => button.addEventListener("click", () => {
-    repairingDetail = button.closest("[data-operation-detail]");
-    repairForm?.reset();
-    if (repairPath) repairPath.value = repairingDetail?.dataset.workspacePath || "";
-    const previous = repairForm?.querySelector("[data-repair-previous]");
-    const count = repairForm?.querySelector("[data-repair-session-count]");
-    if (previous) previous.textContent = repairingDetail?.dataset.workspacePath || "";
-    if (count) count.textContent = (repairingDetail?.dataset.workspaceSessionCount || "0") + " 条";
-    if (repairStatus) repairStatus.hidden = true;
-    updateRepair();
-    repairDialog?.showModal();
-  }));
-  repairPath?.addEventListener("input", updateRepair);
-  repairConfirm?.addEventListener("change", updateRepair);
-  repairForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!repairingDetail?.dataset.detailId || !repairConfirm?.checked || !repairPath?.value.trim()) return;
-    repairSubmit.disabled = true;
-    showDialogStatus(repairStatus, "正在更新目录身份和匹配 Session...", false);
-    try {
-      await parseActionResponse(await fetch(route("/api/workspaces/" + encodeURIComponent(repairingDetail.dataset.detailId) + "/path"), {
-        method: "PATCH",
-        headers: window.goalboardControlHeaders?.() || {},
-        body: JSON.stringify({ workspace_path: repairPath.value.trim(), user_confirmed: true }),
-      }));
-      repairDialog.close();
-      location.reload();
-    } catch (error) {
-      showDialogStatus(repairStatus, error instanceof Error ? error.message : String(error), true);
-      repairSubmit.disabled = false;
-    }
-  });
-
-  const unlinkDialog = document.querySelector("[data-workspace-unlink-dialog]");
-  const unlinkForm = unlinkDialog?.querySelector("[data-workspace-unlink-form]");
-  const unlinkConfirm = unlinkForm?.querySelector("[data-workspace-unlink-confirm]");
-  const unlinkSubmit = unlinkForm?.querySelector("[data-workspace-unlink-submit]");
-  const unlinkStatus = unlinkForm?.querySelector("[data-workspace-unlink-status]");
-  let unlinkDetail = null;
-  document.querySelectorAll("[data-open-workspace-unlink]").forEach((button) => button.addEventListener("click", () => {
-    unlinkDetail = button.closest("[data-operation-detail]");
-    unlinkForm?.reset();
-    const workspace = unlinkForm?.querySelector("[data-workspace-unlink-path]");
-    const sessions = unlinkForm?.querySelector("[data-workspace-unlink-sessions]");
-    if (workspace) workspace.textContent = unlinkDetail?.dataset.workspacePath || "";
-    if (sessions) sessions.textContent = (unlinkDetail?.dataset.workspaceSessionCount || "0") + " 条将解除工作目录关系";
-    if (unlinkStatus) unlinkStatus.hidden = true;
-    if (unlinkSubmit) unlinkSubmit.disabled = true;
-    unlinkDialog?.showModal();
-  }));
-  unlinkConfirm?.addEventListener("change", () => { if (unlinkSubmit) unlinkSubmit.disabled = !unlinkConfirm.checked; });
-  unlinkForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!unlinkDetail?.dataset.detailId || !unlinkConfirm?.checked) return;
-    unlinkSubmit.disabled = true;
-    showDialogStatus(unlinkStatus, "正在解除当前 Project 关系...", false);
-    try {
-      await parseActionResponse(await fetch(route("/api/workspaces/" + encodeURIComponent(unlinkDetail.dataset.detailId) + "/unlink"), {
-        method: "POST",
-        headers: window.goalboardControlHeaders?.() || {},
-        body: JSON.stringify({ user_confirmed: true }),
-      }));
-      unlinkDialog.close();
-      location.reload();
-    } catch (error) {
-      showDialogStatus(unlinkStatus, error instanceof Error ? error.message : String(error), true);
-      unlinkSubmit.disabled = false;
-    }
-  });
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => button.closest("dialog")?.close()));
   document.querySelectorAll('[data-work-surface-open="sessions"]').forEach((button) => button.addEventListener("click", () => {
     queueMicrotask(() => loadSessionContent(document.querySelector('[data-work-surface="sessions"] [data-operation-detail]:not([hidden])')));
   }));
   const deepLink = location.hash.replace(/^#/, "");
-  if (deepLink === "sessions" || deepLink === "workspaces") document.querySelector('[data-work-surface-open="' + deepLink + '"][data-directory-open="' + deepLink + '"]')?.click();
+  if (deepLink === "sessions" || deepLink === "workspaces") {
+    if (deepLink === "workspaces") history.replaceState(null, "", location.pathname + location.search + "#sessions");
+    document.querySelector('[data-work-surface-open="sessions"][data-directory-open="sessions"]')?.click();
+  }
 })();
 `;

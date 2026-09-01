@@ -164,6 +164,11 @@ export interface SessionContentResult {
   content_mode: SessionContentMode;
   events: SessionTimelineEvent[];
   native_error: { code: string; message: string } | null;
+  native_history: {
+    mode: "summary";
+    turn_count: number;
+    has_earlier: boolean;
+  } | null;
   partial_terminal_history: boolean;
 }
 
@@ -309,7 +314,7 @@ export type RuntimeSessionAdapterResult<T = unknown> =
   | {
       status: "failed";
       capability: RuntimeSessionCapability;
-      code: "runtime.operation_failed";
+      code: "runtime.operation_failed" | "runtime.response_too_large";
       message: string;
       recovery?: {
         phase: "create" | "deliver";

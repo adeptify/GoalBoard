@@ -39,7 +39,9 @@ test("Codex Adapter declares every capability and routes only through verified a
     ["read", "thread/read"],
     ["resume", "thread/resume"],
   ] as const) {
-    const result = await adapter.invoke(capability, { marker: capability });
+    const result = await adapter.invoke(capability, capability === "read"
+      ? { threadId: "thread-loop" }
+      : { marker: capability });
     assert.equal(result.status, "ok");
     assert.equal(calls.at(-1)?.method, method);
   }
@@ -86,6 +88,44 @@ test("unknown Runtime uses honest registry fallback without Runtime-name branchi
     registry.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Codex read uses metadata plus a bounded newest-first summary page", async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const adapter = new CodexRuntimeSessionAdapter({
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/read") return { thread: { id: "thread-paged", title: "Paged", turns: [] } };
+      if (method === "thread/turns/list") {
+        return {
+          nextCursor: "older",
+          data: [
+            { id: "turn-new", status: "completed", itemsView: "summary", items: [] },
+            { id: "turn-old", status: "completed", itemsView: "summary", items: [] },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+    subscribe() { return () => undefined; },
+  });
+
+  const result = await adapter.invoke("read", { threadId: "thread-paged", includeTurns: true });
+  assert.equal(result.status, "ok");
+  if (result.status !== "ok") return;
+  assert.deepEqual(calls, [
+    { method: "thread/read", params: { threadId: "thread-paged", includeTurns: false } },
+    {
+      method: "thread/turns/list",
+      params: { threadId: "thread-paged", limit: 50, sortDirection: "desc", itemsView: "summary" },
+    },
+  ]);
+  const value = result.value as {
+    thread: { turns: Array<{ id: string }> };
+    goalboard_history_page: { mode: string; turn_count: number; has_earlier: boolean };
+  };
+  assert.deepEqual(value.thread.turns.map((turn) => turn.id), ["turn-old", "turn-new"]);
+  assert.deepEqual(value.goalboard_history_page, { mode: "summary", turn_count: 2, has_earlier: true });
 });
 
 test("Adapter failures stay failed instead of becoming empty native results", async () => {

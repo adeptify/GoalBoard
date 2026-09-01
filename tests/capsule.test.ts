@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCapsuleSnapshot, renderCapsuleShell } from "../src/web/capsule.js";
-import type { AvailableGoal, GoalRecord } from "../src/v1/types.js";
+import type { AvailableGoal, GoalActionKind, GoalDisplayStatus, GoalRecord } from "../src/v1/types.js";
 import type { GoalBoardWebView, WebGoalView } from "../src/web/render.js";
 
 const PROJECT = { project_id: "project-capsule", display_name: "胶囊测试" };
@@ -49,11 +49,71 @@ function webGoal(
   workState: WebGoalView["work_state"],
   options: Partial<WebGoalView> = {},
 ): WebGoalView {
+  const hasHumanDecision = options.review_obligations?.some((item) =>
+    item.role === "human_approver" && item.state === "pending"
+  ) ?? false;
+  const displayStatus: GoalDisplayStatus = record.fulfillment_state === "satisfied"
+    ? "completed"
+    : hasHumanDecision
+      ? "waiting_user"
+    : workState === "executing" || workState === "clarifying" || workState === "reviewing" || workState === "revalidating"
+      ? "in_progress"
+      : workState === "waiting_for_human"
+        ? "waiting_user"
+        : workState.includes("blocked") || workState === "invalidated"
+          ? "blocked"
+          : workState === "waiting_children" || workState === "replaced"
+            ? "waiting"
+            : "continue";
+  const actionKind: GoalActionKind = workState.includes("clarif")
+    ? "clarify"
+    : workState.includes("review") || workState === "waiting_for_human"
+      ? "review"
+      : workState.includes("revalidat")
+        ? "revalidate"
+        : "execute";
+  const action = displayStatus === "completed" || displayStatus === "waiting"
+    ? null
+    : {
+        action_id: `action-${record.goal_id}`,
+        actor: displayStatus === "waiting_user" ? "user" as const : "runtime" as const,
+        kind: actionKind,
+        status: displayStatus === "in_progress" ? "active" as const : displayStatus === "blocked" ? "blocked" as const : "ready" as const,
+        target_type: hasHumanDecision ? "review_obligation" : "goal",
+        target_id: hasHumanDecision
+          ? options.review_obligations?.find((item) => item.role === "human_approver" && item.state === "pending")?.obligation_id ?? record.goal_id
+          : record.goal_id,
+        reasons: [],
+      };
   return {
     goal: record,
     status: workState as WebGoalView["status"],
+    action_projection: {
+      goal_id: record.goal_id,
+      contract_revision: record.current_contract_revision ?? 1,
+      progress: displayStatus === "completed" ? "verified" : displayStatus === "in_progress" ? "in_progress" : "not_started",
+      primary_action: action,
+      actions: action ? [action] : [],
+      action_token: `token-${record.goal_id}`,
+      display_status: displayStatus,
+    },
+    display_status: displayStatus,
     work_state: workState,
-    status_label: workState,
+    status_label: displayStatus === "continue"
+      ? "可继续"
+      : displayStatus === "in_progress"
+        ? "进行中"
+        : displayStatus === "waiting_user"
+          ? "等你"
+          : displayStatus === "waiting"
+            ? "等待中"
+            : displayStatus === "blocked"
+              ? "受阻"
+              : "已完成",
+    main_action_label: actionKind === "review"
+      ? displayStatus === "waiting_user" ? "完成验收" : "开始复核"
+      : actionKind === "clarify" ? "继续澄清" : "开始推进",
+    action_summary: displayStatus === "waiting_user" ? "Runtime 能做的部分已经结束，现在轮到你决定" : "按当前主动作继续",
     reasons: [],
     active_claim_actor: null,
     active_claim: null,
@@ -202,9 +262,9 @@ test("capsule projects a real active Run as Working", () => {
   assert.equal(result.state.goal_title, record.title);
   assert.equal(result.state.status_since, "2026-08-24T09:00:00.000Z");
   assert.equal(result.state.action_path, "/projects/project-capsule/goals/working-goal");
-  assert.equal(result.state.menu_bar_title, "执行中");
-  assert.equal(result.default_tab, "executing");
-  assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [["executing", 1]]);
+  assert.equal(result.state.menu_bar_title, "进行中");
+  assert.equal(result.default_tab, "in_progress");
+  assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [["in_progress", 1]]);
 });
 
 test("capsule routes an actionable Goal to main GoalBoard instead of creating work", () => {
@@ -216,8 +276,8 @@ test("capsule routes an actionable Goal to main GoalBoard instead of creating wo
   );
   const projected = result.tabs[0]?.items[0];
 
-  assert.equal(projected?.action_label, "前往开始");
-  assert.match(projected?.next ?? "", /主界面确认由哪个 Runtime 领取/);
+  assert.equal(projected?.status_label, "可继续");
+  assert.equal(projected?.action_label, "开始推进");
 });
 
 test("capsule ignores a stale current Goal and shows the real running Goal", () => {
@@ -238,8 +298,8 @@ test("capsule ignores a stale current Goal and shows the real running Goal", () 
   assert.equal(result.state.goal_id, liveRecord.goal_id);
   assert.equal(result.state.goal_title, liveRecord.title);
   assert.equal(result.state.running_count, 1);
-  assert.equal(result.default_tab, "executing");
-  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["executing", "execution_pending"]);
+  assert.equal(result.default_tab, "in_progress");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["in_progress", "continue"]);
 });
 
 test("capsule does not present an unclaimed prerequisite blocker as current work", () => {
@@ -265,8 +325,8 @@ test("capsule does not present an unclaimed prerequisite blocker as current work
   assert.equal(result.state.goal_id, nextRecord.goal_id);
   assert.equal(result.state.running_count, 0);
   assert.equal(result.state.additional_running, 0);
-  assert.equal(result.default_tab, "execution_pending");
-  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["execution_pending", "blocked"]);
+  assert.equal(result.default_tab, "continue");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["continue", "blocked"]);
 });
 
 test("capsule never replaces a current blocker with a released Run's historical reason", () => {
@@ -356,8 +416,8 @@ test("capsule shows work needing the user before unrelated running work when foc
   assert.equal(result.state.kind, "needs_you");
   assert.equal(result.state.goal_id, decisionRecord.goal_id);
   assert.equal(result.state.additional_running, 1);
-  assert.equal(result.default_tab, "needs_you");
-  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["needs_you", "executing", "execution_pending"]);
+  assert.equal(result.default_tab, "waiting_user");
+  assert.deepEqual(result.tabs.map((tab) => tab.kind), ["waiting_user", "in_progress", "continue"]);
   assert.equal(
     result.state.action_path,
     "/projects/project-capsule/decisions#decision-goal-needs-user-goal",
@@ -381,13 +441,13 @@ test("capsule prioritizes a pending user decision and deep-links to that Goal", 
   });
   const result = buildCapsuleSnapshot(view([item], record.goal_id), [], new Date("2026-08-24T09:05:00.000Z"));
   assert.equal(result.state.kind, "needs_you");
-  assert.match(result.state.current, /1 项内容/);
+  assert.match(result.state.current, /轮到你决定/);
   assert.equal(
     result.state.action_path,
     "/projects/project-capsule/decisions#decision-goal-decision-goal",
   );
-  assert.equal(result.state.menu_bar_title, "需要你");
-  assert.equal(result.tabs[0]?.items[0]?.next_step, "处理这 1 项决定");
+  assert.equal(result.state.menu_bar_title, "等你");
+  assert.equal(result.tabs[0]?.items[0]?.next_step, "完成验收");
 });
 
 test("capsule groups every actionable Goal into one horizontal status tab", () => {
@@ -412,18 +472,16 @@ test("capsule groups every actionable Goal into one horizontal status tab", () =
     ready(executeFirst),
   ]);
 
-  assert.equal(result.default_tab, "completion_pending");
+  assert.equal(result.default_tab, "continue");
   assert.deepEqual(result.tabs.map((tab) => [tab.kind, tab.items.length]), [
-    ["completion_pending", 1],
-    ["execution_pending", 2],
-    ["clarification_pending", 1],
+    ["continue", 4],
   ]);
   assert.deepEqual(
-    result.tabs.find((tab) => tab.kind === "execution_pending")?.items.map((item) => item.goal_id),
-    [executeFirst.goal_id, executeSecond.goal_id],
+    result.tabs.find((tab) => tab.kind === "continue")?.items.map((item) => item.goal_id),
+    [complete.goal_id, executeFirst.goal_id, clarify.goal_id, executeSecond.goal_id],
   );
   assert.equal(result.tabs.flatMap((tab) => tab.items).length, 4);
-  assert.match(result.tabs[0]!.items[0]!.next_step, /完成判定/);
+  assert.equal(result.tabs[0]!.items[0]!.status_label, "可继续");
 });
 
 test("capsule shows a real completion briefly, then the authoritative next actionable Goal", () => {
@@ -472,9 +530,9 @@ test("capsule shows a real completion briefly, then the authoritative next actio
   assert.equal(justCompleted.state.kind, "complete");
   assert.equal(justCompleted.state.just_completed, "三种真实状态已经通过检查");
   assert.equal(justCompleted.state.action_path, "/projects/project-capsule/goals/completed-goal");
-  assert.equal(justCompleted.state.menu_bar_title, "刚完成");
-  assert.equal(justCompleted.default_tab, "complete");
-  assert.deepEqual(justCompleted.tabs.map((tab) => tab.kind), ["execution_pending", "complete"]);
+  assert.equal(justCompleted.state.menu_bar_title, "已完成");
+  assert.equal(justCompleted.default_tab, "completed");
+  assert.deepEqual(justCompleted.tabs.map((tab) => tab.kind), ["continue", "completed"]);
 
   const afterResult = buildCapsuleSnapshot(
     currentView,
@@ -483,7 +541,7 @@ test("capsule shows a real completion briefly, then the authoritative next actio
   );
   assert.equal(afterResult.state.kind, "ready");
   assert.equal(afterResult.state.goal_id, "next-goal");
-  assert.equal(afterResult.state.menu_bar_title, "待执行");
+  assert.equal(afterResult.state.menu_bar_title, "可继续");
 });
 
 test("capsule shell is one menu-bar popover with horizontal state tabs and inline Goal details", () => {

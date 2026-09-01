@@ -20,6 +20,9 @@ export const NATIVE_DESKTOP_BOOTSTRAP_SCRIPT = `(()=>{
   };
   if(!native)return;
   document.documentElement.dataset.nativeDesktop="true";
+  document.documentElement.style.setProperty("--desktop-native-project-safe-inline-start","88px");
+  document.documentElement.style.setProperty("--desktop-native-settings-safe-inline-start","80px");
+  document.documentElement.style.setProperty("--desktop-native-titlebar-control-offset-y","-8px");
   const normalized=globalThis.goalboardNavigationUrl(location.href);
   if(normalized!==location.href)location.replace(normalized);
 })();`;

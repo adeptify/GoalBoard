@@ -32,39 +32,49 @@ test("Session content merges native Codex items with explicitly labelled GoalBoa
     const router = new RuntimeSessionAdapterRouter(registry);
     router.register(new CodexRuntimeSessionAdapter({
       async request(method, params) {
-        assert.equal(method, "thread/read");
-        assert.deepEqual(params, { threadId: "thread-content", includeTurns: true });
+        if (method === "thread/read") {
+          assert.deepEqual(params, { threadId: "thread-content", includeTurns: false });
+          return { thread: { id: "thread-content", turns: [] } };
+        }
+        assert.equal(method, "thread/turns/list");
+        assert.deepEqual(params, {
+          threadId: "thread-content",
+          limit: 50,
+          sortDirection: "desc",
+          itemsView: "summary",
+        });
         return {
-          thread: {
-            turns: [{
-              id: "turn-a",
-              startedAt: Date.parse("2026-08-30T10:00:00.000Z") / 1000,
-              status: "completed",
-              items: [
-                { id: "user-a", type: "userMessage", content: [{ type: "text", text: "请检查 Session 时间线" }] },
-                { id: "agent-a", type: "agentMessage", text: "我会先读取现有实现。" },
-                { id: "tool-a", type: "commandExecution", command: "pnpm typecheck", aggregatedOutput: "Done", status: "completed", durationMs: 32, exitCode: 0 },
-                {
-                  id: "image-tool-a",
-                  type: "mcpToolCall",
-                  server: "image",
-                  tool: "preview",
-                  status: "completed",
-                  result: {
-                    preview: `data:image/png;base64,${"A".repeat(5_000)}`,
-                    content: [{ type: "image", data: "B".repeat(5_000), mimeType: "image/png" }],
-                  },
+          nextCursor: "older-turns",
+          data: [{
+            id: "turn-a",
+            startedAt: Date.parse("2026-08-30T10:00:00.000Z") / 1000,
+            status: "completed",
+            itemsView: "summary",
+            items: [
+              { id: "user-a", type: "userMessage", content: [{ type: "text", text: "请检查 Session 时间线" }] },
+              { id: "agent-a", type: "agentMessage", text: "我会先读取现有实现。" },
+              { id: "tool-a", type: "commandExecution", command: "pnpm typecheck", aggregatedOutput: "Done", status: "completed", durationMs: 32, exitCode: 0 },
+              {
+                id: "image-tool-a",
+                type: "mcpToolCall",
+                server: "image",
+                tool: "preview",
+                status: "completed",
+                result: {
+                  preview: `data:image/png;base64,${"A".repeat(5_000)}`,
+                  content: [{ type: "image", data: "B".repeat(5_000), mimeType: "image/png" }],
                 },
-                { id: "file-a", type: "fileChange", changes: [{ path: "src/sessions/content.ts", kind: "update" }], status: "completed" },
-              ],
-            }],
-          },
+              },
+              { id: "file-a", type: "fileChange", changes: [{ path: "src/sessions/content.ts", kind: "update" }], status: "completed" },
+            ],
+          }],
         };
       },
       subscribe() { return () => undefined; },
     }));
     const result = await new SessionContentService(registry, router).read(session.session_id);
     assert.equal(result.content_mode, "native");
+    assert.deepEqual(result.native_history, { mode: "summary", turn_count: 1, has_earlier: true });
     assert.equal(result.partial_terminal_history, true);
     assert.deepEqual(
       result.events.map((event) => [event.kind, event.source]),

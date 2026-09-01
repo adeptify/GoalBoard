@@ -591,8 +591,9 @@ test("canonical workspace routing supports symlinks, multiple project candidates
       assert.equal(initialMembership[0]?.workspace_name, "ordinary-project-directory");
 
       const aliasResolved = catalog.resolveRuntimeContext(aliasSession);
-      assert.equal(aliasResolved.status, "suggested");
-      assert.deepEqual(aliasResolved.suggested_projects.map((project) => project.project_id), [first.project_id]);
+      assert.equal(aliasResolved.status, "bound");
+      assert.equal(aliasResolved.project?.project_id, first.project_id);
+      assert.deepEqual(aliasResolved.suggested_projects, []);
       assert.equal(
         aliasResolved.context.workspace?.workspace_id,
         initial.context.workspace?.workspace_id,
@@ -634,8 +635,9 @@ test("canonical workspace routing supports symlinks, multiple project candidates
         user_confirmed: true,
       });
       const needsChoice = catalog.resolveRuntimeContext(workspaceContext("generic", null, workspace));
-      assert.equal(needsChoice.status, "suggested");
-      assert.deepEqual(needsChoice.suggested_projects.map((project) => project.project_id), [first.project_id]);
+      assert.equal(needsChoice.status, "bound");
+      assert.equal(needsChoice.project?.project_id, first.project_id);
+      assert.deepEqual(needsChoice.suggested_projects, []);
 
       assert.equal(
         catalog.resolveRuntimeContext({

@@ -500,7 +500,11 @@ export class GoalBoardProjectCatalog {
     return mapProject(row);
   }
 
-  /** Resolve without mutating state: Session binding first, then workspace members as choices. */
+  /**
+   * Resolve without mutating state: an explicit Session binding wins. A fresh
+   * Session may reuse one exact, realpath-verified workspace membership, but
+   * ambiguous workspace membership and softer host clues remain choices.
+   */
   resolveRuntimeContext(
     context: RuntimeWorkContext,
     suggestionClues: readonly RuntimeProjectSuggestionClue[] = [],
@@ -515,6 +519,9 @@ export class GoalBoardProjectCatalog {
       return boundResolution(normalized, this.getProject(binding.project_id));
     }
     const workspaceSuggestions = this.workspaceMemberSuggestions(normalized.workspace);
+    if (normalized.workspace?.realpath_verified && workspaceSuggestions.length === 1) {
+      return boundResolution(normalized, this.getProject(workspaceSuggestions[0]!.project_id));
+    }
     if (workspaceSuggestions.length > 0) {
       return suggestedResolution(normalized, workspaceSuggestions, availableProjects);
     }
@@ -1419,7 +1426,7 @@ export class GoalBoardProjectCatalog {
     return rows.map((row) => ({
       project_id: String(row.project_id),
       display_name: String(row.display_name),
-      reasons: ["这个项目已经与当前目录关联；新 Session 仍需明确选择"],
+      reasons: ["这个项目已经与当前目录精确关联"],
     }));
   }
 
