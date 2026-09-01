@@ -1,10 +1,8 @@
 name: Release macOS Desktop
 
 on:
+  # Temporarily manual-only. Restore the `push.tags` trigger to resume automatic releases.
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: write
