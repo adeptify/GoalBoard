@@ -46,6 +46,7 @@
 - 验证 DMG、App ZIP、SHA-256、codesign、Gatekeeper / notarization 状态。
 - 在隔离 Home 中验证新装、Onboarding、前后端主链路、重启；使用 `v0.1.13` 数据副本验证升级时不覆盖项目与历史。
 - 审查最终 diff 后 commit、push；创建 `v0.1.14` tag 并让 GitHub Actions 生成 arm64 / x64 正式发布物。只有远端签名、公证和 Release workflow 全部成功，才宣称公开可直接安装。
+- `main` 保持必须经 PR、禁止管理员绕过和对话必须解决；为单人维护将必需审批数调整为 0，同时新增 PR CI，只有类型检查、全量 Node 测试、Rust 测试和版本一致性检查通过后才能合并。
 
 ## 4. 非目标
 
@@ -96,7 +97,7 @@
 1. 超大 Session 不再调用 `thread/read(includeTurns: true)`；最近历史通过分页摘要返回，时间顺序正确，并明确标记是否还有更早历史。
 2. 模拟超过 Transport 单行上限时，Web 进程不崩、请求得到安全失败、下一次请求可重建 transport；对应自动化测试通过。
 3. Footballnia 那条真实超大 Session 可以通过 GoalBoard API / UI 打开最近摘要；服务健康检查在前后均成功。
-4. `pnpm typecheck`、`pnpm test`、所有 `tests/*.test.ts`、`cargo test` 全绿；发布脚本不会遗漏仓库中的测试文件。
+4. `pnpm typecheck`、`pnpm test`、所有 `tests/*.test.ts`、`cargo test` 全绿；发布脚本不会遗漏仓库中的测试文件；PR CI 运行同一组门禁并成为 `main` 必需状态检查。
 5. 上述模块在桌面、窄屏、Light、Dark 的主要状态无横向溢出、裁切、错误层级、不可读对比或阻塞动效；键盘焦点、触控尺寸和 reduced-motion 成立。
 6. 隔离新装可完成 Onboarding → 项目 → Goal → Goals / Sessions / Feed / Settings 主路径；重启后数据仍在。
 7. 从 `v0.1.13` 数据副本升级到 `v0.1.14` 后，已有项目、Goal、Session 关系和设置保留，服务能恢复。
@@ -136,3 +137,4 @@ pnpm desktop:build:macos
 - 通过：桌面、760px 附近与手机窄屏，Light / Dark / System 下检查项目目录、Onboarding、Goals、Runtime、Momentum、Sessions、Inbox、Feed、Sources、Settings、Diagnostics、Promotion 与 Visual Workspace；修复了 Feed 空态残留和 Session 标题挤压，确认长内容、搜索、筛选和响应式布局正常。
 - 待远端：本机包使用 `Tauri Local Development` 身份，签名元数据存在，但本机信任链与 Gatekeeper 按预期拒绝，且未 notarize；Developer ID 签名、公证、双架构包和公开 GitHub Release 只能由 tag workflow 提供最终证据。
 - 未运行：GitHub / Gmail 等 Connector 的真实账号拉取；无用户凭据，不伪造线上成功，已有本地适配器、加密、游标、重试与错误状态自动化测试覆盖。
+- 待远端：新增 `CI / Verify` PR 门禁；该检查首次在 PR #57 运行通过后，再把 `main` 的必需审批数从 1 调整为 0 并将该状态检查设为必须，避免形成无审批也无 CI 的保护空窗。
