@@ -1451,6 +1451,31 @@ export const VISUAL_FOUNDATION_STYLES = `
     .topbar .project-context > strong { display: none; }
   }
 
+  .goal-title-heading { min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .goal-title-status--narrow { display: none; }
+
+  @media (max-width: 760px) {
+    body[data-desktop-shell="true"] .goal-title-kicker,
+    .goal-title-kicker { display: none; }
+    body[data-desktop-shell="true"] .goal-title-heading,
+    .goal-title-heading { align-items: baseline; flex-wrap: wrap; column-gap: 8px; row-gap: 3px; }
+    .goal-title-status--narrow { display: inline-flex; }
+    body[data-desktop-shell="true"] .goal-title-status--narrow .goal-status,
+    .goal-title-status--narrow .goal-status {
+      min-height: 0;
+      padding: 0;
+      gap: 5px;
+      border: 0;
+      border-radius: 0;
+      color: var(--muted);
+      background: transparent;
+      font-size: 9.5px;
+      font-weight: 600;
+    }
+    .goal-title-status--narrow .goal-status::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--goal-status-tone); }
+    .goal-title-status--narrow .goal-status > svg { display: none; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     body[data-navigation-pending="true"]::before,
     .goal-document-loading::before { animation: none; }
@@ -7886,6 +7911,56 @@ export const VISUAL_FOUNDATION_STYLES = `
     body[data-desktop-shell="true"] .feed-destination-strip small { grid-column: 1; }
     body[data-desktop-shell="true"] .inbox-attention-context dl > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     body[data-desktop-shell="true"] .prototype-honesty-note { font-size: 10px; }
+  }
+
+  html[data-onboarding-embed="true"],
+  html[data-onboarding-embed="true"] body {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: #17191c;
+  }
+  html[data-onboarding-embed="true"] body > .icon-sprite,
+  html[data-onboarding-embed="true"] body > dialog,
+  html[data-onboarding-embed="true"] body > .toast,
+  html[data-onboarding-embed="true"] .mobile-project-bar,
+  html[data-onboarding-embed="true"] .mobile-switch,
+  html[data-onboarding-embed="true"] .tui-owner-actions,
+  html[data-onboarding-embed="true"] .tui-add,
+  html[data-onboarding-embed="true"] .tui-tab-close,
+  html[data-onboarding-embed="true"] .tui-chrome-actions { display: none !important; }
+  html[data-onboarding-embed="true"] .app {
+    width: 100% !important;
+    height: 100dvh !important;
+    min-height: 0 !important;
+    display: block !important;
+    overflow: hidden !important;
+    background: #17191c !important;
+  }
+  html[data-onboarding-embed="true"] .workspace {
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    height: 100dvh !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+    overflow: hidden !important;
+    background: #17191c !important;
+  }
+  html[data-onboarding-embed="true"] .workspace > :not(.tui-pane) { display: none !important; }
+  html[data-onboarding-embed="true"] .workspace > .tui-pane {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    display: grid !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
   }
 
   @media (prefers-reduced-motion: reduce) {

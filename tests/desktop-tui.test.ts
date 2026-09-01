@@ -351,6 +351,20 @@ test("advance prompt names the Goal and omits the five-chapter contract", () => 
   assert.match(prompt, /^<GOALBOARD_CURRENT_GOAL>/);
 });
 
+test("onboarding advance prompt starts one-question-at-a-time clarification and Goal Tree proposal", () => {
+  const prompt = desktopAdvancePrompt({
+    goal_id: "ROOT-DRAFT-1",
+    title: "第一次体验优化",
+    onboarding: true,
+  });
+  assert.match(prompt, /新项目的第一次 Goal 澄清/);
+  assert.match(prompt, /一次只问用户一个问题/);
+  assert.match(prompt, /项目规划组合/);
+  assert.match(prompt, /拆分 Goal Tree 并提交 Proposal/);
+  assert.match(prompt, /等待用户确认/);
+  assert.match(prompt, /不要自动接受 Proposal/);
+});
+
 test("advance prompt keeps confirmed project guidance before dynamic Goal and untrusted source data", () => {
   const prompt = desktopAdvancePrompt({
     goal_id: "LEAF-GUIDANCE",
@@ -765,6 +779,13 @@ test("panel APIs and the TUI pane work without a desktop shell marker", async ()
     assert.match(promptBody.prompt, /TUI-GOAL/);
     assert.doesNotMatch(promptBody.prompt, /business_logic/);
 
+    const onboardingPrompt = await webFetch(`${origin}${prefix}/api/goals/TUI-GOAL/advance-prompt?onboarding=1`);
+    assert.equal(onboardingPrompt.status, 200);
+    const onboardingPromptBody = await onboardingPrompt.json() as { prompt: string };
+    assert.match(onboardingPromptBody.prompt, /新项目的第一次 Goal 澄清/);
+    assert.match(onboardingPromptBody.prompt, /一次只问用户一个问题/);
+    assert.match(onboardingPromptBody.prompt, /拆分 Goal Tree 并提交 Proposal/);
+
     const listed = await webFetch(panelsUrl);
     const listedBody = await listed.json() as { panels: Array<{ panel_id: string }> };
     assert.equal(listedBody.panels.length, 1);
@@ -960,10 +981,25 @@ test("Feed processing opens Runtime and fills context without sending it", () =>
 });
 
 test("Onboarding opens one Goal-bound TUI and fills the advance prompt without sending it", () => {
+  assert.match(WEB_RENDER_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-runtime", "1"\)/);
+  assert.match(WEB_RENDER_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-embed", "1"\)/);
+  assert.match(WEB_RENDER_SOURCE, /data-onboarding-runtime-frame/);
+  assert.match(WEB_RENDER_SOURCE, /goalboard:onboarding-runtime-bootstrap/);
+  assert.match(WEB_RENDER_SOURCE, /goalboard:onboarding-runtime-ready/);
+  assert.match(WEB_RENDER_SOURCE, /安排好了，进入 GoalBoard/);
+  assert.match(WEB_RENDER_SOURCE, /const onboardingRuntimeRequested = new URLSearchParams\(location\.search\)\.get\("onboarding-runtime"\) === "1"/);
+  assert.match(WEB_RENDER_SOURCE, /onboardingRuntimeRequested[\s\S]{0,700}setWorkspaceMode\("runtime", false\)[\s\S]{0,220}setMobileView\("tui"\)/);
   assert.match(PTY_CLIENT_SOURCE, /goalboard-onboarding-runtime-autofill:/);
   assert.match(PTY_CLIENT_SOURCE, /await openPanel\(\{ runtime_kind: pending\.runtimeKind, cwd: pending\.workspacePath \}\)/);
   assert.match(PTY_CLIENT_SOURCE, /await waitForTerminalOutput\(panel\.panel_id\)/);
-  assert.match(PTY_CLIENT_SOURCE, /await writePrompt\(false\)/);
+  assert.match(PTY_CLIENT_SOURCE, /await writePrompt\(false, undefined, true\)/);
+  assert.match(PTY_CLIENT_SOURCE, /query\.set\("onboarding", "1"\)/);
+  assert.match(PTY_CLIENT_SOURCE, /goalboard:onboarding-runtime-bootstrap/);
+  assert.match(PTY_CLIENT_SOURCE, /goalboard:onboarding-runtime-ready/);
+  assert.match(PTY_CLIENT_SOURCE, /goalboard:onboarding-runtime-waiting/);
+  assert.match(PTY_CLIENT_SOURCE, /goalboard:onboarding-runtime-error/);
+  assert.match(PTY_CLIENT_SOURCE, /press enter to \(\?:continue\|confirm\)/);
+  assert.match(PTY_CLIENT_SOURCE, /ask codex to do anything/);
   assert.match(PTY_CLIENT_SOURCE, /初始化提示已填入，检查后再发送/);
   assert.doesNotMatch(PTY_CLIENT_SOURCE, /fillPendingOnboardingContext[\s\S]{0,1800}writePrompt\(true\)/);
 });
