@@ -1,6 +1,5 @@
-import type { AvailableGoal, EvidenceRecord, RunRecord } from "../v1/types.js";
+import type { AvailableGoal, EvidenceRecord, GoalAction, RunRecord } from "../v1/types.js";
 import { L, clientI18nScript, htmlLang } from "./i18n.js";
-import { explainWorkState, goalPresentationState } from "./human-language.js";
 import {
   countGoalDecisions,
   type GoalBoardWebView,
@@ -16,6 +15,7 @@ export type CapsuleStateKind =
   | "blocked"
   | "complete"
   | "ready"
+  | "waiting"
   | "empty";
 
 export interface CapsuleState {
@@ -39,16 +39,12 @@ export interface CapsuleState {
 }
 
 export type CapsuleTabKind =
-  | "needs_you"
-  | "executing"
-  | "clarifying"
-  | "checking"
-  | "completion_pending"
-  | "execution_pending"
-  | "clarification_pending"
-  | "review_pending"
+  | "waiting_user"
+  | "in_progress"
+  | "continue"
+  | "waiting"
   | "blocked"
-  | "complete";
+  | "completed";
 
 export interface CapsuleGoalItem {
   goal_id: string;
@@ -117,17 +113,7 @@ function evidenceSummary(item: WebGoalView): string | null {
 }
 
 function activeGoalViews(view: GoalBoardWebView): WebGoalView[] {
-  return view.goals.filter((item) => {
-    if (["clarifying", "executing", "reviewing", "revalidating"].includes(item.work_state)) {
-      return true;
-    }
-    return [
-      "clarification_blocked",
-      "execution_blocked",
-      "review_blocked",
-      "revalidation_blocked",
-    ].includes(item.work_state) && item.active_claim !== null;
-  });
+  return view.goals.filter((item) => item.display_status === "in_progress");
 }
 
 function latestGoalActivity(item: WebGoalView): string {
@@ -183,15 +169,6 @@ function goalWhy(item: WebGoalView): string {
   return item.goal.why.trim() || item.goal.outcome.trim() || L("这项目标还没有补充说明");
 }
 
-function itemExplanation(view: GoalBoardWebView, item: WebGoalView) {
-  return explainWorkState(goalPresentationState(
-    item.work_state,
-    item.goal,
-    view.snapshot,
-    item.reasons,
-  ));
-}
-
 function primaryBlocker(item: WebGoalView): { message: string; remediation: string | null } {
   const reason = item.reasons.find((candidate) => candidate.severity === "blocker") ?? item.reasons[0];
   const run = item.active_claim == null
@@ -222,111 +199,94 @@ function itemBase(
 }
 
 function decisionItem(view: GoalBoardWebView, item: WebGoalView, decisionCount: number): CapsuleGoalItem {
+  const actionPath = decisionCount > 0
+    ? decisionPath(view, item.goal.goal_id)
+    : goalPath(view, item.goal.goal_id);
   return itemBase(view, item, {
-    tab_kind: "needs_you",
+    tab_kind: "waiting_user",
     kind: "needs_you",
-    status_label: L("等你决定"),
+    status_label: item.status_label,
     status_since: null,
-    current: L("这项工作正在等你确认 {count} 项内容", { count: decisionCount }),
-    blocker: L("决定处理前，相关工作不会继续"),
-    next_step: L("处理这 {count} 项决定", { count: decisionCount }),
-    next: L("打开对应事项，确认采用、修改或拒绝"),
-    action_label: L("去处理"),
-    action_path: decisionPath(view, item.goal.goal_id),
+    current: item.action_summary,
+    blocker: L("完成这一步前，相关工作不会继续"),
+    next_step: item.main_action_label,
+    next: decisionCount > 0
+      ? L("打开对应事项，确认采用、修改或拒绝")
+      : item.action_summary,
+    action_label: item.main_action_label,
+    action_path: actionPath,
     has_active_run: newestRun(item) !== null,
   });
 }
 
-function activeTab(item: WebGoalView): CapsuleTabKind {
-  if (item.work_state === "executing") return "executing";
-  if (item.work_state === "clarifying") return "clarifying";
-  if (item.work_state === "reviewing" || item.work_state === "revalidating") return "checking";
-  return "blocked";
+function activeTone(action: GoalAction | null): CapsuleStateKind {
+  return action?.kind === "review" || action?.kind === "revalidate" ? "checking" : "working";
 }
 
 function activeItem(view: GoalBoardWebView, item: WebGoalView): CapsuleGoalItem {
-  const explanation = itemExplanation(view, item);
   const run = newestRun(item);
-  const tabKind = activeTab(item);
-  const blocked = tabKind === "blocked";
-  const blocker = blocked ? primaryBlocker(item) : null;
-  const actionLabel = tabKind === "clarifying"
-    ? L("继续澄清")
-    : tabKind === "checking"
-      ? L("查看检查进度")
-      : blocked
-        ? L("查看原因")
-        : L("查看进展");
-  const current = tabKind === "executing"
-    ? L("这条 Goal 正在推进。")
-    : explanation.meaning;
-  const next = tabKind === "executing"
-    ? L("打开这条 Goal，查看最新进展和下一步。")
-    : blocker?.remediation ?? explanation.howToContinue;
   return itemBase(view, item, {
-    tab_kind: tabKind,
-    kind: tabKind === "checking" ? "checking" : blocked ? "blocked" : "working",
-    status_label: explanation.label,
+    tab_kind: "in_progress",
+    kind: activeTone(item.action_projection.primary_action),
+    status_label: item.status_label,
     status_since: run?.started_at ?? null,
-    current,
-    blocker: blocker?.message ?? null,
-    next_step: blocker?.remediation ?? explanation.nextAction,
-    next,
-    action_label: actionLabel,
+    current: item.action_summary,
+    blocker: null,
+    next_step: item.main_action_label,
+    next: L("打开这条 Goal，查看最新进展和下一步。"),
+    action_label: item.main_action_label,
     action_path: goalPath(view, item.goal.goal_id),
     has_active_run: run !== null,
   });
 }
 
-function availableTab(item: AvailableGoal): CapsuleTabKind {
-  if (item.next_action === "clarify") return "clarification_pending";
-  if (item.next_action === "execute") return "execution_pending";
-  if (item.next_action === "complete") return "completion_pending";
-  return "review_pending";
-}
-
 function availableItem(
   view: GoalBoardWebView,
   item: WebGoalView,
-  available: AvailableGoal,
 ): CapsuleGoalItem {
-  const explanation = itemExplanation(view, item);
-  const tabKind = availableTab(available);
-  const next = tabKind === "clarification_pending"
-    ? L("打开这条 Goal，补齐目标、范围和完成标准。")
-    : tabKind === "execution_pending"
-      ? L("前往主界面确认由哪个 Runtime 领取，再开始推进。")
-      : tabKind === "completion_pending"
-        ? L("让 Runtime 直接运行完成判定，不要重新领取或重复执行。")
-      : explanation.howToContinue;
   return itemBase(view, item, {
-    tab_kind: tabKind,
+    tab_kind: "continue",
     kind: "ready",
-    status_label: explanation.label,
+    status_label: item.status_label,
     status_since: null,
-    current: explanation.meaning,
+    current: item.action_summary,
     blocker: null,
-    next_step: explanation.nextAction,
-    next,
-    action_label: tabKind === "execution_pending" || tabKind === "completion_pending" ? L("前往开始") : L("打开 Goal"),
+    next_step: item.main_action_label,
+    next: item.action_summary,
+    action_label: item.main_action_label,
     action_path: goalPath(view, item.goal.goal_id),
     has_active_run: false,
   });
 }
 
 function blockedItem(view: GoalBoardWebView, item: WebGoalView): CapsuleGoalItem {
-  const explanation = itemExplanation(view, item);
   const blocker = primaryBlocker(item);
   return itemBase(view, item, {
     tab_kind: "blocked",
     kind: "blocked",
-    status_label: explanation.label,
+    status_label: item.status_label,
     status_since: null,
-    current: explanation.meaning,
+    current: item.action_summary,
     blocker: blocker.message,
-    next_step: blocker.remediation ?? explanation.nextAction,
-    next: blocker.remediation ?? explanation.howToContinue,
-    action_label: L("查看原因"),
+    next_step: blocker.remediation ?? item.main_action_label,
+    next: blocker.remediation ?? item.action_summary,
+    action_label: item.main_action_label,
+    action_path: goalPath(view, item.goal.goal_id),
+    has_active_run: false,
+  });
+}
+
+function waitingItem(view: GoalBoardWebView, item: WebGoalView): CapsuleGoalItem {
+  return itemBase(view, item, {
+    tab_kind: "waiting",
+    kind: "waiting",
+    status_label: item.status_label,
+    status_since: null,
+    current: item.action_summary,
+    blocker: null,
+    next_step: item.main_action_label,
+    next: item.action_summary,
+    action_label: item.main_action_label,
     action_path: goalPath(view, item.goal.goal_id),
     has_active_run: false,
   });
@@ -334,9 +294,9 @@ function blockedItem(view: GoalBoardWebView, item: WebGoalView): CapsuleGoalItem
 
 function completeItem(view: GoalBoardWebView, item: WebGoalView, at: string): CapsuleGoalItem {
   return itemBase(view, item, {
-    tab_kind: "complete",
+    tab_kind: "completed",
     kind: "complete",
-    status_label: L("刚完成"),
+    status_label: item.status_label,
     status_since: at,
     current: L("这项目标已满足全部完成条件"),
     blocker: null,
@@ -349,48 +309,28 @@ function completeItem(view: GoalBoardWebView, item: WebGoalView, at: string): Ca
 }
 
 const TAB_ORDER: CapsuleTabKind[] = [
-  "needs_you",
-  "executing",
-  "clarifying",
-  "checking",
-  "completion_pending",
-  "execution_pending",
-  "clarification_pending",
-  "review_pending",
+  "waiting_user",
+  "in_progress",
+  "continue",
+  "waiting",
   "blocked",
-  "complete",
+  "completed",
 ];
 
 function tabMeta(kind: CapsuleTabKind): Pick<CapsuleTab, "label" | "tone"> {
   switch (kind) {
-    case "needs_you": return { label: L("需要你"), tone: "needs_you" };
-    case "executing": return { label: L("执行中"), tone: "working" };
-    case "clarifying": return { label: L("澄清中"), tone: "working" };
-    case "checking": return { label: L("检查中"), tone: "checking" };
-    case "completion_pending": return { label: L("待完成"), tone: "ready" };
-    case "execution_pending": return { label: L("待执行"), tone: "ready" };
-    case "clarification_pending": return { label: L("待澄清"), tone: "ready" };
-    case "review_pending": return { label: L("待检查"), tone: "ready" };
-    case "blocked": return { label: L("已卡住"), tone: "blocked" };
-    case "complete": return { label: L("刚完成"), tone: "complete" };
+    case "waiting_user": return { label: L("等你"), tone: "needs_you" };
+    case "in_progress": return { label: L("进行中"), tone: "working" };
+    case "continue": return { label: L("可继续"), tone: "ready" };
+    case "waiting": return { label: L("等待中"), tone: "waiting" };
+    case "blocked": return { label: L("受阻"), tone: "blocked" };
+    case "completed": return { label: L("已完成"), tone: "complete" };
   }
 }
 
 function menuBarTitle(tabs: CapsuleTab[], selected: CapsuleGoalItem): string {
   const tab = tabs.find((candidate) => candidate.kind === selected.tab_kind);
   const count = tab?.items.length ?? 1;
-  if (selected.tab_kind === "needs_you") {
-    return count > 1 ? L("需要你 · {count}", { count }) : L("需要你");
-  }
-  const activeKinds = new Set<CapsuleTabKind>(["executing", "clarifying", "checking"]);
-  if (activeKinds.has(selected.tab_kind)) {
-    const activeCount = tabs
-      .filter((candidate) => activeKinds.has(candidate.kind))
-      .reduce((sum, candidate) => sum + candidate.items.length, 0);
-    return activeCount > 1
-      ? L("进行中 · {count}", { count: activeCount })
-      : selected.status_label;
-  }
   return count > 1 ? L("{label} · {count}", { label: tab?.label ?? selected.status_label, count }) : selected.status_label;
 }
 
@@ -441,7 +381,7 @@ export function buildCapsuleSnapshot(
     view.goals.map((item) => [item.goal.goal_id, countGoalDecisions(view, item.goal.goal_id)]),
   );
   const decisionItems = newestFirst(
-    view.goals.filter((item) => (decisionCounts.get(item.goal.goal_id) ?? 0) > 0),
+    view.goals.filter((item) => item.display_status === "waiting_user"),
   ).map((item) => {
     assigned.add(item.goal.goal_id);
     return decisionItem(view, item, decisionCounts.get(item.goal.goal_id) ?? 0);
@@ -468,34 +408,42 @@ export function buildCapsuleSnapshot(
     items.push(completedItem);
   }
 
+  const availableOrder = new Map<string, number>();
+  available.forEach((candidate, index) => {
+    if (!availableOrder.has(candidate.goal.goal_id)) availableOrder.set(candidate.goal.goal_id, index);
+  });
+  const continueGoals = view.goals
+    .filter((item) => item.display_status === "continue" && !assigned.has(item.goal.goal_id))
+    .sort((left, right) =>
+      (availableOrder.get(left.goal.goal_id) ?? Number.MAX_SAFE_INTEGER) -
+        (availableOrder.get(right.goal.goal_id) ?? Number.MAX_SAFE_INTEGER) ||
+      right.goal.priority - left.goal.priority ||
+      left.goal.goal_id.localeCompare(right.goal.goal_id)
+    );
   const availableItems: CapsuleGoalItem[] = [];
-  for (const candidate of available) {
-    if (assigned.has(candidate.goal.goal_id)) continue;
-    const item = view.goals.find((goal) => goal.goal.goal_id === candidate.goal.goal_id);
-    if (!item) continue;
-    assigned.add(candidate.goal.goal_id);
-    const projected = availableItem(view, item, candidate);
+  for (const item of continueGoals) {
+    assigned.add(item.goal.goal_id);
+    const projected = availableItem(view, item);
     availableItems.push(projected);
     items.push(projected);
   }
 
   const blockedItems = newestFirst(view.goals.filter((item) =>
     !assigned.has(item.goal.goal_id) &&
-    ([
-      "clarification_blocked",
-      "execution_blocked",
-      "completion_blocked",
-      "review_blocked",
-      "waiting_for_human",
-      "revalidation_blocked",
-      "replaced",
-      "invalidated",
-    ] as string[]).includes(item.work_state)
+    item.display_status === "blocked"
   )).map((item) => {
     assigned.add(item.goal.goal_id);
     return blockedItem(view, item);
   });
   items.push(...blockedItems);
+
+  const waitingItems = newestFirst(view.goals.filter((item) =>
+    !assigned.has(item.goal.goal_id) && item.display_status === "waiting"
+  )).map((item) => {
+    assigned.add(item.goal.goal_id);
+    return waitingItem(view, item);
+  });
+  items.push(...waitingItems);
 
   const grouped = new Map<CapsuleTabKind, CapsuleGoalItem[]>();
   for (const item of items) {
@@ -507,7 +455,7 @@ export function buildCapsuleSnapshot(
     const group = grouped.get(kind);
     return group?.length ? [{ kind, ...tabMeta(kind), items: group }] : [];
   });
-  const selected = decisionItems[0] ?? activeItems[0] ?? completedItem ?? availableItems[0] ?? blockedItems[0] ?? null;
+  const selected = decisionItems[0] ?? activeItems[0] ?? completedItem ?? availableItems[0] ?? blockedItems[0] ?? waitingItems[0] ?? null;
   if (selected) {
     return {
       observed_event_cursor: view.snapshot.cursor,

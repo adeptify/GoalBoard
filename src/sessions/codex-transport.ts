@@ -1,11 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import readline from "node:readline";
 import type { RuntimeSessionTransport } from "./types.js";
+
+const DEFAULT_MAX_RESPONSE_LINE_BYTES = 16 * 1024 * 1024;
 
 export interface CodexAppServerTransportOptions {
   command?: string;
   args?: string[];
   requestTimeoutMs?: number;
+  maxResponseLineBytes?: number;
   spawnProcess?: typeof spawn;
 }
 
@@ -13,6 +15,16 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+export class CodexAppServerTransportError extends Error {
+  constructor(
+    readonly code: "runtime.response_too_large",
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexAppServerTransportError";
+  }
 }
 
 /**
@@ -25,6 +37,8 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(event: { method: string; params: unknown }) => void>();
+  private stdoutChunks: Buffer[] = [];
+  private stdoutBytes = 0;
   private closed = false;
 
   constructor(private readonly options: CodexAppServerTransportOptions = {}) {}
@@ -45,6 +59,7 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
     const child = this.child;
     this.child = null;
     this.startPromise = null;
+    this.resetResponseBuffer();
     this.failAll(new Error("Codex Session transport 已关闭"));
     if (child && !child.killed) child.kill("SIGTERM");
   }
@@ -69,15 +84,15 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
       shell: false,
     });
     this.child = child;
-    const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    lines.on("line", (line) => this.handleLine(line));
-    child.once("error", () => this.handleExit("Codex app-server 无法启动"));
-    child.once("exit", () => this.handleExit("Codex app-server 已退出"));
+    this.resetResponseBuffer();
+    child.stdout.on("data", (chunk: Buffer | string) => this.handleChunk(child, chunk));
+    child.once("error", () => this.handleExit(child, "Codex app-server 无法启动"));
+    child.once("exit", () => this.handleExit(child, "Codex app-server 已退出"));
     // Drain stderr without copying potentially sensitive Runtime diagnostics.
     child.stderr.on("data", () => undefined);
 
     await this.requestRaw("initialize", {
-      clientInfo: { name: "goalboard-session-browser", title: "GoalBoard", version: "0.1.13" },
+      clientInfo: { name: "goalboard-session-browser", title: "GoalBoard", version: "0.1.14" },
       capabilities: {
         experimentalApi: false,
         requestAttestation: false,
@@ -111,6 +126,60 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
+  private handleChunk(child: ChildProcessWithoutNullStreams, chunk: Buffer | string): void {
+    if (child !== this.child) return;
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const newline = bytes.indexOf(0x0a, offset);
+      const end = newline === -1 ? bytes.length : newline;
+      const segment = bytes.subarray(offset, end);
+      if (segment.length > 0 && !this.appendResponseSegment(child, segment)) return;
+      if (newline === -1) return;
+      const line = this.consumeResponseLine();
+      if (line.length > 0) this.handleLine(line);
+      if (child !== this.child) return;
+      offset = newline + 1;
+    }
+  }
+
+  private appendResponseSegment(child: ChildProcessWithoutNullStreams, segment: Buffer): boolean {
+    const maxBytes = Math.max(1_024, this.options.maxResponseLineBytes ?? DEFAULT_MAX_RESPONSE_LINE_BYTES);
+    if (this.stdoutBytes + segment.length > maxBytes) {
+      this.failProtocolLine(child, new CodexAppServerTransportError(
+        "runtime.response_too_large",
+        "Codex Session 内容超过安全读取上限；GoalBoard 已停止本次读取。",
+      ));
+      return false;
+    }
+    this.stdoutChunks.push(segment);
+    this.stdoutBytes += segment.length;
+    return true;
+  }
+
+  private consumeResponseLine(): string {
+    const bytes = this.stdoutChunks.length === 1
+      ? this.stdoutChunks[0]!
+      : Buffer.concat(this.stdoutChunks, this.stdoutBytes);
+    this.resetResponseBuffer();
+    const end = bytes.at(-1) === 0x0d ? bytes.length - 1 : bytes.length;
+    return bytes.toString("utf8", 0, end);
+  }
+
+  private resetResponseBuffer(): void {
+    this.stdoutChunks = [];
+    this.stdoutBytes = 0;
+  }
+
+  private failProtocolLine(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (child !== this.child) return;
+    this.child = null;
+    this.startPromise = null;
+    this.resetResponseBuffer();
+    this.failAll(error);
+    if (!child.killed) child.kill("SIGTERM");
+  }
+
   private handleLine(line: string): void {
     let message: Record<string, unknown>;
     try {
@@ -135,9 +204,11 @@ export class CodexAppServerTransport implements RuntimeSessionTransport {
     for (const listener of this.listeners) listener(event);
   }
 
-  private handleExit(message: string): void {
+  private handleExit(child: ChildProcessWithoutNullStreams, message: string): void {
+    if (child !== this.child) return;
     this.child = null;
     this.startPromise = null;
+    this.resetResponseBuffer();
     this.failAll(new Error(message));
   }
 

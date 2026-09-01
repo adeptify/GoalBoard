@@ -122,13 +122,13 @@ test("Codex native journey stays project-scoped from discovery through Handoff a
   let mutate = mutator(origin);
   try {
     const projectPicker = await (await fetch(`${origin}/`)).text();
-    assert.match(projectPicker, /打开项目不会自动绑定或切换正在对话的 Runtime Session/);
+    assert.match(projectPicker, /工作目录在新建或关联 Session 时选择/);
     const globalSessions = await fetch(`${origin}/sessions`, { redirect: "manual" });
     assert.equal(globalSessions.headers.get("location"), "/");
     const projectSessions = await fetch(`${origin}${prefix}/sessions`, { redirect: "manual" });
     assert.equal(projectSessions.headers.get("location"), `${prefix}/#sessions`);
     const projectWorkspaces = await fetch(`${origin}${prefix}/workspaces`, { redirect: "manual" });
-    assert.equal(projectWorkspaces.headers.get("location"), `${prefix}/#workspaces`);
+    assert.equal(projectWorkspaces.headers.get("location"), `${prefix}/#sessions`);
 
     const discoveredResponse = await mutate(`${prefix}/api/sessions/discover`, "POST", { runtime_id: "codex" });
     assert.equal(discoveredResponse.status, 200, await discoveredResponse.clone().text());
@@ -147,6 +147,27 @@ test("Codex native journey stays project-scoped from discovery through Handoff a
       workspace_path: workspace,
     });
     assert.equal(deniedLink.status, 400);
+    const mismatchedWorkspace = await mutate(`${prefix}/api/sessions`, "POST", {
+      action: "create",
+      runtime_id: "opencode",
+      workspace_id: workspaceRecord.workspace_id,
+      workspace_path: directory,
+      user_confirmed: true,
+    });
+    assert.equal(mismatchedWorkspace.status, 409);
+    const launchedResponse = await mutate(`${prefix}/api/sessions`, "POST", {
+      action: "create",
+      runtime_id: "opencode",
+      current_goal_id: goalId,
+      workspace_id: workspaceRecord.workspace_id,
+      workspace_path: workspaceRecord.canonical_path,
+      title: "从 Sessions 启动",
+      user_confirmed: true,
+    });
+    assert.equal(launchedResponse.status, 201, await launchedResponse.clone().text());
+    const launched = await launchedResponse.json() as { session: { workspace_id: string | null; workspace_path: string | null } };
+    assert.equal(launched.session.workspace_id, workspaceRecord.workspace_id);
+    assert.equal(launched.session.workspace_path, workspaceRecord.canonical_path);
     const linkedResponse = await mutate(`${prefix}/api/sessions`, "POST", {
       action: "link",
       runtime_id: "codex",
@@ -165,7 +186,9 @@ test("Codex native journey stays project-scoped from discovery through Handoff a
     assert.match(page, /Pi Agent/);
     assert.doesNotMatch(page, /NATIVE-E2E-CONTENT/);
     assert.equal((page.match(/data-work-surface="sessions"/g) ?? []).length, 1);
-    assert.equal((page.match(/data-work-surface="workspaces"/g) ?? []).length, 1);
+    assert.equal((page.match(/data-work-surface="workspaces"/g) ?? []).length, 0);
+    assert.doesNotMatch(page, /data-directory-open="workspaces"|data-directory-panel="workspaces"/);
+    assert.match(page, /data-session-workspace-option/);
 
     const contentResponse = await fetch(`${origin}${prefix}/api/sessions/${encodeURIComponent(linked.session.session_id)}/content`);
     const content = await contentResponse.json() as { content_mode: string; events: Array<{ content: string }> };

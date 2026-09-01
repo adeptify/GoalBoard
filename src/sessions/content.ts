@@ -26,6 +26,7 @@ export class SessionContentService {
       content_mode: managed.length > 0 ? "fallback" : "unavailable",
       events: sortTimeline(managed),
       native_error: null,
+      native_history: null,
       partial_terminal_history: managed.some((event) => event.source === "goalboard_tui"),
     });
     if (!session.native_runtime_session_id) return fallback();
@@ -41,7 +42,9 @@ export class SessionContentService {
         content_mode: "failed",
         native_error: {
           code: result.code,
-          message: "Runtime 内容读取失败。确认 Runtime 可用后重试。",
+          message: result.code === "runtime.response_too_large"
+            ? "这条 Session 的单项内容超过安全读取上限；GoalBoard 已停止本次读取，服务仍可继续使用。"
+            : "Runtime 内容读取失败。确认 Runtime 可用后重试。",
         },
       };
     }
@@ -61,6 +64,7 @@ export class SessionContentService {
       content_mode: "native",
       events: sortTimeline([...native, ...managed]),
       native_error: null,
+      native_history: nativeHistory(result.value),
       partial_terminal_history: managed.some((event) => event.source === "goalboard_tui"),
     };
   }
@@ -100,6 +104,17 @@ export class SessionContentService {
       next_action: result.status === "unsupported" ? "create_handoff" : "retry",
     };
   }
+}
+
+function nativeHistory(value: unknown): SessionContentResult["native_history"] {
+  const root = record(value);
+  const page = root ? record(root.goalboard_history_page) : null;
+  if (!page || text(page.mode) !== "summary") return null;
+  return {
+    mode: "summary",
+    turn_count: finiteNumber(page.turn_count) ?? 0,
+    has_earlier: page.has_earlier === true,
+  };
 }
 
 function hasCodexThreadReadShape(value: unknown): boolean {

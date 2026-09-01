@@ -469,21 +469,15 @@ test("packed release completes fresh install, Web setup, Runtime dialogue, resta
       await genericMcp.initialize();
       const genericSessionA = { sessionId: "generic-session-a" };
       const genericSuggested = await genericMcp.call("goalboard_v1_context_resolve", {}, genericSessionA);
-      assert.equal(genericSuggested.status, "suggested");
-      assert.equal(genericSuggested.connection, null);
-      const genericBound = await genericMcp.call("goalboard_v1_context_bind", {
-        project_id: created.project.project_id,
-        actor_id: "runtime-generic",
-        user_confirmed: true,
-      }, genericSessionA) as { status: string };
-      assert.equal(genericBound.status, "bound");
+      assert.equal(genericSuggested.status, "bound");
+      assert.equal(genericSuggested.connection.project_id, created.project.project_id);
       const freshGenericSession = await genericMcp.call(
         "goalboard_v1_context_resolve",
         {},
         { sessionId: "generic-session-b" },
       );
-      assert.equal(freshGenericSession.status, "suggested");
-      assert.equal(freshGenericSession.connection, null);
+      assert.equal(freshGenericSession.status, "bound");
+      assert.equal(freshGenericSession.connection.project_id, created.project.project_id);
       await genericMcp.close();
 
       const removePlanResponse = await securePost(origin, token, "/api/settings/runtimes/codex/plan", { action: "remove" });

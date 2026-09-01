@@ -32,9 +32,10 @@ const CODEX_METHODS: Partial<Record<RuntimeSessionCapability, string>> = {
   create: "thread/start",
   list: "thread/list",
   discover: "thread/list",
-  read: "thread/read",
   resume: "thread/resume",
 };
+
+const CODEX_SESSION_TURN_PAGE_LIMIT = 50;
 
 export class CodexRuntimeSessionAdapter implements RuntimeSessionAdapter {
   readonly runtime_id = "codex";
@@ -56,6 +57,7 @@ export class CodexRuntimeSessionAdapter implements RuntimeSessionAdapter {
         const unsubscribe = this.transport.subscribe(listener as (event: { method: string; params: unknown }) => void);
         return ok(capability, "native", { unsubscribe });
       }
+      if (capability === "read") return ok(capability, "native", await this.read(input));
       const method = CODEX_METHODS[capability];
       if (!method) return unsupported(capability, "Codex Adapter 未声明这项能力");
       const value = await this.transport.request(method, input);
@@ -67,8 +69,41 @@ export class CodexRuntimeSessionAdapter implements RuntimeSessionAdapter {
         capability === "create"
           ? { phase: "create", retryable: definitelyNotAccepted(error) }
           : undefined,
+        runtimeErrorCode(error),
       );
     }
+  }
+
+  private async read(input: Record<string, unknown>): Promise<unknown> {
+    const threadId = optionalString(input.threadId);
+    if (!threadId) throw new Error("Codex Session 内容读取缺少 threadId");
+    const metadata = objectValue(await this.transport.request("thread/read", {
+      threadId,
+      includeTurns: false,
+    }));
+    const nestedThread = recordValue(metadata.thread);
+    const thread = nestedThread ?? (optionalString(metadata.id) ? metadata : null);
+    if (!thread) return metadata;
+    // A valid metadata read always carries the Runtime-owned thread id. Keeping
+    // the unmodified response here also preserves compatibility with older or
+    // test transports without ever falling back to a full-history read.
+    if (!optionalString(thread.id)) return metadata;
+    const page = objectValue(await this.transport.request("thread/turns/list", {
+      threadId,
+      limit: CODEX_SESSION_TURN_PAGE_LIMIT,
+      sortDirection: "desc",
+      itemsView: "summary",
+    }));
+    const turns = Array.isArray(page.data) ? [...page.data].reverse() : [];
+    return {
+      ...metadata,
+      thread: { ...thread, turns },
+      goalboard_history_page: {
+        mode: "summary",
+        turn_count: turns.length,
+        has_earlier: typeof page.nextCursor === "string" && page.nextCursor.length > 0,
+      },
+    };
   }
 
   private async handoff(input: Record<string, unknown>): Promise<RuntimeSessionAdapterResult> {
@@ -227,14 +262,21 @@ function failed(
   capability: RuntimeSessionCapability,
   message: string,
   recovery?: Extract<RuntimeSessionAdapterResult, { status: "failed" }>["recovery"],
+  code: Extract<RuntimeSessionAdapterResult, { status: "failed" }>["code"] = "runtime.operation_failed",
 ): RuntimeSessionAdapterResult {
   return {
     status: "failed",
     capability,
-    code: "runtime.operation_failed",
+    code,
     message,
     ...(recovery ? { recovery } : {}),
   };
+}
+
+function runtimeErrorCode(error: unknown): Extract<RuntimeSessionAdapterResult, { status: "failed" }>["code"] {
+  if (!error || typeof error !== "object") return "runtime.operation_failed";
+  const code = (error as { code?: unknown }).code;
+  return code === "runtime.response_too_large" ? code : "runtime.operation_failed";
 }
 
 function optionalString(value: unknown): string | null {
@@ -243,6 +285,10 @@ function optionalString(value: unknown): string | null {
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function definitelyNotAccepted(error: unknown): boolean {

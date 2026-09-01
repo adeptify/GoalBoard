@@ -33,8 +33,10 @@ type ChildGoalSummary = {
 type GoalChangedDetail = {
   goalId?: string;
   goalTitle?: string;
+  status?: string;
   statusLabel?: string;
   statusMeaning?: string;
+  statusIconMarkup?: string;
   parentReadOnly?: boolean;
   children?: ChildGoalSummary[];
 };
@@ -152,6 +154,7 @@ if (pane) {
   let panelLoadSequence = 0;
   let parentReadOnly = pane.dataset.tuiParentReadOnly === "true";
   let feedAutofillInFlight = false;
+  let onboardingAutofillInFlight = false;
 
   const headers = () => ({
     "content-type": "application/json",
@@ -755,6 +758,35 @@ if (pane) {
 
   const feedAutofillKey = () => `goalboard-feed-runtime-autofill:${goalId()}`;
 
+  const onboardingAutofillKey = () => `goalboard-onboarding-runtime-autofill:${goalId()}`;
+
+  const pendingOnboardingAutofill = () => {
+    const key = onboardingAutofillKey();
+    if (!goalId()) return false;
+    try {
+      const pending = JSON.parse(sessionStorage.getItem(key) || "null") as {
+        runtimeKind?: string;
+        workspacePath?: string;
+        at?: number;
+      } | null;
+      if (!pending) return false;
+      if (pending.at && Date.now() - pending.at > 30 * 60 * 1000) {
+        sessionStorage.removeItem(key);
+        return false;
+      }
+      const runtimeKind = typeof pending.runtimeKind === "string" ? pending.runtimeKind.trim() : "";
+      const workspacePath = typeof pending.workspacePath === "string" ? pending.workspacePath.trim() : "";
+      if (!runtimeKind || !workspacePath) {
+        sessionStorage.removeItem(key);
+        return false;
+      }
+      return { runtimeKind, workspacePath };
+    } catch {
+      sessionStorage.removeItem(key);
+      return false;
+    }
+  };
+
   const pendingFeedAutofill = () => {
     const key = feedAutofillKey();
     if (!goalId()) return false;
@@ -809,6 +841,35 @@ if (pane) {
       setStatus(errorText(error), "error");
     } finally {
       feedAutofillInFlight = false;
+    }
+  };
+
+  const fillPendingOnboardingContext = async () => {
+    const pending = pendingOnboardingAutofill();
+    if (onboardingAutofillInFlight || !pending || parentReadOnly) return;
+    onboardingAutofillInFlight = true;
+    document.querySelector<HTMLButtonElement>('[data-workbench-view="runtime"]')?.click();
+    if (matchMedia("(max-width: 760px)").matches) {
+      document.querySelector<HTMLButtonElement>('[data-mobile-target="tui"]')?.click();
+    }
+    setStatus(L("正在打开初始化终端…"), "busy");
+    try {
+      if (!current()) {
+        await openPanel({ runtime_kind: pending.runtimeKind, cwd: pending.workspacePath });
+      }
+      const panel = current();
+      if (!panel || !alive.has(panel.panel_id)) {
+        throw new Error(L("终端没有成功打开；你可以从右上角再次选择 Runtime。"));
+      }
+      await waitForTerminalOutput(panel.panel_id);
+      await writePrompt(false);
+      sessionStorage.removeItem(onboardingAutofillKey());
+      setStatus(L("初始化提示已填入，检查后再发送。"), "live");
+      showPageToast(L("初始化提示已填入 Terminal"));
+    } catch (error) {
+      setStatus(errorText(error), "error");
+    } finally {
+      onboardingAutofillInFlight = false;
     }
   };
 
@@ -932,8 +993,25 @@ if (pane) {
     const detail = (event as CustomEvent<GoalChangedDetail>).detail;
     if (ownerTitleEl && detail?.goalTitle) ownerTitleEl.textContent = detail.goalTitle;
     if (ownerStatusEl) {
-      ownerStatusEl.textContent = detail?.statusLabel ?? "";
+      const status = detail?.status ?? "";
+      const label = ownerStatusEl.querySelector("[data-tui-owner-status-label]");
+      if (label) label.textContent = detail?.statusLabel ?? "";
+      ownerStatusEl.hidden = !detail?.statusLabel;
       ownerStatusEl.title = detail?.statusMeaning ?? "";
+      [...ownerStatusEl.classList]
+        .filter((className) => className.startsWith("goal-status--"))
+        .forEach((className) => ownerStatusEl.classList.remove(className));
+      if (/^[a-z_]+$/.test(status)) ownerStatusEl.classList.add(`goal-status--${status}`);
+      if (detail?.statusIconMarkup) {
+        const template = document.createElement("template");
+        template.innerHTML = detail.statusIconMarkup.trim();
+        const nextIcon = template.content.firstElementChild;
+        const currentIcon = ownerStatusEl.querySelector(":scope > svg");
+        if (nextIcon?.tagName.toLowerCase() === "svg") {
+          if (currentIcon) currentIcon.replaceWith(nextIcon);
+          else ownerStatusEl.prepend(nextIcon);
+        }
+      }
     }
     promptCache = "";
     setParentGuard(Boolean(detail?.parentReadOnly), detail?.children ?? []);
@@ -976,6 +1054,7 @@ if (pane) {
       setStatus(errorText(error), "error");
     }
     await loadPanels();
+    await fillPendingOnboardingContext();
   })();
 }
 

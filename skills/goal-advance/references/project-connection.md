@@ -7,11 +7,12 @@ Read this reference when the user asks to connect, create, switch, unbind, or de
 Call `goalboard_v1_context_resolve` only after the user explicitly invokes GoalBoard in the current conversation.
 
 - `bound`: use exactly the returned connection and `board_id`.
+- `bound` may be a read-only automatic workspace recovery when the current realpath has exactly one verified project membership. Use it without asking again; GoalBoard does not create a Session binding merely to recover this unique project.
 - `suggested`: the Session is still unbound. If the current user request already explicitly asks to use, connect, continue, or advance GoalBoard with a named project, and that reference unambiguously denotes exactly one returned existing project, call `goalboard_v1_context_bind` in the same turn; the user has already selected it. Otherwise show candidate names and safe generic reasons, explain that they are only suggestions, and ask which one to use.
 - `unbound`: apply the same current-request rule when one returned existing project unambiguously matches the user's explicit selection. Otherwise show the returned existing project names and ask whether to connect one or create a named project.
 - `missing_stable_context`: explain that GoalBoard cannot safely remember this conversation or workspace association. Do not fabricate identity. Offer a host with a stable Session signal, an explicitly configured stable work-context ID, or read-only Web browsing.
 
-The working directory is only a host clue used to rank projects previously associated with it. It is never a Session ID or project identity. Raw host clues, database paths, and internal project IDs stay out of normal user-facing text.
+The working directory is never a Session ID or project identity. It may recover a project only through one exact, realpath-verified membership. Zero matches, multiple matches, path conflicts or unverified matches still require a user choice. Raw host clues, database paths, and internal project IDs stay out of normal user-facing text.
 
 ## Recover from a connection-context refresh
 
@@ -45,7 +46,7 @@ GoalBoard owns the version diagnosis and the no-data-loss recovery instructions.
 - Do not ask the user to copy a fixed confirmation phrase. If the Runtime has already repeated the project name and explained the create-and-bind operation, and the user already clearly authorized the named create-and-bind operation in the current reply, do not ask again. If the name, whether to create, or whether to bind remains unclear, ask one short confirmation question.
 - Do not ask the user to repeat an existing-project selection made in the same message that invoked GoalBoard. A phrase such as “继续用 GoalBoard 推进 CGS” is selection authority only when `CGS` unambiguously denotes one returned existing project. A bare mention, an unclear shorthand, several possible matches, or “you decide” still requires one short question.
 - Switch: when the current work entry is already bound elsewhere, ask a separate switch question before `rebind_confirmed=true`.
-- Workspace history: ordinary selection records that the directory has used the project, but never becomes a default. Every new Session still requires an explicit Project choice. If the user asks for a directory default, explain that GoalBoard no longer stores one; do not call a legacy `workspace_default` write path.
+- Workspace history: ordinary selection records that the directory has used the project. A later Session can recover it without another question only when that exact verified workspace has one project membership; this is read-only recovery, not a hidden Session binding or a directory-default write. Multiple candidates still require a choice.
 - Reject suggestion: after an explicit “not this candidate,” call `goalboard_v1_context_reject_suggestion` only when the resolved context contains a stable Session identity. Without one, acknowledge the answer without pretending it was persisted.
 
 Silence, timeout, “not now,” “you decide,” and other ambiguous language are not confirmation.
@@ -54,7 +55,8 @@ Useful user-facing questions:
 
 | Situation | Ask |
 |---|---|
-| One suggestion | “我找到一个可能相关的项目：{项目名}。它只是候选，还没有关联。要把当前会话关联到它吗？” |
+| One exact verified workspace membership | Do not ask. Say “已连接：{项目名}” and continue from the restored Goal focus. |
+| One non-exact suggestion | “我找到一个可能相关的项目：{项目名}。它只是候选，还没有关联。要把当前会话关联到它吗？” |
 | Several suggestions | List names, then ask which one to connect. |
 | No suggestion | “当前会话还没有关联项目。要打开现有项目中的一个，还是新建一个？” |
 | User mentions an existing project without clearly selecting it | “你提到了「{项目名}」。要把当前会话关联到它吗？” |

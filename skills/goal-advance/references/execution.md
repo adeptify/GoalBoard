@@ -7,12 +7,12 @@ Read this reference when the user asks to continue available work, advance an ac
 For an ordinary “继续推进” or “领一件能做的” request:
 
 1. call `goalboard_v1_available` with the current Runtime's real capabilities; its default `detail_level=summary` returns the whole comparable menu without expanding every Contract;
-2. if the user named a Goal, use it only if it is returned there;
-3. otherwise prioritize an item with `requires_parent_confirmation=true`, then tentatively choose according to the user's request, blockers, priority, dependencies, and planning rationale;
-4. when `next_action=complete`, call `goalboard_v1_complete` directly; it intentionally has `role=null` and must not create another Claim or Run;
-5. for every other action, treat the item as a tentative candidate and call `goalboard_v1_contract` before any write;
-6. compare the current user request with the Contract's `in_scope`, `out_of_scope`, promised outputs, and constraints;
-7. only when that scope check passes, call `goalboard_v1_select_goal` with the item's returned `role` so Claim and Run start atomically.
+2. if the user named a Goal, use it only when its action projection permits the relevant action;
+3. otherwise tentatively choose according to the user's request, blockers, priority, dependencies, and planning rationale;
+4. read the chosen Goal's Contract and compare the request with `in_scope`, `out_of_scope`, promised outputs, and constraints;
+5. when the `primary_action` belongs to the Runtime and the scope check passes, call `goalboard_v1_select_goal` with its `action_id`, `action_token`, action target and returned role so Claim and Run start atomically;
+6. when the primary action belongs to the user, explain that one decision and do not Claim it;
+7. when there is no action because the Goal is complete, report completion; do not call `complete` or start another Run.
 
 If the current request hits `out_of_scope`, contradicts the Contract, or has no canonical owner among the Available candidates, do not call `goalboard_v1_select_goal`: no Claim or Run should be created merely to discover scope. Explain the mismatch and use the existing planning path when the work is an independently valuable missing Goal or relation change. Do not force a handoff action into the nearest eligible Goal.
 
@@ -26,26 +26,24 @@ When Available returns a non-null `parallel_suggestion`, proactively explain the
 
 `available` and `explain(role=executor)` answer whether the current action can proceed; they do not certify that `complete` will pass before finished work reaches the completion phase. A Risk with `blocking_mode=completion` deliberately allows initial execution. Read `risk_summary` and the canonical Contract, and after any confirmed Risk update verify the canonical state before retrying completion.
 
-If the selected Goal's promised result is a Risk lifecycle change, treat the confirmed Risk state as one required output, not as completion of the Goal by itself. When the Risk was not already resolved during clarification, complete the mitigation and submit Evidence from the active executor Run, then use that same Run to propose only the same-root Risk lifecycle result for user confirmation. After canonical Risk verification, continue the same Goal through `run_report`, Evidence, required Review, `complete`, and `release`. Never complete or release a clarifier Run merely because a Risk item materialized while its Goal is still Draft.
+If the selected Goal's promised result is a Risk lifecycle change, treat the confirmed Risk state as one required output, not as completion of the Goal by itself. When the Risk was not already resolved during clarification, complete the mitigation and submit Evidence from the scoped active executor Run, then report the same-root Risk result. GoalBoard releases and completes automatically when the canonical Risk and all other gates close. Never end a clarifier Run merely because a Risk item materialized while its Goal is still Draft.
 
 For a named Goal absent from `available`, inspect the same response's `blocked` and compact `blocked_overview` before considering any adjacent Goal. `blocked_overview.next_action=explain` means the Goal still exists but an ordinary dependency, Review, validity, or phase blocker keeps it out of the actionable menu; call `goalboard_v1_explain` and report that canonical reason instead of claiming the nearest eligible Goal. A `completion_blocked` item has already finished execution and reviews: report its Risk or decision reason and remediation without starting duplicate executor work. If new traceable counter-evidence proves that one or more previously covered acceptance criteria are no longer met, use `goalboard_v1_rework_request` with those criterion IDs, the counter-evidence references, and a concrete reason. This preserves the old Run/Evidence/Review, makes only those criteria require fresh Evidence, reopens Review, and returns the same unmet Goal to executor work; it does not resolve a completion Risk. Never bypass a blocker with legacy `ready → claim → run_start`; the normal claiming path is `available → contract → select_goal`.
 
 If `GOALBOARD_GOAL_ID` is set, prefer that Desktop-opened Goal for “继续推进.” Opening the panel itself is not permission to select it.
 
-## Follow the derived work state
+## Follow the action projection
 
-| Returned state | Runtime action |
+| Short state | Runtime action |
 |---|---|
-| `clarifying` / `clarification_pending` | Read the planning reference and continue the saved dialogue. If `requires_parent_confirmation=true`, summarize completed children and ask whether they cover the original parent outcome. |
-| `waiting_children` | Do not execute the parent. Choose an eligible child from Available. |
-| `executing` / `execution_pending` | Work only inside the selected accepted leaf Contract. |
-| `completion_pending` | Execution, Evidence, and required Reviews are already done. Call `goalboard_v1_complete` directly; do not select, Claim, or rerun the Goal. |
-| `completion_blocked` | Do not select duplicate executor work. Resolve the returned canonical gate and then call `complete`; if fresh counter-evidence instead disproves an earlier completion premise, call `goalboard_v1_rework_request`, re-read Available, and continue the same Goal with fresh Evidence and Review. |
-| `reviewing` / `review_pending` | Inspect the Contract and submitted evidence; perform only the Review this Runtime may provide. |
-| `waiting_for_human` | Runtime-checkable Review is finished. Report the returned human criteria and user action. When the reason returns `conversation_approval_handoff`, use the bounded exact-quote handoff below; otherwise open GoalBoard. Do not select another Runtime Review or impersonate the user's decision. |
-| `revalidating` / `revalidation_pending` | Recheck the Contract, active dependencies, Risks, and cited evidence; use `goalboard_v1_revalidate` only from the active revalidator Run. |
-| Any other `*_blocked` | Call `goalboard_v1_explain`, report the concrete blocker, then choose other eligible work or ask for the missing decision. |
-| `satisfied`, `archived`, `invalidated` | Do not claim it. Explain the state or choose other work. |
+| `可继续` | Perform the Runtime-owned primary action. “继续修改” keeps old Runs and Evidence visible; it is not a first execution. |
+| `进行中` | Continue the active Claim/Run, renew at a meaningful checkpoint when recommended, and avoid duplicate selection. |
+| `等你` | Explain the one user-owned revision, Human Review or Risk decision. Use trusted dialogue only for one exact, current Human Review target. |
+| `等待中` | Advance an eligible child/dependency when authorized; do not execute the waiting parent. |
+| `受阻` | Report the projection's recovery action. Do not retry an unchanged call or invent a new gate. |
+| `已完成` | Report the trusted result and optionally show the next available Goals without auto-claiming one. |
+
+Every lifecycle write returns a transition receipt. Continue from `receipt.projection`; do not poll to guess whether the write released a Claim, opened Review or completed the Goal. A stale token rejects the old write and returns the new projection.
 
 A parent whose current children are complete is not silently done. If they cover the whole original result, use the planning flow to propose `accepted / closed_compound`; otherwise clarify and propose missing children.
 
@@ -58,7 +56,7 @@ A parent whose current children are complete is not silently done. If they cover
 - Evidence is immutable. If a submitted record is wrong, submit the corrected Evidence first and then use `goalboard_v1_evidence_correct` to supersede it, or retract it when there is no replacement. Never hide the old locator in free text or treat a corrected historical record as current proof.
 - A Runtime may correct only Evidence produced by the same actor. If another producer's Evidence is wrong, report the problem and let that producer or a trusted user-facing workflow resolve it.
 - A required human approval cannot be replaced by a Runtime review.
-- A `human_verdict` Evidence record is only an auditable handoff into the human form; it is never the canonical Human Review. Use `conversation_approval_handoff` only when the returned state identifies exactly one pending human obligation and the current user's reply explicitly approves that named Goal or criterion. Submit the exact returned `criterion_ids`, `kind=human_verdict`, `result=passed`, a `conversation://` locator tied to the current session/message when the host exposes those IDs, and the user's exact quote as `digest`; then re-read the Goal and open its Inbox deep link. GoalBoard will prefill the matching form, but the user must make the final submit. Do not invent missing provenance, select Evidence for the user, or turn “好的”“继续” and similar replies into approval. If there are multiple pending items, a non-pass/needs-changes/inconclusive decision, ambiguity about the Goal or criterion, or changed Goal/Evidence state, do not submit the handoff Evidence; open Inbox and let the user decide there.
+- A Human Review can be recorded from conversation only by a host-provided trusted dialogue operation that derives the user, Session and message source itself. Use it only when the projection identifies exactly one current human obligation and the user explicitly approves it or asks for changes. Pass the exact quote, target and attention token; the operation atomically writes Human Evidence and Review. If that trusted host operation is unavailable, or there are multiple items, ambiguous wording or a stale token, open Decision Center. Do not separately submit `human_verdict` Evidence through Runtime MCP and do not turn “好的”“继续” into approval.
 - During execution, a repeated project-wide rule may be proposed as project guidance, but it is not part of Goal completion and must follow the protocol's exact-text user confirmation flow. Do not interrupt work for one-off implementation detail or save it automatically.
 
 Normal executor-to-review order:
@@ -67,19 +65,19 @@ Normal executor-to-review order:
 run_report(state=completed | blocked | failed)
   → evidence_submit mapped to acceptance criterion IDs
   → evidence_correct when an immutable Evidence record must be superseded or retracted
-  → release the executor Claim using the completed Run's returned handoff
-  → available → select the pending independent reviewer
+  → GoalBoard auto-releases the executor when the completed Run and required Runtime Evidence are both present
+  → select the pending independent reviewer action
   → rework_request only when later counter-evidence invalidates an earlier completion premise
   → review_submit for each Runtime-permitted required review
-  → run_report(state=completed) and release the reviewer Claim
-  → complete
+  → GoalBoard ends the reviewer Run and releases its Claim in the same Review transaction
+  → GoalBoard auto-completes the Goal when the last Review/Risk gate closes
 ```
 
-`run_report(state=completed)` deliberately does not auto-release: the current writer may still need to attach Evidence or correct the execution record, and a reviewer must not race that final write window. The completed response, Contract `work.handoff_pending` reason, and Available `blocked_overview` all identify `goalboard_v1_release`, the exact `claim_id`, and the subsequent `goalboard_v1_available` read. Do not wait for an automatic handoff and do not start a reviewer while the executor Claim remains active.
+If the executor reports `completed` before all required Runtime Evidence exists, the Claim stays active and the primary action becomes “补齐完成依据.” The last required Evidence submission releases it atomically. `blocked` Runs stay owned; `failed` or `abandoned` Runs retain history and release automatically. Explicit `release` remains only for handoff, abandonment and old Runtime recovery.
 
-## Close every Run with a cycle handoff
+## Continue from each atomic receipt
 
-A successful `goalboard_v1_release` closes ownership of one Run; it is not the endpoint of an ongoing “继续推进” request. Unless the user explicitly asked to stop or limited the request to this one Run, immediately follow the returned `handoff` and call `goalboard_v1_available` with `detail_level=summary` and the current Runtime's real capabilities. This read needs no repeated user confirmation, but it does not authorize unrelated work.
+A successful lifecycle write returns the exact resulting projection. It is not the endpoint of an ongoing “继续推进” request: continue the same Goal when the next action is safe and in scope. Read Available only when selecting among other Goals. Never auto-claim an unrelated Goal.
 
 Every cycle checkpoint has this shape:
 

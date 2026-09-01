@@ -137,6 +137,37 @@ function completeLeafGoal(
   return { evidence, execution };
 }
 
+function selectProjectedAction(
+  coordinator: GoalBoardCoordinator,
+  input: {
+    goal_id: string;
+    actor_id: string;
+    kind: "clarify" | "execute" | "review" | "revalidate" | "mitigate_risk";
+    idempotency_key: string;
+    target_id?: string;
+  },
+) {
+  const projection = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: input.goal_id,
+  });
+  const selected = projection.actions.find((action) =>
+    action.actor === "runtime" &&
+    action.status === "ready" &&
+    action.kind === input.kind &&
+    (input.target_id == null || action.target_id === input.target_id)
+  );
+  assert.ok(selected, `missing ${input.kind} action for ${input.goal_id}`);
+  return coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: input.goal_id,
+    actor_id: input.actor_id,
+    action_id: selected.action_id,
+    action_token: projection.action_token,
+    idempotency_key: input.idempotency_key,
+  });
+}
+
 function dependencyProposal(
   fromGoalId: string,
   toGoalId: string,
@@ -1096,6 +1127,418 @@ test("migration 17 repairs a missing evidence corrections table even when its le
   assert.equal(migrationCount.count, 1);
   assert.doesNotThrow(() => repaired.snapshot("board-1"));
   repaired.close();
+});
+
+test("migration 30 backfills Contract revisions and action targets without rewriting legacy business state", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "migration-30-parent");
+  createLeaf(coordinator, "migration-30-child");
+  coordinator.addRelation(
+    "board-1",
+    {
+      from_goal_id: "migration-30-child",
+      to_goal_id: "migration-30-parent",
+      type: "part_of",
+      state: "active",
+      reason: "验证旧父子关系的 revision coverage 回填",
+    },
+    { actor_id: "user-1", idempotency_key: "migration-30-part-of" },
+  );
+  const execution = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "migration-30-child",
+    actor_id: "runtime-migration-30",
+    role: "executor",
+    idempotency_key: "migration-30-select",
+  });
+  assert.equal(execution.allowed, true);
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-migration-30",
+    state: "completed",
+    idempotency_key: "migration-30-run-complete",
+  });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "migration-30-child",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-migration-30",
+    criterion_ids: ["migration-30-child-criterion"],
+    kind: "test",
+    locator: "test://migration-30-child",
+    result: "passed",
+    idempotency_key: "migration-30-evidence",
+  });
+
+  const databasePath = store.path;
+  const before = store.snapshot("board-1");
+  const countsBefore = {
+    goals: before.goals.length,
+    relations: before.relations.length,
+    claims: before.claims.length,
+    runs: before.runs.length,
+    evidence: before.evidence.length,
+    obligations: before.review_obligations.length,
+  };
+  store.db.exec(`
+    DELETE FROM schema_migrations WHERE migration_id = 30;
+    UPDATE claims SET action_kind = NULL, action_target_id = NULL;
+    DROP TABLE coverage_contract_revisions;
+    DROP TABLE goal_contract_revisions;
+  `);
+  store.close();
+
+  const migrated = new SqliteGoalBoardStore(databasePath);
+  const after = migrated.snapshot("board-1");
+  assert.deepEqual({
+    goals: after.goals.length,
+    relations: after.relations.length,
+    claims: after.claims.length,
+    runs: after.runs.length,
+    evidence: after.evidence.length,
+    obligations: after.review_obligations.length,
+  }, countsBefore);
+  assert.ok(after.goals.every((goal) => goal.current_contract_revision === 1));
+  assert.equal(after.goal_contract_revisions.length, after.goals.length);
+  assert.ok(after.claims.every((claim) => claim.contract_revision === 1));
+  assert.ok(after.claims.every((claim) => claim.action_kind != null && claim.action_target_id === claim.goal_id));
+  assert.ok(after.evidence.every((evidence) => evidence.contract_revision === 1));
+  assert.ok(after.review_obligations.every((obligation) => obligation.contract_revision === 1));
+  assert.deepEqual(
+    after.coverage_contract_revisions.map((coverage) => [
+      coverage.parent_goal_id,
+      coverage.child_goal_id,
+      coverage.parent_contract_revision,
+      coverage.child_contract_revision,
+    ]),
+    [["migration-30-parent", "migration-30-child", 1, 1]],
+  );
+  migrated.close();
+
+  const reopened = new SqliteGoalBoardStore(databasePath);
+  assert.equal(
+    (reopened.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE migration_id = 30").get() as { count: number }).count,
+    1,
+  );
+  assert.equal(reopened.snapshot("board-1").goal_contract_revisions.length, after.goals.length);
+  reopened.close();
+});
+
+test("action tokens ignore informational Risk edits but reject stale work after an actionable Risk appears", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "action-token-scope");
+  const initial = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "action-token-scope",
+  });
+  assert.equal(initial.primary_action?.kind, "execute");
+
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "action-token-informational",
+      goal_ids: ["action-token-scope"],
+      description: "只记录观察，不影响当前动作",
+      probability: "low",
+      impact: "当前无直接影响",
+      trigger: "后续观察到趋势变化",
+      treatment: "defer",
+      blocking_mode: "none",
+      revisit_condition: "进入下一阶段时复查",
+      owner: "runtime-observer",
+    },
+    { actor_id: "runtime-observer", idempotency_key: "action-token-informational" },
+  );
+  const afterInformational = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "action-token-scope",
+  });
+  assert.equal(afterInformational.action_token, initial.action_token);
+
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "action-token-mitigation",
+      goal_ids: ["action-token-scope"],
+      description: "开始前必须先降低风险",
+      probability: "medium",
+      impact: "可能让结果不可信",
+      trigger: "关键前提仍未验证",
+      treatment: "mitigate",
+      treatment_plan: "先补充验证并记录残余缺口",
+      blocking_mode: "claim",
+      revisit_condition: "验证依据提交后复查",
+      owner: "runtime-mitigator",
+    },
+    { actor_id: "runtime-mitigator", idempotency_key: "action-token-mitigation" },
+  );
+  const changed = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "action-token-scope",
+  });
+  assert.notEqual(changed.action_token, initial.action_token);
+  assert.equal(changed.primary_action?.kind, "mitigate_risk");
+  assert.throws(
+    () => coordinator.selectGoalAndStart({
+      board_id: "board-1",
+      goal_id: "action-token-scope",
+      actor_id: "runtime-stale",
+      action_id: initial.primary_action!.action_id,
+      action_token: initial.action_token,
+      idempotency_key: "action-token-stale-select",
+    }),
+    (error: unknown) => error instanceof GoalBoardV1Error &&
+      error.code === "action.token_stale" &&
+      (error.details?.projection as { primary_action?: { kind?: string } } | undefined)?.primary_action?.kind === "mitigate_risk",
+  );
+  const snapshot = store.snapshot("board-1");
+  assert.equal(snapshot.claims.length, 0);
+  assert.equal(snapshot.runs.length, 0);
+  store.close();
+});
+
+test("user Risk decisions require one current action and reconcile every linked Goal", () => {
+  const { store, coordinator } = fixture();
+  createLeaf(coordinator, "risk-decision-a");
+  createLeaf(coordinator, "risk-decision-b");
+  coordinator.addRisk(
+    "board-1",
+    {
+      risk_id: "shared-accept-risk",
+      goal_ids: ["risk-decision-a", "risk-decision-b"],
+      description: "用户必须明确接受这项共享残余风险",
+      probability: "low",
+      impact: "两个结果都可能受影响",
+      trigger: "进入执行前仍无法完全消除不确定性",
+      treatment: "accept",
+      blocking_mode: "completion",
+      revisit_condition: "条件变化后重新评估",
+      owner: "user-1",
+    },
+    { actor_id: "runtime-risk", idempotency_key: "shared-accept-risk-add" },
+  );
+  const projection = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "risk-decision-a",
+  });
+  assert.equal(projection.primary_action?.kind, "accept_risk");
+
+  assert.throws(
+    () => coordinator.setRiskState(
+      "board-1",
+      {
+        risk_id: "shared-accept-risk",
+        state: "accepted",
+        reason: "缺少并发校验上下文",
+        goal_id: "risk-decision-a",
+        action_id: projection.primary_action!.action_id,
+      },
+      { actor_id: "user-1", actor_kind: "user", idempotency_key: "shared-risk-incomplete" },
+    ),
+    (error: unknown) => error instanceof GoalBoardV1Error && error.code === "action.context_incomplete",
+  );
+  assert.equal(store.snapshot("board-1").risks.find((risk) => risk.risk_id === "shared-accept-risk")?.state, "open");
+
+  const accepted = coordinator.setRiskState(
+    "board-1",
+    {
+      risk_id: "shared-accept-risk",
+      state: "accepted",
+      reason: "用户理解影响并接受这项共享残余风险",
+      goal_id: "risk-decision-a",
+      contract_revision: 1,
+      action_id: projection.primary_action!.action_id,
+      action_token: projection.action_token,
+    },
+    { actor_id: "user-1", actor_kind: "user", idempotency_key: "shared-risk-accepted" },
+  );
+  assert.equal(accepted.risk.state, "accepted");
+  assert.deepEqual(
+    accepted.transitions.map((transition) => transition.goal_id).sort(),
+    ["risk-decision-a", "risk-decision-b"],
+  );
+  assert.ok(accepted.transitions.every((transition) => transition.projection.display_status === "continue"));
+  store.close();
+});
+
+test("metadata-only Contract revisions preserve the active Run, action token, Evidence scope, and Review", () => {
+  const { store, coordinator } = fixture();
+  const initialContract = treeGoalPayload({
+    goal_id: "metadata-continuity",
+    title: "metadata continuity",
+    definition_state: "accepted",
+    decomposition_state: "closed_leaf",
+  });
+  coordinator.createGoal(
+    "board-1",
+    { ...initialContract, constraints: ["保持既有验收语义"], priority: 12 },
+    { actor_id: "user-1", idempotency_key: "create-metadata-continuity" },
+  );
+  const execution = selectProjectedAction(coordinator, {
+    goal_id: "metadata-continuity",
+    actor_id: "runtime-metadata",
+    kind: "execute",
+    idempotency_key: "metadata-continuity-execute",
+  });
+  assert.equal(execution.allowed, true);
+  const activeBeforeRevision = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+  });
+  const obligationBefore = store.snapshot("board-1").review_obligations.find((obligation) =>
+    obligation.goal_id === "metadata-continuity" && obligation.role === "self_verifier"
+  );
+  assert.ok(obligationBefore);
+
+  const dialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-metadata-clarifier",
+    rough_idea: "只更新目标标题、说明和优先级，不改变正在执行的工作。",
+    goal_id: "metadata-continuity-context",
+    idempotency_key: "metadata-continuity-dialogue",
+  });
+  const current = store.getGoal("metadata-continuity")!;
+  const proposal = coordinator.submitGoalTreeProposal({
+    board_id: "board-1",
+    actor_id: "runtime-metadata-clarifier",
+    discovered_in_run_id: dialogue.run!.run_id,
+    root_goal_id: "metadata-continuity-context",
+    summary: "仅调整用户可读说明，不改变工作 Contract。",
+    items: [goalTreeProposalItem({
+      item_id: "metadata-continuity-contract",
+      kind: "contract",
+      operation: "update",
+      payload: {
+        goal_id: current.goal_id,
+        title: "更容易读懂的 metadata continuity",
+        outcome: current.outcome,
+        why: "把为什么做说得更清楚，但不改变验收和产物。",
+        business_logic: current.business_logic,
+        in_scope: current.in_scope,
+        out_of_scope: current.out_of_scope,
+        constraints: current.constraints,
+        required_inputs: current.required_inputs,
+        promised_outputs: current.promised_outputs,
+        definition_state: "accepted",
+        decomposition_state: "closed_leaf",
+        priority: current.priority + 1,
+        acceptance_criteria: current.acceptance_criteria,
+        leaf_readiness: readyLeafReadiness(
+          current.promised_outputs[0]!,
+          current.acceptance_criteria.map((criterion) => criterion.criterion_id),
+        ),
+      },
+      object_type: "goal",
+      object_id: current.goal_id,
+    })],
+    idempotency_key: "metadata-continuity-proposal",
+  }).proposal;
+  coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-metadata-clarifier",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://metadata-continuity",
+      message_ref: "message://metadata-continuity-confirm",
+    },
+    decisions: [{
+      item_id: "metadata-continuity-contract",
+      decision: "confirm",
+      reason: "确认只调整说明和优先级。",
+    }],
+    idempotency_key: "metadata-continuity-confirm",
+  });
+
+  const afterRevision = store.snapshot("board-1");
+  assert.equal(store.getGoal("metadata-continuity")?.current_contract_revision, 2);
+  assert.equal(
+    afterRevision.goal_contract_revisions.find((revision) =>
+      revision.goal_id === "metadata-continuity" && revision.revision === 2
+    )?.effect,
+    "metadata",
+  );
+  assert.equal(afterRevision.runs.find((run) => run.run_id === execution.run!.run_id)?.state, "started");
+  assert.equal(afterRevision.claims.find((claim) => claim.claim_id === execution.claim!.claim_id)?.contract_revision, 2);
+  assert.equal(afterRevision.review_obligations.find((obligation) =>
+    obligation.obligation_id === obligationBefore!.obligation_id
+  )?.state, "pending");
+  assert.equal(
+    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "metadata-continuity" }).action_token,
+    activeBeforeRevision.action_token,
+  );
+
+  coordinator.reportRun({
+    board_id: "board-1",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-metadata",
+    state: "completed",
+    contract_revision: 1,
+    action_token: activeBeforeRevision.action_token,
+    idempotency_key: "metadata-continuity-run-complete",
+  });
+  const evidenceProjection = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+  });
+  const evidence = coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+    run_id: execution.run!.run_id,
+    actor_id: "runtime-metadata",
+    criterion_ids: ["metadata-continuity-criterion"],
+    kind: "test",
+    locator: "test://metadata-continuity",
+    result: "passed",
+    contract_revision: 1,
+    action_token: evidenceProjection.action_token,
+    idempotency_key: "metadata-continuity-evidence",
+  }).evidence;
+  assert.equal(evidence.contract_revision, 2);
+
+  const readyForReview = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+  });
+  const reviewAction = readyForReview.actions.find((action) =>
+    action.kind === "review" && action.target_id === obligationBefore!.obligation_id
+  );
+  assert.ok(reviewAction);
+  const reviewSelection = coordinator.selectGoalAndStart({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+    actor_id: "runtime-metadata",
+    role: "self_verifier",
+    action_id: reviewAction!.action_id,
+    action_token: readyForReview.action_token,
+    idempotency_key: "metadata-continuity-review-select",
+  });
+  assert.equal(reviewSelection.allowed, true);
+  const reviewProjection = coordinator.getGoalActionProjection({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+  });
+  coordinator.submitReview({
+    board_id: "board-1",
+    goal_id: "metadata-continuity",
+    obligation_id: obligationBefore!.obligation_id,
+    actor_id: "runtime-metadata",
+    verdict: "pass",
+    evidence_refs: [evidence.evidence_id],
+    reasoning: "说明性修改没有改变原验收结论。",
+    contract_revision: 1,
+    action_token: reviewProjection.action_token,
+    idempotency_key: "metadata-continuity-review",
+  });
+  const finalSnapshot = store.snapshot("board-1");
+  assert.equal(finalSnapshot.review_obligations.filter((obligation) =>
+    obligation.goal_id === "metadata-continuity" && obligation.role === "self_verifier"
+  ).length, 1);
+  assert.equal(store.getGoal("metadata-continuity")?.fulfillment_state, "satisfied");
+  store.close();
 });
 
 test("migration 12 reconciles historical Runs and clarification sessions exactly once", () => {
@@ -2160,6 +2603,8 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
     read_requires_user_confirmation: false,
     continuation_scope: "current_user_authority",
   });
+  assert.equal(released.transition.goal_id, "release-handoff");
+  assert.equal(released.transition.projection.display_status, "continue");
 
   const replayed = coordinator.releaseClaim({
     board_id: "board-1",
@@ -2173,7 +2618,7 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
   store.close();
 });
 
-test("a completed Run keeps its Claim until Evidence is ready and exposes the exact release handoff", () => {
+test("a completed Run keeps its Claim until Evidence is ready and then auto-releases", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completed-run-handoff", 12);
   const selected = coordinator.selectGoalAndStart({
@@ -2191,24 +2636,12 @@ test("a completed Run keeps its Claim until Evidence is ready and exposes the ex
     state: "completed",
     idempotency_key: "completed-run-handoff-report",
   });
-  assert.deepEqual(reported.handoff, {
-    action: "release_claim",
-    tool: "goalboard_v1_release",
-    goal_id: "completed-run-handoff",
-    run_id: selected.run!.run_id,
-    claim_id: selected.claim!.claim_id,
-    actor_id: "runtime-completed-run-handoff",
-    release_reason_suggestion: "本阶段结果与记录已提交，释放当前工作进入下一步",
-    after_release: {
-      action: "read_available",
-      tool: "goalboard_v1_available",
-      read_requires_user_confirmation: false,
-      continuation_scope: "current_user_authority",
-    },
-  });
+  assert.equal(reported.handoff, undefined);
+  assert.equal(reported.transition.projection.display_status, "in_progress");
+  assert.equal(reported.transition.projection.primary_action?.kind, "submit_evidence");
   assert.equal(store.snapshot("board-1").claims.find((item) => item.claim_id === selected.claim!.claim_id)?.state, "active");
 
-  const evidence = coordinator.submitEvidence({
+  const submitted = coordinator.submitEvidence({
     board_id: "board-1",
     goal_id: "completed-run-handoff",
     actor_id: "runtime-completed-run-handoff",
@@ -2218,41 +2651,15 @@ test("a completed Run keeps its Claim until Evidence is ready and exposes the ex
     locator: "command://completed-run-handoff-test",
     result: "passed",
     idempotency_key: "completed-run-handoff-evidence",
-  }).evidence;
+  });
+  const evidence = submitted.evidence;
   assert.equal(evidence.run_id, selected.run!.run_id);
-
-  const contractState = coordinator.getGoalWorkState({
-    board_id: "board-1",
-    goal_id: "completed-run-handoff",
-  });
-  assert.equal(contractState.work_state, "review_blocked");
-  assert.deepEqual(contractState.reasons[0]?.facts, reported.handoff);
-  assert.match(contractState.reasons[0]?.remediation ?? "", /goalboard_v1_release/);
-
-  const beforeRelease = coordinator.queryAvailable({
-    board_id: "board-1",
-    actor_id: "runtime-completed-run-handoff",
-  });
   assert.equal(
-    beforeRelease.available.some(
-      (item) => item.goal.goal_id === "completed-run-handoff" && item.role === "self_verifier",
-    ),
-    false,
+    store.snapshot("board-1").claims.find((item) => item.claim_id === selected.claim!.claim_id)?.state,
+    "released",
   );
-  const handoffOverview = beforeRelease.blocked_overview.find(
-    (item) => item.goal.goal_id === "completed-run-handoff",
-  );
-  assert.equal(handoffOverview?.next_action, "release");
-  assert.deepEqual(handoffOverview?.reasons[0]?.facts, reported.handoff);
-  assert.match(handoffOverview?.reasons[0]?.remediation ?? "", /释放当前 Claim/);
-
-  coordinator.releaseClaim({
-    board_id: "board-1",
-    claim_id: selected.claim!.claim_id,
-    actor_id: "runtime-completed-run-handoff",
-    reason: reported.handoff!.release_reason_suggestion,
-    idempotency_key: "completed-run-handoff-release",
-  });
+  assert.equal(submitted.transition.projection.display_status, "continue");
+  assert.equal(submitted.transition.projection.primary_action?.kind, "review");
   const afterRelease = coordinator.queryAvailable({
     board_id: "board-1",
     actor_id: "runtime-independent-reviewer",
@@ -2480,6 +2887,8 @@ test("an active Claim can renew the same lifecycle and exposes a near-expiry act
   assert.equal(renewed.claim.claim_id, selected.claim!.claim_id);
   assert.equal(renewed.claim.renewed_at, "2026-08-15T00:00:07.000Z");
   assert.equal(renewed.claim.expires_at, "2026-08-15T00:00:17.000Z");
+  assert.equal(renewed.transition.goal_id, "lease-renew");
+  assert.equal(renewed.transition.projection.display_status, "in_progress");
   assert.equal(
     store.snapshot("board-1").runs.filter((item) => item.goal_id === "lease-renew").length,
     1,
@@ -4518,8 +4927,15 @@ test("a clarifier submits one atomic, versioned Goal Tree proposal without touch
     "pending",
   );
 
+  const revisionDialogue = coordinator.resumeDraftDialogue({
+    board_id: "board-1",
+    goal_id: "tree-root",
+    actor_id: "runtime-clarifier",
+    idempotency_key: "tree-proposal-revision-dialogue",
+  });
   const revised = coordinator.submitGoalTreeProposal({
     ...proposalInput,
+    discovered_in_run_id: revisionDialogue.run!.run_id,
     summary: "按最新 Draft 标题修订后的同一组首次使用 Goal Tree 变更。",
     items: [
       goalTreeProposalItem({
@@ -6433,7 +6849,7 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   assert.equal(treeClarificationCloseCount(), 1);
   assert.equal(
     coordinator.readGoalContract("board-1", "tree-decision-parent").work_state.work_state,
-    "clarifying",
+    "clarification_pending",
   );
   assert.equal(
     coordinator.readGoalContract("board-1", "tree-decision-leaf").work_state.work_state,
@@ -6668,10 +7084,16 @@ test("a bootstrap Goal Tree proposal can be strictly reconciled back to its pend
     type: "part_of",
     reason: "启动 Goal 属于当前根 Goal。",
   };
+  const resumed = coordinator.resumeDraftDialogue({
+    board_id: "board-1",
+    goal_id: "candidate-bootstrap-root",
+    actor_id: "runtime-bootstrap-planner",
+    idempotency_key: "candidate-bootstrap-dialogue-resume",
+  });
   const reconciliation = coordinator.submitGoalTreeProposal({
     board_id: "board-1",
     actor_id: "runtime-bootstrap-planner",
-    discovered_in_run_id: dialogue.run!.run_id,
+    discovered_in_run_id: resumed.run!.run_id,
     root_goal_id: "candidate-bootstrap-root",
     summary: "将启动 Goal 严格对账回原 Candidate，并确认父子关系。",
     items: [goalTreeProposalItem({
@@ -7291,10 +7713,17 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
     "incomplete-compound-parent": 0,
   });
 
+  const secondDialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-clarifier",
+    goal_id: "compound-reconciliation-trigger-context",
+    rough_idea: "用另一条澄清工作触发复合状态幂等结算。",
+    idempotency_key: "compound-reconciliation-second-dialogue",
+  });
   const secondProposal = coordinator.submitGoalTreeProposal({
     board_id: "board-1",
     actor_id: "runtime-clarifier",
-    discovered_in_run_id: dialogue.run!.run_id,
+    discovered_in_run_id: secondDialogue.run!.run_id,
     summary: "物化另一项独立 Goal，验证重复结算不重复写入完成事件。",
     items: [
       goalTreeProposalItem({
@@ -7336,7 +7765,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
   store.close();
 });
 
-test("accepted compound closure rejects missing children, invalid transitions, and Contract edits", () => {
+test("accepted compound closure rejects structural gaps and versions material Contract edits", () => {
   const { store, coordinator } = fixture();
   const dialogue = coordinator.startDraftDialogue({
     board_id: "board-1",
@@ -7352,11 +7781,20 @@ test("accepted compound closure rejects missing children, invalid transitions, a
     conversation_ref: "conversation://accepted-closure-rejection",
     message_ref: "message://accepted-closure-rejection-confirm",
   };
+  let submittedProposalCount = 0;
   const submitAndConfirm = (goalId: string, itemId: string, payload: Record<string, unknown>) => {
+    const currentRun = submittedProposalCount === 0
+      ? dialogue.run!
+      : coordinator.resumeDraftDialogue({
+          board_id: "board-1",
+          goal_id: "accepted-closure-rejection-context",
+          actor_id: "runtime-clarifier",
+          idempotency_key: `accepted-closure-resume-${submittedProposalCount}`,
+        }).run!;
     const proposal = coordinator.submitGoalTreeProposal({
       board_id: "board-1",
       actor_id: "runtime-clarifier",
-      discovered_in_run_id: dialogue.run!.run_id,
+      discovered_in_run_id: currentRun.run_id,
       root_goal_id: goalId,
       summary: `验证 ${goalId} 的收口边界。`,
       items: [
@@ -7371,6 +7809,7 @@ test("accepted compound closure rejects missing children, invalid transitions, a
       ],
       idempotency_key: `accepted-closure-rejection-proposal-${goalId}`,
     }).proposal;
+    submittedProposalCount += 1;
     return coordinator.decideGoalTreeProposal({
       board_id: "board-1",
       proposal_id: proposal.proposal_id,
@@ -7435,7 +7874,7 @@ test("accepted compound closure rejects missing children, invalid transitions, a
   assert.deepEqual(invalidTransition.conflict_item_ids, ["accepted-close-invalid-transition"]);
   assert.equal(
     (invalidTransition.proposal.items[0]?.conflict as { code?: string } | null)?.code,
-    "goal.accepted_compound_closure_invalid",
+    "contract.revision_structure_conflict",
   );
   assert.equal(store.getGoal("accepted-closure-invalid-transition")?.decomposition_state, "abstract");
 
@@ -7458,13 +7897,17 @@ test("accepted compound closure rejects missing children, invalid transitions, a
       title: "不允许改写的已接受父 Goal 标题",
     }),
   );
-  assert.deepEqual(mutated.conflict_item_ids, ["accepted-close-mutated-contract"]);
+  assert.deepEqual(mutated.conflict_item_ids, []);
+  assert.deepEqual(mutated.applied_item_ids, ["accepted-close-mutated-contract"]);
+  assert.equal(store.getGoal("accepted-closure-mutated-contract")?.title, "不允许改写的已接受父 Goal 标题");
+  assert.equal(store.getGoal("accepted-closure-mutated-contract")?.decomposition_state, "closed_compound");
+  assert.equal(store.getGoal("accepted-closure-mutated-contract")?.current_contract_revision, 2);
   assert.equal(
-    (mutated.proposal.items[0]?.conflict as { code?: string } | null)?.code,
-    "goal.accepted_contract_immutable",
+    store.snapshot("board-1").goal_contract_revisions.find(
+      (revision) => revision.goal_id === "accepted-closure-mutated-contract" && revision.revision === 2,
+    )?.effect,
+    "rework",
   );
-  assert.equal(store.getGoal("accepted-closure-mutated-contract")?.title, "收口 accepted-closure-mutated-contract");
-  assert.equal(store.getGoal("accepted-closure-mutated-contract")?.decomposition_state, "abstract");
   store.close();
 });
 
@@ -7477,12 +7920,17 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
     goal_id: "decision-conflict-root",
     idempotency_key: "decision-conflict-dialogue",
   });
-  const submit = (idempotencyKey: string, items: ReturnType<typeof goalTreeProposalItem>[]) =>
+  const submit = (
+    idempotencyKey: string,
+    items: ReturnType<typeof goalTreeProposalItem>[],
+    runId = dialogue.run!.run_id,
+    rootGoalId = "decision-conflict-root",
+  ) =>
     coordinator.submitGoalTreeProposal({
       board_id: "board-1",
       actor_id: "runtime-clarifier",
-      discovered_in_run_id: dialogue.run!.run_id,
-      root_goal_id: "decision-conflict-root",
+      discovered_in_run_id: runId,
+      root_goal_id: rootGoalId,
       summary: `测试 ${idempotencyKey}`,
       items,
       idempotency_key: idempotencyKey,
@@ -7556,6 +8004,12 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
   assert.equal(store.getGoal("decision-conflict-root")?.title, "另一个 Session 已修改的根 Goal");
   assert.ok(store.getGoal("decision-conflict-child"));
 
+  const cycleDialogue = coordinator.resumeDraftDialogue({
+    board_id: "board-1",
+    goal_id: "decision-conflict-root",
+    actor_id: "runtime-clarifier",
+    idempotency_key: "decision-cycle-resume",
+  });
   const cycleProposal = submit("decision-cycle-propose", [
     goalTreeProposalItem({
       item_id: "cycle-relation",
@@ -7570,7 +8024,7 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
       object_type: "relation",
       object_id: "relation:new:decision-conflict-root:decision-conflict-child:part_of",
     }),
-  ]);
+  ], cycleDialogue.run!.run_id);
   const cycle = coordinator.decideGoalTreeProposal({
     board_id: "board-1",
     proposal_id: cycleProposal.proposal_id,
@@ -7591,6 +8045,12 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
     false,
   );
 
+  const confirmationADialogue = coordinator.resumeDraftDialogue({
+    board_id: "board-1",
+    goal_id: "decision-conflict-root",
+    actor_id: "runtime-clarifier",
+    idempotency_key: "decision-ambiguity-a-resume",
+  });
   const confirmationA = submit("decision-ambiguity-a", [
     goalTreeProposalItem({
       item_id: "ambiguity-a",
@@ -7605,7 +8065,7 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
       object_type: "goal",
       object_id: "ambiguity-a-goal",
     }),
-  ]);
+  ], confirmationADialogue.run!.run_id);
   assert.throws(
     () =>
       coordinator.decideGoalTreeProposal({
@@ -7631,6 +8091,13 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
       }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "goal_tree_proposal.whole_confirmation_ambiguous",
   );
+  const confirmationBDialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-clarifier",
+    rough_idea: "从另一条独立 Goal 提交第二份待确认方案，验证整份确认不会串单。",
+    goal_id: "decision-ambiguity-b-context",
+    idempotency_key: "decision-ambiguity-b-dialogue",
+  });
   const confirmationB = submit("decision-ambiguity-b", [
     goalTreeProposalItem({
       item_id: "ambiguity-b",
@@ -7645,7 +8112,7 @@ test("Goal Tree decisions keep independent items, conflicts, cycles, and short c
       object_type: "goal",
       object_id: "ambiguity-b-goal",
     }),
-  ]);
+  ], confirmationBDialogue.run!.run_id, "decision-ambiguity-b-context");
   assert.throws(
     () =>
       coordinator.decideGoalTreeProposal({
@@ -7687,6 +8154,17 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
     const fixtureResult = fixture();
     const { store, coordinator } = fixtureResult;
     createAcceptedCompoundParent(coordinator, "atomic-confirm-parent");
+    createLeaf(coordinator, "atomic-confirm-existing-child");
+    coordinator.addRelation(
+      "board-1",
+      {
+        from_goal_id: "atomic-confirm-existing-child",
+        to_goal_id: "atomic-confirm-parent",
+        type: "part_of",
+        reason: "已有子 Goal 使父 Goal 不能被 revision 偷偷改成叶子。",
+      },
+      { actor_id: "user-1", idempotency_key: "atomic-confirm-existing-child-relation" },
+    );
     const dialogue = coordinator.startDraftDialogue({
       board_id: "board-1",
       actor_id: "runtime-atomic-confirm",
@@ -7722,7 +8200,7 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
             goal_id: "atomic-confirm-parent",
             title: "试图改写已接受父 Goal",
             definition_state: "accepted",
-            decomposition_state: "frontier_open",
+            decomposition_state: "closed_leaf",
           }),
           object_type: "goal",
           object_id: "atomic-confirm-parent",
@@ -7743,14 +8221,10 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
   });
   assert.deepEqual(checked.conflict_item_ids, ["atomic-invalid-contract"]);
   assert.equal(checked.proposal.items.find((item) => item.item_id === "atomic-invalid-contract")?.conflict?.code,
-    "goal.accepted_compound_closure_invalid");
+    "contract.revision_structure_conflict");
   assert.equal(
     checked.proposal.items.find((item) => item.item_id === "atomic-invalid-contract")?.conflict?.next_action,
-    "create_replacement_goal",
-  );
-  assert.equal(
-    checked.proposal.items.find((item) => item.item_id === "atomic-invalid-contract")?.conflict?.required_relation,
-    "replaces",
+    "revise_contract_or_update_relations",
   );
   assert.equal(checked.observed_event_cursor, cursorBeforeCheck + 1);
   assert.equal(checkedFixture.store.getGoal("atomic-confirm-child"), null);
@@ -7834,11 +8308,13 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
   partialFixture.store.close();
 });
 
-test("accepted leaf Contract changes return an accurate successor migration outline", () => {
+test("accepted leaf Contract changes keep the Goal ID and preserve relation history", () => {
   const { store, coordinator } = fixture();
   createAcceptedCompoundParent(coordinator, "accepted-leaf-parent");
   createLeaf(coordinator, "accepted-leaf-revision", 8);
   createLeaf(coordinator, "accepted-leaf-provider", 7);
+  store.db.prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
+    .run("accepted-leaf-provider");
   const partOf = coordinator.addRelation(
     "board-1",
     {
@@ -7895,66 +8371,47 @@ test("accepted leaf Contract changes return an accurate successor migration outl
     actor_id: "runtime-leaf-revision",
     idempotency_key: "accepted-leaf-revision-check",
   });
-  const conflict = checked.proposal.items[0]?.conflict;
-  assert.equal(conflict?.code, "goal.accepted_contract_immutable");
-  assert.match(String(conflict?.message), /已接受的叶子 Goal/);
-  assert.doesNotMatch(String(conflict?.message), /父 Goal/);
-  assert.deepEqual(conflict?.current_goal, {
-    goal_id: "accepted-leaf-revision",
-    title: "完成 accepted-leaf-revision",
-    definition_state: "accepted",
-    decomposition_state: "closed_leaf",
-    fulfillment_state: "unmet",
+  assert.deepEqual(checked.conflict_item_ids, []);
+  assert.equal(checked.proposal.items[0]?.conflict, null);
+  const decided = coordinator.decideGoalTreeProposal({
+    board_id: "board-1",
+    proposal_id: proposal.proposal_id,
+    runtime_actor_id: "runtime-leaf-revision",
+    authority: {
+      actor_id: "user-1",
+      actor_kind: "user",
+      authority_source: "runtime_dialogue",
+      conversation_ref: "conversation://accepted-leaf-revision",
+      message_ref: "message://accepted-leaf-revision-confirm",
+    },
+    decisions: [{
+      item_id: "accepted-leaf-contract-update",
+      decision: "confirm",
+      reason: "确认在同一 Goal 上按新要求修改。",
+    }],
+    idempotency_key: "accepted-leaf-revision-decide",
   });
-  assert.deepEqual(conflict?.successor_outline, {
-    source_item_id: "accepted-leaf-contract-update",
-    create_goal: {
-      operation: "create",
-      contract_source: "当前冲突条目的 proposed Goal",
-      requires_new_goal_id: true,
-      requires_new_criterion_ids: true,
-    },
-    replaces_relation: {
-      from_goal_id: "<replacement_goal_id>",
-      to_goal_id: "accepted-leaf-revision",
-      type: "replaces",
-    },
-  });
-  assert.deepEqual(conflict?.relation_migration_candidates, [
-    {
-      relation_id: dependsOn.relation_id,
-      from_goal_id: "accepted-leaf-revision",
-      to_goal_id: "accepted-leaf-provider",
-      type: "depends_on",
-      reason: "叶子消费 provider 输出",
-      replacement_relation: {
-        from_goal_id: "<replacement_goal_id>",
-        to_goal_id: "accepted-leaf-provider",
-        type: "depends_on",
-        reason: "叶子消费 provider 输出",
-      },
-      deactivate_original_after_confirmation: true,
-      requires_review: true,
-    },
-    {
-      relation_id: partOf.relation_id,
-      from_goal_id: "accepted-leaf-revision",
-      to_goal_id: "accepted-leaf-parent",
-      type: "part_of",
-      reason: "叶子属于现有父 Goal",
-      replacement_relation: {
-        from_goal_id: "<replacement_goal_id>",
-        to_goal_id: "accepted-leaf-parent",
-        type: "part_of",
-        reason: "叶子属于现有父 Goal",
-      },
-      deactivate_original_after_confirmation: true,
-      requires_review: true,
-    },
-  ]);
+  assert.deepEqual(decided.applied_item_ids, ["accepted-leaf-contract-update"]);
+  assert.deepEqual(decided.conflict_item_ids, []);
+  const revised = store.getGoal("accepted-leaf-revision")!;
+  assert.equal(revised.title, "用户纠偏后的叶子 Goal");
+  assert.equal(revised.current_contract_revision, 2);
+  assert.equal(revised.fulfillment_state, "unmet");
+  assert.equal(
+    decided.transitions.find((transition) => transition.goal_id === "accepted-leaf-revision")?.projection.primary_action?.kind,
+    "execute",
+  );
   const snapshotAfter = store.snapshot("board-1");
   assert.equal(snapshotAfter.goals.length, snapshotBefore.goals.length);
   assert.equal(snapshotAfter.relations.length, snapshotBefore.relations.length);
+  assert.equal(snapshotAfter.relations.find((relation) => relation.relation_id === partOf.relation_id)?.state, "active");
+  assert.equal(snapshotAfter.relations.find((relation) => relation.relation_id === dependsOn.relation_id)?.state, "active");
+  assert.deepEqual(
+    snapshotAfter.goal_contract_revisions
+      .filter((revision) => revision.goal_id === "accepted-leaf-revision")
+      .map((revision) => [revision.revision, revision.effect]),
+    [[1, "metadata"], [2, "rework"]],
+  );
   store.close();
 });
 
@@ -8047,13 +8504,20 @@ test("Goal Tree proposal rejects cross-proposal item ID reuse with a structured 
   const proposalCountBefore = (store.db
     .prepare("SELECT COUNT(*) AS count FROM goal_tree_proposals WHERE board_id = ?")
     .get("board-1") as { count: number }).count;
+  const secondDialogue = coordinator.startDraftDialogue({
+    board_id: "board-1",
+    actor_id: "runtime-item-id-conflict",
+    rough_idea: "从另一条独立 Goal 提交第二份提案，验证 item ID 在 Board 内仍全局唯一。",
+    goal_id: "item-id-conflict-second-root",
+    idempotency_key: "item-id-conflict-second-dialogue",
+  });
 
   assert.throws(
     () => coordinator.submitGoalTreeProposal({
       board_id: "board-1",
       actor_id: "runtime-item-id-conflict",
-      discovered_in_run_id: dialogue.run!.run_id,
-      root_goal_id: "item-id-conflict-root",
+      discovered_in_run_id: secondDialogue.run!.run_id,
+      root_goal_id: "item-id-conflict-second-root",
       summary: "第二份提案错误复用同一个 item ID。",
       items: [buildItem("second-item-goal")],
       idempotency_key: "item-id-conflict-second",
@@ -9696,6 +10160,15 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
   );
   assert.equal(store.getGoal("risk-goal")?.validity_state, "needs_revalidation");
   assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "invalidated");
+  coordinator.updateRisk(
+    "board-1",
+    { ...updateInput, goal_ids: ["risk-linked-goal"], treatment: "accept" },
+    {
+      actor_id: "user-1",
+      idempotency_key: "risk-require-user-acceptance",
+      reason: "改为由用户决定是否接受残余风险",
+    },
+  );
   coordinator.setRiskState(
     "board-1",
     { risk_id: "invalidating-risk", state: "accepted", reason: "用户接受风险，但历史结果仍需重新验证" },
@@ -10220,6 +10693,17 @@ test("unified Available lets the Runtime choose across clarification, execution,
     state: "completed",
     idempotency_key: "available-review-producer-complete",
   });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "ready-review",
+    actor_id: "runtime-producer",
+    run_id: reviewProducer.run!.run_id,
+    criterion_ids: ["ready-review-criterion"],
+    kind: "test",
+    locator: "test://ready-review",
+    result: "passed",
+    idempotency_key: "available-review-producer-evidence",
+  });
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: reviewProducer.claim!.claim_id,
@@ -10481,7 +10965,11 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
   });
   assert.equal(
     coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
-    "completion_pending",
+    "satisfied",
+  );
+  assert.equal(
+    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "human-decision-routing" }).display_status,
+    "completed",
   );
   store.close();
 });
@@ -10502,6 +10990,17 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "runtime-inconclusive-execute-complete",
+  });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "runtime-inconclusive",
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["runtime-inconclusive-criterion"],
+    kind: "test",
+    locator: "test://runtime-inconclusive",
+    result: "passed",
+    idempotency_key: "runtime-inconclusive-evidence",
   });
   coordinator.releaseClaim({
     board_id: "board-1",
@@ -10604,6 +11103,17 @@ test("a historical mixed Review obligation is split on the next safe Review sele
     state: "completed",
     idempotency_key: "historical-mixed-execute-complete",
   });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "historical-mixed-review",
+    actor_id: "runtime-executor",
+    run_id: execution.run!.run_id,
+    criterion_ids: ["historical-runtime-check"],
+    kind: "inspection",
+    locator: "inspection://historical-runtime-check",
+    result: "passed",
+    idempotency_key: "historical-mixed-runtime-evidence",
+  });
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
@@ -10666,7 +11176,7 @@ test("a historical mixed Review obligation is split on the next safe Review sele
   store.close();
 });
 
-test("a completion Risk after finished work stays out of executor Available and exposes recovery", () => {
+test("a mitigatable completion Risk becomes one scoped Runtime action without restarting execution", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completion-risk-handoff", 40);
   coordinator.addRisk(
@@ -10688,11 +11198,10 @@ test("a completion Risk after finished work stays out of executor Available and 
     { actor_id: "user-1", idempotency_key: "completion-risk-handoff-add-risk" },
   );
 
-  const execution = coordinator.selectGoalAndStart({
-    board_id: "board-1",
+  const execution = selectProjectedAction(coordinator, {
     goal_id: "completion-risk-handoff",
     actor_id: "runtime-executor",
-    role: "executor",
+    kind: "execute",
     idempotency_key: "completion-risk-handoff-execute",
   });
   coordinator.reportRun({
@@ -10770,21 +11279,13 @@ test("a completion Risk after finished work stays out of executor Available and 
   assert.equal(state.reasons[0]?.remediation, "确认代表性样本已经覆盖约定来源");
 
   const menu = coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-next" });
-  assert.equal(menu.available.some((item) => item.goal.goal_id === "completion-risk-handoff"), false);
-  assert.deepEqual(
-    menu.blocked.map((item) => [
-      item.goal.goal_id,
-      item.work_state,
-      item.next_action,
-      item.reasons.map((reason) => reason.code),
-    ]),
-    [[
-      "completion-risk-handoff",
-      "completion_blocked",
-      null,
-      ["goal.execution_finished_rework_required", "risk.blocks_completion"],
-    ]],
+  const riskAction = menu.available.find(
+    (item) => item.goal.goal_id === "completion-risk-handoff" && item.action_kind === "mitigate_risk",
   );
+  assert.equal(riskAction?.role, "executor");
+  assert.equal(riskAction?.action_target_id, "completion-risk-handoff-risk");
+  assert.ok(riskAction?.action_id);
+  assert.equal(menu.blocked.some((item) => item.goal.goal_id === "completion-risk-handoff"), false);
 
   const explained = coordinator.explainGoal({
     board_id: "board-1",
@@ -10815,50 +11316,42 @@ test("a completion Risk after finished work stays out of executor Available and 
   assert.equal(historyAfter.runs.length, historyBefore.runs.length);
   assert.equal(historyAfter.evidence.length, historyBefore.evidence.length);
 
-  store.db
-    .prepare("UPDATE risks SET state = 'resolved' WHERE risk_id = ?")
-    .run("completion-risk-handoff-risk");
+  const resolved = coordinator.setRiskState(
+    "board-1",
+    {
+      risk_id: "completion-risk-handoff-risk",
+      state: "resolved",
+      reason: "代表性样本已经覆盖约定来源",
+      resolution_basis: {
+        summary: "已核对代表性样本覆盖。",
+        evidence_refs: ["evidence://representative-sample-review"],
+        residual_gaps: [],
+      },
+    },
+    { actor_id: "runtime-reviewer", idempotency_key: "completion-risk-handoff-resolve" },
+  );
   const recoveredState = coordinator.getGoalWorkState({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
   });
-  assert.equal(recoveredState.work_state, "completion_pending");
-  assert.equal(recoveredState.next_action, "complete");
+  assert.equal(recoveredState.work_state, "satisfied");
+  assert.equal(recoveredState.next_action, null);
   assert.deepEqual(recoveredState.reasons, []);
+  assert.equal(resolved.transitions[0]?.projection.display_status, "completed");
 
   const recoveredMenu = coordinator.queryAvailable({
     board_id: "board-1",
     actor_id: "runtime-after-risk-resolution",
   });
-  assert.deepEqual(
-    recoveredMenu.available
-      .filter((item) => item.goal.goal_id === "completion-risk-handoff")
-      .map((item) => [item.next_action, item.role, item.why_now]),
-    [["complete", null, "执行、证据和复核已经完成；现在应直接重试完成判定，不要开始新的执行"]],
+  assert.equal(
+    recoveredMenu.available.some((item) => item.goal.goal_id === "completion-risk-handoff"),
+    false,
   );
   assert.equal(
     recoveredMenu.blocked.some((item) => item.goal.goal_id === "completion-risk-handoff"),
     false,
   );
 
-  const recoveredExplanation = coordinator.explainGoal({
-    board_id: "board-1",
-    goal_id: "completion-risk-handoff",
-    actor_id: "runtime-after-risk-resolution",
-    role: "executor",
-  });
-  assert.equal(recoveredExplanation.ready, false);
-  assert.deepEqual(recoveredExplanation.reasons.map((item) => item.code), ["goal.ready_to_complete"]);
-
-  const duplicateAfterRecovery = coordinator.selectGoalAndStart({
-    board_id: "board-1",
-    goal_id: "completion-risk-handoff",
-    actor_id: "runtime-after-risk-resolution",
-    role: "executor",
-    idempotency_key: "completion-risk-handoff-duplicate-after-recovery",
-  });
-  assert.equal(duplicateAfterRecovery.allowed, false);
-  assert.deepEqual(duplicateAfterRecovery.reasons.map((item) => item.code), ["goal.ready_to_complete"]);
   const historyBeforeCompletion = store.snapshot("board-1");
   assert.equal(historyBeforeCompletion.claims.length, historyBefore.claims.length);
   assert.equal(historyBeforeCompletion.runs.length, historyBefore.runs.length);
@@ -10877,41 +11370,10 @@ test("a completion Risk after finished work stays out of executor Available and 
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
   });
-  assert.equal(retractedEvidenceState.work_state, "execution_pending");
+  assert.equal(retractedEvidenceState.work_state, "revalidation_pending");
   assert.equal(
-    coordinator
-      .queryAvailable({ board_id: "board-1", actor_id: "runtime-after-evidence-retraction" })
-      .available.some(
-        (item) => item.goal.goal_id === "completion-risk-handoff" && item.next_action === "complete",
-      ),
-    false,
-  );
-  coordinator.submitEvidence({
-    board_id: "board-1",
-    goal_id: "completion-risk-handoff",
-    actor_id: "runtime-executor",
-    run_id: execution.run!.run_id,
-    criterion_ids: ["completion-risk-handoff-criterion"],
-    kind: "test",
-    locator: "command://completion-risk-handoff-replacement-test",
-    result: "passed",
-    idempotency_key: "completion-risk-handoff-replacement-evidence",
-  });
-  assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-handoff" }).work_state,
-    "completion_pending",
-  );
-
-  const completed = coordinator.evaluateLeafCompletion({
-    board_id: "board-1",
-    goal_id: "completion-risk-handoff",
-    actor_id: "runtime-after-risk-resolution",
-    idempotency_key: "completion-risk-handoff-complete",
-  });
-  assert.equal(completed.satisfied, true);
-  assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-handoff" }).work_state,
-    "satisfied",
+    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "completion-risk-handoff" }).primary_action?.kind,
+    "revalidate",
   );
   store.close();
 });
@@ -10937,11 +11399,10 @@ test("new counter-evidence can request audited rework without resolving a comple
     },
     { actor_id: "user-1", idempotency_key: "completion-risk-rework-add-risk" },
   );
-  const execution = coordinator.selectGoalAndStart({
-    board_id: "board-1",
+  const execution = selectProjectedAction(coordinator, {
     goal_id: "completion-risk-rework",
     actor_id: "runtime-original-executor",
-    role: "executor",
+    kind: "execute",
     idempotency_key: "completion-risk-rework-execute",
   });
   coordinator.reportRun({
@@ -11020,13 +11481,14 @@ test("new counter-evidence can request audited rework without resolving a comple
   assert.equal(reworkRecovery?.facts?.completion_gate_only, true);
   assert.equal(reworkRecovery?.facts?.recovery_tool, "goalboard_v1_rework_request");
   assert.match(reworkRecovery?.remediation ?? "", /criterion.*Evidence.*Available/);
-  const blockedAvailable = coordinator.queryAvailable({
+  const riskAvailable = coordinator.queryAvailable({
     board_id: "board-1",
     actor_id: "runtime-independent-auditor",
-  }).blocked.find((item) => item.goal.goal_id === "completion-risk-rework");
-  assert.ok(blockedAvailable?.reasons.some(
-    (item) => item.code === "goal.execution_finished_rework_required",
-  ));
+  }).available.find((item) =>
+    item.goal.goal_id === "completion-risk-rework" && item.action_kind === "mitigate_risk"
+  );
+  assert.equal(riskAvailable?.action_target_id, "completion-risk-rework-risk");
+  assert.ok(riskAvailable?.action_id);
 
   const requested = coordinator.requestGoalRework({
     board_id: "board-1",
@@ -11085,11 +11547,10 @@ test("new counter-evidence can request audited rework without resolving a comple
     store.snapshot("board-1").risks.find((risk) => risk.risk_id === "completion-risk-rework-risk")?.state,
     "open",
   );
-  const nextExecution = coordinator.selectGoalAndStart({
-    board_id: "board-1",
+  const nextExecution = selectProjectedAction(coordinator, {
     goal_id: "completion-risk-rework",
     actor_id: "runtime-new-executor",
-    role: "executor",
+    kind: "execute",
     idempotency_key: "completion-risk-rework-new-execution",
   });
   assert.equal(nextExecution.allowed, true);
@@ -11322,6 +11783,17 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     state: "completed",
     idempotency_key: "review-rework-execute-first-complete",
   });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    actor_id: "runtime-executor-first",
+    run_id: firstExecution.run!.run_id,
+    criterion_ids: ["review-rework-criterion"],
+    kind: "test",
+    locator: "test://review-rework/first",
+    result: "passed",
+    idempotency_key: "review-rework-first-evidence",
+  });
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: firstExecution.claim!.claim_id,
@@ -11395,6 +11867,17 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     state: "completed",
     idempotency_key: "review-rework-execute-second-complete",
   });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "review-rework",
+    actor_id: "runtime-executor-second",
+    run_id: secondExecution.run!.run_id,
+    criterion_ids: ["review-rework-criterion"],
+    kind: "test",
+    locator: "test://review-rework/second",
+    result: "passed",
+    idempotency_key: "review-rework-second-evidence",
+  });
   coordinator.releaseClaim({
     board_id: "board-1",
     claim_id: secondExecution.claim!.claim_id,
@@ -11444,6 +11927,17 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     actor_id: "runtime-author-first",
     state: "completed",
     idempotency_key: "review-round-reset-execute-first-complete",
+  });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-author-first",
+    run_id: firstExecution.run!.run_id,
+    criterion_ids: ["review-round-reset-criterion"],
+    kind: "test",
+    locator: "test://review-round-reset/first",
+    result: "passed",
+    idempotency_key: "review-round-reset-first-evidence",
   });
   coordinator.releaseClaim({
     board_id: "board-1",
@@ -11589,6 +12083,17 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     actor_id: "runtime-author-second",
     state: "completed",
     idempotency_key: "review-round-reset-execute-second-complete",
+  });
+  coordinator.submitEvidence({
+    board_id: "board-1",
+    goal_id: "review-round-reset",
+    actor_id: "runtime-author-second",
+    run_id: secondExecution.run!.run_id,
+    criterion_ids: ["review-round-reset-criterion"],
+    kind: "test",
+    locator: "test://review-round-reset/second",
+    result: "passed",
+    idempotency_key: "review-round-reset-second-evidence",
   });
   coordinator.releaseClaim({
     board_id: "board-1",
@@ -12216,19 +12721,22 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     state: "completed",
     idempotency_key: "phase-review-execution-completed",
   });
-  const reviewHandoff = coordinator.getGoalWorkState({
+  const evidenceHandoff = coordinator.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "review-phase",
   });
-  assert.equal(reviewHandoff.work_state, "review_blocked");
-  assert.match(reviewHandoff.reasons[0]?.message ?? "", /释放当前 Claim 后进入检查/);
-  assert.match(reviewHandoff.reasons[0]?.remediation ?? "", /goalboard_v1_release.*Available.*self_verifier/);
-  coordinator.releaseClaim({
+  assert.equal(evidenceHandoff.display_status, "in_progress");
+  assert.equal(evidenceHandoff.primary_action?.kind, "submit_evidence");
+  coordinator.submitEvidence({
     board_id: "board-1",
-    claim_id: reviewExecution.claim!.claim_id,
+    goal_id: "review-phase",
     actor_id: "runtime-author",
-    reason: "交给交叉复核者",
-    idempotency_key: "phase-review-release-author",
+    run_id: reviewExecution.run!.run_id,
+    criterion_ids: ["review-phase-criterion"],
+    kind: "test",
+    locator: "test://review-phase",
+    result: "passed",
+    idempotency_key: "phase-review-evidence",
   });
   assert.equal(
     coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,

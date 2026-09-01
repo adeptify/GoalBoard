@@ -11,9 +11,83 @@ import {
   PROJECT_OPERATIONS_STYLES,
   renderProjectOperations,
 } from "../src/web/project-session-workspaces.js";
+import { renderGoalBoardWeb, type GoalBoardWebView } from "../src/web/render.js";
 import { createGoalBoardWebServer } from "../src/web/server.js";
 
 const TOKEN = "goalboard-session-web-token-0123456789abcdef";
+
+test("project root directory uses one chevron affordance for every navigable module", () => {
+  const view = {
+    snapshot: {
+      board: {
+        board_id: "board-root-directory",
+        title: "根目录一致性",
+        active_goal_id: null,
+        created_at: "2026-08-31T00:00:00.000Z",
+        updated_at: "2026-08-31T00:00:00.000Z",
+      },
+      cursor: 0,
+      goals: [],
+      relations: [],
+      impacts: [],
+      risks: [],
+      claims: [],
+      runs: [],
+      evidence: [],
+      review_obligations: [],
+      reviews: [],
+      candidates: [],
+      contract_proposals: [],
+      rewires: [],
+      clarification_sessions: [],
+      clarification_turns: [],
+      goal_tree_proposals: [],
+      planning_method_packs: [],
+    },
+    project: { project_id: "project-root-directory", display_name: "根目录一致性" },
+    projects: [{ project_id: "project-root-directory", display_name: "根目录一致性" }],
+    route_prefix: "/projects/project-root-directory",
+    demo: false,
+    active_goal_id: null,
+    goals: [],
+    archived_goals: [],
+    trashed_goals: [],
+    counts: {},
+    coverage: [],
+    input_bindings: [],
+    policy_bindings: [],
+    events: [],
+    feed: {
+      sources: [],
+      feed_items: [],
+      inbox_entries: [],
+      items: [],
+      runs: [],
+      import_receipts: [],
+      contract_migrations: [],
+    },
+    relay_import: {
+      path: "",
+      available: false,
+      source_count: 0,
+      item_count: 0,
+      material_count: 0,
+      error: null,
+    },
+  } as GoalBoardWebView;
+  const html = renderGoalBoardWeb(view);
+  const rootDirectory = html.match(/<section class="desktop-directory-panel desktop-directory-root"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(rootDirectory);
+  for (const label of ["Inbox", "Goals", "Sessions", "Feed", "来源"]) {
+    assert.match(
+      rootDirectory,
+      new RegExp(`<strong>${label}</strong><small>[^<]*</small></span><svg aria-hidden="true"><use href="#icon-chevron-right"></use></svg></button>`),
+    );
+  }
+  assert.doesNotMatch(rootDirectory, /<strong>工作目录<\/strong>|data-directory-open="workspaces"/);
+  assert.doesNotMatch(rootDirectory, /<em>\d+<\/em>/);
+  assert.equal([...rootDirectory.matchAll(/<em>规划中<\/em>/g)].length, 2);
+});
 
 test("project operation renderer uses real records or an honest empty state without prototype branches", () => {
   const rendered = renderProjectOperations({
@@ -21,17 +95,39 @@ test("project operation renderer uses real records or an honest empty state with
     display_name: "GoalBoard 信息流工作台重设计",
   });
   const html = `${rendered.rootItems}${rendered.directories}${rendered.surfaces}${rendered.overlays}`;
+  assert.match(rendered.rootItems, /<strong>Sessions<\/strong><small>执行内容、运行位置与续跑<\/small><\/span><svg aria-hidden="true"><use href="#icon-chevron-right"><\/use><\/svg>/);
+  assert.doesNotMatch(rendered.rootItems, /工作目录|data-directory-open="workspaces"/);
+  assert.doesNotMatch(rendered.rootItems, /<em>\d+<\/em>/);
   assert.match(html, /这个项目还没有 Session/);
-  assert.match(html, /这个项目还没有工作目录/);
+  assert.doesNotMatch(html, /data-directory-panel="workspaces"|data-work-surface="workspaces"/);
+  assert.match(html, /data-session-add-dialog[\s\S]*新建 Session/);
+  assert.match(html, /session-add-heading-row[\s\S]*data-session-add-dialog-title[\s\S]*data-session-add-toggle/);
+  assert.doesNotMatch(html, /session-add-mode-row/);
+  assert.match(html, /data-session-workspace-menu/);
+  assert.match(html, /data-session-workspace-custom/);
   assert.match(html, /OpenCode/);
   assert.match(html, /Pi Agent/);
   assert.doesNotMatch(html, /option value="running"|option value="failed"/);
   assert.doesNotMatch(html, /codex-0193f6c2|\/Users\/demo|可交互原型|data-live-session|data-operation-archive/);
   assert.doesNotMatch(PROJECT_OPERATIONS_CLIENT_SCRIPT, /dataset\.liveSession|data-operation-archive/);
   assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.goal-focus-aside \{ display: contents; \}/);
-  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.operation-goal-history \{ order: 1; \}/);
-  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.goal-focus-main \{ order: 2; \}/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.goal-focus-main \{ order: 1; \}/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.operation-current-context \{ order: 2; \}/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-session-document \.operation-goal-history \{ order: 3; \}/);
   assert.match(PROJECT_OPERATIONS_STYLES, /\.session-content-state > div:only-child \{ grid-column: 1 \/ -1;/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.session-timeline-event \{[^}]*grid-template-columns:/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /data-desktop-surface="sessions"[^}]*--desktop-project-header-height: var\(--desktop-titlebar-height\)/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.project-record-directory:not\(\[hidden\]\) \{ display: grid; \}/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.session-event-card--technical \{[^}]*border-bottom: 1px solid var\(--line\)/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.session-add-dialog \{[^}]*transform: translateX\(68px\)/);
+  assert.match(PROJECT_OPERATIONS_STYLES, /\.session-workspace-options \{ position: static;/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /session-day-group/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /查看详情/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /查看变更/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /展开输出/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /#icon-chevron-down/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /data-session-content-filter/);
+  assert.match(PROJECT_OPERATIONS_CLIENT_SCRIPT, /workspace_id: sessionAddWorkspaceId/);
 });
 
 test("project Sessions render real Registry records and content/resume APIs stay project isolated", async () => {

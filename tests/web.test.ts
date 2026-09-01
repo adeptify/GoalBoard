@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,8 @@ import {
   renderGoalRecordsFragment,
   renderGoalBoardWorkbenchClientScript,
   renderGoalBoardWorkbenchStylesheet,
+  renderGoalBoardProjectSettings,
+  WORK_TAB_VISIBILITY_CLIENT_SCRIPT,
   renderGoalBoardWeb,
   renderPersistedFeedItemDetail,
   sortGoalTreeItems,
@@ -56,6 +58,19 @@ type GoalTreeBrowserLayout = {
   titleScrollWidth: number;
   titleClientHeight: number;
   titleScrollHeight: number;
+  parentCollapsedLineCount: number;
+  parentCollapsedTitleHeight: number;
+  parentCollapsedWhiteSpace: string;
+  parentCollapsedRowHeight: number;
+  parentCollapsedProgressDisplay: string;
+  parentExpandedLineCount: number;
+  parentExpandedTitleHeight: number;
+  parentExpandedWhiteSpace: string;
+  parentExpandedRowHeight: number;
+  parentExpandedProgressDisplay: string;
+  parentRestoredLineCount: number;
+  parentRestoredRowHeight: number;
+  parentRestoredProgressDisplay: string;
 };
 
 type DecisionDeepLinkBrowserState = {
@@ -66,6 +81,11 @@ type DecisionDeepLinkBrowserState = {
   formFocused: boolean;
   mobileView: string | null;
   searchValue: string | null;
+};
+
+type DesktopWorkTabBrowserLayout = {
+  initial: { railLeft: number; railRight: number; tabLeft: number; tabRight: number; scrollLeft: number; scrollWidth: number; tabCount: number };
+  resized: { railLeft: number; railRight: number; tabLeft: number; tabRight: number; scrollLeft: number; scrollWidth: number; tabCount: number };
 };
 
 let cachedGoalTreeBrowserLayout: Promise<GoalTreeBrowserLayout | null> | undefined;
@@ -95,7 +115,16 @@ function readGoalTreeBrowserLayout(): Promise<GoalTreeBrowserLayout | null> {
       <div class="app"><main class="workspace" style="--tree-width: 519px; width: 1178px; height: 760px">
         <aside class="tree-pane" data-desktop-directory="goals">
           <section class="desktop-directory-panel desktop-goal-directory">
-            <div class="tree-scroll"><ul class="goal-tree"><li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item">
+            <div class="tree-scroll"><ul class="goal-tree">
+            <li class="tree-item is-collapsed" id="parent-item">
+              <div class="tree-row" id="parent-row"><button class="tree-toggle" type="button"></button><div class="tree-entry directory-list-row">
+                <button class="tree-node" type="button"><span class="tree-copy"><span class="tree-title-line"><strong id="parent-title">${longTitle}</strong></span><small>G2G</small></span></button>
+                <span class="directory-row-state"><span class="goal-status goal-status--clarification_pending">目标待澄清</span></span>
+                <span class="tree-meta-line"><span class="tree-progress" id="parent-progress"><span>3/8</span><i><b></b></i></span></span>
+              </div></div>
+              <ul class="tree-children"><li class="tree-item"><div class="tree-row"><span class="tree-guide"></span><div class="tree-entry directory-list-row"><button class="tree-node" type="button"><span class="tree-copy"><span class="tree-title-line"><strong>可见的子 Goal</strong></span></span></button><span class="directory-row-state"><span class="goal-status goal-status--satisfied">已完成</span></span><span class="tree-meta-line"></span></div></div></li></ul>
+            </li>
+            <li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item"><ul class="tree-children"><li class="tree-item">
               <div class="tree-row"><span class="tree-guide"></span><div class="tree-entry directory-list-row">
                 <button class="tree-node" type="button"><span class="tree-copy"><span class="tree-title-line"><strong id="target-title">${longTitle}</strong></span><small>G2G/J</small></span></button>
                 <span class="directory-row-state" id="target-status"><span class="goal-status goal-status--execution_blocked">执行受阻</span></span>
@@ -110,6 +139,26 @@ function readGoalTreeBrowserLayout(): Promise<GoalTreeBrowserLayout | null> {
         const title = document.querySelector("#target-title");
         const range = document.createRange();
         range.selectNodeContents(title);
+        const parent = document.querySelector("#parent-item");
+        const parentTitle = document.querySelector("#parent-title");
+        const parentRow = document.querySelector("#parent-row");
+        const parentProgress = document.querySelector("#parent-progress");
+        const parentMetrics = () => {
+          const parentRange = document.createRange();
+          parentRange.selectNodeContents(parentTitle);
+          return {
+            lineCount: parentRange.getClientRects().length,
+            titleHeight: parentTitle.getBoundingClientRect().height,
+            whiteSpace: getComputedStyle(parentTitle).whiteSpace,
+            rowHeight: parentRow.getBoundingClientRect().height,
+            progressDisplay: getComputedStyle(parentProgress).display,
+          };
+        };
+        const parentCollapsed = parentMetrics();
+        parent.classList.remove("is-collapsed");
+        const parentExpanded = parentMetrics();
+        parent.classList.add("is-collapsed");
+        const parentRestored = parentMetrics();
         const result = {
           paneWidth: pane.getBoundingClientRect().width,
           titleWhiteSpace: getComputedStyle(title).whiteSpace,
@@ -118,6 +167,19 @@ function readGoalTreeBrowserLayout(): Promise<GoalTreeBrowserLayout | null> {
           titleScrollWidth: title.scrollWidth,
           titleClientHeight: title.clientHeight,
           titleScrollHeight: title.scrollHeight,
+          parentCollapsedLineCount: parentCollapsed.lineCount,
+          parentCollapsedTitleHeight: parentCollapsed.titleHeight,
+          parentCollapsedWhiteSpace: parentCollapsed.whiteSpace,
+          parentCollapsedRowHeight: parentCollapsed.rowHeight,
+          parentCollapsedProgressDisplay: parentCollapsed.progressDisplay,
+          parentExpandedLineCount: parentExpanded.lineCount,
+          parentExpandedTitleHeight: parentExpanded.titleHeight,
+          parentExpandedWhiteSpace: parentExpanded.whiteSpace,
+          parentExpandedRowHeight: parentExpanded.rowHeight,
+          parentExpandedProgressDisplay: parentExpanded.progressDisplay,
+          parentRestoredLineCount: parentRestored.lineCount,
+          parentRestoredRowHeight: parentRestored.rowHeight,
+          parentRestoredProgressDisplay: parentRestored.progressDisplay,
         };
         document.title = "RESULT:" + btoa(unescape(encodeURIComponent(JSON.stringify(result))));
       </script>
@@ -309,6 +371,112 @@ function readDecisionDeepLinkBrowserState(
   });
 }
 
+function readDesktopWorkTabBrowserLayout(
+  openTabs: string[],
+): Promise<DesktopWorkTabBrowserLayout | null> {
+  const browser = [
+    process.env.GOALBOARD_TEST_CHROME,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!browser) return Promise.resolve(null);
+
+  const directory = mkdtempSync(join(tmpdir(), "goalboard-work-tabs-layout-"));
+  const profilePath = join(directory, "chrome-profile");
+  const htmlPath = join(directory, "work-tabs.html");
+  mkdirSync(profilePath);
+  const tabMarkup = openTabs.map((goalId, index) => `<div class="desktop-work-tab${index === openTabs.length - 1 ? " is-selected" : ""}" data-work-tab-shell="${goalId}"><button type="button" role="tab" data-work-tab="${goalId}" aria-selected="${index === openTabs.length - 1}"><i aria-hidden="true"></i><span>这是第 ${index + 1} 个用于验证完整可见的较长 Goal 标题</span></button><button type="button">×</button></div>`).join("");
+  const browserHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>${WORKBENCH_STYLES}
+    .desktop-work-tabs.fixture-work-tabs { width: 420px; max-width: 420px; }
+  </style></head><body data-board-view="current" data-desktop-shell="true" data-native-desktop="true">
+    <div class="desktop-work-tabs fixture-work-tabs" data-work-tabs role="tablist" aria-label="已打开的 Goal">${tabMarkup}</div>
+    <script>
+      window.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0);
+      window.cancelAnimationFrame = (handle) => clearTimeout(handle);
+      const workTabs = document.querySelector("[data-work-tabs]");
+      ${WORK_TAB_VISIBILITY_CLIENT_SCRIPT}
+      ensureActiveWorkTabVisible();
+      (async () => {
+        const waitForLayout = () => new Promise((resolve) => setTimeout(resolve, 100));
+        const snapshot = () => {
+          const rail = document.querySelector("[data-work-tabs]");
+          const tab = rail.querySelector(".desktop-work-tab.is-selected");
+          const railRect = rail.getBoundingClientRect();
+          const tabRect = tab.getBoundingClientRect();
+          return {
+            railLeft: railRect.left,
+            railRight: railRect.right,
+            tabLeft: tabRect.left,
+            tabRight: tabRect.right,
+            scrollLeft: rail.scrollLeft,
+            scrollWidth: rail.scrollWidth,
+            tabCount: rail.querySelectorAll(".desktop-work-tab").length,
+          };
+        };
+        try {
+          await waitForLayout();
+          const initial = snapshot();
+          const rail = document.querySelector("[data-work-tabs]");
+          rail.style.width = "300px";
+          rail.style.maxWidth = "300px";
+          ensureActiveWorkTabVisible();
+          await waitForLayout();
+          await waitForLayout();
+          const resized = snapshot();
+          const result = { initial, resized };
+          document.title = "RESULT:" + btoa(unescape(encodeURIComponent(JSON.stringify(result))));
+        } catch (error) {
+          document.title = "ERROR:" + String(error?.stack || error);
+        }
+      })();
+    </script></body></html>`;
+  writeFileSync(htmlPath, browserHtml);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(browser, [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-background-mode",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--no-default-browser-check",
+      "--no-first-run",
+      `--user-data-dir=${profilePath}`,
+      "--window-size=800,500",
+      "--virtual-time-budget=3000",
+      "--dump-dom",
+      `file://${htmlPath}`,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 15_000);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (/<title>RESULT:[^<]+<\/title>/.test(stdout)) child.kill("SIGTERM");
+    });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", () => {
+      clearTimeout(timer);
+      rmSync(directory, { recursive: true, force: true });
+      const encoded = stdout.match(/<title>RESULT:([^<]+)<\/title>/)?.[1];
+      if (!encoded) {
+        reject(new Error(`${stderr}\nBrowser work-tab result missing from DOM:\n${stdout.slice(0, 500)}`));
+        return;
+      }
+      resolve(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as DesktopWorkTabBrowserLayout);
+    });
+  });
+}
+
 test("Goal Tree applies the width chosen with its splitter", async (context) => {
   const layout = await readGoalTreeBrowserLayout();
   if (!layout) return context.skip("Headless Chrome is unavailable");
@@ -322,6 +490,26 @@ test("Goal Tree shows a long nested title without clipping", async (context) => 
   assert.ok(layout.titleLineCount > 1, `expected wrapped title, received ${layout.titleLineCount} line`);
   assert.ok(layout.titleScrollWidth <= layout.titleClientWidth + 1, "title is clipped horizontally");
   assert.ok(layout.titleScrollHeight <= layout.titleClientHeight + 1, "title is clipped vertically");
+});
+
+test("Goal Tree compacts an expanded parent row and restores its folded summary", async (context) => {
+  const layout = await readGoalTreeBrowserLayout();
+  if (!layout) return context.skip("Headless Chrome is unavailable");
+  assert.ok(layout.parentCollapsedLineCount > 1, `expected folded parent title to wrap, received ${layout.parentCollapsedLineCount} line`);
+  assert.notEqual(layout.parentCollapsedProgressDisplay, "none");
+  assert.equal(layout.parentExpandedWhiteSpace, "nowrap");
+  assert.ok(
+    layout.parentExpandedTitleHeight < layout.parentCollapsedTitleHeight,
+    `expected expanded title (${layout.parentExpandedTitleHeight}px) to be shorter than folded title (${layout.parentCollapsedTitleHeight}px)`,
+  );
+  assert.equal(layout.parentExpandedProgressDisplay, "none");
+  assert.ok(
+    layout.parentExpandedRowHeight < layout.parentCollapsedRowHeight,
+    `expected expanded row (${layout.parentExpandedRowHeight}px) to be shorter than folded row (${layout.parentCollapsedRowHeight}px)`,
+  );
+  assert.ok(layout.parentRestoredLineCount > 1);
+  assert.notEqual(layout.parentRestoredProgressDisplay, "none");
+  assert.ok(Math.abs(layout.parentRestoredRowHeight - layout.parentCollapsedRowHeight) <= 1);
 });
 
 test("Desktop workbench keeps stable Goal ids visible in the Goal Tree", () => {
@@ -345,6 +533,26 @@ test("desktop work tabs keep a readable width and scroll instead of overlapping"
     WORKBENCH_STYLES,
     /\.desktop-work-tab > \[role="tab"\] span \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/,
   );
+  assert.match(
+    WORKBENCH_CLIENT_SCRIPT,
+    /const ensureActiveWorkTabVisible = \(\) => \{[\s\S]*activeTabShell[\s\S]*workTabs\.scrollLeft/,
+  );
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /new ResizeObserver\(ensureActiveWorkTabVisible\)/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /persistWorkTabs\(\);\s*ensureActiveWorkTabVisible\(\);/);
+});
+
+test("desktop work tabs keep the active tab fully visible after restore and resize", async (context) => {
+  const openTabs = ["goal-one", "goal-two", "goal-three", "goal-four"];
+  const layout = await readDesktopWorkTabBrowserLayout(openTabs);
+  if (!layout) return context.skip("Headless Chrome is unavailable");
+  for (const [state, snapshot] of Object.entries(layout)) {
+    assert.ok(snapshot.tabLeft >= snapshot.railLeft - 1, `${state}: active tab starts outside the rail: ${JSON.stringify(layout)}`);
+    assert.ok(snapshot.tabRight <= snapshot.railRight + 1, `${state}: active tab ends outside the rail: ${JSON.stringify(layout)}`);
+  }
+  assert.equal(layout.initial.tabCount, 4);
+  assert.ok(layout.initial.scrollWidth > layout.initial.railRight - layout.initial.railLeft);
+  assert.ok(layout.initial.scrollLeft > 0, `restored trailing tab should scroll into view: ${JSON.stringify(layout)}`);
+  assert.ok(layout.resized.scrollLeft >= layout.initial.scrollLeft, "narrower rail should preserve or advance the tab scroll");
 });
 
 test("Goal Tree uses compact Runtime references instead of long internal ids", () => {
@@ -495,11 +703,16 @@ test("an open completion Risk stays visible without replacing an executable Goal
   const view = buildGoalBoardWebView(store, coordinator, { boardId: "completion-risk-action-board" });
   const item = view.goals.find((entry) => entry.goal.goal_id === "completion-risk-action-goal")!;
   assert.equal(item.status, "execution_pending");
-  assert.equal(countGoalDecisions(view, item.goal.goal_id), 1, "the Risk remains visible in Inbox");
+  assert.equal(
+    countGoalDecisions(view, item.goal.goal_id),
+    0,
+    "a Runtime-mitigated Risk stays in Goal context instead of becoming a user decision",
+  );
   const html = renderGoalBoardWeb(view, item.goal.goal_id);
   const factors = renderGoalPanelFragment(view, item.goal.goal_id, "factors") ?? "";
-  assert.match(html, /goal-now-body[\s\S]*?<strong>开始推进这条 Goal<\/strong>/);
-  assert.match(html, /goal-now-body[\s\S]*?<span>打开 Runtime<\/span>/);
+  assert.match(html, /data-goal-status="continue"/);
+  assert.match(html, /goal-now-body[\s\S]*?<strong>处理风险<\/strong>/);
+  assert.match(html, /goal-now-body[\s\S]*?<span>处理风险<\/span>/);
   assert.doesNotMatch(html, /goal-now-body[\s\S]{0,800}<strong>先完成等待你的决定<\/strong>/);
   assert.match(factors, /来源覆盖还没有完成最终核对/);
 
@@ -1123,20 +1336,24 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
     const origin = `http://127.0.0.1:${address.port}`;
 
     const openPage = await goalPageWithLazyContent(origin, "OPEN-PARENT", ["completion"]);
-    assert.match(openPage, /data-goal-id="OPEN-PARENT"[^>]*data-goal-status="compound_closure_pending"/);
-    assert.match(openPage, /goal-status--compound_closure_pending[^>]*[\s\S]*?<span>待确认父目标<\/span>/);
-    assert.match(openPage, /现有子 Goal 都完成了，但父 Goal 仍标记为尚未拆完，所以不会自动完成/);
-    assert.match(openPage, /data-open-goal-tui[^>]*aria-label="确认当前拆分是否完整"[^>]*>[\s\S]*?<span>查看完成结果<\/span>/);
+    assert.match(openPage, /data-goal-id="OPEN-PARENT"[^>]*data-goal-status="continue"/);
+    assert.match(openPage, /goal-status--continue[^>]*[\s\S]*?<span>可继续<\/span>/);
+    assert.match(openPage, /当前列出的子 Goal 都完成了，但拆分还没有确认结束。先确认它们是否已经覆盖整个父目标/);
+    assert.match(openPage, /data-open-goal-edit[^>]*aria-label="继续澄清"[^>]*>[\s\S]*?<span>继续澄清<\/span>/);
     assert.match(openPage, /child-progress--needs_confirmation/);
     assert.match(openPage, /现有子 Goal 已完成，父目标待确认/);
     assert.match(openPage, /先确认它们是否已经覆盖整个父目标/);
 
     const compoundPage = await goalPageWithLazyContent(origin, "COMPOUND-PARENT", ["completion"]);
+    assert.match(compoundPage, /data-goal-id="COMPOUND-PARENT"[^>]*data-goal-status="waiting"/);
+    assert.match(compoundPage, /goal-status--waiting[^>]*[\s\S]*?<span>等待中<\/span>/);
     assert.match(compoundPage, /child-progress--automatic/);
     assert.match(compoundPage, /子 Goal 完成后自动完成/);
     assert.match(compoundPage, /还剩 1 个子 Goal；全部完成后，这条父 Goal 会自动完成/);
 
     const leafPage = await goalPageWithLazyContent(origin, "LEAF-PARENT", ["completion"]);
+    assert.match(leafPage, /data-goal-id="LEAF-PARENT"[^>]*data-goal-status="blocked"/);
+    assert.match(leafPage, /goal-status--blocked[^>]*[\s\S]*?<span>受阻<\/span>/);
     assert.match(leafPage, /child-progress--conflict/);
     assert.match(leafPage, /父子结构需要确认/);
     assert.match(leafPage, /被标记为可以独立完成，却同时包含子 Goal/);
@@ -1350,7 +1567,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(historyDecisionHtml, /采用整份方案/);
   assert.match(historyDecisionHtml, /<details class="decision-details goal-tree-proposal-changes"><summary><span>查看采用后的 1 项变化/);
   assert.match(historyDecisionHtml, /展开查看每项变化/);
-  assert.match(historyRootHtml, /处理 \d+ 项决定/);
+  assert.match(historyRootHtml, /href="\/decisions#decision-goal-RELEASE"/);
   const pageHtml = renderGoalBoardWeb(view);
   const projectPageHtml = renderGoalBoardWeb({
     ...view,
@@ -1358,6 +1575,18 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
     project: { project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" },
     projects: [{ project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" }],
   });
+  const desktopProjectPageHtml = renderGoalBoardWeb({
+    ...view,
+    route_prefix: "/projects/PROJECT-UI",
+    project: { project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" },
+    projects: [{ project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" }],
+  }, undefined, false, false, false, "", true);
+  const desktopProjectSettingsHtml = renderGoalBoardProjectSettings({
+    ...view,
+    route_prefix: "/projects/PROJECT-UI",
+    project: { project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" },
+    projects: [{ project_id: "PROJECT-UI", display_name: "GoalBoard 示例项目", data_class: "regenerable_demo" }],
+  }, "", true);
   const corePageHtml = renderGoalBoardWeb(view, "CORE");
   const completionFragment = renderGoalPanelFragment(view, "V1", "completion");
   const progressFragment = renderGoalPanelFragment(view, "V1", "progress");
@@ -1380,6 +1609,21 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.ok(waitingForHumanGoal);
   waitingForHumanGoal.status = "waiting_for_human";
   waitingForHumanGoal.work_state = "waiting_for_human";
+  waitingForHumanGoal.display_status = "waiting_user";
+  waitingForHumanGoal.display_status_label = "等你";
+  waitingForHumanGoal.main_action_label = "完成验收";
+  waitingForHumanGoal.action_summary = "工程检查已经完成，现在只等你的验收";
+  waitingForHumanGoal.action_projection.display_status = "waiting_user";
+  waitingForHumanGoal.action_projection.primary_action = {
+    action_id: "action-waiting-human-test",
+    actor: "user",
+    kind: "review",
+    status: "ready",
+    target_type: "review_obligation",
+    target_id: "human-review-test",
+    reasons: [],
+  };
+  waitingForHumanGoal.action_projection.actions = [waitingForHumanGoal.action_projection.primary_action];
   waitingForHumanGoal.reasons = [{
     code: "review.user_approval_required",
     severity: "blocker",
@@ -1404,6 +1648,10 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   const decisionPageHtml = renderGoalBoardWeb(view, undefined, false, true);
   const decisionHtml = `${decisionPageHtml}<style>${WORKBENCH_STYLES}</style><script>${WORKBENCH_CLIENT_SCRIPT}</script>`;
   assert.ok(html.startsWith("<!--\nTHESIS:"));
+  assert.match(desktopProjectPageHtml, /class="navigator-native-row">[\s\S]*class="navigator-directory-toggle"[\s\S]*class="navigator-project-primary">/);
+  assert.match(desktopProjectPageHtml, /class="navigator-project-primary">[\s\S]*class="navigator-project-menu[\s\S]*class="navigator-project-notifications"[^>]*disabled[\s\S]*class="navigator-project-settings"/);
+  assert.match(desktopProjectSettingsHtml, /class="settings-desktop-project">[\s\S]*class="navigator-native-row">[\s\S]*class="navigator-project-primary">/);
+  assert.match(desktopProjectSettingsHtml, /class="navigator-project-notifications"[^>]*disabled[^>]*aria-label="通知，暂不可用"/);
   assert.equal((html.match(/data-goal-view=/g) ?? []).length, 1);
   assert.match(html, /data-goal-view="V1"/);
   assert.doesNotMatch(html, /data-goal-view="CORE"/);
@@ -1478,7 +1726,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-quick-record-type="impact"/);
   assert.match(html, /data-quick-record-type="relation"/);
   assert.equal((html.match(/class="goal-primary-action"/g) ?? []).length, 1);
-  assert.match(html, /aria-label="进入子 Goal「[^”]+」"[^>]*>[\s\S]*?<span>进入子 Goal<\/span>/);
+  assert.match(html, /goal-now-body[\s\S]*aria-label="查看等待条件"[^>]*>[\s\S]*?<span>查看等待条件<\/span>/);
   assert.doesNotMatch(html, /<section class="goal-technical"[^>]*>/);
   assert.match(html, /data-goal-records-content data-loaded="false"/);
   assert.match(recordsFragment, /<section class="goal-technical"[^>]*>/);
@@ -1576,7 +1824,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /id="tree-status-filter" data-tree-filter hidden aria-label="按状态筛选"/);
   assert.match(html, /可同时选择多个状态；会与关键词搜索一起生效。/);
   assert.match(html, /data-status-filter/);
-  assert.match(html, /data-goal-status="executing"/);
+  assert.match(html, /data-goal-status="waiting_user"/);
   assert.match(html, /data-clear-status-filter/);
   assert.match(html, /data-clear-tree-filter/);
   assert.match(html, /statuses: \[\.\.\.selectedStatuses\]/);
@@ -1611,7 +1859,16 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /selected !== refreshGoalId/);
   assert.match(
     html,
-    /if \(decisionView\) \{\s*saveUiState\(\);\s*location\.reload\(\);\s*return "reloading";/,
+    /if \(decisionView\) \{[\s\S]*nextFeedList[\s\S]*nextRows\.forEach\(\(row\) => feedList\.insertBefore\(row, feedEmpty\)\)[\s\S]*filterFeedItems\(false\)[\s\S]*window\.scrollTo/,
+  );
+  assert.match(
+    html,
+    /feedWorkbench\.querySelectorAll\("\[data-feed-detail\]"\)[\s\S]*feedWorkbench\.insertBefore\(detail, feedDetailEmpty\)/,
+  );
+  assert.match(html, /decisionFeedEntryFromHash\(\)[\s\S]*history\.replaceState\(null, "", location\.pathname \+ location\.search\)/);
+  assert.doesNotMatch(
+    html,
+    /if \(decisionView\) \{\s*saveUiState\(\);\s*location\.reload\(\);/,
   );
   assert.match(
     html,
@@ -1656,7 +1913,9 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /const createDraft = dialog\.open \? readCreateDraft\(\) : null/);
   assert.match(html, /applyCreateDraft\(createDraft\)/);
   assert.match(html, /const liveUiInteractionActive = \(\) =>/);
-  assert.match(html, /active\.closest\?\.\("\[data-live-form\]"\)/);
+  assert.match(html, /active\?\.closest\?\.\("\[data-live-form\]"\)/);
+  assert.match(html, /data-live-form\]\[data-live-dirty=/);
+  assert.match(html, /setAttribute\("data-live-dirty", "true"\)/);
   assert.match(html, /if \(!force && liveUiInteractionActive\(\)\) return/);
   assert.match(html, /form\?\.addEventListener\("change", updateRelationPreviews\)/);
   assert.match(html, /sessionStorage\.setItem/);
@@ -1726,7 +1985,15 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /target\.closest\("\[data-directory-toggle\]"\)/);
   assert.match(
     WORKBENCH_STYLES,
-    /\.workspace\.is-directory-collapsed[\s\S]*grid-template-columns: max\(44px, calc\(var\(--desktop-project-safe-inline-start\) \+ 44px\)\) 0 minmax\(0, 1fr\) !important/,
+    /\.workspace\.is-directory-collapsed[\s\S]*grid-template-columns: 0 0 minmax\(0, 1fr\) !important;[\s\S]*position: relative;/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.workspace\.is-directory-collapsed > \.tree-pane \{[^}]*width: max\(44px, calc\(var\(--desktop-project-safe-inline-start\) \+ 44px\)\);[^}]*height: var\(--desktop-titlebar-height\);[^}]*background: transparent;[^}]*position: absolute;/,
+  );
+  assert.match(
+    WORKBENCH_STYLES,
+    /\.workspace\.is-directory-collapsed > \.workbench-header \{[^}]*padding-inline-start: max\(54px, calc\(var\(--desktop-project-safe-inline-start\) \+ 50px\)\);/,
   );
   assert.match(
     WORKBENCH_STYLES,
@@ -1744,22 +2011,30 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.match(html, /data-companion-runtime/);
   assert.match(html, /data-companion-runtime-open/);
   assert.match(html, /target\.closest\("\[data-companion-runtime-open\]"\)\) \{\s*setWorkspaceMode\("runtime"\)/);
-  assert.match(coreHtml, /租约还剩 \d+ 分钟/);
-  assert.match(coreHtml, /到期前续租可保持当前 Claim 和 Run/);
-  assert.match(waitingForHumanHtml, /goal-status--waiting_for_human/);
-  assert.match(waitingForHumanHtml, /等待你验收/);
-  assert.match(waitingForHumanHtml, /完成真实操作并提交验收决定/);
+  assert.doesNotMatch(coreHtml, /租约还剩 \d+ 分钟/);
+  assert.doesNotMatch(coreHtml, /到期前续租可保持当前 Claim 和 Run/);
+  assert.match(waitingForHumanHtml, /goal-status--waiting_user/);
+  assert.match(waitingForHumanHtml, /<span>等你<\/span>/);
+  assert.match(waitingForHumanHtml, /工程检查已经完成，现在只等你的验收/);
   assert.match(html, /desktopCompanionActive && selected \? "document"/);
   assert.match(html, /const setWorkspaceMode =/);
   assert.match(html, /workspace\.dataset\.workspaceMode = nextMode/);
   assert.match(html, /class="goal-mode-switch" role="tablist" aria-label="Goal 工作模式"/);
   assert.match(html, /data-workbench-view="focus"[\s\S]*data-workbench-view="runtime"/);
   assert.match(html, /class="tui-focus-return"[^>]*data-tui-focus-return/);
+  assert.match(html, /class="tui-owner-copy"[\s\S]*class="tui-owner-actions"[\s\S]*class="goal-status goal-status--[a-z_]+"[^>]*data-tui-owner-status[\s\S]*data-tui-focus-return/);
+  assert.doesNotMatch(html, /<small data-tui-owner-status/);
+  assert.match(html, /status: item\.status,[\s\S]*statusIconMarkup: item\.status_icon/);
   assert.match(html, /target\.closest\("\[data-tui-focus-return\]"\)\) \{\s*setWorkspaceMode\("focus"\)/);
   assert.doesNotMatch(html, /class="desktop-workbench-actions"/);
+  assert.match(WORKBENCH_STYLES, /\.tui-owner-actions \{[^}]*display: flex;[^}]*align-items: center;/);
+  assert.match(WORKBENCH_STYLES, /body\[data-desktop-shell="true"\] \.tui-focus-return \{[^}]*position: static;/);
   assert.match(WORKBENCH_STYLES, /@media \(max-width: 760px\) \{[\s\S]*\.goal-mode-switch,[\s\S]*\.tui-focus-return \{ display: none !important; \}/);
   assert.doesNotMatch(html, /data-workbench-view="graph"/);
   assert.match(html, /marker-end="url\(#momentum-arrow\)"/);
+  assert.match(html, /defaultMarker\.cloneNode\(true\)/);
+  assert.match(html, /selectedMarker\.id = "momentum-arrow-selected"/);
+  assert.match(html, /related \? "url\(#momentum-arrow-selected\)" : "url\(#momentum-arrow\)"/);
   assert.match(html, /class="momentum-level"/);
   assert.match(html, /class="momentum-group"/);
   assert.match(html, /data-momentum-period="7"/);
@@ -1804,31 +2079,22 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
   assert.doesNotMatch(html, /EFFECTIVE POLICY/);
   assert.doesNotMatch(html, /class="goal-decision-notice"/);
   assert.match(coreHtml, /href="\/decisions#decision-goal-CORE"/);
-  assert.match(coreHtml, /处理 \d+ 项决定/);
+  assert.match(coreHtml, /href="\/decisions#decision-goal-CORE"/);
   assert.doesNotMatch(workSurfaceHtml(html, "goal"), /<form class="decision-record rewire-decision"/);
   assert.doesNotMatch(decisionHtml, /USER AUTHORITY/);
   assert.match(decisionHtml, /data-board-view="decisions"/);
   assert.match(decisionHtml, /data-goal-momentum/);
   assert.match(decisionHtml, /href="\/goals\/CORE"><strong>让每项工作都有可信的完成依据<\/strong>/);
-  assert.match(decisionHtml, /decision-kind decision-kind--risk/);
-  assert.equal((decisionHtml.match(/decision-kind decision-kind--risk/g) ?? []).length, 2);
-  assert.match(decisionHtml, /用户接入 Runtime 后没有新开会话，误以为安装失败/);
-  assert.match(decisionHtml, /字段过多导致信息过载/);
-  assert.match(decisionHtml, /risk-goal-links/);
-  assert.match(decisionHtml, /保存风险决定/);
-  assert.match(decisionHtml, /data-risk-state-form[^>]*novalidate/);
-  assert.match(decisionHtml, /<option value="" selected disabled>请选择处理结果<\/option>/);
-  assert.doesNotMatch(decisionHtml, /<option value="open" selected/);
-  assert.match(decisionHtml, /请选择风险处理结果，再保存。/);
-  assert.match(decisionHtml, /决定理由（必填）/);
-  assert.match(decisionHtml, /请填写决定理由。说明你为什么这样选择，以及依据是什么。/);
-  assert.match(decisionHtml, /submit\.textContent = L\("正在保存…"\)/);
+  assert.doesNotMatch(decisionHtml, /decision-kind decision-kind--risk/);
+  assert.doesNotMatch(decisionHtml, /字段过多导致信息过载/);
   assert.match(decisionHtml, /要调整这些 Goal 的先后或归属关系吗？/);
   assert.match(decisionHtml, /这些决定属于/);
   assert.match(decisionHtml, /为什么现在要决定/);
   assert.match(decisionHtml, /选完会发生什么/);
   assert.match(decisionHtml, /现在没有足够依据给出可靠建议/);
   assert.match(decisionHtml, /data-decision-receipt/);
+  assert.match(decisionHtml, /const receiptHost = center \|\| activeFeedDetail/);
+  assert.match(decisionHtml, /receiptHost\.querySelector\("\.decision-record"\)/);
   assert.match(decisionHtml, /link\.href = context\.goalHref/);
   assert.doesNotMatch(decisionHtml, /link\.href = route\(context\.goalHref\)/);
   assert.match(decisionHtml, /为什么是这个方向/);
@@ -1927,7 +2193,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
       impact: "用户会重复操作或放弃当前流程",
       affected_surfaces: ["Decision Center"],
       trigger: "待决定卡片消失且没有可核对结果",
-      treatment: "mitigate",
+      treatment: "accept",
       blocking_mode: "completion",
       revisit_condition: "风险结果能够跨刷新持续显示",
       owner: "test-user",
@@ -2137,7 +2403,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   assert.match(decisionHtml, /data-feed-type-filter hidden/);
   assert.match(decisionHtml, /data-feed-time-filter hidden/);
   assert.match(decisionHtml, /data-feed-entry-id="feed-item"[^>]*data-feed-entry-read="unread"/);
-  assert.match(decisionHtml, /<strong>Feed<\/strong><small>所有来源消息，完整保留<\/small><\/span><em>2<\/em>/);
+  assert.match(decisionHtml, /<strong>Feed<\/strong><small>所有来源消息，完整保留<\/small><\/span><svg aria-hidden="true"><use href="#icon-chevron-right"><\/use><\/svg>/);
   const selectedInboxRow = decisionHtml.match(/<button class="feed-list-item[^>]*aria-selected="true"[^>]*>/)?.[0];
   assert.ok(selectedInboxRow);
   assert.match(selectedInboxRow, /tabindex="0"/);
@@ -2152,13 +2418,15 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   assert.match(feedDetail, /data-feed-action="inbox"[\s\S]*加入 Inbox/);
   assert.match(feedDetail, /data-destination-state="feed"[\s\S]*仅保留在 Feed/);
   assert.match(unsafeDetail, /&lt;img src=x onerror=&quot;globalThis\.pwned=true&quot;&gt;/);
-  assert.match(unsafeDetail, /&lt;script&gt;globalThis\.pwned=true&lt;\/script&gt;/);
+  assert.doesNotMatch(unsafeDetail, /&lt;script&gt;|<script\b/);
   assert.doesNotMatch(unsafeDetail, /href="(?:javascript|data):/);
   assert.doesNotMatch(unsafeDetail, /<(?:script|iframe|img)\b/);
   assert.match(unsafeDetail, /&lt;svg onload=alert\(1\)&gt;/);
   assert.match(decisionHtml, /data-feed-empty-title>[\s\S]*data-feed-empty-copy>[\s\S]*data-feed-clear-filters hidden/);
   assert.doesNotMatch(decisionHtml, /data-prototype-feed-(?:restore|empty-state)/);
   assert.match(WORKBENCH_CLIENT_SCRIPT, /没有符合当前条件的 Item/);
+  assert.match(WORKBENCH_CLIENT_SCRIPT, /setFeedDetailPlaceholder\([\s\S]*filteredEmpty \? L\("没有符合当前条件的 Item"\) : L\("这里还没有 Item"\)[\s\S]*接入来源后，消息和 Feed 会出现在这里。/);
+  assert.match(WORKBENCH_STYLES, /@media \(min-width: 761px\) and \(max-width: 1180px\) \{[\s\S]*\.session-execution > header \{[^}]*flex-direction: column;[^}]*\}[\s\S]*\.operation-content-controls \{[^}]*width: 100%;[^}]*min-width: 0;/);
   assert.match(decisionHtml, /data-mobile-directory-root data-directory-open="root"/);
   assert.match(decisionHtml, /data-directory-open="sources" data-work-surface-open="sources"[\s\S]*<strong>来源<\/strong>[\s\S]*账号、接入源与拉取计划/);
   assert.match(decisionHtml, /data-directory-panel="sources"[^>]*data-source-directory hidden/);
@@ -2229,7 +2497,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   assert.match(goalHtml, new RegExp(`id="relation-${relationId}"`));
   assert.doesNotMatch(decisionHtml, /data-risk-id="RISK-RESULT-VISIBILITY"/);
   assert.doesNotMatch(decisionHtml, new RegExp(`data-rewire-id="${rewire.rewire_id}"`));
-  assert.match(decisionHtml, /data-risk-id="RISK-RESULT-NOOP"/);
+  assert.doesNotMatch(decisionHtml, /data-risk-id="RISK-RESULT-NOOP"/);
   const newRewireForm = decisionHtml.match(
     new RegExp(`<form class="decision-record rewire-decision"[^>]*data-rewire-id="${newRewire.rewire_id}"[\\s\\S]*?</form>`),
   )?.[0];
@@ -2466,13 +2734,22 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
     const obligationStore = new SqliteGoalBoardStore(databasePath);
+    const obligationCoordinator = new GoalBoardCoordinator(obligationStore);
     const humanObligation = obligationStore.snapshot(boardId).review_obligations.find(
       (item) => item.goal_id === goalId && item.role === "human_approver",
     )!;
+    const attentionToken = String(
+      obligationCoordinator.getGoalActionProjection({ board_id: boardId, goal_id: goalId })
+        .actions.find((action) => action.target_id === humanObligation.obligation_id)
+        ?.reasons[0]?.facts?.attention_token ?? "",
+    );
+    assert.match(attentionToken, /^attention-/);
     obligationStore.close();
+    const exactUserQuote = "我亲自走完主路径，来源、Feed 与 Inbox 的对象边界已经清楚。";
     const requestBody = JSON.stringify({
       verdict: "pass",
-      reasoning: "我亲自走完主路径，来源、Feed 与 Inbox 的对象边界已经清楚。",
+      reasoning: exactUserQuote,
+      attention_token: attentionToken,
       idempotency_key: "human-decision-inbox-web-pass",
     });
     const submit = await webFetch(
@@ -2482,12 +2759,17 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     assert.equal(submit.status, 200);
     const submitted = await submit.json() as {
       review: { review_id: string };
-      human_verdict_evidence: { evidence_id: string; review_id: string | null; criterion_ids: string[]; locator: string; digest: string | null };
+      evidence: { evidence_id: string; review_id: string | null; criterion_ids: string[]; locator: string; digest: string | null };
+      transition: { projection: { display_status: string } };
     };
-    assert.equal(submitted.human_verdict_evidence.review_id, submitted.review.review_id);
-    assert.deepEqual(submitted.human_verdict_evidence.criterion_ids, ["human-decision-inbox-owner"]);
-    assert.equal(submitted.human_verdict_evidence.locator, `review://${submitted.review.review_id}`);
-    assert.equal(submitted.human_verdict_evidence.digest, "我亲自走完主路径，来源、Feed 与 Inbox 的对象边界已经清楚。");
+    assert.equal(submitted.evidence.review_id, submitted.review.review_id);
+    assert.deepEqual(submitted.evidence.criterion_ids, ["human-decision-inbox-owner"]);
+    assert.equal(
+      submitted.evidence.locator,
+      `conversation://web%3A${boardId}/human-decision-inbox-web-pass`,
+    );
+    assert.equal(submitted.evidence.digest, createHash("sha256").update(exactUserQuote).digest("hex"));
+    assert.equal(submitted.transition.projection.display_status, "completed");
 
     const replay = await webFetch(
       `${origin}/api/goals/${goalId}/review-obligations/${humanObligation.obligation_id}/review`,
@@ -2496,7 +2778,7 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     assert.equal(replay.status, 200);
     const replayed = await replay.json() as typeof submitted;
     assert.equal(replayed.review.review_id, submitted.review.review_id);
-    assert.equal(replayed.human_verdict_evidence.evidence_id, submitted.human_verdict_evidence.evidence_id);
+    assert.equal(replayed.evidence.evidence_id, submitted.evidence.evidence_id);
 
     const verifiedStore = new SqliteGoalBoardStore(databasePath);
     const verifiedCoordinator = new GoalBoardCoordinator(verifiedStore);
@@ -2510,8 +2792,8 @@ test("Decision Center prioritizes pending human decisions and submits the linked
       1,
     );
     assert.equal(
-      verifiedCoordinator.getGoalWorkState({ board_id: boardId, goal_id: goalId }).work_state,
-      "completion_pending",
+      verifiedCoordinator.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).display_status,
+      "completed",
     );
     verifiedStore.close();
   } finally {
@@ -2569,8 +2851,8 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(projectIndex, /数据源:|board_id/);
     assert.match(projectIndex, /href="\/assets\/goalboard-project-index\.css"/);
     assert.doesNotMatch(projectIndex, /class="project-primary-directories"|打开全部 Sessions/);
-    assert.match(projectIndex, /class="project-directory-list"/);
-    assert.match(projectIndex, /class="project-directory-row"/);
+    assert.match(projectIndex, /class="project-card-grid"/);
+    assert.match(projectIndex, /class="project-card" role="listitem"/);
     assert.match(projectIndex, /data-project-search/);
     assert.match(projectIndex, /data-project-search-row="产品 alpha user"/);
     assert.doesNotMatch(projectIndex, /class="project-list"/);
@@ -2580,8 +2862,12 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.doesNotMatch(projectIndex, /data-native-desktop="true"|data-tauri-drag-region/);
     assert.match(projectIndexStyles, /\.project-index-page > \.topbar \{ height: 58px; \}/);
     assert.match(projectIndexStyles, /\.project-index \{ min-height: calc\(100dvh - 58px\)/);
-    assert.match(projectIndexStyles, /\.project-directory-list \{ border-block: 1px solid var\(--line-strong\); \}/);
-    assert.match(projectIndexStyles, /\.project-directory-row \{[^}]*min-height: 72px;[^}]*grid-template-columns: 36px minmax\(0, 1fr\) 110px 74px/);
+    assert.match(projectIndexStyles, /\.project-card-grid \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\);[^}]*gap: 12px;/);
+    assert.match(projectIndexStyles, /\.project-card \{[^}]*min-height: 138px;[^}]*padding: 16px;[^}]*border-radius: 12px;/);
+    assert.match(projectIndexStyles, /max-width: 1100px[^}]*min-width: 761px[\s\S]*\.project-card-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); \}/);
+    assert.match(projectIndexStyles, /max-width: 760px[\s\S]*\.project-card-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
+    assert.match(projectIndexStyles, /max-width: 520px[\s\S]*\.project-card-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    assert.doesNotMatch(projectIndexStyles, /\.project-index-create \{[^}]*color: #fff;[^}]*background: var\(--ink\)/);
 
     const desktopProjectIndex = await (await webFetch(`${origin}/?desktop=1`)).text();
     assert.match(desktopProjectIndex, /<body class="project-index-page" data-desktop-shell="true" data-native-desktop="true">/);
@@ -2626,11 +2912,9 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(alphaPage, new RegExp(`data-route-prefix="${alphaPrefix}"`));
     assert.match(alphaPage, /data-directory-open="feed"[^>]*data-feed-preset="inbox_message"/);
     assert.match(alphaPage, /data-directory-open="sessions" data-work-surface-open="sessions"/);
-    assert.match(alphaPage, /data-directory-open="workspaces" data-work-surface-open="workspaces"/);
     assert.match(alphaPage, /data-directory-panel="sessions"/);
-    assert.match(alphaPage, /data-directory-panel="workspaces"/);
     assert.match(alphaPage, /data-work-surface="sessions"/);
-    assert.match(alphaPage, /data-work-surface="workspaces"/);
+    assert.doesNotMatch(alphaPage, /data-directory-open="workspaces"|data-directory-panel="workspaces"|data-work-surface="workspaces"/);
     assert.doesNotMatch(alphaPage, /sw-page|sw-project-chrome|sw-shell|sw-commandbar/);
     assert.match(alphaPage, /data-feed-workbench/);
     assert.match(alphaPage, /data-feed-workbench[^>]*data-loaded="false"/);
@@ -2646,7 +2930,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.match(WORKBENCH_STYLES, /:not\(\[data-native-desktop="true"\]\) \.mobile-project-bar \{[\s\S]*display: grid;/);
     assert.match(WORKBENCH_STYLES, /\.mobile-project-switcher \.navigator-project-menu-popover \{[\s\S]*z-index: 120;/);
     assert.match(WORKBENCH_STYLES, /\.project-record-directory \{ min-height: 0; grid-template-rows:/);
-    assert.match(WORKBENCH_STYLES, /\.project-operation-layout \{ padding-inline: 0; \}/);
+    assert.match(WORKBENCH_STYLES, /data-desktop-surface="sessions"\] \.project-operation-layout \{ padding-inline: 0;/);
     assert.doesNotMatch(WORKBENCH_STYLES, /\.sw-page|\.sw-project-chrome|\.sw-shell|\.sw-commandbar/);
     assert.equal((alphaPage.match(/data-goal-view=/g) ?? []).length, 1);
 
@@ -2663,7 +2947,7 @@ test("Web project catalog switches browser scope without exposing storage or cha
     assert.equal(alphaSessions.headers.get("location"), `${alphaPrefix}/#sessions`);
     const alphaWorkspaces = await webFetch(`${origin}${alphaPrefix}/workspaces`, { redirect: "manual" });
     assert.equal(alphaWorkspaces.status, 302);
-    assert.equal(alphaWorkspaces.headers.get("location"), `${alphaPrefix}/#workspaces`);
+    assert.equal(alphaWorkspaces.headers.get("location"), `${alphaPrefix}/#sessions`);
     const desktopAlphaSessions = await webFetch(`${origin}${alphaPrefix}/sessions?desktop=1`, { redirect: "manual" });
     assert.equal(desktopAlphaSessions.status, 302);
     assert.equal(desktopAlphaSessions.headers.get("location"), `${alphaPrefix}/?desktop=1#sessions`);
@@ -3100,11 +3384,15 @@ test("Web settings use shared Runtime and project services for confirmed setup f
     assert.match(runtimePage, /data-runtime-plan-dialog/);
     assert.match(runtimePage, /我已查看并确认这份变更/);
     assert.doesNotMatch(runtimePage, /已关联的 AI 会话|工作目录关联|data-connection-rebind|data-workspace-default/);
-    assert.match(runtimePage, /Session 与工作目录关系请进入对应项目管理/);
+    assert.match(runtimePage, /Session 与运行位置请进入对应项目的 Sessions 管理/);
     assert.match(runtimePage, /不接入也能正常使用 Goal Tree、待决定和记录/);
     assert.match(runtimePage, /href="\/assets\/goalboard-settings\.css"/);
     assert.match(settingsStyles, /.settings-page > \.topbar \{ height: 58px; \}/);
     assert.match(settingsStyles, /@media \(max-width: 760px\)[\s\S]*\.settings-page > \.topbar \{ height: 52px; \}/);
+    assert.match(settingsStyles, /@media \(max-width: 760px\)[\s\S]*\.settings-desktop-project,[\s\S]*\.settings-desktop-heading,[\s\S]*\.settings-navigation > \.personal-sidebar-footer \{ display: none !important; \}/);
+    assert.match(settingsStyles, /@media \(max-width: 760px\)[\s\S]*\.settings-nav-body \{ display: contents; \}/);
+    assert.match(settingsStyles, /@media \(max-width: 760px\)[\s\S]*\.settings-navigation \{[^}]*padding: 6px 8px;[^}]*\}[\s\S]*\.settings-navigation a \{ min-height: 44px; \}/);
+    assert.match(settingsStyles, /@media \(max-width: 520px\) \{\s*\.preference-options--density \{ grid-template-columns: 1fr; \}/);
     assert.match(settingsStyles, /\.settings-page \.top-action span \{ display: none; \}/);
     assert.match(settingsStyles, /button:focus-visible[\s\S]*a:focus-visible/);
     assert.match(settingsStyles, /body\.settings-page\[data-desktop-shell="true"\]:has\(\.settings-navigation\) \.settings-navigation \{[^}]*overflow: visible;/);
@@ -3770,7 +4058,7 @@ test("global settings leaves Session and workspace management to project directo
     const page = await (await webFetch(`${origin}/settings/runtimes`)).text();
     assertInlineScriptsCompile(page);
     assert.doesNotMatch(page, /已关联的 AI 会话|工作目录关联|ordinary-workspace|data-workspace-default|data-connection-rebind|data-connection-unbind/);
-    assert.match(page, /Session 与工作目录关系请进入对应项目管理/);
+    assert.match(page, /Session 与运行位置请进入对应项目的 Sessions 管理/);
     assert.doesNotMatch(page, /web-project-alpha-session|web-project-beta-session/);
 
     for (const path of [
@@ -3792,7 +4080,7 @@ test("global settings leaves Session and workspace management to project directo
     assert.match(await alphaProject.text(), /data-directory-open="sessions"/);
     const betaProject = await webFetch(`${origin}/projects/${encodeURIComponent(fixture.beta.project_id)}/`);
     assert.equal(betaProject.status, 200);
-    assert.match(await betaProject.text(), /data-directory-open="workspaces"/);
+    assert.doesNotMatch(await betaProject.text(), /data-directory-open="workspaces"/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -3892,18 +4180,37 @@ test("Web local control gate rejects cross-site, missing-credential, hostile-hos
   }
 });
 
-test("Web project catalog empty state does not create a project or Runtime binding", async () => {
+test("Web first-run onboarding can be skipped without creating a project or Runtime binding", async () => {
   const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-project-empty-"));
   const server = createGoalBoardWebServer({ homeDirectory });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const page = await (await webFetch(`http://127.0.0.1:${address.port}/`)).text();
+    const origin = `http://127.0.0.1:${address.port}`;
+    const root = await webFetch(`${origin}/`, { redirect: "manual" });
+    assert.equal(root.status, 302);
+    assert.equal(root.headers.get("location"), "/onboarding");
+
+    const onboarding = await (await webFetch(`${origin}/onboarding`)).text();
+    assertInlineScriptsCompile(onboarding);
+    assert.match(onboarding, /你好，我们今天做点什么/);
+    assert.match(onboarding, /先不开 TUI/);
+    assert.match(onboarding, /只填入提示，不自动发送/);
+
+    const dismissed = await webFetch(`${origin}/api/onboarding/dismiss`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "first_run", user_confirmed: true }),
+    });
+    assert.equal(dismissed.status, 200);
+
+    const projectIndex = await webFetch(`${origin}/`, { redirect: "manual" });
+    assert.equal(projectIndex.status, 200);
+    const page = await projectIndex.text();
     assert.match(page, /从一个真实项目开始/);
-    assert.match(page, /创建第一个项目/);
-    assert.match(page, /设置 Runtime 接入/);
-    assert.match(page, /两步都可跳过/);
+    assert.match(page, /开始建立第一个项目/);
+    assert.match(page, /直接进入项目设置/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -3916,6 +4223,145 @@ test("Web project catalog empty state does not create a project or Runtime bindi
     assert.deepEqual(catalog.listRuntimeContextBindingEvents(), []);
   } finally {
     catalog.close();
+  }
+});
+
+test("Web onboarding creates one real Project, root Draft Goal, and optional Workspace", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-onboarding-create-"));
+  const workspaceDirectory = join(homeDirectory, "workspace");
+  mkdirSync(workspaceDirectory);
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let projectId = "";
+  let goalId = "";
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const invalid = await webFetch(`${origin}/api/onboarding/initialize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        project_name: "1234",
+        outcome: "----",
+        workspace_path: null,
+        runtime_kind: null,
+        user_confirmed: true,
+      }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const initialized = await webFetch(`${origin}/api/onboarding/initialize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        project_name: "真实首次项目",
+        outcome: "让第一次使用 GoalBoard 的人建立可以继续澄清的目标",
+        workspace_path: workspaceDirectory,
+        runtime_kind: null,
+        user_confirmed: true,
+      }),
+    });
+    assert.equal(initialized.status, 201);
+    const payload = await initialized.json() as {
+      project: { project_id: string };
+      goal_id: string;
+      goal_path: string;
+      workspace: { canonical_path: string } | null;
+      runtime_autofill: boolean;
+    };
+    projectId = payload.project.project_id;
+    goalId = payload.goal_id;
+    assert.match(payload.goal_path, new RegExp(`^/projects/${projectId}/goals/`));
+    assert.equal(payload.workspace?.canonical_path, realpathSync(workspaceDirectory));
+    assert.equal(payload.runtime_autofill, false);
+
+    const status = await (await webFetch(`${origin}/api/onboarding/status`)).json() as {
+      state: { first_run: string; completed_project_id: string };
+      first_run_required: boolean;
+    };
+    assert.equal(status.state.first_run, "completed");
+    assert.equal(status.state.completed_project_id, projectId);
+    assert.equal(status.first_run_required, false);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+
+  const catalog = await GoalBoardProjectCatalog.open({ homeDirectory });
+  try {
+    const projects = catalog.listProjects();
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.project_id, projectId);
+    assert.equal(projects[0]?.display_name, "真实首次项目");
+    assert.deepEqual(catalog.listWorkspaceDirectory(projectId).map((item) => item.canonical_path), [realpathSync(workspaceDirectory)]);
+    const project = catalog.getProject(projectId);
+    const store = new SqliteGoalBoardStore(project.database_path);
+    try {
+      const goals = store.snapshot(project.board_id).goals;
+      assert.equal(goals.length, 1);
+      assert.equal(goals[0]?.goal_id, goalId);
+      assert.equal(goals[0]?.definition_state, "draft");
+      assert.equal(goals[0]?.decomposition_state, "abstract");
+      assert.equal(goals[0]?.outcome, "让第一次使用 GoalBoard 的人建立可以继续澄清的目标");
+    } finally {
+      store.close();
+    }
+  } finally {
+    catalog.close();
+  }
+});
+
+test("Web update onboarding is shown once per installed version", async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), "goalboard-web-onboarding-update-"));
+  mkdirSync(join(homeDirectory, "config"), { recursive: true });
+  writeFileSync(join(homeDirectory, "config", "installation.json"), JSON.stringify({
+    installer: "goalboard-home-install-v1",
+    version: "1.0.0",
+    release_path: "releases/1.0.0",
+  }));
+  const server = createGoalBoardWebServer({ homeDirectory });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const created = await webFetch(`${origin}/api/settings/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ display_name: "已有项目", user_confirmed: true }),
+    });
+    assert.equal(created.status, 201);
+
+    const firstUpdate = await webFetch(`${origin}/`, { redirect: "manual" });
+    assert.equal(firstUpdate.status, 302);
+    assert.equal(firstUpdate.headers.get("location"), "/onboarding?mode=update");
+    const updatePage = await (await webFetch(`${origin}/onboarding?mode=update`)).text();
+    assertInlineScriptsCompile(updatePage);
+    assert.match(updatePage, /GoalBoard 已更新 1\.0\.0/);
+
+    const acknowledged = await webFetch(`${origin}/api/onboarding/dismiss`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "update", user_confirmed: true }),
+    });
+    assert.equal(acknowledged.status, 200);
+    assert.equal((await webFetch(`${origin}/`, { redirect: "manual" })).status, 200);
+
+    writeFileSync(join(homeDirectory, "config", "installation.json"), JSON.stringify({
+      installer: "goalboard-home-install-v1",
+      version: "1.1.0",
+      release_path: "releases/1.1.0",
+    }));
+    const nextUpdate = await webFetch(`${origin}/`, { redirect: "manual" });
+    assert.equal(nextUpdate.status, 302);
+    assert.equal(nextUpdate.headers.get("location"), "/onboarding?mode=update");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -3970,14 +4416,16 @@ test("Web chrome switches between Chinese and English without translating Goal t
       `${origin}/projects/${fixture.alpha.project_id}/api/capsule?locale=en`,
       { headers: { cookie: "goalboard_locale=zh" } },
     )).text();
-    assert.match(capsuleApiEnglish, /Needs clarification/);
-    assert.doesNotMatch(capsuleApiEnglish, /目标待澄清/);
+    assert.match(capsuleApiEnglish, /Continue clarifying/);
+    assert.match(capsuleApiEnglish, /"label":"Continue"/);
+    assert.doesNotMatch(capsuleApiEnglish, /目标待澄清|待澄清/);
 
     const capsuleApiChinese = await (await webFetch(
       `${origin}/projects/${fixture.alpha.project_id}/api/capsule?locale=zh`,
       { headers: { cookie: "goalboard_locale=en" } },
     )).text();
-    assert.match(capsuleApiChinese, /目标待澄清/);
+    assert.match(capsuleApiChinese, /继续澄清/);
+    assert.match(capsuleApiChinese, /"label":"可继续"/);
     assert.doesNotMatch(capsuleApiChinese, /Needs clarification/);
 
     const accepted = await (await webFetch(`${origin}/`, {
@@ -4049,7 +4497,14 @@ test("Web migrates an explicitly confirmed legacy DB into one project without ch
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
 
-    const indexResponse = await webFetch(`${origin}/`);
+    const firstRunResponse = await webFetch(`${origin}/`, { redirect: "manual" });
+    assert.equal(firstRunResponse.status, 302);
+    assert.equal(firstRunResponse.headers.get("location"), "/onboarding");
+    const onboarding = await (await webFetch(`${origin}/onboarding`)).text();
+    assert.match(onboarding, /迁移已有数据/);
+    assert.match(onboarding, /href="\/settings\/projects"/);
+
+    const indexResponse = await webFetch(`${origin}/settings/projects`);
     assert.match(indexResponse.headers.get("content-security-policy") ?? "", /script-src(?: 'self')? 'unsafe-inline'/);
     assert.match(indexResponse.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
     const index = await indexResponse.text();
@@ -4396,9 +4851,9 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
     assert.match(decisionPage, /data-goal-tree-decision-form[\s\S]*novalidate/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /goalTreeDecisionForm[\s\S]*请填写决定理由或修改意见/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /decision === "confirm"[\s\S]*confirm_all_pending: true/);
-    assert.match(rootPage, /查看并决定这份方案/);
-    assert.match(rootPage, /处理 1 项决定/);
-    assert.match(rootPage, /goal-status--clarification_decision_pending[^>]*[\s\S]*?<span>待你确认<\/span>/);
+    assert.match(rootPage, /href="\/decisions#decision-goal-web-tree-root"/);
+    assert.match(rootPage, /处理待确认事项/);
+    assert.match(rootPage, /goal-status--waiting_user[^>]*[\s\S]*?<span>等你<\/span>/);
     assert.match(rootPage, /draft-gaps draft-gaps--decision[\s\S]*方案已经整理好/);
     assert.match(rootPage, /这条 Goal 不是还要继续澄清，而是在等你确认整理后的结果、范围和子 Goal/);
     assert.doesNotMatch(rootPage, /<div class="draft-gaps"><div><strong>这条 Goal 还没说清楚/);
@@ -4459,8 +4914,8 @@ test("Web uses the named Goal Tree decision page for atomic whole confirmation",
     const updatedRootHeaderEnd = updatedRootPage.indexOf("</header>", updatedRootStart);
     assert.ok(updatedRootHeaderEnd >= 0);
     const updatedRootDocument = updatedRootPage.slice(updatedRootStart, updatedRootHeaderEnd);
-    assert.match(updatedRootDocument, /goal-status--clarifying[^>]*[\s\S]*?<span>目标澄清中<\/span>/);
-    assert.doesNotMatch(updatedRootDocument, /goal-status--clarification_decision_pending/);
+    assert.match(updatedRootDocument, /goal-status--continue[^>]*[\s\S]*?<span>可继续<\/span>/);
+    assert.doesNotMatch(updatedRootDocument, /goal-status--waiting_user/);
     const resultPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(resultPage, /最近处理结果/);
     assert.match(resultPage, /Goal 方案/);
@@ -4507,6 +4962,35 @@ test("Web explains a materialization conflict before the user confirms a whole G
     },
     { actor_id: "web-user", idempotency_key: "web-tree-accepted-parent-create" },
   );
+  coordinator.createGoal(
+    "web-tree-preflight-board",
+    {
+      goal_id: "web-tree-existing-child",
+      title: "已经属于父目标的子 Goal",
+      outcome: "提供父目标需要的现有结果",
+      why: "验证 Contract revision 不会偷偷删除 Goal Tree 关系",
+      business_logic: "子 Goal 继续保留自己的 Contract 和历史。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "web-tree-existing-child-done",
+        statement: "子 Goal 结果可检查",
+        decision_method: "inspection",
+        pass_condition: "现有 part_of 关系保持可追溯",
+      }],
+    },
+    { actor_id: "web-user", idempotency_key: "web-tree-existing-child-create" },
+  );
+  coordinator.addRelation(
+    "web-tree-preflight-board",
+    {
+      from_goal_id: "web-tree-existing-child",
+      to_goal_id: "web-tree-accepted-parent",
+      type: "part_of",
+      reason: "这是已经生效的父子结构",
+    },
+    { actor_id: "web-user", idempotency_key: "web-tree-existing-child-link" },
+  );
   const dialogue = coordinator.startDraftDialogue({
     board_id: "web-tree-preflight-board",
     actor_id: "runtime-tree-preflight",
@@ -4545,17 +5029,32 @@ test("Web explains a materialization conflict before the user confirms a whole G
           why: "错误示例",
           business_logic: "错误示例",
           in_scope: ["新需求"],
-          out_of_scope: [],
+          out_of_scope: ["不更改现有父子关系"],
           required_inputs: ["新需求"],
           promised_outputs: ["新结果"],
           definition_state: "accepted",
-          decomposition_state: "frontier_open",
+          decomposition_state: "closed_leaf",
           acceptance_criteria: [{
             criterion_id: "web-tree-accepted-parent-contract",
             statement: "新需求已经覆盖旧承诺",
             decision_method: "inspection",
             pass_condition: "错误示例",
+            required_evidence: ["inspection"],
           }],
+          leaf_readiness: {
+            verdict: "ready",
+            primary_deliverable: "新结果",
+            output_coverage: [{
+              promised_output: "新结果",
+              role: "primary",
+              reason: "这是错误修订声称的唯一交付结果。",
+            }],
+            split_candidates: [],
+            rationale: "让用例继续进入结构冲突预检，而不是被叶子完整性校验提前拦截。",
+            unresolved_decisions: [],
+            independent_deliverables: [],
+            acceptance_criterion_ids: ["web-tree-accepted-parent-contract"],
+          },
         },
         source_refs: ["conversation://web-tree-preflight"],
         reason: "验证用户确认前能看到不可应用原因。",
@@ -4584,9 +5083,8 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.match(page, /这份方案暂时不能采用/);
     assert.match(page, /当前有内容不满足 GoalBoard 的写入规则，修正前不会写入 Goal Tree/);
     assert.doesNotMatch(page, /其中有风险信息或 Goal 拆解需要 Runtime 修正/);
-    assert.match(page, /已接受且尚未收口的复合 Goal 只能从 abstract 或 frontier_open 收口为 closed_compound/);
-    assert.match(page, /使用 successor_outline 创建 replacement Goal/);
-    assert.match(page, /当前 Goal Tree 尚未改变/);
+    assert.match(page, /这个 Goal 仍有生效的子 Goal，不能把新版本改成叶子 Goal/);
+    assert.match(page, /保留 compound 结构，或在同一份 Proposal 中显式调整 part_of 关系后再确认/);
     assert.match(page, /value="confirm" disabled aria-disabled="true"/);
     assert.match(page, /value="reject">退回修正/);
     const directWholeConfirmation = await webFetch(
@@ -4604,7 +5102,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     assert.equal(directWholeConfirmation.status, 400);
     const directError = await directWholeConfirmation.text();
     assert.match(directError, /本次整份确认没有写入任何变更/);
-    assert.match(directError, /使用 successor_outline 创建 replacement Goal/);
+    assert.match(directError, /不能把新版本改成叶子 Goal/);
     const board = (await (await webFetch(`${origin}/api/board`)).json()) as {
       snapshot: {
         goals: Array<{ goal_id: string }>;
@@ -5824,7 +6322,7 @@ test("Web server keeps Candidate and Rewire as separate user decisions", async (
     )?.goal_id;
     assert.ok(ownerGoalId);
     const ownerPageWithDecision = await (await webFetch(`${origin}/goals/${encodeURIComponent(ownerGoalId)}`)).text();
-    assert.match(ownerPageWithDecision, /处理 \d+ 项决定/);
+    assert.match(ownerPageWithDecision, new RegExp(`href="/decisions#decision-goal-${ownerGoalId}"`));
     assert.doesNotMatch(workSurfaceHtml(ownerPageWithDecision, "goal"), /<form class="decision-record rewire-decision"/);
     const relationCountBefore = afterCandidate.snapshot.relations.length;
     const missingRewireReason = await webFetch(
@@ -6067,13 +6565,13 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
     const page = await (await webFetch(`${origin}/goals/FIRST-DRAFT`)).text();
-    assert.match(page, /goal-status--clarification_decision_pending[^>]*[\s\S]*?<span>待你确认<\/span>/);
+    assert.match(page, /goal-status--waiting_user[^>]*[\s\S]*?<span>等你<\/span>/);
     assert.match(page, /方案已经整理好/);
-    assert.match(page, /查看并决定这份方案/);
-    assert.match(page, /目标方案已经整理好，正在等你确认或退回修改/);
+    assert.match(page, /确认新要求/);
+    assert.match(page, /新的目标说明等待你的确认/);
     assert.doesNotMatch(page, /clarifier 已提交 Contract/);
     assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT"/);
-    assert.match(page, /处理 2 项决定/);
+    assert.match(page, /href="\/decisions#decision-goal-FIRST-DRAFT"/);
     assert.doesNotMatch(workSurfaceHtml(page, "goal"), /<form class="decision-record contract-proposal"/);
     const decisionPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(decisionPage, /这条 Goal 已经说清楚，可以开始了吗？/);
@@ -6297,7 +6795,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
         impact: "高",
         affected_surfaces: ["src/web", "Goal Tree"],
         trigger: "两个子 Goal 同时修改同一业务决策",
-        treatment: "mitigate",
+        treatment: "accept",
         blocking_mode: "completion",
         revisit_condition: "子 Goal 关系确认后复查",
         owner: "product-owner",
@@ -6455,7 +6953,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
         impact: "高",
         affected_surfaces: ["src/web", "Contract"],
         trigger: "规则正式发布新版本",
-        treatment: "mitigate",
+        treatment: "accept",
         treatment_plan: "提前核对外部规则，并保留兼容路径",
         blocking_mode: "completion",
         revisit_condition: "每次规则发布后复查",
@@ -6482,11 +6980,23 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(riskDecisionPage, /name="resolution_summary"/);
     assert.match(riskDecisionPage, /name="resolution_evidence_refs"/);
     assert.match(riskDecisionPage, /name="resolution_residual_gaps"/);
-    assert.match(riskDecisionPage, /保持待处理，继续阻塞完成/);
-    assert.doesNotMatch(riskDecisionPage, /<option value="open" selected/);
-    for (const state of ["open", "triggered", "resolved", "accepted", "expired"]) {
-      assert.match(riskDecisionPage, new RegExp(`option value="${state}"`));
+    assert.match(riskDecisionPage, /风险保持开放，并继续按照当前规则影响关联 Goal/);
+    assert.match(riskDecisionPage, /option value="accepted"/);
+    assert.match(riskDecisionPage, /option value="rejected"/);
+    for (const state of ["open", "triggered", "resolved", "expired"]) {
+      assert.doesNotMatch(riskDecisionPage, new RegExp(`option value="${state}"`));
     }
+
+    const acceptedResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        state: "accepted",
+        reason: "用户明确接受当前残余风险",
+        idempotency_key: "web-risk-state-accepted",
+      }),
+    });
+    assert.equal(acceptedResponse.status, 200, await acceptedResponse.text());
 
     const updateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/update`, {
       method: "POST",
@@ -6509,7 +7019,23 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     });
     assert.equal(updateResponse.status, 200, await updateResponse.text());
 
-    for (const state of ["triggered", "accepted", "expired", "open", "resolved"] as const) {
+    const riskEvidenceResponse = await webFetch(`${origin}/api/goals/RISK-B/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        criterion_ids: ["RISK-B-C1"],
+        kind: "test",
+        locator: "conversation://rule-owner-confirmation",
+        digest: "负责人确认外部规则版本已经冻结。",
+        result: "passed",
+        idempotency_key: "web-risk-resolution-evidence",
+      }),
+    });
+    const riskEvidenceText = await riskEvidenceResponse.text();
+    assert.equal(riskEvidenceResponse.status, 201, riskEvidenceText);
+    const riskEvidence = JSON.parse(riskEvidenceText) as { evidence: { evidence_id: string } };
+
+    for (const state of ["triggered", "expired", "open", "resolved"] as const) {
       const stateResponse = await webFetch(`${origin}/api/risks/${encodeURIComponent(created.risk.risk_id)}/state`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -6520,7 +7046,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
             ? {
                 resolution_basis: {
                   summary: "负责人确认外部规则版本已经冻结。",
-                  evidence_refs: ["conversation://rule-owner-confirmation"],
+                  evidence_refs: [riskEvidence.evidence.evidence_id],
                   residual_gaps: ["下一次规则发布后仍需重新检查"],
                 },
               }
@@ -6545,7 +7071,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     assert.match(updatedPage, /已解决/);
     assert.match(updatedPage, /解决依据/);
     assert.match(updatedPage, /负责人确认外部规则版本已经冻结/);
-    assert.match(updatedPage, /conversation:\/\/rule-owner-confirmation/);
+    assert.match(updatedPage, new RegExp(riskEvidence.evidence.evidence_id));
     assert.match(updatedPage, /下一次规则发布后仍需重新检查/);
     assert.match(updatedPage, /交付风险工作台/);
     const verify = new SqliteGoalBoardStore(databasePath);
@@ -6561,7 +7087,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
       assert.equal(stored?.treatment_plan, "在规则冻结前不接入新的外部字段");
       assert.deepEqual(stored?.resolution_basis, {
         summary: "负责人确认外部规则版本已经冻结。",
-        evidence_refs: ["conversation://rule-owner-confirmation"],
+        evidence_refs: [riskEvidence.evidence.evidence_id],
         residual_gaps: ["下一次规则发布后仍需重新检查"],
       });
       assert.ok(verify.db.prepare("SELECT 1 FROM events WHERE object_id = ? AND type = 'risk.updated'").get(created.risk.risk_id));
@@ -6878,37 +7404,51 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       idempotency_key: "run-policy-web-completed",
     });
     const handoffPage = await (await webFetch(`${origin}/goals/POLICY-WEB`)).text();
-    assert.match(handoffPage, /goal-status--handoff_pending[^>]*[\s\S]*?<span>等待交接<\/span>/);
-    assert.match(handoffPage, /结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
-    assert.match(handoffPage, /完成本轮记录后释放当前工作；刷新可推进项后即可进入独立检查或完成判断/);
+    assert.match(handoffPage, /goal-status--continue[^>]*[\s\S]*?<span>可继续<\/span>/);
+    assert.match(handoffPage, /<strong>开始复核<\/strong>/);
+    assert.equal(
+      runtimeStore.snapshot(DEMO_BOARD_ID).claims.find((item) => item.claim_id === claim.claim_id)?.state,
+      "released",
+    );
     assert.doesNotMatch(handoffPage, /goalboard_v1_release/);
     assert.doesNotMatch(handoffPage, /这个 Claim 没有未结束的 Run/);
     assert.doesNotMatch(handoffPage, /由领取 Runtime 启动 Run/);
-    assert.doesNotMatch(handoffPage, /当前有什么会挡住它[\s\S]*结果与 Evidence 可继续补齐；释放当前 Claim 后进入检查/);
-    runtimeCoordinator.releaseClaim({
-      board_id: DEMO_BOARD_ID,
-      claim_id: claim.claim_id,
-      actor_id: "runtime-policy-web",
-      reason: "交给 Review 阶段",
-      idempotency_key: "claim-policy-web-release",
-    });
+    const runtimeObligations = runtimeStore.snapshot(DEMO_BOARD_ID).review_obligations.filter(
+      (item) => item.goal_id === "POLICY-WEB" && item.role !== "human_approver",
+    );
+    for (const [index, runtimeObligation] of runtimeObligations.entries()) {
+      const projection = runtimeCoordinator.getGoalActionProjection({ board_id: DEMO_BOARD_ID, goal_id: "POLICY-WEB" });
+      const reviewAction = projection.actions.find((action) => action.target_id === runtimeObligation.obligation_id);
+      assert.ok(reviewAction);
+      const reviewerId = `runtime-policy-reviewer-${index}`;
+      runtimeCoordinator.selectGoalAndStart({
+        board_id: DEMO_BOARD_ID,
+        goal_id: "POLICY-WEB",
+        actor_id: reviewerId,
+        role: runtimeObligation.role,
+        action_id: reviewAction.action_id,
+        action_token: projection.action_token,
+        idempotency_key: `policy-review-select-${index}`,
+      });
+      runtimeCoordinator.submitReview({
+        board_id: DEMO_BOARD_ID,
+        goal_id: "POLICY-WEB",
+        obligation_id: runtimeObligation.obligation_id,
+        actor_id: reviewerId,
+        actor_kind: "runtime",
+        verdict: "pass",
+        evidence_refs: [evidence.evidence_id],
+        reasoning: `第 ${index + 1} 项 Runtime 复核通过`,
+        contract_revision: projection.contract_revision,
+        idempotency_key: `policy-review-submit-${index}`,
+      });
+    }
     const obligation = runtimeStore
       .snapshot(DEMO_BOARD_ID)
       .review_obligations.find(
         (item) => item.goal_id === "POLICY-WEB" && item.role === "human_approver",
       );
     assert.ok(obligation);
-    const conversationVerdict = runtimeCoordinator.submitEvidence({
-      board_id: DEMO_BOARD_ID,
-      goal_id: "POLICY-WEB",
-      actor_id: "runtime-policy-web",
-      criterion_ids: obligation.criterion_scope,
-      kind: "human_verdict",
-      locator: "conversation://policy-web/current-user-message",
-      digest: "用户在当前对话明确回复：这版没问题，可以继续。",
-      result: "passed",
-      idempotency_key: "evidence-policy-web-human-verdict",
-    }).evidence;
     runtimeStore.close();
 
     const boardRisk = await webFetch(`${origin}/api/goals/POLICY-WEB/risks`, {
@@ -6983,7 +7523,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(WORKBENCH_STYLES, /policy-mode-options, \.policy-control--split, \.policy-toggle-list, \.policy-review-counts \{ grid-template-columns: 1fr; \}/);
     assert.match(page, /value="browser"/);
     assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB"/);
-    assert.match(page, /处理 \d+ 项决定/);
+    assert.match(page, /href="\/decisions#decision-goal-POLICY-WEB"/);
     assert.doesNotMatch(workSurfaceHtml(page, "goal"), /<form class="human-review-form"/);
     const policyRecords = await (
       await webFetch(`${origin}/api/goals/POLICY-WEB/records?view=current`)
@@ -6998,32 +7538,19 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(reviewDecisionPage, /维护 Runtime 与 Review Policy/);
     assert.match(reviewDecisionPage, /确认工作结果/);
     assert.match(reviewDecisionPage, /<form class="human-review-form"/);
-    assert.match(reviewDecisionPage, /<option value="" disabled>请选择结论<\/option>/);
-    assert.match(reviewDecisionPage, /<option value="pass" selected>通过<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="" selected disabled>请选择结论<\/option>/);
+    assert.match(reviewDecisionPage, /<option value="pass">通过<\/option>/);
     assert.match(reviewDecisionPage, /<option value="needs_changes">需要修改<\/option>/);
-    assert.match(reviewDecisionPage, /<option value="fail">不通过<\/option>/);
-    assert.match(reviewDecisionPage, /<option value="inconclusive">证据不足<\/option>/);
     assert.match(reviewDecisionPage, new RegExp(evidence.evidence_id));
     assert.match(reviewDecisionPage, /拿当前完成标准和依据来说/);
     assert.match(reviewDecisionPage, /完成标准「Policy 与 Review 可以保存」已有一条通过依据「tests\/web\.test\.ts#policy-review」/);
     assert.match(reviewDecisionPage, /这份记录支持该标准，但不等于你已经确认通过/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /requireDecisionText\(reviewForm, errorBox, "verdict", "请先选择结论。"\)/);
-    assert.match(reviewDecisionPage, /如果选择通过[\s\S]*Goal「维护 Runtime 与 Review Policy」还会等待/);
+    assert.match(reviewDecisionPage, /如果选择通过[\s\S]*GoalBoard 会立即再核对全部门槛[\s\S]*Goal「维护 Runtime 与 Review Policy」才会完成/);
     assert.match(reviewDecisionPage, /如果需要修改或依据不足[\s\S]*两种情况都不会完成这条 Goal/);
     assert.match(reviewDecisionPage, /human-review-list[\s\S]*<section class="decision-scenario"[\s\S]*<details class="decision-details"/);
-    assert.match(reviewDecisionPage, /已找到当前对话中的明确验收/);
-    assert.match(reviewDecisionPage, /尚未记录为用户验收；请核对后只提交一次/);
-    assert.match(reviewDecisionPage, /用户在当前对话明确回复：这版没问题，可以继续。/);
-    assert.match(reviewDecisionPage, /conversation:\/\/policy-web\/current-user-message/);
-    assert.match(reviewDecisionPage, /<option value="pass" selected>通过<\/option>/);
-    assert.match(
-      reviewDecisionPage,
-      new RegExp(`name="evidence_refs" value="${conversationVerdict.evidence_id}" checked`),
-    );
-    assert.doesNotMatch(
-      reviewDecisionPage,
-      new RegExp(`name="evidence_refs" value="${evidence.evidence_id}" checked`),
-    );
+    assert.doesNotMatch(reviewDecisionPage, /已找到当前对话中的明确验收/);
+    assert.doesNotMatch(reviewDecisionPage, /conversation:\/\/policy-web\/current-user-message/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /const revealDeepLinkTarget = \(target\) =>/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /disclosure\.open = true/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /scrollTarget = decisionDetail\.querySelector\([\s\S]*data-human-review-form/);
@@ -7035,7 +7562,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.match(WORKBENCH_CLIENT_SCRIPT, /scrollTarget\.focus\(\{ preventScroll: true \}\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /if \(!restoredUi && initialHashTargetId\) void revealDeepLinkFromId/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.setItem\("goalboard-decision-receipt"/);
-    assert.match(WORKBENCH_CLIENT_SCRIPT, /location\.reload\(\)/);
+    assert.match(WORKBENCH_CLIENT_SCRIPT, /await refreshBoardWithDecisionReceipt\(receiptMessage, receiptContext\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /sessionStorage\.getItem\("goalboard-decision-receipt"\)/);
     assert.match(WORKBENCH_CLIENT_SCRIPT, /showDecisionReceipt\(storedDecisionReceipt\.message/);
 
@@ -7070,22 +7597,6 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
     assert.equal(mobileDeepLinkState.mobileView, "document");
     assert.equal(mobileDeepLinkState.formVisible, true);
 
-    const correctionStore = new SqliteGoalBoardStore(databasePath);
-    const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
-    correctionCoordinator.correctEvidence({
-      board_id: DEMO_BOARD_ID,
-      goal_id: "POLICY-WEB",
-      actor_id: "runtime-policy-web",
-      target_evidence_id: conversationVerdict.evidence_id,
-      action: "retract",
-      reason: "用户后续说明这句话不是最终验收。",
-      idempotency_key: "evidence-policy-web-human-verdict-retract",
-    });
-    correctionStore.close();
-    const retractedDecisionPage = await (await webFetch(`${origin}/decisions`)).text();
-    assert.doesNotMatch(retractedDecisionPage, /已找到当前对话中的明确验收/);
-    assert.match(retractedDecisionPage, /<option value="" selected disabled>请选择结论<\/option>/);
-
     const missingReason = await webFetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
       {
@@ -7095,7 +7606,20 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       },
     );
     assert.equal(missingReason.status, 400);
-    assert.match(await missingReason.text(), /Review 必须说明判断理由/);
+    assert.match(await missingReason.text(), /对话验收必须保留用户原话/);
+
+    const decisionStore = new SqliteGoalBoardStore(databasePath);
+    const decisionCoordinator = new GoalBoardCoordinator(decisionStore);
+    const decisionProjection = decisionCoordinator.getGoalActionProjection({
+      board_id: DEMO_BOARD_ID,
+      goal_id: "POLICY-WEB",
+    });
+    const attentionToken = String(
+      decisionProjection.actions.find((action) => action.target_id === obligation.obligation_id)
+        ?.reasons[0]?.facts?.attention_token ?? "",
+    );
+    decisionStore.close();
+    assert.match(attentionToken, /^attention-/);
 
     const reviewed = await webFetch(
       `${origin}/api/goals/POLICY-WEB/review-obligations/${obligation.obligation_id}/review`,
@@ -7104,8 +7628,8 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           verdict: "needs_changes",
-          evidence_refs: [evidence.evidence_id, "https://example.com/human-observation"],
           reasoning: "测试已通过，但人工检查发现说明文案仍需修改",
+          attention_token: attentionToken,
         }),
       },
     );
@@ -7116,10 +7640,12 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       .reviews.find((item) => item.obligation_id === obligation.obligation_id);
     assert.equal(savedReview?.actor_id, "web-user");
     assert.equal(savedReview?.verdict, "needs_changes");
-    assert.deepEqual(savedReview?.evidence_refs, [
-      evidence.evidence_id,
-      "https://example.com/human-observation",
-    ]);
+    assert.equal(savedReview?.evidence_refs.length, 1);
+    const savedHumanEvidence = verifiedStore.snapshot(DEMO_BOARD_ID).evidence.find(
+      (item) => item.evidence_id === savedReview?.evidence_refs[0],
+    );
+    assert.equal(savedHumanEvidence?.kind, "human_verdict");
+    assert.equal(savedHumanEvidence?.review_id, savedReview?.review_id);
     verifiedStore.close();
     const reviewResultPage = await (await webFetch(`${origin}/decisions`)).text();
     assert.match(reviewResultPage, /最近处理结果/);
@@ -7214,14 +7740,14 @@ test("Web result confirmation names the criterion that still lacks passing evide
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const page = await (await webFetch(`http://127.0.0.1:${address.port}/decisions`)).text();
-    const group = feedDetailHtml(page, "decision:REVIEW-NO-EVIDENCE");
-    assert.match(group, /拿当前完成标准和依据来说/);
-    assert.match(group, /完成标准「用户能看到保存后的实际结果」还没有对应的通过依据/);
-    assert.match(group, /现在不应选择“通过”/);
-    assert.match(group, /即使选择“通过”[\s\S]*仍有 1 条由测试或检查判断的完成标准缺少通过依据，不会完成/);
-    assert.match(page, /<option value="" selected disabled>请选择结论<\/option>/);
-    assert.doesNotMatch(group, /建议确认通过/);
+    const origin = `http://127.0.0.1:${address.port}`;
+    const decisionsPage = await (await webFetch(`${origin}/decisions`)).text();
+    assert.doesNotMatch(decisionsPage, /decision:REVIEW-NO-EVIDENCE/);
+    const goalPage = await (await webFetch(`${origin}/goals/REVIEW-NO-EVIDENCE`)).text();
+    assert.match(goalPage, /goal-status--continue[^>]*[\s\S]*?<span>可继续<\/span>/);
+    assert.match(goalPage, /<strong>补齐完成依据<\/strong>/);
+    assert.match(goalPage, /执行已经完成，还需要补齐完成依据/);
+    assert.doesNotMatch(goalPage, /<form class="human-review-form"/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

@@ -27,8 +27,8 @@ Before the first GoalBoard write, read [references/protocol.md](references/proto
 3. **Clarify only consequential gaps.** Ask one question at a time. Save each material answer before asking the next question.
 4. **Plan before closing complex work.** Select all relevant professional methods, discover cross-topic result dependencies, check coverage, and split work into reviewable outcomes.
 5. **Ask for a real decision.** Present one readable, complete Goal Tree change set. Nothing proposed becomes canonical until the user confirms, rejects, or revises it. After applied changes, consume `semantic_review`: structural success is not semantic closure, and an affected subgraph must be reviewed before planning is reported complete.
-6. **Execute from derived state.** Choose an eligible leaf, work inside its accepted Contract, submit evidence and permitted reviews, complete it, and release the Claim.
-7. **Hand off to the next cycle.** After release, refresh Available and state the next Goal, action, why-now, and continuation boundary; keep going when it is safe and already authorized instead of treating one Run as the conversation endpoint.
+6. **Execute from the action projection.** Choose the returned `primary_action`, claim it with its `action_id + action_token`, work inside the accepted Contract, and submit evidence or the permitted review. GoalBoard automatically releases complete role work and completes a Goal when the last gate closes.
+7. **Continue from the transition receipt.** Every lifecycle write returns the new projection. State the new short status, specific next action and owner; refresh Available only when choosing another Goal, not to discover whether the just-finished write worked.
 8. **Correct locally.** New requirements and observed failures update the affected Goal or subgraph; they do not silently expand scope or rewrite the whole tree.
 
 ## Keep Goals finite and operations recurring
@@ -93,14 +93,16 @@ Use a compact checkpoint when resuming, after a material direction change, or be
 
 ## Continue from returned state
 
-Always follow the latest returned `work_state`:
+Prefer the latest `action_projection`; `work_state` exists only for older Runtime readers.
 
-- Draft or open decomposition: continue clarification or parent-completeness review.
-- Confirmed parent with active children: select an eligible child; do not execute the parent.
-- Accepted executable leaf: select and execute only when Available permits it.
-- Review or revalidation: perform only the current Runtime's permitted role with evidence.
-- Blocked: call `goalboard_v1_explain`, report the concrete blocker, then choose other work or ask for the missing decision. Do not retry unchanged calls.
-- Satisfied, archived, or invalidated: do not claim it.
+- `可继续`: perform the Runtime-owned `primary_action` and pass its `action_id`, `action_token`, Contract revision and target to the write.
+- `进行中`: continue only the active Claim/Run. Do not create a second Run.
+- `等你`: name the one user decision. A unique, explicit Human Review answer may use the trusted dialogue operation; ambiguous or multiple items stay in Decision Center.
+- `等待中`: advance an eligible child or dependency when it is inside the request; never execute the waiting parent.
+- `受阻`: report the concrete recovery action and do not retry an unchanged write.
+- `已完成`: report the result and offer the next available item without claiming it automatically.
+
+Always use the transition receipt returned by a write as the immediate new state. A stale action token means the old operation was rejected: show the returned current projection and recover from that action instead of guessing.
 
 ## Runtime MCP map
 
@@ -111,11 +113,11 @@ Always follow the latest returned `work_state`:
 | Read or confirm project-level guidance | `project_guidance_get`, `project_guidance_add`, `project_guidance_update` |
 | Start or resume Goal clarification | `draft_dialogue_start`, `draft_dialogue_turn`, `draft_dialogue_resume`, `planning_methods`, `planning_analyze_change`, `planning_graph_check` |
 | Propose and decide Goal Tree changes | `goal_tree_propose`, `goal_tree_read`, `goal_tree_check`, `goal_tree_decide` |
-| Atomically start and report work | `select_goal`, `claim_renew`, `run_report`, `evidence_submit`, `evidence_correct`, `review_submit`, `complete`, `release`, `revalidate` |
+| Atomically start and report work | `select_goal`, `claim_renew`, `run_report`, `evidence_submit`, `evidence_correct`, `review_submit`, `revalidate` (`complete` and `release` are compatibility/repair operations) |
 | Recoverably trash or restore a Goal | `goal_trash`, `goal_trash_list`, `goal_restore` |
 
 Use the full `goalboard_v1_` tool names. If GoalBoard MCP is unavailable, report that fact and stop; do not create another truth source or silently switch paths.
 
 During active work, inspect Contract's `active_claim_lease` at meaningful checkpoints. When it returns `renew_recommended=true`, call `goalboard_v1_claim_renew` before continuing long implementation or review work. Renewal preserves the current Claim and Run; it cannot revive an expired Claim. Reuse the Claim's exact actor; after compaction, `claim.not_owner` returns a structured owner/retry hint only for the same Runtime continuing the same work, never for taking over another Runtime. Do not create background heartbeat loops.
 
-When work state is `waiting_for_human`, report the returned human criterion IDs and action, then stop Runtime review work. Do not select another Runtime Review, infer the user's verdict, or treat engineering evidence as user acceptance. If the returned reason includes `conversation_approval_handoff`, follow the exact-quote handoff in the execution reference: a Runtime may record an explicit approval as `human_verdict` Evidence only for the one returned pending obligation, then open the prefilled Inbox for the user's final submit. The Evidence is not the Human Review and does not authorize the Runtime to submit one.
+When the projection says `等你`, report the exact user-owned action and stop Runtime review work. Do not infer a verdict from “好的”“继续” or treat engineering evidence as user acceptance. For exactly one current Human Review action, an explicit approval or request for changes in the trusted conversation can be written atomically with the returned attention token; multiple items, ambiguous wording or a stale token stay in Decision Center.

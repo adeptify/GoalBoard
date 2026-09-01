@@ -5,8 +5,7 @@ import { L } from "./i18n.js";
 export type GoalPresentationState =
   | GoalWorkState
   | "clarification_decision_pending"
-  | "compound_closure_pending"
-  | "handoff_pending";
+  | "compound_closure_pending";
 
 export interface WorkStateExplanation {
   label: string;
@@ -57,13 +56,6 @@ const WORK_STATE_COPY: Record<GoalPresentationState, WorkStateCopy> = {
     nextAction: "确认当前拆分是否完整",
     howToContinue: "如果这些子 Goal 已覆盖整个目标，就确认由它们共同完成；否则继续补充遗漏的子 Goal。",
     actionKind: "close_parent",
-  },
-  handoff_pending: {
-    label: "等待交接",
-    meaning: "结果已提交，但当前执行者仍持有写权，可以继续补齐 Evidence。",
-    nextAction: "补齐记录后释放当前工作",
-    howToContinue: "完成本轮记录后释放当前工作；刷新可推进项后即可进入独立检查或完成判断。",
-    actionKind: "resolve_blocker",
   },
   clarifying: {
     label: "目标澄清中",
@@ -216,7 +208,7 @@ export function goalPresentationState(
   workState: GoalWorkState,
   goal: GoalRecord,
   snapshot: BoardSnapshot,
-  reasons: readonly { code: string }[] = [],
+  _reasons: readonly { code: string }[] = [],
 ): GoalPresentationState {
   const isClarificationState = ["clarification_pending", "clarifying", "clarification_blocked"].includes(workState);
   if (isClarificationState && goal.definition_state === "draft") {
@@ -244,10 +236,6 @@ export function goalPresentationState(
     requiresParentCompletionConfirmation(goal, snapshot)
   ) {
     return "compound_closure_pending";
-  }
-
-  if (reasons.some((reason) => reason.code === "work.handoff_pending")) {
-    return "handoff_pending";
   }
 
   return workState;

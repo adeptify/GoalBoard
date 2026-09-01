@@ -1,0 +1,1262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>GoalBoard · Nordic Onboarding Prototype</title>
+  <script>document.documentElement.classList.add('js')</script>
+  <style>
+    @font-face {
+      font-family: "GoalBoard Manrope";
+      src: url("fonts/Manrope-Variable.ttf") format("truetype");
+      font-style: normal;
+      font-weight: 200 800;
+      font-display: swap;
+    }
+
+    :root {
+      --night: #050607;
+      --night-soft: #0c0f11;
+      --snow: #ecece7;
+      --snow-bright: #f4f3ef;
+      --ink-night: #f2f1ed;
+      --ink-day: #171918;
+      --accent: #4f72d8;
+      --danger: #e08a83;
+      --ease: cubic-bezier(.16, 1, .3, 1);
+      --ease-in: cubic-bezier(.7, 0, .84, 0);
+      --content-width: 960px;
+      --fg: var(--ink-night);
+      --muted: rgba(237, 237, 232, .62);
+      --quiet: rgba(237, 237, 232, .62);
+      --rule: rgba(237, 237, 232, .25);
+      --field-one: rgba(82, 100, 109, .3);
+      --field-two: rgba(40, 52, 58, .34);
+      --field-opacity: .82;
+      --room-bg: var(--night);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    html { background: var(--night); }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: var(--room-bg);
+      color: var(--fg);
+      font-family: "GoalBoard Manrope", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      transition: background-color 860ms var(--ease), color 660ms var(--ease);
+    }
+
+    body[data-tone="1"] {
+      --field-one: rgba(84, 101, 111, .22);
+      --field-two: rgba(38, 50, 56, .28);
+      --field-opacity: .8;
+    }
+
+    body[data-tone="2"] {
+      --field-one: rgba(96, 111, 118, .26);
+      --field-two: rgba(49, 61, 66, .3);
+      --field-opacity: .86;
+    }
+
+    body[data-tone="3"] {
+      --field-one: rgba(116, 127, 130, .28);
+      --field-two: rgba(60, 69, 72, .33);
+      --field-opacity: .92;
+    }
+
+    body[data-tone="4"] {
+      --field-one: rgba(138, 145, 144, .26);
+      --field-two: rgba(75, 82, 81, .34);
+      --field-opacity: 1;
+    }
+
+    body[data-tone="5"] {
+      --room-bg: var(--snow);
+      --fg: var(--ink-day);
+      --muted: rgba(23, 25, 24, .74);
+      --quiet: rgba(23, 25, 24, .68);
+      --rule: rgba(23, 25, 24, .22);
+      --field-one: rgba(255, 255, 252, .82);
+      --field-two: rgba(202, 207, 205, .38);
+      --field-opacity: 1;
+    }
+
+    ::selection { background: rgba(109, 139, 220, .42); color: var(--fg); }
+
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--rule) transparent;
+    }
+
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background: var(--rule);
+      background-clip: padding-box;
+    }
+
+    button, input, textarea { font: inherit; }
+
+    button { -webkit-tap-highlight-color: transparent; }
+
+    button:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 5px;
+    }
+
+    input:focus-visible,
+    textarea:focus-visible,
+    h1[tabindex]:focus,
+    .room-content:focus { outline: none; }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .app {
+      position: relative;
+      min-height: 100svh;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .atmosphere {
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .atmosphere::before,
+    .atmosphere::after {
+      content: "";
+      position: absolute;
+      inset: -22%;
+      opacity: var(--field-opacity);
+      transition: opacity 900ms var(--ease), background 900ms var(--ease), transform 1200ms var(--ease);
+    }
+
+    .atmosphere::before {
+      background: radial-gradient(ellipse 62% 72% at 31% 52%, var(--field-one) 0%, transparent 72%);
+      transform: translate3d(-4%, 3%, 0) scale(1.08);
+    }
+
+    .atmosphere::after {
+      background: linear-gradient(112deg, transparent 18%, var(--field-two) 52%, transparent 78%);
+      transform: translate3d(6%, 0, 0);
+    }
+
+    .js body.is-booting .atmosphere::before {
+      animation: firstLight 1650ms 260ms var(--ease) both;
+    }
+
+    .js body.is-booting .atmosphere::after {
+      animation: horizonWash 1900ms 180ms var(--ease) both;
+    }
+
+    @keyframes firstLight {
+      0%, 18% { opacity: 0; transform: translate3d(-12%, 7%, 0) scale(1.18); }
+      100% { opacity: var(--field-opacity); transform: translate3d(-4%, 3%, 0) scale(1.08); }
+    }
+
+    @keyframes horizonWash {
+      0%, 24% { opacity: 0; transform: translate3d(18%, 0, 0); }
+      100% { opacity: var(--field-opacity); transform: translate3d(6%, 0, 0); }
+    }
+
+    .masthead {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 72px;
+      padding: 0 34px;
+      color: var(--quiet);
+      transition: color 660ms var(--ease);
+    }
+
+    .wordmark {
+      margin: 0;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .21em;
+      text-transform: uppercase;
+    }
+
+    .skip {
+      min-width: 52px;
+      min-height: 44px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 150ms ease;
+    }
+
+    .skip:hover { color: var(--fg); }
+
+    .room {
+      display: grid;
+      align-items: center;
+      min-height: 100svh;
+      padding: 108px 7vw 94px;
+      overflow: auto;
+    }
+
+    body[data-step="proposal"] .room { padding-top: 78px; padding-bottom: 68px; }
+    body[data-step="proposal"] .question.compact { font-size: clamp(34px, 3.45vw, 49px); }
+    body[data-step="proposal"] .support { margin-top: 15px; }
+    body[data-step="proposal"] .decision-actions { margin-top: 28px; }
+
+    .room-content {
+      width: min(var(--content-width), 100%);
+      margin-inline: auto;
+      transform: translateY(-1.5vh);
+    }
+
+    .room-content.is-leaving { animation: questionOut 220ms var(--ease-in) both; }
+    .room-content.is-entering { animation: questionIn 560ms var(--ease) both; }
+
+    @keyframes questionIn {
+      from { opacity: 0; filter: blur(8px); transform: translateY(18px); }
+      to { opacity: 1; filter: blur(0); transform: translateY(0); }
+    }
+
+    @keyframes questionOut {
+      from { opacity: 1; filter: blur(0); transform: translateY(0); }
+      to { opacity: 0; filter: blur(5px); transform: translateY(-12px); }
+    }
+
+    .js body.is-booting .room-content {
+      animation: openingQuestion 1350ms 420ms var(--ease) both;
+    }
+
+    @keyframes openingQuestion {
+      0%, 12% { opacity: 0; filter: blur(13px); transform: translateY(12px); }
+      100% { opacity: 1; filter: blur(0); transform: translateY(-1.5vh); }
+    }
+
+    .context-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 22px;
+      margin: 0 0 32px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .context-line::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: .5;
+      box-shadow: 0 7px 18px rgba(213, 223, 225, .24);
+    }
+
+    .question {
+      max-width: 930px;
+      margin: 0;
+      color: var(--fg);
+      font-size: clamp(40px, 4.7vw, 66px);
+      font-weight: 300;
+      letter-spacing: -.028em;
+      line-height: 1.13;
+      text-wrap: balance;
+      transition: color 660ms var(--ease);
+    }
+
+    .question.compact { max-width: 830px; font-size: clamp(35px, 3.8vw, 54px); }
+
+    .support {
+      max-width: 620px;
+      margin: 23px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.75;
+      text-wrap: pretty;
+    }
+
+    .answer-form { max-width: 850px; margin-top: 58px; }
+
+    .answer-line {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 52px;
+      align-items: end;
+      min-height: 68px;
+    }
+
+    .answer-line::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      right: 15%;
+      bottom: 0;
+      left: -5%;
+      height: 70%;
+      border-radius: 50%;
+      background: radial-gradient(ellipse at 25% 70%, rgba(174, 191, 197, .16), transparent 68%);
+      filter: blur(24px);
+      opacity: .2;
+      transform: translateY(9px) scale(.9);
+      transition: opacity 320ms ease, transform 560ms var(--ease), filter 560ms var(--ease);
+    }
+
+    .answer-line:focus-within::before {
+      opacity: .9;
+      filter: blur(18px);
+      transform: translateY(2px) scale(1);
+    }
+
+    .answer-input,
+    .answer-textarea {
+      width: 100%;
+      min-width: 0;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--fg);
+      caret-color: var(--fg);
+      font-size: clamp(24px, 2.4vw, 32px);
+      font-weight: 350;
+      letter-spacing: -.018em;
+      line-height: 1.35;
+    }
+
+    .answer-input { height: 66px; padding: 6px 8px 8px 0; }
+
+    .answer-textarea {
+      min-height: 70px;
+      max-height: 140px;
+      padding: 13px 8px 12px 0;
+      resize: none;
+      overflow: auto;
+    }
+
+    .answer-input::placeholder,
+    .answer-textarea::placeholder { color: var(--quiet); opacity: 1; }
+
+    .continue-button {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      margin-bottom: 9px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 160ms ease, transform 260ms var(--ease), filter 260ms ease;
+    }
+
+    .continue-button:hover { color: var(--fg); filter: drop-shadow(0 8px 13px rgba(202, 217, 220, .25)); }
+    .continue-button:active { transform: scale(.94); }
+    .continue-button svg { width: 24px; height: 24px; transition: transform 300ms var(--ease); }
+    .continue-button:hover svg { transform: translateX(5px); }
+
+    .form-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 24px;
+      margin-top: 13px;
+      color: var(--quiet);
+      font-size: 11px;
+    }
+
+    .error-message { color: var(--danger); }
+
+    .choice-field {
+      display: grid;
+      gap: 0;
+      width: min(650px, 100%);
+      margin-top: 54px;
+      padding: 0;
+      border: 0;
+      gap: 4px;
+    }
+
+    .choice-line {
+      position: relative;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 16px;
+      min-height: 64px;
+      padding: 0 12px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      isolation: isolate;
+      transition: color 170ms ease, transform 300ms var(--ease), filter 300ms ease;
+    }
+
+    .choice-line::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 5px -18px;
+      border-radius: 22px;
+      background: radial-gradient(ellipse at 22% 50%, rgba(167, 184, 190, .15), transparent 68%);
+      filter: blur(12px);
+      opacity: 0;
+      transform: scale(.94);
+      transition: opacity 280ms ease, transform 420ms var(--ease);
+    }
+
+    .choice-line:hover,
+    .choice-line.is-selected { color: var(--fg); transform: translateY(-2px) scale(1.01); }
+    .choice-line:hover::before,
+    .choice-line.is-selected::before { opacity: 1; transform: scale(1); }
+
+    .choice-radio {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .choice-line:has(.choice-radio:focus-visible) {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    .choice-index { color: var(--quiet); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .choice-name { font-size: 18px; font-weight: 500; }
+    .choice-state { color: var(--quiet); font-size: 11px; }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      margin-top: 36px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--quiet);
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 160ms ease, transform 260ms var(--ease), text-shadow 260ms ease;
+    }
+
+    .back-link:hover { color: var(--fg); text-shadow: 0 8px 18px rgba(215, 224, 226, .18); transform: translateY(-2px); }
+
+    .review-list {
+      display: grid;
+      gap: 18px;
+      width: min(720px, 100%);
+      margin: 48px 0 0;
+    }
+
+    .review-row {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr);
+      gap: 24px;
+      padding: 0;
+    }
+
+    .review-term { color: var(--quiet); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+    .review-value { color: var(--fg); font-size: 15px; line-height: 1.55; }
+
+    .decision-actions {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-top: 40px;
+    }
+
+    .primary-action,
+    .secondary-action {
+      min-height: 48px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      transition: color 170ms ease, transform 280ms var(--ease), text-shadow 280ms ease;
+    }
+
+    .primary-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--fg);
+      font-size: 15px;
+      font-weight: 550;
+    }
+
+    .primary-action:hover { transform: translateY(-3px); text-shadow: 0 10px 24px rgba(214, 224, 226, .24); }
+    body[data-tone="5"] .primary-action:hover { text-shadow: 0 10px 24px rgba(20, 24, 23, .18); }
+
+    .secondary-action { color: var(--quiet); font-size: 12px; }
+    .secondary-action:hover { color: var(--fg); transform: translateY(-2px); }
+
+    .progress {
+      position: fixed;
+      z-index: 20;
+      right: 34px;
+      bottom: 30px;
+      left: 34px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--quiet);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 300ms ease, color 660ms var(--ease);
+    }
+
+    .progress.is-visible { opacity: 1; }
+
+    .progress-count {
+      min-width: 34px;
+      font-size: 10px;
+      letter-spacing: .14em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .terminal-wrap {
+      width: min(980px, 100%);
+      margin: 42px auto 0;
+      overflow: hidden;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #070808, #0b0d0d 64%, #070808);
+      color: #e8e8e3;
+      box-shadow: 0 32px 80px rgba(0, 0, 0, .34);
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 46px;
+      padding: 0 17px;
+      color: rgba(237,237,232,.62);
+      font-size: 10px;
+    }
+
+    .terminal-body {
+      min-height: 300px;
+      padding: 24px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.72;
+    }
+
+    .terminal-note { margin: 0 0 24px; color: rgba(237,237,232,.66); }
+
+    .prompt-draft {
+      padding: 20px;
+      border-radius: 12px;
+      background: rgba(237,237,232,.035);
+      color: rgba(237,237,232,.82);
+      white-space: pre-wrap;
+    }
+
+    .terminal-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      min-height: 62px;
+      padding: 0 16px;
+    }
+
+    .terminal-button {
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 9px;
+      background: rgba(237,237,232,.045);
+      color: rgba(237,237,232,.68);
+      font-size: 11px;
+      cursor: pointer;
+      transition: color 160ms ease, background 160ms ease, transform 260ms var(--ease), box-shadow 260ms ease;
+    }
+
+    .terminal-button:hover { background: rgba(237,237,232,.09); color: #fff; transform: translateY(-2px); }
+    .terminal-button.primary { background: #e7e7e2; color: #111312; }
+    .terminal-button.primary:hover { background: #fff; box-shadow: 0 10px 24px rgba(0, 0, 0, .3); }
+
+    .working {
+      display: grid;
+      place-items: center;
+      min-height: 300px;
+      text-align: center;
+    }
+
+    .working-line {
+      width: 10px;
+      height: 10px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      background: rgba(225, 230, 228, .86);
+      box-shadow: 0 12px 34px rgba(195, 213, 218, .4);
+      animation: gatherLight 1450ms var(--ease) both;
+    }
+
+    @keyframes gatherLight {
+      0% { opacity: .2; filter: blur(5px); transform: translateY(10px) scale(.35); }
+      60% { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+      100% { opacity: .72; filter: blur(1px); transform: translateY(-2px) scale(.76); }
+    }
+
+    .working-title { margin: 0; color: rgba(237,237,232,.85); font: 500 14px/1.5 "GoalBoard Manrope", "PingFang SC", sans-serif; }
+    .working-copy { margin: 9px 0 0; color: rgba(237,237,232,.62); font: 400 11px/1.6 "GoalBoard Manrope", "PingFang SC", sans-serif; }
+
+    .tree-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 30px;
+      width: min(1000px, 100%);
+      margin-top: 30px;
+    }
+
+    .goal-grove {
+      position: relative;
+      display: grid;
+      gap: clamp(26px, 3.2vw, 38px);
+      min-height: 300px;
+      padding: 6px 4%;
+      isolation: isolate;
+    }
+
+    .goal-grove::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      top: -18%;
+      left: 50%;
+      width: 78%;
+      height: 76%;
+      border-radius: 50%;
+      background: radial-gradient(ellipse, rgba(156, 171, 176, .12), transparent 69%);
+      filter: blur(30px);
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+
+    .goal-root {
+      width: min(680px, 100%);
+      margin-inline: auto;
+      text-align: center;
+      animation: rootArrives 760ms 90ms var(--ease) both;
+    }
+
+    .goal-role {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--quiet);
+      font-size: 9px;
+      letter-spacing: .14em;
+    }
+
+    .goal-root strong {
+      display: block;
+      color: var(--fg);
+      font-size: clamp(21px, 2.3vw, 30px);
+      font-weight: 360;
+      letter-spacing: -.02em;
+      line-height: 1.35;
+    }
+
+    .goal-branches {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: clamp(42px, 8vw, 98px);
+      width: min(900px, 100%);
+      margin-inline: auto;
+    }
+
+    .goal-branch {
+      min-width: 0;
+      animation: branchUnfold 820ms var(--ease) both;
+    }
+
+    .goal-branch:nth-child(1) { animation-delay: 170ms; text-align: right; }
+    .goal-branch:nth-child(2) { animation-delay: 270ms; }
+    .goal-branch strong { display: block; color: var(--fg); font-size: 16px; font-weight: 480; line-height: 1.55; }
+    .goal-branch p { max-width: 34ch; margin: 9px 0 0; color: var(--quiet); font-size: 11px; line-height: 1.65; }
+    .goal-branch:first-child p { margin-left: auto; }
+
+    .goal-next {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 20px;
+      width: min(560px, 100%);
+      margin-inline: auto;
+      padding: 12px 0;
+      animation: nextGoalRises 860ms 390ms var(--ease) both;
+    }
+
+    .goal-seed {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--fg);
+      box-shadow: 0 13px 30px rgba(205, 219, 222, .34);
+    }
+
+    .goal-next strong { display: block; color: var(--fg); font-size: 18px; font-weight: 520; line-height: 1.5; }
+
+    @keyframes rootArrives {
+      from { opacity: 0; filter: blur(9px); transform: translateY(18px); }
+      to { opacity: 1; filter: blur(0); transform: translateY(0); }
+    }
+
+    @keyframes branchUnfold {
+      from { opacity: 0; filter: blur(7px); clip-path: inset(0 50% 0 50%); transform: translateY(-10px); }
+      to { opacity: 1; filter: blur(0); clip-path: inset(0 0 0 0); transform: translateY(0); }
+    }
+
+    @keyframes nextGoalRises {
+      from { opacity: 0; filter: blur(10px); transform: translateY(24px) scale(.97); }
+      to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+    }
+
+    .proposal-notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 34px; }
+    .proposal-note { padding: 0; }
+    .proposal-note dt { margin: 0 0 5px; color: var(--quiet); font-size: 10px; }
+    .proposal-note dd { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+    .success-layout { width: min(900px, 100%); }
+
+    .success-next {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr);
+      gap: 24px;
+      max-width: 700px;
+      margin-top: 48px;
+      padding: 24px 28px;
+      border-radius: 14px;
+      background: radial-gradient(ellipse at 20% 50%, rgba(23, 25, 24, .07), transparent 74%);
+    }
+
+    .success-next span { color: var(--quiet); font-size: 11px; }
+    .success-next strong { font-size: 18px; font-weight: 520; line-height: 1.45; }
+
+    .update-proof {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px;
+      width: min(720px, 100%);
+      margin-top: 50px;
+    }
+
+    .update-state { padding: 20px 0; transition: transform 280ms var(--ease), color 180ms ease; }
+    .update-state:hover { transform: translateY(-3px); }
+    .update-state small { display: block; margin-bottom: 10px; color: var(--quiet); font-size: 10px; }
+    .update-state p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+    .toast {
+      position: fixed;
+      z-index: 50;
+      right: 30px;
+      bottom: 70px;
+      max-width: 360px;
+      padding: 11px 14px;
+      border-radius: 10px;
+      background: var(--room-bg);
+      color: var(--fg);
+      font-size: 11px;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, .24);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 260ms var(--ease), background 660ms var(--ease), color 660ms var(--ease);
+    }
+
+    .toast.is-visible { opacity: 1; transform: translateY(0); }
+    .is-paused *, .is-paused *::before, .is-paused *::after { animation-play-state: paused !important; }
+
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .app { min-height: 100svh; overflow-x: hidden; overflow-y: visible; }
+      .masthead { min-height: 64px; padding-inline: 20px; }
+      .room { min-height: 100svh; padding: 92px 24px 82px; }
+      .room-content { transform: none; }
+      .question { font-size: clamp(36px, 10.6vw, 54px); line-height: 1.12; }
+      .question.compact { font-size: clamp(32px, 8.6vw, 45px); }
+      .support { font-size: 14px; }
+      .answer-form { margin-top: 45px; }
+      .answer-input, .answer-textarea { font-size: 23px; }
+      .choice-line { min-height: 66px; }
+      .choice-state { display: none; }
+      .review-row { grid-template-columns: 92px minmax(0, 1fr); gap: 16px; }
+      .decision-actions { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .primary-action, .secondary-action, .back-link, .skip { min-height: 44px; }
+      .progress { right: 24px; bottom: 22px; left: 24px; }
+      .terminal-wrap { margin-top: 34px; }
+      .terminal-bar { align-items: flex-start; flex-direction: column; justify-content: center; gap: 3px; padding-block: 9px; }
+      .terminal-body { min-height: 330px; padding: 20px 16px; font-size: 11px; }
+      .terminal-actions { align-items: stretch; flex-direction: column-reverse; padding-block: 12px; }
+      .terminal-button { min-height: 44px; }
+      .tree-layout { gap: 34px; }
+      .goal-grove { min-height: 0; gap: 40px; padding-inline: 0; }
+      .goal-root { text-align: left; }
+      .goal-branches { grid-template-columns: 1fr; gap: 28px; }
+      .goal-branch:nth-child(1),
+      .goal-branch:nth-child(2) { text-align: left; }
+      .goal-branch:first-child p { margin-left: 0; }
+      .goal-next { gap: 16px; margin-inline: 0; }
+      .proposal-notes { grid-template-columns: 1fr; gap: 24px; }
+      .success-next { grid-template-columns: 1fr; gap: 9px; }
+      .update-proof { grid-template-columns: 1fr; gap: 0; }
+      .toast { right: 20px; bottom: 62px; left: 20px; max-width: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .001ms !important;
+        animation-delay: 0ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+      }
+      .room-content.is-entering,
+      .room-content.is-leaving,
+      .js body.is-booting .room-content,
+      .js body.is-booting .atmosphere::before,
+      .js body.is-booting .atmosphere::after { animation: none !important; }
+    }
+  </style>
+</head>
+<body data-tone="0" class="is-booting">
+  <!--
+  THESIS: Onboarding begins as a Nordic winter room before dawn; one human question and one blank replace the category's card-based product tour.
+  OWN-WORLD: Carbon black, blue-gray first light, winter white, quiet modern grotesk type, borderless tonal depth, and no decorative chrome.
+  STORY: The user names one real project, makes its result concrete, chooses the working context, inspects the handoff, and confirms the first Goal Tree.
+  FIRST VIEWPORT: Full black field; a left-aligned question at human reading scale; one borderless fill-in below; tiny GoalBoard and Skip recede at the top edge.
+  FORM: Nordic winter-dawn room, grounded candidate 6, seed 91c9eee5; the signature motion is darkness becoming usable daylight as intent becomes structure.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+  -->
+  <div class="app" id="app">
+    <div class="atmosphere" aria-hidden="true"></div>
+
+    <header class="masthead">
+      <p class="wordmark">GoalBoard</p>
+      <button class="skip" id="skipButton">跳过</button>
+    </header>
+
+    <main class="room">
+      <section class="room-content" id="roomContent" aria-live="polite">
+        <h1 class="question" tabindex="-1">你好，我们今天做点什么？</h1>
+        <form class="answer-form" data-form="project">
+          <div class="answer-line">
+            <input class="answer-input" id="projectInput" autocomplete="off" placeholder="我想……" aria-label="想推进的项目" aria-describedby="projectError" aria-invalid="false">
+            <button class="continue-button" type="submit" aria-label="继续">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13.5 6.5 19 12l-5.5 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <div class="form-meta"><span id="projectError" class="error-message" role="alert"></span><span>按回车继续</span></div>
+        </form>
+      </section>
+    </main>
+
+    <div class="progress" id="progress" aria-label="引导进度">
+      <span class="progress-count" id="progressCount"></span>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
+  </div>
+
+  <script>
+    (() => {
+      const app = document.getElementById('app');
+      const roomContent = document.getElementById('roomContent');
+      const progress = document.getElementById('progress');
+      const progressCount = document.getElementById('progressCount');
+      const toast = document.getElementById('toast');
+      const skipButton = document.getElementById('skipButton');
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      const arrow = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13.5 6.5 19 12l-5.5 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+      const state = {
+        journey: new URLSearchParams(location.search).get('journey') === 'update' ? 'update' : 'first',
+        step: 'project',
+        project: '',
+        outcome: '',
+        runtime: 'Codex',
+        workspace: '/Users/yijunwang/code/goalboard',
+        timer: null
+      };
+
+      const stepMap = {
+        project: { number: 1, tone: 0 },
+        outcome: { number: 2, tone: 1 },
+        runtime: { number: 3, tone: 2 },
+        workspace: { number: 4, tone: 3 },
+        handoff: { number: 5, tone: 4 },
+        tui: { number: 5, tone: 4 },
+        working: { number: 5, tone: 4 },
+        disconnected: { number: 5, tone: 4 },
+        proposal: { number: 5, tone: 4 },
+        success: { number: 5, tone: 5 },
+        skipped: { number: 0, tone: 0 },
+        'update-intro': { number: 1, tone: 0 },
+        'update-detail': { number: 2, tone: 2 },
+        'update-ready': { number: 3, tone: 5 }
+      };
+
+      const escapeHTML = value => String(value || '').replace(/[&<>'"]/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[char]));
+
+      const hasMeaningfulText = value => {
+        const compact = String(value || '').replace(/\s/g, '');
+        return compact.length >= 2 && /\p{L}/u.test(compact);
+      };
+
+      const project = () => escapeHTML(hasMeaningfulText(state.project) ? state.project : '第一个项目');
+      const outcome = () => escapeHTML(hasMeaningfulText(state.outcome) ? state.outcome : '让这个项目产生一个可以验证的真实变化');
+
+      function context(text) {
+        return `<p class="context-line">${text}</p>`;
+      }
+
+      function inputForm({ form, id, placeholder, value = '', multiline = false, errorId }) {
+        const field = multiline
+          ? `<textarea class="answer-textarea" id="${id}" rows="1" placeholder="${placeholder}" aria-label="${placeholder}" aria-describedby="${errorId}" aria-invalid="false">${escapeHTML(value)}</textarea>`
+          : `<input class="answer-input" id="${id}" value="${escapeHTML(value)}" autocomplete="off" placeholder="${placeholder}" aria-label="${placeholder}" aria-describedby="${errorId}" aria-invalid="false">`;
+        return `<form class="answer-form" data-form="${form}">
+          <div class="answer-line">${field}<button class="continue-button" type="submit" aria-label="继续">${arrow}</button></div>
+          <div class="form-meta"><span id="${errorId}" class="error-message" role="alert"></span><span>按回车继续</span></div>
+        </form>`;
+      }
+
+      function template(step) {
+        if (step === 'project') return `
+          <h1 class="question" tabindex="-1">你好，我们今天做点什么？</h1>
+          ${inputForm({ form: 'project', id: 'projectInput', placeholder: '我想……', value: state.project, errorId: 'projectError' })}`;
+
+        if (step === 'outcome') return `
+          ${context(`今天想做 · ${project()}`)}
+          <h1 class="question compact" tabindex="-1">四周后，什么变化会让你觉得它真的向前走了？</h1>
+          ${inputForm({ form: 'outcome', id: 'outcomeInput', placeholder: '我希望看见……', value: state.outcome, multiline: true, errorId: 'outcomeError' })}
+          <button class="back-link" data-go="project">返回上一步</button>`;
+
+        if (step === 'runtime') return `
+          ${context(`${project()} · ${outcome()}`)}
+          <h1 class="question compact" tabindex="-1">你通常用哪个 Runtime 推进这类工作？</h1>
+          <fieldset class="choice-field">
+            <legend class="sr-only">选择 Runtime</legend>
+            ${choice('Codex', '已检测并验证', '01')}
+            ${choice('Claude Code', '已安装，尚未验证接入', '02')}
+            ${choice('暂时不用 AI', '先建立空项目', '03')}
+          </fieldset>
+          <div class="decision-actions"><button class="primary-action" data-action="confirm-runtime">继续</button></div>
+          <button class="back-link" data-go="outcome">返回上一步</button>`;
+
+        if (step === 'workspace') return `
+          ${context(`${project()} · ${escapeHTML(state.runtime)}`)}
+          <h1 class="question compact" tabindex="-1">最后，确认一下工作的地方。</h1>
+          <p class="support">目录只是新 Session 读取文件的现场，不是项目身份。以后换目录，仍然继续同一个 Goal Tree。</p>
+          ${inputForm({ form: 'workspace', id: 'workspaceInput', placeholder: '工作目录', value: state.workspace, errorId: 'workspaceError' })}
+          <button class="back-link" data-go="runtime">返回上一步</button>`;
+
+        if (step === 'handoff') return `
+          ${context('已经足够开始')}
+          <h1 class="question compact" tabindex="-1">好。要把这些交给 ${escapeHTML(state.runtime)} 吗？</h1>
+          <div class="review-list">
+            <div class="review-row"><span class="review-term">Project</span><span class="review-value">${project()}</span></div>
+            <div class="review-row"><span class="review-term">希望结果</span><span class="review-value">${outcome()}</span></div>
+            <div class="review-row"><span class="review-term">Runtime</span><span class="review-value">${escapeHTML(state.runtime)} · 新建初始化 Session</span></div>
+            <div class="review-row"><span class="review-term">工作目录</span><span class="review-value">${escapeHTML(state.workspace)}</span></div>
+          </div>
+          <p class="support">下一步只打开一个新 Session，并填好提示。不会自动发送、改代码或接受 Goal。</p>
+          <div class="decision-actions">
+            <button class="primary-action" data-action="open-tui">打开并检查提示词</button>
+            <button class="secondary-action" data-action="blank-project">从空项目开始</button>
+          </div>
+          <button class="back-link" data-go="workspace">返回修改</button>`;
+
+        if (step === 'tui') return `
+          ${context(`${project()} · 初始化 Session 尚未发送`)}
+          <h1 class="question compact" tabindex="-1">这是准备交给 ${escapeHTML(state.runtime)} 的内容。</h1>
+          <div class="terminal-wrap">
+            <div class="terminal-bar"><span>${project()}</span><span>${escapeHTML(state.workspace)} · ${escapeHTML(state.runtime)}</span></div>
+            <div class="terminal-body">
+              <p class="terminal-note">GoalBoard 已连接 Project 与 Workspace。以下仍是可编辑草稿。</p>
+              <div class="prompt-draft">我正在推进「${project()}」。
+希望看见的真实结果是：「${outcome()}」。
+
+请先澄清关键限制，再生成 Goal Tree Proposal。不要修改代码，不要自动接受 Goal。</div>
+            </div>
+            <div class="terminal-actions">
+              <button class="terminal-button" data-action="disconnect">模拟断开</button>
+              <button class="terminal-button" data-go="handoff">返回检查</button>
+              <button class="terminal-button primary" data-action="send-prompt">发送给 ${escapeHTML(state.runtime)}</button>
+            </div>
+          </div>`;
+
+        if (step === 'working') return `
+          ${context(`${project()} · 正在生成目标树提案`)}
+          <h1 class="question compact" tabindex="-1">先把结果和依赖理清。</h1>
+          <div class="terminal-wrap">
+            <div class="terminal-bar"><span>${project()}</span><span>正式目标树尚未改变</span></div>
+            <div class="terminal-body working">
+              <div><div class="working-line" aria-hidden="true"></div><p class="working-title">正在建立结果链</p><p class="working-copy">这一步只生成 Proposal，仍由你确认。</p></div>
+            </div>
+            <div class="terminal-actions"><button class="terminal-button" data-action="interrupt">停止生成</button></div>
+          </div>`;
+
+        if (step === 'disconnected') return `
+          ${context(`${project()} · Session 已断开`)}
+          <h1 class="question compact" tabindex="-1">连接断了，但刚才的内容还在。</h1>
+          <p class="support">Project、已确认答案和提示词草稿都已保留。重新连接不会创建第二份目标树。</p>
+          <div class="decision-actions"><button class="primary-action" data-action="reconnect">重新连接</button><button class="secondary-action" data-go="handoff">返回检查</button></div>`;
+
+        if (step === 'proposal') return `
+          ${context('目标树提案 · 等待确认')}
+          <h1 class="question compact" tabindex="-1">这是它现在长成的样子。</h1>
+          <p class="support">先看结果链。确认之前，它还不会写入正式目标树。</p>
+          <div class="tree-layout">
+            <div class="goal-grove" aria-label="目标树提案">
+              <div class="goal-root"><span class="goal-role">希望发生的变化</span><strong>${outcome()}</strong></div>
+              <div class="goal-branches" role="list">
+                <article class="goal-branch" role="listitem"><span class="goal-role">体验结果</span><strong>首次路径能在 5 分钟内完成</strong><p>让第一次使用本身成为可以被验证的结果。</p></article>
+                <article class="goal-branch" role="listitem"><span class="goal-role">连续性结果</span><strong>Project、Session 与结果保持连续</strong><p>换一个工作现场，仍然知道目标、决定和下一步。</p></article>
+              </div>
+              <div class="goal-next"><span class="goal-seed" aria-hidden="true"></span><div><span class="goal-role">现在从这里开始</span><strong>完成一次真实首次用户走查</strong></div></div>
+            </div>
+            <dl class="proposal-notes">
+              <div class="proposal-note"><dt>采用后</dt><dd>建立 1 个根目标、2 个结果分支和 1 个可执行行动。</dd></div>
+              <div class="proposal-note"><dt>不会发生</dt><dd>不执行代码，不覆盖 Runtime 配置，不替你判定完成。</dd></div>
+              <div class="proposal-note"><dt>建议先做</dt><dd>完成一次真实首次用户走查。</dd></div>
+            </dl>
+          </div>
+          <div class="decision-actions"><button class="primary-action" data-action="accept-proposal">确认并建立目标树</button><button class="secondary-action" data-go="tui">回到 TUI 修改</button></div>`;
+
+        if (step === 'success') return `
+          <div class="success-layout">
+            ${context('第一棵目标树已确认')}
+            <h1 class="question" tabindex="-1">好了。先从这一件事开始。</h1>
+            <p class="support">以后即使换一个 Session，也会从同一份结果、决定和下一步继续。</p>
+            <div class="success-next"><span>现在先做</span><strong>完成一次真实首次用户走查</strong></div>
+            <div class="decision-actions"><button class="primary-action" data-action="begin-goal">开始推进</button><button class="secondary-action" data-action="view-tree">查看完整目标树</button></div>
+          </div>`;
+
+        if (step === 'skipped') return `
+          <h1 class="question compact" tabindex="-1">好，引导先放在这里。</h1>
+          <p class="support">你可以直接进入 GoalBoard。之后随时从设置重新打开；这不会伪造任何项目或 Goal 状态。</p>
+          <div class="decision-actions"><button class="primary-action" data-action="enter-app">进入 GoalBoard</button><button class="secondary-action" data-action="restart">重新开始</button></div>`;
+
+        if (step === 'update-intro') return `
+          <h1 class="question" tabindex="-1">这次更新，只改变一件事。</h1>
+          <p class="support">Session 的结果，现在可以回到同一棵 Goal Tree。</p>
+          <div class="decision-actions"><button class="primary-action" data-action="see-update">继续</button><button class="secondary-action" data-action="dismiss-update">稍后再看</button></div>`;
+
+        if (step === 'update-detail') return `
+          ${context('v0.8 · 与当前项目有关')}
+          <h1 class="question compact" tabindex="-1">结果先成为 Proposal。你确认后，它才进入 Goal Tree。</h1>
+          <div class="update-proof">
+            <div class="update-state"><small>以前</small><p>Session 结束后，关键结果留在聊天记录里。</p></div>
+            <div class="update-state"><small>现在</small><p>新的 Session 可以继续使用已经确认的结果。</p></div>
+          </div>
+          <div class="decision-actions"><button class="primary-action" data-action="try-update">在当前项目试用</button><button class="secondary-action" data-go="update-intro">返回</button></div>`;
+
+        return `
+          ${context('当前项目 · GoalBoard Onboarding')}
+          <h1 class="question compact" tabindex="-1">试用入口已经准备好。</h1>
+          <p class="support">生产版会打开当前项目的新 Session，并填入提交 Goal Tree Proposal 的提示。这个原型不会连接真实 Runtime。</p>
+          <div class="decision-actions"><button class="primary-action" data-action="enter-app">回到当前项目</button><button class="secondary-action" data-go="update-intro">重新查看</button></div>`;
+      }
+
+      function choice(name, detail, index) {
+        const selected = state.runtime === name;
+        return `<label class="choice-line ${selected ? 'is-selected' : ''}" data-runtime="${escapeHTML(name)}">
+          <input class="choice-radio" type="radio" name="runtime" value="${escapeHTML(name)}" ${selected ? 'checked' : ''}>
+          <span class="choice-index">${index}</span><span class="choice-name">${escapeHTML(name)}</span><span class="choice-state">${escapeHTML(detail)}</span>
+        </label>`;
+      }
+
+      function updateProgress(step) {
+        const config = stepMap[step] || { number: 0, tone: 0 };
+        document.body.dataset.tone = String(config.tone);
+        document.body.dataset.step = step;
+        const visible = state.journey === 'first' && config.number > 1 && !['success', 'skipped'].includes(step);
+        progress.classList.toggle('is-visible', visible);
+        progressCount.textContent = visible ? `${config.number} / 5` : '';
+        skipButton.style.visibility = ['success', 'skipped', 'update-ready'].includes(step) ? 'hidden' : 'visible';
+      }
+
+      function render(step, immediate = false) {
+        window.clearTimeout(state.timer);
+        const apply = () => {
+          state.step = step;
+          roomContent.innerHTML = template(step);
+          roomContent.classList.remove('is-leaving');
+          roomContent.classList.add('is-entering');
+          updateProgress(step);
+          const textarea = roomContent.querySelector('textarea');
+          if (textarea) autoGrow(textarea);
+          requestAnimationFrame(() => {
+            const focusTarget = roomContent.querySelector('input, textarea, h1, button');
+            focusTarget?.focus({ preventScroll: true });
+          });
+          window.setTimeout(() => roomContent.classList.remove('is-entering'), 580);
+          if (step === 'working') startWorking();
+        };
+
+        if (immediate || reduceMotion.matches) apply();
+        else {
+          roomContent.classList.add('is-leaving');
+          window.setTimeout(apply, 215);
+        }
+      }
+
+      function autoGrow(field) {
+        field.style.height = 'auto';
+        field.style.height = `${Math.min(field.scrollHeight, 140)}px`;
+      }
+
+      function showError(id, message) {
+        const target = roomContent.querySelector(`#${id}`);
+        if (!target) return;
+        target.textContent = message;
+        const field = target.closest('form')?.querySelector('input, textarea');
+        field?.setAttribute('aria-invalid', 'true');
+      }
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add('is-visible');
+        window.setTimeout(() => toast.classList.remove('is-visible'), 2400);
+      }
+
+      function startWorking() {
+        state.timer = window.setTimeout(() => render('proposal'), reduceMotion.matches ? 60 : 1650);
+      }
+
+      function commitRuntime() {
+        window.setTimeout(() => {
+          if (state.runtime === '暂时不用 AI') {
+            showToast('可以先建立空项目。原型继续演示完整初始化路径。');
+            state.runtime = 'Codex';
+          }
+          render('workspace');
+        }, reduceMotion.matches ? 20 : 260);
+      }
+
+      roomContent.addEventListener('input', event => {
+        if (event.target.matches('textarea')) autoGrow(event.target);
+        if (event.target.matches('input, textarea')) {
+          event.target.setAttribute('aria-invalid', 'false');
+          const errorId = event.target.getAttribute('aria-describedby');
+          const error = errorId ? roomContent.querySelector(`#${errorId}`) : null;
+          if (error) error.textContent = '';
+        }
+      });
+
+      roomContent.addEventListener('change', event => {
+        if (!event.target.matches('input[name="runtime"]')) return;
+        state.runtime = event.target.value;
+        roomContent.querySelectorAll('[data-runtime]').forEach(item => {
+          item.classList.toggle('is-selected', item.dataset.runtime === state.runtime);
+        });
+      });
+
+      roomContent.addEventListener('submit', event => {
+        event.preventDefault();
+        const form = event.target.dataset.form;
+        if (form === 'project') {
+          const value = roomContent.querySelector('#projectInput')?.value.trim();
+          if (!hasMeaningfulText(value)) return showError('projectError', '请写一个有意义的项目名称，不要只填数字或符号。');
+          state.project = value;
+          render('outcome');
+        }
+        if (form === 'outcome') {
+          const value = roomContent.querySelector('#outcomeInput')?.value.trim();
+          if (!hasMeaningfulText(value)) return showError('outcomeError', '请用一句话描述可以亲眼确认的变化，不要只填数字或符号。');
+          state.outcome = value;
+          render('runtime');
+        }
+        if (form === 'workspace') {
+          const value = roomContent.querySelector('#workspaceInput')?.value.trim();
+          if (!value) return showError('workspaceError', '需要一个可访问的工作目录，或者返回选择稍后设置。');
+          state.workspace = value;
+          render('handoff');
+        }
+      });
+
+      roomContent.addEventListener('keydown', event => {
+        if (event.target.matches('textarea') && event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          event.target.closest('form')?.requestSubmit();
+        }
+      });
+
+      roomContent.addEventListener('click', event => {
+        const go = event.target.closest('[data-go]')?.dataset.go;
+        if (go) return render(go);
+
+        const action = event.target.closest('[data-action]')?.dataset.action;
+        if (!action) return;
+        if (action === 'confirm-runtime') commitRuntime();
+        if (action === 'open-tui') render('tui');
+        if (action === 'blank-project') showToast('生产版会直接进入空 Goal Tree；原型保留当前流程。');
+        if (action === 'send-prompt') render('working');
+        if (action === 'disconnect') render('disconnected');
+        if (action === 'reconnect') render('tui');
+        if (action === 'interrupt') { window.clearTimeout(state.timer); render('tui'); showToast('生成已停止，提示词草稿仍然保留。'); }
+        if (action === 'accept-proposal') render('success');
+        if (action === 'begin-goal' || action === 'view-tree' || action === 'enter-app') showToast('原型到此结束；生产版会进入当前 Project。');
+        if (action === 'restart') {
+          Object.assign(state, { journey: 'first', step: 'project', project: '', outcome: '', runtime: 'Codex', workspace: '/Users/yijunwang/code/goalboard' });
+          render('project');
+        }
+        if (action === 'see-update') render('update-detail');
+        if (action === 'dismiss-update' || action === 'try-update') render('update-ready');
+      });
+
+      skipButton.addEventListener('click', () => render(state.journey === 'update' ? 'update-ready' : 'skipped'));
+      document.addEventListener('visibilitychange', () => app.classList.toggle('is-paused', document.hidden));
+
+      window.setTimeout(() => {
+        document.body.classList.remove('is-booting');
+        roomContent.querySelector('input')?.focus({ preventScroll: true });
+      }, reduceMotion.matches ? 0 : 1850);
+
+      if (state.journey === 'update') {
+        document.body.classList.remove('is-booting');
+        render('update-intro', true);
+      } else {
+        updateProgress('project');
+      }
+    })();
+  </script>
+</body>
+</html>
