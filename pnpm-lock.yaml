@@ -8,6 +8,87 @@ importers:
 
   .:
     dependencies:
+      '@adeptify/goalboard-app-cli':
+        specifier: workspace:*
+        version: link:apps/cli
+      '@adeptify/goalboard-app-desktop':
+        specifier: workspace:*
+        version: link:apps/desktop
+      '@adeptify/goalboard-app-local-host':
+        specifier: workspace:*
+        version: link:apps/local-host
+      '@adeptify/goalboard-app-mcp':
+        specifier: workspace:*
+        version: link:apps/mcp
+      '@adeptify/goalboard-app-workbench':
+        specifier: workspace:*
+        version: link:apps/workbench
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:packages/contracts
+      '@adeptify/goalboard-design-system':
+        specifier: workspace:*
+        version: link:packages/design-system
+      '@adeptify/goalboard-integration-github':
+        specifier: workspace:*
+        version: link:plugins/official-integrations/github
+      '@adeptify/goalboard-integration-gmail':
+        specifier: workspace:*
+        version: link:plugins/official-integrations/gmail
+      '@adeptify/goalboard-kernel':
+        specifier: workspace:*
+        version: link:packages/kernel
+      '@adeptify/goalboard-module-artifacts':
+        specifier: workspace:*
+        version: link:modules/artifacts
+      '@adeptify/goalboard-module-attention-resumption':
+        specifier: workspace:*
+        version: link:modules/attention-resumption
+      '@adeptify/goalboard-module-evidence-verification':
+        specifier: workspace:*
+        version: link:modules/evidence-verification
+      '@adeptify/goalboard-module-execution':
+        specifier: workspace:*
+        version: link:modules/execution
+      '@adeptify/goalboard-module-feed':
+        specifier: workspace:*
+        version: link:modules/feed
+      '@adeptify/goalboard-module-goals':
+        specifier: workspace:*
+        version: link:modules/goals
+      '@adeptify/goalboard-module-governance-collaboration':
+        specifier: workspace:*
+        version: link:modules/governance-collaboration
+      '@adeptify/goalboard-module-private-work-context':
+        specifier: workspace:*
+        version: link:modules/private-work-context
+      '@adeptify/goalboard-module-projects':
+        specifier: workspace:*
+        version: link:modules/projects
+      '@adeptify/goalboard-module-signals':
+        specifier: workspace:*
+        version: link:modules/signals
+      '@adeptify/goalboard-module-sources':
+        specifier: workspace:*
+        version: link:modules/sources
+      '@adeptify/goalboard-plugin-feed':
+        specifier: workspace:*
+        version: link:plugins/native/feed
+      '@adeptify/goalboard-plugin-goals':
+        specifier: workspace:*
+        version: link:plugins/native/goals
+      '@adeptify/goalboard-plugin-runtime':
+        specifier: workspace:*
+        version: link:packages/plugin-runtime
+      '@adeptify/goalboard-service-connector-host':
+        specifier: workspace:*
+        version: link:horizontal/connector-host
+      '@adeptify/goalboard-service-listener-host':
+        specifier: workspace:*
+        version: link:horizontal/listener-host
+      '@adeptify/goalboard-ui-host':
+        specifier: workspace:*
+        version: link:packages/ui-host
       '@adeptify/intelligence-client':
         specifier: file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz
         version: file:vendor/intelligence-client/adeptify-intelligence-client-0.2.2.tgz(@adeptify/search-evidence-layer@file:vendor/search-evidence-layer/adeptify-search-evidence-layer-0.4.1.tgz)
@@ -33,6 +114,9 @@ importers:
         specifier: ^8.21.3
         version: 8.21.3
     devDependencies:
+      '@adeptify/goalboard-test-kit':
+        specifier: workspace:*
+        version: link:packages/test-kit
       '@tauri-apps/cli':
         specifier: 2.11.4
         version: 2.11.4
@@ -63,6 +147,339 @@ importers:
       typescript:
         specifier: ^5.8.0
         version: 5.9.3
+
+  apps/cli:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@adeptify/goalboard-plugin-goals':
+        specifier: workspace:*
+        version: link:../../plugins/native/goals
+
+  apps/desktop:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@adeptify/goalboard-plugin-feed':
+        specifier: workspace:*
+        version: link:../../plugins/native/feed
+
+  apps/local-host:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@adeptify/goalboard-kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+
+  apps/mcp:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@adeptify/goalboard-plugin-goals':
+        specifier: workspace:*
+        version: link:../../plugins/native/goals
+
+  apps/server:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  apps/workbench:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@adeptify/goalboard-plugin-feed':
+        specifier: workspace:*
+        version: link:../../plugins/native/feed
+      '@adeptify/goalboard-plugin-goals':
+        specifier: workspace:*
+        version: link:../../plugins/native/goals
+      '@adeptify/goalboard-ui-host':
+        specifier: workspace:*
+        version: link:../../packages/ui-host
+
+  horizontal/connector-host:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  horizontal/listener-host:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  horizontal/runtime-host:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  horizontal/scheduler:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/actions:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/artifacts:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/attention-resumption:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/automation:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/context-ledger:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/evidence-verification:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/execution:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/feed:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/goals:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/governance-collaboration:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/identity-team-access:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/private-work-context:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      better-sqlite3:
+        specifier: 12.8.0
+        version: 12.8.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+
+  modules/projects:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/signals:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/sources:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  modules/sync-replication:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
+  packages/contracts: {}
+
+  packages/design-system:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/exchange:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/kernel:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/observability:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/plugin-runtime:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/plugin-sdk:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/storage:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/test-kit:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/ui-host:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  plugins/native/actions:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+
+  plugins/native/artifacts:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+
+  plugins/native/automation:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+
+  plugins/native/feed:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+
+  plugins/native/goals:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-module-evidence-verification':
+        specifier: workspace:*
+        version: link:../../../modules/evidence-verification
+      '@adeptify/goalboard-module-goals':
+        specifier: workspace:*
+        version: link:../../../modules/goals
+
+  plugins/native/work:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+
+  plugins/official-integrations/github:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-sdk
+
+  plugins/official-integrations/gmail:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-sdk
+
+  plugins/official-integrations/rss:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-sdk
+
+  plugins/official-integrations/web-query:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-sdk
+
+  plugins/official-integrations/youtube:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@adeptify/goalboard-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-sdk
+
+  tooling/plugin-cli:
+    dependencies:
+      '@adeptify/goalboard-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
 
 packages:
 

@@ -1,0 +1,60 @@
+import type {
+  IntegrationProviderPort,
+  PluginDefinition,
+  PluginManifest,
+} from "@adeptify/goalboard-contracts/platform/plugin";
+import { definePollingIntegrationPlugin } from "@adeptify/goalboard-plugin-sdk";
+
+export { createGithubProvider, type GithubFetch } from "./provider.js";
+
+export const packageDescriptor = {
+  packageName: "@adeptify/goalboard-integration-github",
+  packagePath: "plugins/official-integrations/github",
+  kind: "integration-plugin",
+  maturity: "partial",
+  contract: "@adeptify/goalboard-contracts/platform/plugin",
+  migrationGoals: ["goal-reorg-f2", "goal-reorg-fd3"],
+  ssot: "docs/SSOT-MATRIX.md",
+  capabilities: ["connector.github.v1", "signal-adapter.github.v1"],
+} as const;
+
+export const githubIntegrationManifest = {
+  schema_version: 1,
+  plugin_id: "io.goalboard.integration.github",
+  version: "1.0.0",
+  name: "GitHub",
+  kind: "integration",
+  publisher: {
+    publisher_id: "io.adeptify",
+    signature: "adeptify-official-signature-v1",
+  },
+  host_api_version: 1,
+  entrypoints: [{ deployment: "local", entrypoint: "./dist/index.js" }],
+  permissions: [
+    { permission: "network:github.com", required: true, reason: "读取 GitHub 身份与通知" },
+    { permission: "secret:github", required: true, reason: "使用不可导出的 GitHub credential reference" },
+  ],
+  capabilities: {
+    provides: ["connector.driver.github.v1", "signal.adapter.github.v1"],
+    consumes: ["connector.host.v1", "listener.host.v1", "signals.command.v1"],
+  },
+  artifacts: { produces: [], consumes: [] },
+  ui: { contributions: ["settings.integration.github"] },
+} as const satisfies PluginManifest;
+
+export function createGithubIntegrationPlugin(input: {
+  provider: IntegrationProviderPort;
+  now?: () => Date;
+}): PluginDefinition {
+  return definePollingIntegrationPlugin({
+    manifest: githubIntegrationManifest,
+    createProvider(context) {
+      context.requireGrant("network:github.com");
+      context.requireGrant("secret:github");
+      return input.provider;
+    },
+    now: input.now,
+  });
+}
+
+export type GoalBoardPackageDescriptor = typeof packageDescriptor;

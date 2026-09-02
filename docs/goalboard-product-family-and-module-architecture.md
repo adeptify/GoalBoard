@@ -1,8 +1,10 @@
-# GoalBoard 产品族与模块架构草案
+# GoalBoard 产品族与模块架构草案（历史输入）
 
-状态：工作草案
+状态：已被新的架构 SSOT 取代，仅保留为讨论和来源记录
 日期：2026-09-01
-用途：记录 GoalBoard、Relay、Loreport 重组方向，作为后续模块 Contract、Desktop UI 和 Server 设计的共同输入。本文不是已经接受的实现 Contract；“已确认”与“开放问题”必须分开维护。
+替代文档：[`docs/SSOT-MATRIX.md`](SSOT-MATRIX.md) 与 [`specs/goalboard-architecture-reorganization/spec.md`](../specs/goalboard-architecture-reorganization/spec.md)
+
+本文记录了 GoalBoard、Relay、Loreport 重组讨论的早期输入，其中 `Space`、Server 业务边界、模块吸收关系等内容已经被后续决定修改。不要据此创建 package、实现功能或判断事实 owner；需要追溯早期思路时再阅读。
 
 ## 1. 为什么需要重新整理
 

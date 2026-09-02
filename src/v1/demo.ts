@@ -255,13 +255,13 @@ export function seedDemoBoard(databasePath: string): void {
       },
     ];
     for (const goal of goals) {
-      coordinator.createGoal(DEMO_BOARD_ID, goal, {
+      coordinator.goals.commands.createGoal(DEMO_BOARD_ID, goal, {
         actor_id: "demo-user",
         idempotency_key: `demo-goal-${goal.goal_id}`,
       });
     }
     for (const child of ["PLATFORM", "WORKSPACE", "ADOPTION"]) {
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         DEMO_BOARD_ID,
         { from_goal_id: child, to_goal_id: "V1", type: "part_of", reason: "共同组成第一次完整的 GoalBoard 使用体验" },
         { actor_id: "demo-user", idempotency_key: `demo-part-${child}` },
@@ -277,18 +277,18 @@ export function seedDemoBoard(databasePath: string): void {
       ["ONBOARDING", "ADOPTION"],
       ["DOCS", "ADOPTION"],
     ] as const) {
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         DEMO_BOARD_ID,
         { from_goal_id: child, to_goal_id: parent, type: "part_of", reason: "在 Mock 项目中形成可追溯的产品目标层级" },
         { actor_id: "demo-user", idempotency_key: `demo-part-${child}` },
       );
     }
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       DEMO_BOARD_ID,
       { from_goal_id: "INTERFACES", to_goal_id: "CORE", type: "depends_on", reason: "共享项目进度前，必须先保证每项工作的状态和完成依据可靠" },
       { actor_id: "demo-user", idempotency_key: "demo-dependency-interfaces" },
     );
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       DEMO_BOARD_ID,
       { from_goal_id: "WEB", to_goal_id: "INTERFACES", type: "depends_on", reason: "页面显示必须和不同 Runtime 看到的项目进度一致" },
       { actor_id: "demo-user", idempotency_key: "demo-dependency-web" },
@@ -299,14 +299,14 @@ export function seedDemoBoard(databasePath: string): void {
       ["ONBOARDING", "RELEASE", "首次体验需要建立在可重复的安装与接入路径上"],
       ["DOCS", "ONBOARDING", "README 的演示必须来自已经走通的首次体验"],
     ] as const) {
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         DEMO_BOARD_ID,
         { from_goal_id: from, to_goal_id: to, type: "depends_on", reason },
         { actor_id: "demo-user", idempotency_key: `demo-dependency-${from.toLowerCase()}` },
       );
     }
 
-    coordinator.addRisk(
+    coordinator.goals.commands.addRisk(
       DEMO_BOARD_ID,
       {
         risk_id: "RISK-FIRST-RESTART",
@@ -324,7 +324,7 @@ export function seedDemoBoard(databasePath: string): void {
       { actor_id: "demo-user", idempotency_key: "demo-risk-first-restart" },
     );
 
-    coordinator.setGoalTrashed(
+    coordinator.goals.lifecycle.setTrashed(
       DEMO_BOARD_ID,
       {
         goal_id: "AUTO-CONNECT",
@@ -334,19 +334,19 @@ export function seedDemoBoard(databasePath: string): void {
       { actor_id: "demo-user", idempotency_key: "demo-trash-auto-connect" },
     );
 
-    const coreClaim = coordinator.claimGoal({
+    const coreClaim = coordinator.executionValidation.commands.claimGoal({
       board_id: DEMO_BOARD_ID,
       goal_id: "CORE",
       actor_id: "runtime-core",
       idempotency_key: "demo-core-claim",
     }).claim!;
-    const coreRun = coordinator.startRun({
+    const coreRun = coordinator.executionValidation.commands.startRun({
       board_id: DEMO_BOARD_ID,
       claim_id: coreClaim.claim_id,
       actor_id: "runtime-core",
       idempotency_key: "demo-core-run",
     }).run;
-    coordinator.reportRun({
+    coordinator.executionValidation.commands.reportRun({
       board_id: DEMO_BOARD_ID,
       run_id: coreRun.run_id,
       actor_id: "runtime-core",
@@ -354,7 +354,7 @@ export function seedDemoBoard(databasePath: string): void {
       output_refs: ["tests/v1.test.ts"],
       idempotency_key: "demo-core-run-complete",
     });
-    const coreEvidence = coordinator.submitEvidence({
+    const coreEvidence = coordinator.executionValidation.commands.submitEvidence({
       board_id: DEMO_BOARD_ID,
       goal_id: "CORE",
       actor_id: "runtime-core",
@@ -368,7 +368,7 @@ export function seedDemoBoard(databasePath: string): void {
     const coreSelfReview = store
       .snapshot(DEMO_BOARD_ID)
       .review_obligations.find((item) => item.goal_id === "CORE" && item.role === "self_verifier")!;
-    coordinator.submitReview({
+    coordinator.executionValidation.commands.submitReview({
       board_id: DEMO_BOARD_ID,
       goal_id: "CORE",
       obligation_id: coreSelfReview.obligation_id,
@@ -378,20 +378,20 @@ export function seedDemoBoard(databasePath: string): void {
       reasoning: "生命周期测试通过",
       idempotency_key: "demo-core-review",
     });
-    coordinator.evaluateLeafCompletion({
+    coordinator.goals.lifecycle.evaluateCompletion({
       board_id: DEMO_BOARD_ID,
       goal_id: "CORE",
       actor_id: "runtime-core",
       idempotency_key: "demo-core-complete",
     });
 
-    const interfaceClaim = coordinator.claimGoal({
+    const interfaceClaim = coordinator.executionValidation.commands.claimGoal({
       board_id: DEMO_BOARD_ID,
       goal_id: "INTERFACES",
       actor_id: "runtime-interface",
       idempotency_key: "demo-interface-claim",
     }).claim!;
-    const interfaceRun = coordinator.startRun({
+    const interfaceRun = coordinator.executionValidation.commands.startRun({
       board_id: DEMO_BOARD_ID,
       claim_id: interfaceClaim.claim_id,
       actor_id: "runtime-interface",

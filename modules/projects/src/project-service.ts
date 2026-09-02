@@ -1,0 +1,178 @@
+import path from "node:path";
+
+import type {
+  ProjectDeletionRecord,
+  ProjectRecord,
+  ProjectSelection,
+} from "@adeptify/goalboard-contracts/modules/projects";
+
+import { ProjectsRepository, type StoredProjectDeletion } from "./repository.js";
+
+export type ProjectsErrorFactory = (code: string, message: string) => Error;
+
+export interface ProjectRecordDraftInput {
+  project_id?: string;
+  display_name: string;
+  board_id?: string;
+  projects_directory: string;
+  source: ProjectRecord["source"];
+  data_class: ProjectRecord["data_class"];
+  migrated_from_path: string | null;
+}
+
+export class ProjectService {
+  constructor(
+    private readonly repository: ProjectsRepository,
+    private readonly error: ProjectsErrorFactory,
+    private readonly now: () => string,
+    private readonly id: (prefix: string) => string,
+  ) {}
+
+  list(): ProjectRecord[] {
+    return this.repository.listProjects();
+  }
+
+  selections(): ProjectSelection[] {
+    return this.list().map((project) => ({
+      project_id: project.project_id,
+      display_name: project.display_name,
+    }));
+  }
+
+  get(projectId: string): ProjectRecord {
+    const normalized = this.requiredProjectId(projectId);
+    const project = this.repository.getProject(normalized);
+    if (!project) throw this.error("catalog.project_not_found", `找不到 GoalBoard 项目: ${normalized}`);
+    return project;
+  }
+
+  prepareRecord(input: ProjectRecordDraftInput): ProjectRecord {
+    const projectId = input.project_id?.trim() || this.id("project");
+    const displayName = this.requiredName(input.display_name);
+    const at = this.now();
+    return {
+      project_id: projectId,
+      display_name: displayName,
+      board_id: input.board_id?.trim() || projectId,
+      database_path: path.join(input.projects_directory, projectId, "goalboard.db"),
+      source: input.source,
+      data_class: input.data_class,
+      migrated_from_path: input.migrated_from_path,
+      created_at: at,
+      updated_at: at,
+    };
+  }
+
+  register(record: ProjectRecord, eventType: string, actorId: string): void {
+    this.repository.transaction(() => {
+      this.repository.insertProject(record);
+      this.appendEvent(record.project_id, eventType, this.requiredActorId(actorId), {
+        board_id: record.board_id,
+        database_path: record.database_path,
+        source: record.source,
+        migrated_from_path: record.migrated_from_path,
+      });
+    });
+  }
+
+  rollbackRegistration(projectId: string): void {
+    this.repository.removeProject(this.requiredProjectId(projectId));
+  }
+
+  rename(projectId: string, displayName: string, actorId: string): ProjectRecord {
+    const existing = this.get(projectId);
+    const nextName = this.requiredName(displayName);
+    if (existing.display_name === nextName) return existing;
+    this.repository.transaction(() => {
+      this.repository.renameProject(existing.project_id, nextName, this.now());
+      this.appendEvent(existing.project_id, "project.renamed", this.requiredActorId(actorId), {
+        previous_display_name: existing.display_name,
+        display_name: nextName,
+      });
+    });
+    return this.get(existing.project_id);
+  }
+
+  touch(projectId: string, eventType: string, actorId: string, payload: Record<string, unknown>): ProjectRecord {
+    const project = this.get(projectId);
+    this.repository.transaction(() => {
+      this.repository.touchProject(project.project_id, this.now());
+      this.appendEvent(project.project_id, eventType, this.requiredActorId(actorId), payload);
+    });
+    return this.get(project.project_id);
+  }
+
+  appendEvent(projectId: string, type: string, actorId: string, payload: Record<string, unknown>): void {
+    this.repository.appendEvent({
+      event_id: this.id("project-event"),
+      project_id: this.requiredProjectId(projectId),
+      type,
+      actor_id: this.requiredActorId(actorId),
+      payload,
+      created_at: this.now(),
+    });
+  }
+
+  removeFacts(projectId: string): number {
+    return this.repository.removeProject(this.requiredProjectId(projectId));
+  }
+
+  listDeletions(): ProjectDeletionRecord[] {
+    return this.repository.listProjectDeletions();
+  }
+
+  findDeletion(actorId: string, idempotencyKey: string): StoredProjectDeletion | null {
+    return this.repository.findDeletion(this.requiredActorId(actorId), idempotencyKey.trim());
+  }
+
+  insertDeletion(record: StoredProjectDeletion): void {
+    this.repository.insertDeletion(record);
+  }
+
+  getDeletion(deletionId: string): StoredProjectDeletion {
+    const record = this.repository.getDeletion(deletionId);
+    if (!record) throw this.error("catalog.project_storage_invalid", "项目删除记录意外丢失");
+    return record;
+  }
+
+  updateDeletionCleanup(
+    deletionId: string,
+    input: { state: "complete" | "pending"; error: string | null; cleaned_at: string | null },
+  ): StoredProjectDeletion {
+    this.repository.updateDeletionCleanup(deletionId, input);
+    return this.getDeletion(deletionId);
+  }
+
+  deletionRecord(record: StoredProjectDeletion): ProjectDeletionRecord {
+    return {
+      deletion_id: record.deletion_id,
+      project_id: record.project_id,
+      display_name: record.display_name,
+      board_id: record.board_id,
+      actor_id: record.actor_id,
+      deleted_binding_count: record.deleted_binding_count,
+      cleanup_state: record.cleanup_state,
+      cleanup_error: record.cleanup_error,
+      deleted_at: record.deleted_at,
+      cleaned_at: record.cleaned_at,
+    };
+  }
+
+  requiredName(value: string): string {
+    const name = value.trim();
+    if (!name) throw this.error("catalog.invalid_name", "项目显示名称不能为空");
+    return name;
+  }
+
+  private requiredProjectId(value: string): string {
+    const projectId = value.trim();
+    if (!projectId) throw this.error("catalog.project_not_found", "项目 ID 不能为空");
+    return projectId;
+  }
+
+  private requiredActorId(value: string): string {
+    const actorId = value.trim();
+    if (!actorId) throw this.error("context.user_confirmation_required", "项目操作必须记录执行者");
+    return actorId;
+  }
+}

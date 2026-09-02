@@ -1,0 +1,41 @@
+{
+  "name": "@adeptify/goalboard-module-signals",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Normalized external-event facts, deduplication identity, revisions, and provenance.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "modules/signals",
+    "kind": "module",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/modules/signals",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-fd1"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

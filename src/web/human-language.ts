@@ -1,5 +1,5 @@
 import type { BoardSnapshot, GoalRecord, GoalWorkState } from "../v1/types.js";
-import { requiresParentCompletionConfirmation } from "../v1/parent-completion.js";
+import { requiresParentCompletionConfirmation } from "@adeptify/goalboard-plugin-goals";
 import { L } from "./i18n.js";
 
 export type GoalPresentationState =

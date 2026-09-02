@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "description": "Legacy mixed files temporarily exempt from the new-package boundary scanner. New packages are never exempt.",
+  "entries": [
+    {
+      "path": "src/index.ts",
+      "kind": "legacy-public-facade",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-f3"],
+      "removalCondition": "All public callers use explicit Contract or package entrypoints."
+    },
+    {
+      "path": "src/v1/coordinator.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-gw1", "goal-reorg-gw2", "goal-reorg-gw3", "goal-reorg-gw4", "goal-reorg-ar2", "goal-reorg-ex1", "goal-reorg-ex2", "goal-reorg-ex3", "goal-reorg-ex4"],
+      "removalCondition": "Goal, execution, evidence, governance, planning, and projection callers have moved to their public owners."
+    },
+    {
+      "path": "src/web/render.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-ap3", "goal-reorg-ap4", "goal-reorg-gw4", "goal-reorg-fd4", "goal-reorg-ar3", "goal-reorg-ex4", "goal-reorg-wk3"],
+      "removalCondition": "Workbench and native Plugin UI callers no longer use the legacy renderer."
+    },
+    {
+      "path": "src/web/server.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-ap1", "goal-reorg-ap2", "goal-reorg-ap3", "goal-reorg-ap4", "goal-reorg-fd4", "goal-reorg-gw4", "goal-reorg-ex4", "goal-reorg-wk2", "goal-reorg-wk3"],
+      "removalCondition": "Routes are thin adapters and all business writes go through public owner APIs."
+    },
+    {
+      "path": "src/mcp/server.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-dv2",
+      "migrationGoals": ["goal-reorg-dv1", "goal-reorg-dv2"],
+      "removalCondition": "The MCP entry only owns transport and calls public Host capabilities."
+    },
+    {
+      "path": "src/projects/catalog.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-ap1", "goal-reorg-ap4", "goal-reorg-wk1", "goal-reorg-gw3"],
+      "removalCondition": "Project, Session, Desktop, and planning responsibilities have separate owners and callers."
+    },
+    {
+      "path": "src/v1/store.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-f3", "goal-reorg-gw1", "goal-reorg-gw2", "goal-reorg-gw3", "goal-reorg-ar2", "goal-reorg-ex1", "goal-reorg-ex2", "goal-reorg-ex3", "goal-reorg-ex4"],
+      "removalCondition": "Each fact owner has its own Repository and the root Store has no authoritative callers."
+    },
+    {
+      "path": "src/web/project-session-workspaces.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-wk3",
+      "migrationGoals": ["goal-reorg-ap1", "goal-reorg-wk3"],
+      "removalCondition": "Project membership and Session workspace composition use their public owners."
+    },
+    {
+      "path": "src/install/runtime-integration.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-dv4",
+      "migrationGoals": ["goal-reorg-dv4"],
+      "removalCondition": "Install preview, mutation, rollback, and diagnostics are split behind release contracts."
+    },
+    {
+      "path": "src/sessions/registry.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-wk1",
+      "migrationGoals": ["goal-reorg-wk1"],
+      "removalCondition": "Private Work Context owns Session content, association, resume, and migration facts."
+    },
+    {
+      "path": "src/feed/store.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-fd4",
+      "migrationGoals": ["goal-reorg-fd1", "goal-reorg-fd2", "goal-reorg-fd3", "goal-reorg-fd4"],
+      "removalCondition": "Provider and Web callers use their final Plugin/Host entrypoints; the remaining Source/Run/import compatibility composition can be deleted."
+    },
+    {
+      "path": "src/v1/types.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "final-cutover",
+      "migrationGoals": ["goal-reorg-f3", "goal-reorg-gw1", "goal-reorg-gw2", "goal-reorg-gw3", "goal-reorg-ar2", "goal-reorg-ex1", "goal-reorg-ex2", "goal-reorg-ex3", "goal-reorg-ex4"],
+      "removalCondition": "Public types are exported by explicit owner Contract subpaths and internal types are colocated."
+    },
+    {
+      "path": "src/web/pty-client.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-wk3",
+      "migrationGoals": ["goal-reorg-wk2", "goal-reorg-wk3"],
+      "removalCondition": "Runtime transport and Work Plugin terminal UI are independently owned."
+    },
+    {
+      "path": "src/feed/connectors/gmail.ts",
+      "kind": "legacy-huge-class",
+      "removalOwner": "goal-reorg-fd3",
+      "migrationGoals": ["goal-reorg-fd1", "goal-reorg-fd3"],
+      "removalCondition": "Gmail protocol and normalization live in the Integration Plugin while hosts retain only technical state."
+    }
+  ]
+}

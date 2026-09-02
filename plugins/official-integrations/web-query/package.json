@@ -1,0 +1,43 @@
+{
+  "name": "@adeptify/goalboard-integration-web-query",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Official Web Query provider adapter and settings boundary.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "manifest.json",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-plugin-sdk": "workspace:*"
+  },
+  "goalboard": {
+    "path": "plugins/official-integrations/web-query",
+    "kind": "integration-plugin",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/plugin",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-fd3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

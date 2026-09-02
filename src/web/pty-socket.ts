@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import { GoalBoardPtyHost, type PtySpawnRequest } from "./pty-host.js";
+import { GoalBoardPtyHost, type PtySpawnRequest } from "@adeptify/goalboard-service-runtime-host";
 
 type ClientMessage =
   | { type: "auth"; token: string }

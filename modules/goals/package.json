@@ -1,0 +1,53 @@
+{
+  "name": "@adeptify/goalboard-module-goals",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Goal Contract, graph, policy, risk, lifecycle, guidance, and planning facts.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "methods",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "modules/goals",
+    "kind": "module",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/modules/goals",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-f826dfb8-bf63-4e98-b6b7-57f6b4b7c3b8",
+      "goal-reorg-gw1",
+      "goal-reorg-gw2",
+      "goal-reorg-gw3",
+      "goal-reorg-gw4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "goals.command.v1",
+      "goals.repository.v1",
+      "goals.lifecycle.v1",
+      "goals.planning.v1",
+      "goals.query.v1"
+    ]
+  }
+}

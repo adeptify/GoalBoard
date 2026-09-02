@@ -5,15 +5,14 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { WebSocket, type RawData } from "ws";
-import { desktopAdvancePrompt } from "../src/desktop/advance-prompt.js";
-import { desktopLaunchSpec, desktopPanelEnv } from "../src/desktop/launch.js";
+import { desktopAdvancePrompt, desktopLaunchSpec, desktopPanelEnv } from "@adeptify/goalboard-app-desktop";
 import { FeedStore } from "../src/feed/store.js";
 import { GoalBoardProjectCatalog } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../src/v1/demo.js";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 import { resolveWebControlToken, WEB_CONTROL_TOKEN_RELATIVE_PATH } from "../src/web/control-token.js";
-import { NATIVE_DESKTOP_BOOTSTRAP_SCRIPT } from "../src/web/desktop-shell.js";
+import { NATIVE_DESKTOP_BOOTSTRAP_SCRIPT } from "@adeptify/goalboard-app-desktop";
 import {
   GoalBoardPtyHost,
   buildPtyEnvironment,
@@ -21,6 +20,10 @@ import {
   resolveNvmBinDirectory,
   resolvePtyCommand,
 } from "../src/web/pty-host.js";
+import {
+  CLIENT_SCRIPT,
+  ONBOARDING_CLIENT_SCRIPT,
+} from "@adeptify/goalboard-app-workbench";
 import {
   renderGoalBoardWeb,
   renderGoalBoardWorkbenchClientScript,
@@ -34,6 +37,7 @@ import {
 const WEB_TEST_CONTROL_TOKEN = "goalboard-web-test-control-token-0123456789abcdef";
 const PTY_CLIENT_SOURCE = readFileSync(new URL("../src/web/pty-client.ts", import.meta.url), "utf8");
 const WEB_RENDER_SOURCE = readFileSync(new URL("../src/web/render.ts", import.meta.url), "utf8");
+const WORKBENCH_UI_SOURCE = [WEB_RENDER_SOURCE, CLIENT_SCRIPT, ONBOARDING_CLIENT_SCRIPT].join("\n");
 const DESKTOP_CAPABILITIES = JSON.parse(
   readFileSync(new URL("../desktop/src-tauri/capabilities/default.json", import.meta.url), "utf8"),
 ) as { permissions?: string[] };
@@ -152,7 +156,7 @@ function addProjectGoal(
 ): void {
   const store = new SqliteGoalBoardStore(project.database_path);
   try {
-    new GoalBoardCoordinator(store).createGoal(
+    new GoalBoardCoordinator(store).goals.commands.createGoal(
       project.board_id,
       {
         goal_id: goalId,
@@ -255,7 +259,7 @@ function addProjectAcceptedGoal(
 ): void {
   const store = new SqliteGoalBoardStore(project.database_path);
   try {
-    new GoalBoardCoordinator(store).createGoal(
+    new GoalBoardCoordinator(store).goals.commands.createGoal(
       project.board_id,
       {
         goal_id: goalId,
@@ -290,7 +294,7 @@ function addProjectChildRelation(
 ): void {
   const store = new SqliteGoalBoardStore(project.database_path);
   try {
-    new GoalBoardCoordinator(store).addRelation(
+    new GoalBoardCoordinator(store).goals.commands.addRelation(
       project.board_id,
       {
         from_goal_id: childGoalId,
@@ -964,14 +968,15 @@ test("TUI client rejects cross-Goal and parent writes before touching the PTY ch
 });
 
 test("Feed processing opens Runtime and fills context without sending it", () => {
-  assert.match(WEB_RENDER_SOURCE, /goalboard-feed-runtime-autofill:/);
-  assert.match(WEB_RENDER_SOURCE, /workspaceMode: action === "start" \? "runtime" : "focus"/);
-  assert.match(WEB_RENDER_SOURCE, /feedStartRequested/);
-  assert.match(WEB_RENDER_SOURCE, /goalWorkspaceMode = "runtime"/);
-  assert.match(WEB_RENDER_SOURCE, /setDesktopWorkSurface\("goal", false, false\)/);
+  assert.match(WORKBENCH_UI_SOURCE, /goalboard-feed-runtime-autofill:/);
+  assert.match(WORKBENCH_UI_SOURCE, /workspaceMode: action === "start" \? "runtime" : "focus"/);
+  assert.match(WORKBENCH_UI_SOURCE, /feedStartRequested/);
+  assert.match(WORKBENCH_UI_SOURCE, /goalWorkspaceMode = "runtime"/);
+  assert.match(WORKBENCH_UI_SOURCE, /setDesktopWorkSurface\("goal", false, false\)/);
   assert.match(PTY_CLIENT_SOURCE, /goalboard-feed-runtime-autofill:/);
   assert.match(PTY_CLIENT_SOURCE, /await writePrompt\(false, pending\.itemId\)/);
-  assert.match(PTY_CLIENT_SOURCE, /feed_item_id=\$\{encodeURIComponent\(feedItemId\)\}/);
+  assert.match(PTY_CLIENT_SOURCE, /const query = new URLSearchParams\(\)/);
+  assert.match(PTY_CLIENT_SOURCE, /if \(feedItemId\) query\.set\("feed_item_id", feedItemId\)/);
   assert.match(PTY_CLIENT_SOURCE, /await waitForTerminalOutput\(panel\.panel_id\)/);
   assert.match(PTY_CLIENT_SOURCE, /replace\(\/\[\\r\\n\]\+\/g, " ⏎ "\)/);
   assert.match(PTY_CLIENT_SOURCE, /replace\(\/\[\\u0000-\\u001f\\u007f\]\/g, " "\)/);
@@ -981,14 +986,14 @@ test("Feed processing opens Runtime and fills context without sending it", () =>
 });
 
 test("Onboarding opens one Goal-bound TUI and fills the advance prompt without sending it", () => {
-  assert.match(WEB_RENDER_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-runtime", "1"\)/);
-  assert.match(WEB_RENDER_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-embed", "1"\)/);
-  assert.match(WEB_RENDER_SOURCE, /data-onboarding-runtime-frame/);
-  assert.match(WEB_RENDER_SOURCE, /goalboard:onboarding-runtime-bootstrap/);
-  assert.match(WEB_RENDER_SOURCE, /goalboard:onboarding-runtime-ready/);
-  assert.match(WEB_RENDER_SOURCE, /安排好了，进入 GoalBoard/);
-  assert.match(WEB_RENDER_SOURCE, /const onboardingRuntimeRequested = new URLSearchParams\(location\.search\)\.get\("onboarding-runtime"\) === "1"/);
-  assert.match(WEB_RENDER_SOURCE, /onboardingRuntimeRequested[\s\S]{0,700}setWorkspaceMode\("runtime", false\)[\s\S]{0,220}setMobileView\("tui"\)/);
+  assert.match(WORKBENCH_UI_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-runtime", "1"\)/);
+  assert.match(WORKBENCH_UI_SOURCE, /embeddedDestination\.searchParams\.set\("onboarding-embed", "1"\)/);
+  assert.match(WORKBENCH_UI_SOURCE, /data-onboarding-runtime-frame/);
+  assert.match(WORKBENCH_UI_SOURCE, /goalboard:onboarding-runtime-bootstrap/);
+  assert.match(WORKBENCH_UI_SOURCE, /goalboard:onboarding-runtime-ready/);
+  assert.match(WORKBENCH_UI_SOURCE, /安排好了，进入 GoalBoard/);
+  assert.match(WORKBENCH_UI_SOURCE, /const onboardingRuntimeRequested = new URLSearchParams\(location\.search\)\.get\("onboarding-runtime"\) === "1"/);
+  assert.match(WORKBENCH_UI_SOURCE, /onboardingRuntimeRequested[\s\S]{0,700}setWorkspaceMode\("runtime", false\)[\s\S]{0,220}setMobileView\("tui"\)/);
   assert.match(PTY_CLIENT_SOURCE, /goalboard-onboarding-runtime-autofill:/);
   assert.match(PTY_CLIENT_SOURCE, /await openPanel\(\{ runtime_kind: pending\.runtimeKind, cwd: pending\.workspacePath \}\)/);
   assert.match(PTY_CLIENT_SOURCE, /await waitForTerminalOutput\(panel\.panel_id\)/);

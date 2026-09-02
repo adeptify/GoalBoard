@@ -1,0 +1,41 @@
+{
+  "name": "@adeptify/goalboard-module-context-ledger",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Object references, cross-owner relationships, publication, and materialization records.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "modules/context-ledger",
+    "kind": "module",
+    "maturity": "contract-only",
+    "contract": "@adeptify/goalboard-contracts/modules/context-ledger",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ar2"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

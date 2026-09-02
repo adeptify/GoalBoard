@@ -73,7 +73,7 @@ export function importV3Board(
     for (const legacyGoal of legacy.goals) {
       const migratedId = idMap[legacyGoal.id];
       const hasChildren = legacy.goals.some((item) => item.parent === legacyGoal.id);
-      coordinator.createGoal(
+      coordinator.goals.commands.createGoal(
         input.target_board_id,
         {
           goal_id: migratedId,
@@ -106,7 +106,7 @@ export function importV3Board(
     }
     for (const legacyGoal of legacy.goals) {
       if (!legacyGoal.parent || !idMap[legacyGoal.parent]) continue;
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         input.target_board_id,
         {
           from_goal_id: idMap[legacyGoal.id],

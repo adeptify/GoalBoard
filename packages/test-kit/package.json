@@ -1,0 +1,42 @@
+{
+  "name": "@adeptify/goalboard-test-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deterministic clocks, fake capabilities, temporary storage, and Contract harnesses.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "packages/test-kit",
+    "kind": "foundation",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/testing",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-f3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

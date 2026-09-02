@@ -1,0 +1,45 @@
+{
+  "name": "@adeptify/goalboard-module-private-work-context",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Private Session, content reference, workspace association, resume, and handoff facts.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "better-sqlite3": "12.8.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0"
+  },
+  "goalboard": {
+    "path": "modules/private-work-context",
+    "kind": "module",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/modules/private-work-context",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-wk1"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

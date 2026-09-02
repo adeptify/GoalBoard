@@ -5,6 +5,14 @@ import path from "node:path";
 import readline from "node:readline";
 import { createHash } from "node:crypto";
 import {
+  createGoalBoardLocalHost,
+  createGoalCapability,
+  goalBoardHostProjectReference,
+  initializeBoardCapability,
+  snapshotBoardCapability,
+  type GoalBoardLocalHost,
+} from "../local-host/composition.js";
+import {
   GoalBoardProjectCatalogError,
   normalizeRuntimeWorkContext,
   readPersonalPlanningMethodPacks,
@@ -19,13 +27,12 @@ import {
   runtimeSessionHostSignalsFromEnvironment,
   type RuntimeSessionHostSignals,
 } from "../sessions/compatibility.js";
-import { GoalBoardSessionRegistry } from "../sessions/registry.js";
+import { GoalBoardSessionRegistry } from "@adeptify/goalboard-module-private-work-context";
 import {
   GoalBoardCoordinator,
   GoalBoardV1Error,
   type AvailableQueryResult,
 } from "../v1/coordinator.js";
-import { SqliteGoalBoardStore } from "../v1/store.js";
 import type {
   ClaimRequest,
   ClarificationTurnRecord,
@@ -35,7 +42,11 @@ import type {
   GoalTrashResult,
 } from "../v1/types.js";
 import { importV3Board, type LegacyV3ImportInput } from "../v1/migration.js";
-import type { PlanningMethodComposition, PlanningMethodPack } from "../planning/method-packs.js";
+import type { PlanningMethodComposition, PlanningMethodPack } from "@adeptify/goalboard-contracts/modules/goals";
+import {
+  createMcpExecutionValidationAdapter,
+  createMcpGoalsAdapter,
+} from "@adeptify/goalboard-app-mcp";
 
 const SERVER_INFO = { name: "goalboard-mcp", version: "1.0.0" };
 
@@ -2047,7 +2058,8 @@ function runtimeResumeView(
 ): Record<string, unknown> {
   const snapshot = coordinator.store.snapshot(boardId);
   const goalsById = new Map(snapshot.goals.map((goal) => [goal.goal_id, goal]));
-  const projections = coordinator.getGoalActionProjections({ board_id: boardId, snapshot });
+  const executionAdapter = createMcpExecutionValidationAdapter(coordinator.executionValidation);
+  const projections = executionAdapter.query.getGoalActionProjections({ board_id: boardId, snapshot });
   const projectionsById = new Map(projections.map((projection) => [projection.goal_id, projection]));
   const preferred = [
     { goal_id: explicitGoalId, source: "host_focus" },
@@ -2208,11 +2220,14 @@ export class GoalBoardServer {
   private runtimeConnectionRefreshContextKey: string | null;
   private readonly sessionFoundationReady: Promise<void>;
   private sessionFoundationError: string | null;
+  private readonly localHost: GoalBoardLocalHost;
+  private readonly ownsLocalHost: boolean;
 
   constructor(
     audience?: GoalBoardMcpAudience | null,
     runtimeConnection?: GoalBoardRuntimeConnection | null,
     runtimeContextHost?: GoalBoardRuntimeContextHost | null,
+    localHost?: GoalBoardLocalHost,
   ) {
     this.audience =
       audience ?? (process.env.GOALBOARD_MCP_AUDIENCE === "management" ? "management" : "runtime");
@@ -2223,6 +2238,12 @@ export class GoalBoardServer {
     this.runtimeConnectionRefreshContextKey = null;
     this.runtimeContextHost =
       runtimeContextHost ?? (this.runtimeConnection ? null : runtimeContextHostFromEnvironment());
+    this.ownsLocalHost = !localHost;
+    this.localHost = localHost ?? createGoalBoardLocalHost({
+      planningMethods: () => this.runtimeContextHost?.homeDirectory
+        ? readPersonalPlanningMethodPacks(this.runtimeContextHost.homeDirectory)
+        : [],
+    });
     this.sessionFoundationError = null;
     // An explicitly injected Board connection is already fully scoped. Tests
     // and embedders that omit homeDirectory must not accidentally migrate the
@@ -2249,7 +2270,7 @@ export class GoalBoardServer {
     if (name === "goalboard_v1_context_unbind") return this.unbindRuntimeContext(arguments_, callContext);
     if (name === "goalboard_v1_context_create_and_bind") return this.createAndBindRuntimeContext(arguments_, callContext);
     if (name === "goalboard_v1_project_delete") return this.deleteRuntimeProject(arguments_, callContext);
-    const response = this.callV1Tool(
+    const response = await this.callV1Tool(
       name,
       arguments_,
       this.audience === "runtime" ? this.runtimeConnection : null,
@@ -2402,7 +2423,7 @@ export class GoalBoardServer {
     const runtimeSessionId = callContext.runtimeSessionId?.trim() || "";
     if (!host || !panelId || !runtimeSessionId) return;
     await withGoalBoardProjectCatalog({ homeDirectory: host.homeDirectory }, async (catalog) => {
-      const panel = catalog.aliasDesktopPanelSession({
+      const panel = catalog.desktopPanels.aliasSession({
         panel_id: panelId,
         runtime_id: host.runtimeContext.runtime_id,
         host_session_id: runtimeSessionId,
@@ -2621,23 +2642,14 @@ export class GoalBoardServer {
       ? { ...resolution.connection, web_base_url: webBaseUrl, project_url: projectUrl }
       : null;
     let projectGuidance: ReturnType<GoalBoardCoordinator["readProjectGuidance"]> | null = null;
-    let coordinatorForResume: GoalBoardCoordinator | null = null;
-    let resumeStore: SqliteGoalBoardStore | null = null;
     if (connection) {
-      resumeStore = new SqliteGoalBoardStore(path.resolve(connection.database_path));
-      try {
-        coordinatorForResume = new GoalBoardCoordinator(
-          resumeStore,
-          () => new Date(),
-          readPersonalPlanningMethodPacks(host.homeDirectory),
-        );
-        projectGuidance = coordinatorForResume.readProjectGuidance(connection.board_id);
-      } catch (error) {
-        resumeStore.close();
-        resumeStore = null;
-        coordinatorForResume = null;
-        throw error;
-      }
+      const reference = goalBoardHostProjectReference({
+        databasePath: connection.database_path,
+        boardId: connection.board_id,
+        projectId: connection.project_id,
+      });
+      projectGuidance = await this.localHost.withProject(reference, ({ coordinator }) =>
+        coordinator.goalQueries.readProjectGuidance(connection.board_id));
     }
     this.runtimeConnectionRefreshContextKey = null;
     if (connection) {
@@ -2695,17 +2707,18 @@ export class GoalBoardServer {
       }
     }
     let resume: Record<string, unknown> = { focus: null, next_goals: [], auto_claimed: false };
-    try {
-      if (connection && coordinatorForResume) {
-        resume = runtimeResumeView(
-          coordinatorForResume,
-          connection.board_id,
-          host.goalId?.trim() || null,
-          sessionGoalId,
-        );
-      }
-    } finally {
-      resumeStore?.close();
+    if (connection) {
+      const reference = goalBoardHostProjectReference({
+        databasePath: connection.database_path,
+        boardId: connection.board_id,
+        projectId: connection.project_id,
+      });
+      resume = await this.localHost.withProject(reference, ({ coordinator }) => runtimeResumeView(
+        coordinator,
+        connection.board_id,
+        host.goalId?.trim() || null,
+        sessionGoalId,
+      ));
     }
     return JSON.stringify({
       ...resolution,
@@ -2728,12 +2741,12 @@ export class GoalBoardServer {
     }
   }
 
-  private callV1Tool(
+  private async callV1Tool(
     name: string,
     arguments_: Record<string, unknown>,
     runtimeConnection: GoalBoardRuntimeConnection | null,
     callContext: GoalBoardMcpToolCallContext,
-  ): string {
+  ): Promise<string> {
     const databasePath = path.resolve(
       String(
         this.audience === "runtime"
@@ -2746,20 +2759,25 @@ export class GoalBoardServer {
     } else if (!fs.existsSync(databasePath)) {
       throw new GoalBoardV1Error("store.not_found", `GoalBoard 数据库不存在: ${databasePath}`);
     }
-    const store = new SqliteGoalBoardStore(databasePath);
-    const coordinator = new GoalBoardCoordinator(
-      store,
-      () => new Date(),
-      this.runtimeContextHost?.homeDirectory
-        ? readPersonalPlanningMethodPacks(this.runtimeContextHost.homeDirectory)
-        : [],
+    const boardId = String(
+      this.audience === "runtime"
+        ? runtimeConnection!.boardId
+        : arguments_.board_id ?? `database:${databasePath}`,
     );
-    try {
+    const reference = goalBoardHostProjectReference({
+      databasePath,
+      boardId,
+      projectId: this.audience === "runtime" ? runtimeConnection!.projectId : undefined,
+    });
+    const client = this.localHost.client(reference);
+    return await this.localHost.withProject(reference, async ({ store, coordinator }) => {
+      const goalsAdapter = createMcpGoalsAdapter(coordinator.goals);
+      const executionAdapter = createMcpExecutionValidationAdapter(coordinator.executionValidation);
       let result: unknown;
       let prettyPrint = true;
       switch (name) {
         case "goalboard_v1_initialize":
-          result = coordinator.initializeBoard({
+          result = await client.invoke(initializeBoardCapability, {
             board_id: String(arguments_.board_id),
             title: String(arguments_.title),
             actor_id: String(arguments_.actor_id),
@@ -2767,27 +2785,25 @@ export class GoalBoardServer {
           });
           break;
         case "goalboard_v1_create_goal":
-          result = coordinator.createGoal(
-            String(arguments_.board_id),
-            arguments_.goal as CreateGoalInput,
-            {
-              actor_id: String(arguments_.actor_id),
-              idempotency_key: String(arguments_.idempotency_key),
-              reason: arguments_.reason == null ? undefined : String(arguments_.reason),
-            },
-          );
+          result = await client.invoke(createGoalCapability, {
+            board_id: String(arguments_.board_id),
+            goal: arguments_.goal as CreateGoalInput,
+            actor_id: String(arguments_.actor_id),
+            idempotency_key: String(arguments_.idempotency_key),
+            reason: arguments_.reason == null ? undefined : String(arguments_.reason),
+          });
           break;
         case "goalboard_v1_snapshot":
-          result = store.snapshot(String(arguments_.board_id));
+          result = await client.invoke(snapshotBoardCapability, { board_id: String(arguments_.board_id) });
           break;
         case "goalboard_v1_project_guidance_get":
-          result = coordinator.readProjectGuidance(String(arguments_.board_id));
+          result = coordinator.goalQueries.readProjectGuidance(String(arguments_.board_id));
           break;
         case "goalboard_v1_project_guidance_add":
-          result = coordinator.addProjectGuidance({
+          result = goalsAdapter.commands.addProjectGuidance({
             board_id: String(arguments_.board_id),
             actor_id: String(arguments_.actor_id),
-            kind: String(arguments_.kind) as Parameters<GoalBoardCoordinator["addProjectGuidance"]>[0]["kind"],
+            kind: String(arguments_.kind) as Parameters<GoalBoardCoordinator["goals"]["commands"]["addProjectGuidance"]>[0]["kind"],
             content: String(arguments_.content),
             source_refs: (arguments_.source_refs as string[]) ?? [],
             reason: String(arguments_.reason),
@@ -2797,14 +2813,14 @@ export class GoalBoardServer {
           });
           break;
         case "goalboard_v1_project_guidance_update":
-          result = coordinator.updateProjectGuidance({
+          result = goalsAdapter.commands.updateProjectGuidance({
             board_id: String(arguments_.board_id),
             guidance_id: String(arguments_.guidance_id),
             actor_id: String(arguments_.actor_id),
-            action: String(arguments_.action) as Parameters<GoalBoardCoordinator["updateProjectGuidance"]>[0]["action"],
+            action: String(arguments_.action) as Parameters<GoalBoardCoordinator["goals"]["commands"]["updateProjectGuidance"]>[0]["action"],
             kind: arguments_.kind == null
               ? undefined
-              : String(arguments_.kind) as Parameters<GoalBoardCoordinator["updateProjectGuidance"]>[0]["kind"],
+              : String(arguments_.kind) as Parameters<GoalBoardCoordinator["goals"]["commands"]["updateProjectGuidance"]>[0]["kind"],
             content: arguments_.content == null ? undefined : String(arguments_.content),
             source_refs: arguments_.source_refs == null ? undefined : arguments_.source_refs as string[],
             reason: String(arguments_.reason),
@@ -2814,7 +2830,7 @@ export class GoalBoardServer {
           });
           break;
         case "goalboard_v1_contract": {
-          const contract = coordinator.readGoalContract(
+          const contract = coordinator.goalQueries.readGoalContract(
             String(arguments_.board_id),
             String(arguments_.goal_id),
           );
@@ -2865,7 +2881,7 @@ export class GoalBoardServer {
           }), detailLevel);
           result = {
             ...legacyAvailable,
-            action_projections: coordinator.getGoalActionProjections({
+            action_projections: executionAdapter.query.getGoalActionProjections({
               board_id: String(arguments_.board_id),
             }),
           };
@@ -2874,27 +2890,27 @@ export class GoalBoardServer {
         }
         case "goalboard_v1_planning_methods":
           result = planningMethodResponse(
-            coordinator.effectivePlanningMethods(String(arguments_.board_id)),
-            coordinator.projectPlanningComposition(String(arguments_.board_id)),
+            goalsAdapter.planning.effectiveMethods(String(arguments_.board_id)),
+            goalsAdapter.planning.projectComposition(String(arguments_.board_id)),
             arguments_,
           );
           break;
         case "goalboard_v1_planning_method_save":
-          result = coordinator.saveProjectPlanningMethod({
+          result = goalsAdapter.planning.saveProjectMethod({
             board_id: String(arguments_.board_id),
-            method: arguments_.method as Parameters<GoalBoardCoordinator["saveProjectPlanningMethod"]>[0]["method"],
+            method: arguments_.method as Parameters<GoalBoardCoordinator["goals"]["planning"]["saveProjectMethod"]>[0]["method"],
             actor_id: String(arguments_.actor_id),
             user_confirmed: arguments_.user_confirmed === true,
           });
           break;
         case "goalboard_v1_planning_analyze_change":
-          result = coordinator.analyzePlanningChange({
-            board_id: String(arguments_.board_id),
-            changed_goal_ids: (arguments_.changed_goal_ids as string[]) ?? [],
-          });
+          result = goalsAdapter.planning.analyzeChange(
+            String(arguments_.board_id),
+            (arguments_.changed_goal_ids as string[]) ?? [],
+          );
           break;
         case "goalboard_v1_planning_graph_check":
-          result = coordinator.validatePlanningGraph(String(arguments_.board_id));
+          result = goalsAdapter.planning.validateBoardGraph(String(arguments_.board_id));
           break;
         case "goalboard_v1_explain":
           result = coordinator.explainGoal({
@@ -2907,10 +2923,10 @@ export class GoalBoardServer {
           });
           break;
         case "goalboard_v1_claim":
-          result = coordinator.claimGoal(arguments_ as unknown as ClaimRequest);
+          result = executionAdapter.commands.claimGoal(arguments_ as unknown as ClaimRequest);
           break;
         case "goalboard_v1_select_goal":
-          result = coordinator.selectGoalAndStart(arguments_ as unknown as ClaimRequest);
+          result = executionAdapter.commands.selectGoalAndStart(arguments_ as unknown as ClaimRequest);
           break;
         case "goalboard_v1_draft_dialogue_start":
           result = coordinator.startDraftDialogue(
@@ -3027,22 +3043,22 @@ export class GoalBoardServer {
           break;
         }
         case "goalboard_v1_release":
-          result = coordinator.releaseClaim(this.v1Payload(arguments_));
+          result = executionAdapter.commands.releaseClaim(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_claim_renew":
-          result = coordinator.renewClaim(this.v1Payload(arguments_));
+          result = executionAdapter.commands.renewClaim(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_revoke_claim":
-          result = coordinator.revokeClaim(this.v1Payload(arguments_));
+          result = executionAdapter.commands.revokeClaim(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_relation_add": {
           const payload = this.v1Payload<{
             board_id: string;
-            relation: Parameters<GoalBoardCoordinator["addRelation"]>[1];
+            relation: Parameters<GoalBoardCoordinator["goals"]["commands"]["addRelation"]>[1];
             actor_id: string;
             idempotency_key: string;
           }>(arguments_);
-          result = coordinator.addRelation(payload.board_id, payload.relation, payload);
+          result = goalsAdapter.commands.addRelation(payload.board_id, payload.relation, payload);
           break;
         }
         case "goalboard_v1_impact_add": {
@@ -3058,31 +3074,31 @@ export class GoalBoardServer {
         case "goalboard_v1_policy_set": {
           const payload = this.v1Payload<{
             board_id: string;
-            binding: Parameters<GoalBoardCoordinator["setPolicy"]>[1];
+            binding: Parameters<GoalBoardCoordinator["goals"]["commands"]["setPolicy"]>[1];
             actor_id: string;
             idempotency_key: string;
           }>(arguments_);
-          result = coordinator.setPolicy(payload.board_id, payload.binding, payload);
+          result = goalsAdapter.commands.setPolicy(payload.board_id, payload.binding, payload);
           break;
         }
         case "goalboard_v1_risk_add": {
           const payload = this.v1Payload<{
             board_id: string;
-            risk: Parameters<GoalBoardCoordinator["addRisk"]>[1];
+            risk: Parameters<GoalBoardCoordinator["goals"]["commands"]["addRisk"]>[1];
             actor_id: string;
             idempotency_key: string;
           }>(arguments_);
-          result = coordinator.addRisk(payload.board_id, payload.risk, payload);
+          result = goalsAdapter.commands.addRisk(payload.board_id, payload.risk, payload);
           break;
         }
         case "goalboard_v1_risk_state": {
           const payload = this.v1Payload<{
             board_id: string;
-            risk: Parameters<GoalBoardCoordinator["setRiskState"]>[1];
+            risk: Parameters<GoalBoardCoordinator["goals"]["commands"]["setRiskState"]>[1];
             actor_id: string;
             idempotency_key: string;
           }>(arguments_);
-          result = coordinator.setRiskState(payload.board_id, payload.risk, {
+          result = goalsAdapter.commands.setRiskState(payload.board_id, payload.risk, {
             actor_id: payload.actor_id,
             actor_kind: this.audience === "runtime" ? "runtime" : "user",
             idempotency_key: payload.idempotency_key,
@@ -3116,7 +3132,7 @@ export class GoalBoardServer {
           result = this.presentGoalTrashResult(
             coordinator,
             payload.board_id,
-            coordinator.setGoalTrashed(
+            goalsAdapter.lifecycle.setTrashed(
               payload.board_id,
               { goal_id: payload.goal_id, trashed: true, reason: payload.reason },
               { actor_id: payload.actor_id, idempotency_key: payload.idempotency_key },
@@ -3127,7 +3143,7 @@ export class GoalBoardServer {
         case "goalboard_v1_goal_trash_list": {
           const boardId = String(arguments_.board_id);
           result = {
-            goals: coordinator.listTrashedGoals(boardId),
+            goals: coordinator.goalQueries.listTrashedGoals(boardId),
             observed_event_cursor: store.eventCursor(boardId),
           };
           break;
@@ -3145,7 +3161,7 @@ export class GoalBoardServer {
           result = this.presentGoalTrashResult(
             coordinator,
             payload.board_id,
-            coordinator.setGoalTrashed(
+            goalsAdapter.lifecycle.setTrashed(
               payload.board_id,
               { goal_id: payload.goal_id, trashed: false, reason: payload.reason },
               { actor_id: payload.actor_id, idempotency_key: payload.idempotency_key },
@@ -3154,24 +3170,24 @@ export class GoalBoardServer {
           break;
         }
         case "goalboard_v1_run_start":
-          result = coordinator.startRun(this.v1Payload(arguments_));
+          result = executionAdapter.commands.startRun(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_revalidate":
-          result = coordinator.revalidateGoal(this.v1Payload(arguments_));
+          result = goalsAdapter.lifecycle.revalidate(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_rework_request":
-          result = coordinator.requestGoalRework(this.v1Payload(arguments_));
+          result = executionAdapter.commands.requestGoalRework(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_run_report":
-          result = coordinator.reportRun(this.v1Payload(arguments_));
+          result = executionAdapter.commands.reportRun(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_evidence_submit":
           {
           const normalizedWorkspace = this.runtimeContextHost
             ? normalizeRuntimeWorkContext(this.runtimeContextHost.runtimeContext).workspace
             : undefined;
-          result = coordinator.submitEvidence({
-            ...this.v1Payload<Parameters<GoalBoardCoordinator["submitEvidence"]>[0]>(arguments_),
+          result = executionAdapter.commands.submitEvidence({
+            ...this.v1Payload<Parameters<typeof executionAdapter.commands.submitEvidence>[0]>(arguments_),
             locator_context: {
               project_root: normalizedWorkspace?.canonical_path ?? null,
               workspace_id: normalizedWorkspace?.workspace_id ?? null,
@@ -3180,13 +3196,13 @@ export class GoalBoardServer {
           break;
           }
         case "goalboard_v1_evidence_correct":
-          result = coordinator.correctEvidence(this.v1Payload(arguments_));
+          result = executionAdapter.commands.correctEvidence(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_review_submit":
-          result = coordinator.submitReview(this.v1Payload(arguments_));
+          result = executionAdapter.commands.submitReview(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_complete":
-          result = coordinator.evaluateLeafCompletion(this.v1Payload(arguments_));
+          result = goalsAdapter.lifecycle.evaluateCompletion(this.v1Payload(arguments_));
           break;
         case "goalboard_v1_contract_propose":
           result = coordinator.submitContractProposal(this.v1Payload(arguments_));
@@ -3223,9 +3239,11 @@ export class GoalBoardServer {
           throw new GoalBoardV1Error("mcp.tool_unknown", `未知 V1 tool: ${name}`);
       }
       return JSON.stringify(result, null, prettyPrint ? 2 : undefined);
-    } finally {
-      store.close();
-    }
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.ownsLocalHost) await this.localHost.close();
   }
 
   private v1Payload<T>(arguments_: Record<string, unknown>): T {
@@ -3248,10 +3266,11 @@ export class GoalBoardServer {
     boardId: string,
     result: T,
   ): T & {
-    work_state: ReturnType<GoalBoardCoordinator["getGoalWorkState"]>;
+    work_state: ReturnType<GoalBoardCoordinator["executionValidation"]["query"]["getGoalWorkState"]>;
     next_action: { kind: string; message: string } | null;
   } {
-    const workState = coordinator.getGoalWorkState({
+    const executionAdapter = createMcpExecutionValidationAdapter(coordinator.executionValidation);
+    const workState = executionAdapter.query.getGoalWorkState({
       board_id: boardId,
       goal_id: result.goal.goal_id,
     });
@@ -3390,18 +3409,22 @@ function formatMcpToolError(error: unknown): string {
 
 async function runStdio(): Promise<void> {
   const server = new GoalBoardServer();
-  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let message: Record<string, unknown>;
-    try {
-      message = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      continue;
+  try {
+    const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let message: Record<string, unknown>;
+      try {
+        message = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const response = await server.handleMessage(message);
+      if (response) process.stdout.write(JSON.stringify(response) + "\n");
     }
-    const response = await server.handleMessage(message);
-    if (response) process.stdout.write(JSON.stringify(response) + "\n");
+  } finally {
+    await server.close();
   }
 }
 

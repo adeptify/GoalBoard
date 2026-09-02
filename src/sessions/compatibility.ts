@@ -71,7 +71,7 @@ export function reconcileLegacySessionCatalog(
   beforeStep?: (step: "after_panels" | "after_bindings" | "before_commit") => void,
 ): LegacySessionMigrationReport {
   const panels = catalog.listProjects().flatMap((project) =>
-    catalog.listDesktopPanels(project.project_id).map((panel) => {
+    catalog.desktopPanels.list(project.project_id).map((panel) => {
       const normalized = panel.cwd
         ? normalizeRuntimeWorkContext({
             runtime_id: panel.runtime_kind,

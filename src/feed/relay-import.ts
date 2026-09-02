@@ -197,9 +197,11 @@ export function importRelayData(
     );
     const existingSourceIds = new Set(existingSources.keys());
     const isRepeatOwnershipImport = currentSnapshot.import_receipts.length > 0;
-    const existingItemIds = idSet(target.db, "feed_items", "item_id", boardId);
-    const existingMaterialIds = idSet(target.db, "feed_materials", "material_id", boardId);
-    const existingRunIds = idSet(target.db, "feed_source_runs", "run_id", boardId);
+    const existingItemIds = new Set(currentSnapshot.feed_items.map((item) => item.item_id));
+    const existingMaterialIds = new Set(
+      currentSnapshot.feed_items.flatMap((item) => item.materials.map((material) => material.material_id)),
+    );
+    const existingRunIds = new Set(currentSnapshot.runs.map((run) => run.run_id));
     const relaySecurity = migrateOwnership
       ? openRelaySecurity(path.dirname(availability.path))
       : { entries: new Map<string, string>(), contentKey: null, readable: false };
@@ -427,32 +429,6 @@ export function importRelayData(
         return id;
       };
 
-      const itemStatement = target.db.prepare(`
-        INSERT INTO feed_items (
-          board_id, item_id, source_id, item_type, kind, title, summary, body,
-          source_kind, source_label, external_id, url, origin_status, priority,
-          tags_json, author, disposition, linked_goal_id, revision,
-          source_created_at, source_updated_at, imported_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)
-        ON CONFLICT(board_id, item_id) DO UPDATE SET
-          source_id = excluded.source_id,
-          item_type = excluded.item_type,
-          kind = excluded.kind,
-          title = excluded.title,
-          summary = excluded.summary,
-          body = excluded.body,
-          source_kind = excluded.source_kind,
-          source_label = excluded.source_label,
-          external_id = excluded.external_id,
-          url = excluded.url,
-          origin_status = excluded.origin_status,
-          priority = excluded.priority,
-          tags_json = excluded.tags_json,
-          author = excluded.author,
-          source_created_at = excluded.source_created_at,
-          source_updated_at = excluded.source_updated_at,
-          imported_at = excluded.imported_at
-      `);
       for (const row of items) {
         const tags = parsedTags(row.tags_json);
         const sourceKind = text(row.source) || "manual";
@@ -463,29 +439,28 @@ export function importRelayData(
             ? "archived"
             : "inbox";
         const itemId = text(row.id);
-        itemStatement.run(
-          boardId,
-          itemId,
-          sourceId,
-          "feed",
-          text(row.kind),
-          text(row.title),
-          text(row.summary),
-          optionalText(row.body),
-          sourceKind,
-          text(row.source_label) || sourceKind,
-          optionalText(row.external_id),
-          optionalText(row.url),
-          text(row.status),
-          text(row.priority) || "medium",
-          JSON.stringify(tags),
-          optionalText(row.author),
+        target.upsertImportedItem({
+          project_id: boardId,
+          item_id: itemId,
+          source_id: sourceId,
+          kind: text(row.kind),
+          title: text(row.title),
+          summary: text(row.summary),
+          body: optionalText(row.body),
+          source_kind: sourceKind,
+          source_label: text(row.source_label) || sourceKind,
+          external_id: optionalText(row.external_id),
+          url: optionalText(row.url),
+          origin_status: text(row.status),
+          priority: text(row.priority) || "medium",
+          tags,
+          author: optionalText(row.author),
           disposition,
-          text(row.created_at) || now,
-          text(row.updated_at) || now,
-          now,
-          now,
-        );
+          source_created_at: text(row.created_at) || now,
+          source_updated_at: text(row.updated_at) || now,
+          imported_at: now,
+          updated_at: now,
+        });
         if (feedItemTypeForSource(sourceKind) === "inbox_message") {
           target.ensureInboxEntryForFeedItem(boardId, itemId, "source_rule", {
             source_id: sourceId,
@@ -496,45 +471,6 @@ export function importRelayData(
         else result.items.created += 1;
       }
 
-      target.db.prepare(`
-        UPDATE feed_sources
-        SET item_count = (
-          SELECT COUNT(*)
-          FROM feed_items
-          WHERE feed_items.board_id = feed_sources.board_id
-            AND feed_items.source_id = feed_sources.source_id
-        )
-        WHERE board_id = ?
-      `).run(boardId);
-
-      const materialStatement = target.db.prepare(`
-        INSERT INTO feed_materials (
-          board_id, material_id, item_id, canonical_url, title, source_name,
-          published_at, preview, content_hash, content_ref, content_available,
-          content_type, character_count, captured_at, provenance_json,
-          selected_for_context, imported_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(board_id, material_id) DO UPDATE SET
-          item_id = excluded.item_id,
-          canonical_url = excluded.canonical_url,
-          title = excluded.title,
-          source_name = excluded.source_name,
-          published_at = excluded.published_at,
-          preview = excluded.preview,
-          content_hash = excluded.content_hash,
-          content_ref = CASE
-            WHEN excluded.content_available = 1 THEN excluded.content_ref
-            ELSE feed_materials.content_ref
-          END,
-          content_available = MAX(feed_materials.content_available, excluded.content_available),
-          content_type = excluded.content_type,
-          character_count = excluded.character_count,
-          captured_at = excluded.captured_at,
-          provenance_json = excluded.provenance_json,
-          selected_for_context = excluded.selected_for_context,
-          imported_at = excluded.imported_at,
-          updated_at = excluded.updated_at
-      `);
       for (const row of materials) {
         const itemId = text(row.item_id);
         if (!itemId || !items.some((item) => text(item.id) === itemId)) continue;
@@ -547,26 +483,26 @@ export function importRelayData(
         if (migrated.available) result.content.migrated += 1;
         else if (optionalText(row.content_ref)) result.content.missing += 1;
         const materialId = text(row.id);
-        materialStatement.run(
-          boardId,
-          materialId,
-          itemId,
-          optionalText(row.canonical_url),
-          text(row.title),
-          text(row.source_name),
-          optionalText(row.published_at),
-          text(row.preview),
-          optionalText(row.content_hash),
-          migrated.contentRef,
-          migrated.available ? 1 : 0,
-          optionalText(row.content_type),
-          row.character_count == null ? null : Number(row.character_count),
-          optionalText(row.captured_at) ?? optionalText(row.last_seen_at),
-          typeof row.provenance_json === "string" ? row.provenance_json : "{}",
-          Number(row.selected_for_context ?? 0) === 1 ? 1 : 0,
-          now,
-          text(row.last_seen_at) || now,
-        );
+        target.upsertMaterial({
+          board_id: boardId,
+          material_id: materialId,
+          item_id: itemId,
+          canonical_url: optionalText(row.canonical_url),
+          title: text(row.title),
+          source_name: text(row.source_name),
+          published_at: optionalText(row.published_at),
+          preview: text(row.preview),
+          content_hash: optionalText(row.content_hash),
+          content_ref: migrated.contentRef,
+          content_available: migrated.available,
+          content_type: optionalText(row.content_type),
+          character_count: row.character_count == null ? null : Number(row.character_count),
+          captured_at: optionalText(row.captured_at) ?? optionalText(row.last_seen_at),
+          provenance: parsedJson(row.provenance_json, {}),
+          selected_for_context: Number(row.selected_for_context ?? 0) === 1,
+          imported_at: now,
+          updated_at: text(row.last_seen_at) || now,
+        });
         if (existingMaterialIds.has(materialId)) result.materials.updated += 1;
         else result.materials.created += 1;
       }
@@ -644,17 +580,6 @@ export function importRelayData(
   } finally {
     relay.close();
   }
-}
-
-function idSet(
-  db: Database.Database,
-  table: string,
-  idColumn: string,
-  boardId: string,
-): Set<string> {
-  return new Set((db.prepare(
-    `SELECT ${idColumn} AS id FROM ${table} WHERE board_id = ?`,
-  ).all(boardId) as Array<{ id: string }>).map((row) => row.id));
 }
 
 function sourceConfig(row: Row): Record<string, unknown> {

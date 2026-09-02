@@ -1,29 +1,69 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { SqliteGoalBoardStore, mapSqliteClaim, sqliteJson } from "./store.js";
 import {
-  ProjectReferenceError,
-  validateEvidenceLocator,
-} from "../evidence/locator.js";
+  ArtifactsModule,
+  type ArtifactsSqliteDatabase,
+} from "@adeptify/goalboard-module-artifacts";
+import type {
+  ArtifactsApplicationApi,
+} from "@adeptify/goalboard-contracts/modules/artifacts";
 import {
-  DEFAULT_GOAL_POLICY,
+  EvidenceVerificationModule,
+  type EvidenceSqliteDatabase,
+} from "@adeptify/goalboard-module-evidence-verification";
+import type {
+  EvidenceVerificationApplicationApi,
+} from "@adeptify/goalboard-contracts/modules/evidence-verification";
+import {
+  ExecutionModule,
+  type ExecutionSqliteDatabase,
+} from "@adeptify/goalboard-module-execution";
+import type { ExecutionApplicationApi } from "@adeptify/goalboard-contracts/modules/execution";
+import {
+  deriveGoalTreeProposalState,
+  GovernanceCollaborationModule,
+  type GovernanceSqliteDatabase,
+} from "@adeptify/goalboard-module-governance-collaboration";
+import type {
+  GovernanceApplicationApi,
+} from "@adeptify/goalboard-contracts/modules/governance-collaboration";
+import {
+  GoalsModule,
+  goalProposalLeafReadinessIssues,
+  goalTreeProposalDecompositionIssues,
+  readDecompositionReview,
+  recordedContractCoverageBlocksClosure,
+  resolveGoalPolicy,
+  type GoalChangeImpact,
+  type GoalRevisionDependentTransition,
+  type GoalsSqliteDatabase,
+  type PlanningGraphIssue,
+  type PlanningMethodPack,
+  type PlanningMetric,
+  type SetRiskStateInput as GoalsSetRiskStateInput,
+  type UpdateRiskInput as GoalsUpdateRiskInput,
+} from "@adeptify/goalboard-module-goals";
+import type { GoalsApplicationApi } from "@adeptify/goalboard-contracts/modules/goals";
+import {
+  compactGoalActionProjection,
+  compatibleContractRevisions,
+  contractRevisionIsCompatible,
+  deriveGoalActionProjection,
+  deriveGoalActionProjections,
+  requiresParentCompletionConfirmation,
+  type ExecutionValidationApplicationApi,
+} from "@adeptify/goalboard-plugin-goals";
+import { SqliteGoalBoardStore, sqliteJson } from "./store.js";
+import {
   type ActionTransitionReceipt,
   type AvailableGoal,
-  type AddProjectGuidanceInput,
-  type AddProjectGuidanceResult,
   type BoardSnapshot,
   type BlockedAvailableGoal,
   type BlockedAvailableOverview,
-  type ClaimDecision,
   type ClaimRecord,
-  type ClaimRenewRequest,
-  type ClaimRenewResult,
-  type ClaimRunDecision,
-  type ClaimRequest,
   type ClaimRole,
   type CandidateGoalRecord,
   type ContractFieldSource,
-  type ContractRevisionEffect,
   type ContractProposalImpact,
   type ContractProposalRecord,
   type ContractProposalRisk,
@@ -36,15 +76,11 @@ import {
   type DraftDialogueStartInput,
   type DraftDialogueTurnInput,
   type DraftDialogueView,
-  type EvidenceCorrectionRecord,
-  type EvidenceRecord,
   type GoalAction,
-  type GoalActionProjection,
   type GoalPolicy,
   type GoalContractView,
   type GoalRecord,
   type GoalRelationRecord,
-  type GoalTrashResult,
   type GoalTreeProposalItemInput,
   type GoalTreeProposalItemExplanation,
   type GoalTreeProposalItemRecord,
@@ -66,62 +102,25 @@ import {
   type ParallelExecutionSuggestion,
   type ProjectGuidanceView,
   type ReadyGoal,
-  type RevalidationDecision,
   type ReviewRecord,
   type RewireRecord,
   type RiskRecord,
   type RunRecord,
-  type ValidityState,
-  type UpdateProjectGuidanceInput,
-  type UpdateProjectGuidanceResult,
 } from "./types.js";
-import {
-  isProjectGuidanceKind,
-  normalizeProjectGuidanceContent,
-  PROJECT_GUIDANCE_ENTRY_MAX_CHARS,
-  PROJECT_GUIDANCE_TOTAL_MAX_CHARS,
-  projectGuidanceView,
-} from "./project-guidance.js";
-import { requiresParentCompletionConfirmation } from "./parent-completion.js";
-import {
-  compatibleContractRevisions,
-  contractRevisionIsCompatible,
-} from "./contract-revisions.js";
 import {
   goalTreeProposalItemValidationIssues,
   goalTreeRiskDescription,
 } from "./goal-tree-proposal-validation.js";
-import {
-  goalProposalLeafReadinessIssues,
-  goalTreeProposalDecompositionIssues,
-  readDecompositionReview,
-  recordedContractCoverageBlocksClosure,
-} from "./goal-decomposition-validation.js";
-import {
-  composePlanningMethodPacks,
-  normalizePlanningMethodPack,
-  resolvePlanningMethodPacks,
-  type PlanningMethodComposition,
-  type PlanningMethodPack,
-  type PlanningMethodPackInput,
-} from "../planning/method-packs.js";
-import {
-  analyzeGoalChangeImpact,
-  planningMetrics,
-  projectPlanningRelations,
-  validatePlanningGraph,
-  validatePlanningProposalGraph,
-  type GoalChangeImpact,
-  type PlanningGraphIssue,
-  type PlanningMetric,
-} from "../planning/goal-graph.js";
-import {
-  compactGoalActionProjection,
-  deriveGoalActionProjection,
-  deriveGoalActionProjections,
-} from "./action-projection.js";
 import { planGoalLifecycleReconciliation } from "./lifecycle-reconciliation.js";
-import { dialogueEvidenceDigest, humanReviewAttentionToken } from "./human-review.js";
+import { GoalReadApplication } from "./goal-query-application.js";
+import { ExecutionValidationApplication } from "./execution-validation-application.js";
+import { GoalBoardV1Error } from "./errors.js";
+export { GoalBoardV1Error } from "./errors.js";
+export type {
+  ClaimReleaseHandoff,
+  ClaimReleaseResult,
+  ReportRunResult as RunReportResult,
+} from "@adeptify/goalboard-plugin-goals";
 
 type Row = Record<string, unknown>;
 
@@ -131,46 +130,6 @@ type NormalizedProposedRelation = Record<string, unknown> & {
   type: string;
   reason: string;
 };
-
-export interface ClaimReleaseHandoff {
-  action: "read_available";
-  tool: "goalboard_v1_available";
-  read_requires_user_confirmation: false;
-  continuation_scope: "current_user_authority";
-}
-
-export interface ClaimReleaseResult {
-  claim: ClaimRecord;
-  replayed: boolean;
-  observed_event_cursor: number;
-  handoff: ClaimReleaseHandoff;
-  transition: ActionTransitionReceipt;
-}
-
-export interface RunReportResult {
-  run: RunRecord;
-  replayed: boolean;
-  observed_event_cursor: number;
-  transition?: ActionTransitionReceipt;
-}
-
-const CLAIM_RELEASE_HANDOFF: ClaimReleaseHandoff = Object.freeze({
-  action: "read_available",
-  tool: "goalboard_v1_available",
-  read_requires_user_confirmation: false,
-  continuation_scope: "current_user_authority",
-});
-
-export class GoalBoardV1Error extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly details?: Record<string, unknown>,
-  ) {
-    super(message);
-    this.name = "GoalBoardV1Error";
-  }
-}
 
 export interface ExplainGoalResult {
   goal: GoalRecord | null;
@@ -301,21 +260,6 @@ interface ImpactFactsInput {
   input_snapshot?: string | null;
   state?: "proposed" | "confirmed";
   reason: string;
-}
-
-interface RiskFactsInput {
-  risk_id?: string;
-  goal_ids: string[];
-  description: string;
-  probability: string;
-  impact: string;
-  affected_surfaces?: string[];
-  trigger: string;
-  treatment: RiskRecord["treatment"];
-  treatment_plan?: string;
-  blocking_mode: RiskRecord["blocking_mode"];
-  revisit_condition: string;
-  owner: string;
 }
 
 interface SubmitContractProposalInput {
@@ -457,16 +401,8 @@ function snapshotEvaluationIndex(snapshot: BoardSnapshot): SnapshotEvaluationInd
   return index;
 }
 
-const GOAL_MODE_ORDER = { disabled: 0, preferred: 1, required: 2 } as const;
 const IMPACT_ACCESSES = new Set<ImpactAccess>(["read", "write", "decide", "exclusive"]);
 const IMPACT_ACTIVE_STATES = new Set<"proposed" | "confirmed">(["proposed", "confirmed"]);
-const RISK_TREATMENTS = new Set<RiskRecord["treatment"]>(["accept", "mitigate", "avoid", "defer"]);
-const RISK_BLOCKING_MODES = new Set<RiskRecord["blocking_mode"]>([
-  "none",
-  "claim",
-  "completion",
-  "invalidate_on_trigger",
-]);
 const RISK_STATES = new Set<RiskRecord["state"]>([
   "open",
   "triggered",
@@ -545,29 +481,6 @@ function contractInputFromGoal(goal: GoalRecord): CreateGoalInput {
       required_evidence: criterion.required_evidence,
     })),
   };
-}
-
-function contractRevisionEffect(
-  current: CreateGoalInput,
-  proposed: CreateGoalInput,
-): ContractRevisionEffect {
-  const same = (left: unknown, right: unknown): boolean =>
-    JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
-  const reworkFields: Array<keyof CreateGoalInput> = [
-    "outcome",
-    "business_logic",
-    "in_scope",
-    "out_of_scope",
-    "constraints",
-    "required_inputs",
-    "promised_outputs",
-    "decomposition_review",
-    "definition_state",
-    "decomposition_state",
-  ];
-  if (reworkFields.some((field) => !same(current[field], proposed[field]))) return "rework";
-  if (!same(current.acceptance_criteria, proposed.acceptance_criteria)) return "revalidate";
-  return "metadata";
 }
 
 function requiredDialogueText(value: string, code: string, message: string): string {
@@ -1226,16 +1139,226 @@ function compareReasons(left: DecisionReason, right: DecisionReason): number {
   );
 }
 
-function addSeconds(iso: string, seconds: number): string {
-  return new Date(new Date(iso).getTime() + seconds * 1000).toISOString();
-}
-
 export class GoalBoardCoordinator {
+  readonly artifacts: ArtifactsApplicationApi;
+  private readonly evidenceVerificationModule: EvidenceVerificationModule;
+  private readonly executionModule: ExecutionModule;
+  private readonly goalsModule: GoalsModule<ActionTransitionReceipt>;
+  readonly evidenceVerification: EvidenceVerificationApplicationApi;
+  readonly execution: ExecutionApplicationApi;
+  readonly governance: GovernanceApplicationApi;
+  readonly goals: GoalsApplicationApi<ActionTransitionReceipt>;
+  readonly goalQueries: GoalReadApplication;
+  readonly executionValidation: ExecutionValidationApplicationApi<BoardSnapshot>;
+
   constructor(
     readonly store: SqliteGoalBoardStore,
     private readonly clock: () => Date = () => new Date(),
     private readonly personalPlanningMethodPacks: readonly PlanningMethodPack[] = [],
-  ) {}
+  ) {
+    const artifactsModule = new ArtifactsModule({
+      db: this.store.db as unknown as ArtifactsSqliteDatabase,
+      now: () => this.clock().toISOString(),
+      errorFactory: (code, message, details) => new GoalBoardV1Error(code, message, details),
+      appendEvent: (input) => this.store.appendEvent(input),
+    });
+    this.artifacts = {
+      query: artifactsModule.query,
+      commands: artifactsModule.commands,
+    };
+    this.executionModule = new ExecutionModule({
+      db: this.store.db as unknown as ExecutionSqliteDatabase,
+      now: () => this.clock().toISOString(),
+      errorFactory: (code, message, details) => new GoalBoardV1Error(code, message, details),
+      appendEvent: (input) => this.store.appendEvent(input),
+      assertRunStartAllowed: (boardId, goalId) => {
+        const goal = this.store.getGoal(goalId);
+        if (!goal || goal.board_id !== boardId || goal.validity_state === "invalidated") {
+          throw new GoalBoardV1Error("goal.invalidated", "Goal 已失效，不能开始 Run");
+        }
+        if (goal.trashed_at) {
+          throw new GoalBoardV1Error("goal.trashed", "回收站中的 Goal 不能开始 Run");
+        }
+      },
+    });
+    this.execution = {
+      query: this.executionModule.query,
+      commands: this.executionModule.commands,
+    };
+    this.evidenceVerificationModule = new EvidenceVerificationModule({
+      db: this.store.db as unknown as EvidenceSqliteDatabase,
+      now: () => this.clock().toISOString(),
+      errorFactory: (code, message, details) => new GoalBoardV1Error(code, message, details),
+      appendEvent: (input) => this.store.appendEvent(input),
+    });
+    this.evidenceVerification = {
+      query: this.evidenceVerificationModule.query,
+      commands: this.evidenceVerificationModule.commands,
+    };
+    const governanceModule = new GovernanceCollaborationModule({
+      db: this.store.db as unknown as GovernanceSqliteDatabase,
+      now: () => this.clock().toISOString(),
+      errorFactory: (code, message, details) => new GoalBoardV1Error(code, message, details),
+    });
+    this.governance = {
+      query: governanceModule.query,
+      reviews: governanceModule.reviews,
+      records: governanceModule.records,
+      decisions: governanceModule.decisions,
+    };
+    let goalsModule!: GoalsModule<ActionTransitionReceipt>;
+    goalsModule = new GoalsModule<ActionTransitionReceipt>(
+      this.store.db as unknown as GoalsSqliteDatabase,
+      {
+        validateRelationGraph: (boardId, input) => {
+          const projectedId = "projected:new-relation";
+          const snapshot = this.store.snapshot(boardId);
+          const issue = goalsModule.planning.validateGraph(
+            snapshot.goals,
+            goalsModule.planning.projectRelations(snapshot.relations, [{
+              action: "add",
+              relation_id: projectedId,
+              from_goal_id: input.from_goal_id,
+              to_goal_id: input.to_goal_id,
+              type: input.type,
+              reason: input.reason,
+            }]),
+          ).find((candidate) => candidate.relation_ids.includes(projectedId));
+          return issue ? { code: issue.code, message: issue.message } : null;
+        },
+        clearActiveGoalIfMatches: (boardId, goalId, at) =>
+          this.clearActiveGoalIfMatches(boardId, goalId, at),
+        blockingWork: (boardId, goalId, now) => ({
+          claim_ids: this.executionModule.repository.activeClaimIdsForGoal(boardId, goalId, now),
+          run_ids: this.executionModule.repository.activeRunIdsForGoal(boardId, goalId),
+        }),
+        compoundCoverageBlocksClosure: (boardId, goalId) => {
+          const snapshot = this.store.snapshot(boardId);
+          const goal = snapshot.goals.find((candidate) => candidate.goal_id === goalId);
+          return goal
+            ? recordedContractCoverageBlocksClosure(goal, {
+                goals: snapshot.goals,
+                relations: snapshot.relations,
+              })
+            : true;
+        },
+        completionGateReasons: (boardId, goalId) =>
+          this.externalCompletionGateReasons(boardId, goalId),
+        currentActionProjection: (boardId, goalId) =>
+          this.executionValidation.query.getGoalActionProjection({ board_id: boardId, goal_id: goalId }),
+        isContractRevisionCompatible: (boardId, goalId, revision) => {
+          const goal = this.requireGoalOnBoard(boardId, goalId);
+          return contractRevisionIsCompatible(goal, this.store.snapshot(boardId), revision);
+        },
+        readRevalidationRun: (boardId, runId) => {
+          const pair = this.execution.query.getRunWithClaim(boardId, runId);
+          return pair ? {
+            run_id: pair.run.run_id,
+            board_id: pair.run.board_id,
+            goal_id: pair.run.goal_id,
+            actor_id: pair.run.actor_id,
+            role: pair.run.role,
+            state: pair.run.state,
+            claim_state: pair.claim.state,
+            claim_expires_at: pair.claim.expires_at,
+            claim_role: pair.claim.role,
+            claim_actor_id: pair.claim.actor_id,
+            claim_contract_revision: pair.claim.contract_revision,
+          } : null;
+        },
+        completeRevalidationRun: (boardId, _goalId, runId, actorId, _at) => {
+          this.executionModule.lifecycle.completeRunForRevalidation(boardId, runId, actorId);
+        },
+        transitionRevisionDependents: (input) =>
+          this.transitionGoalRevisionDependents(input),
+        currentActionToken: (boardId, goalId) =>
+          this.executionValidation.query.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).action_token,
+        authorizeRiskUpdate: (boardId, input, write, current) =>
+          this.authorizeGoalRiskUpdate(boardId, input, write, current),
+        authorizeRiskState: (
+          boardId,
+          input,
+          write,
+          current,
+          linkedGoalIds,
+          resolutionBasis,
+        ) => this.authorizeGoalRiskState(
+          boardId,
+          input,
+          write,
+          current,
+          linkedGoalIds,
+          resolutionBasis,
+        ),
+        reconcileLifecycle: (
+          boardId,
+          goalId,
+          actorId,
+          previousActionToken,
+          summary,
+          at,
+        ) => this.reconcileLifecycle(
+          boardId,
+          goalId,
+          actorId,
+          previousActionToken,
+          summary,
+          at,
+        ),
+      },
+      {
+        now: this.clock,
+        errorFactory: (code, message, details) => new GoalBoardV1Error(code, message, details),
+        personalPlanningMethodPacks: this.personalPlanningMethodPacks,
+      },
+    );
+    this.goalsModule = goalsModule;
+    this.goals = {
+      commands: goalsModule.commands,
+      lifecycle: goalsModule.lifecycle,
+      planning: goalsModule.planning,
+    };
+    this.goalQueries = new GoalReadApplication(goalsModule.query, {
+      now: () => this.clock(),
+      snapshot: (boardId) => this.store.snapshot(boardId),
+      projectGoalLifecycle: (snapshot, goalId, now) =>
+        this.projectGoalLifecycle(snapshot, goalId, now),
+      workState: (boardId, goal, snapshot, now) =>
+        this.deriveGoalWorkState(boardId, goal, snapshot, now),
+      actionProjection: (goal, snapshot, now) =>
+        deriveGoalActionProjection(goal, snapshot, now),
+      goalTreeProposals: (boardId, rootGoalId) =>
+        this.listGoalTreeProposals({ board_id: boardId, root_goal_id: rootGoalId }).proposals,
+    });
+    this.executionValidation = new ExecutionValidationApplication({
+      store: this.store,
+      executionModule: this.executionModule,
+      execution: this.execution,
+      evidenceVerification: this.evidenceVerification,
+      governance: this.governance,
+      goalsModule: this.goalsModule,
+      clock: this.clock,
+      evaluate: (input) => this.evaluate(input),
+      claimRoleForAction: (candidate, snapshot) => this.claimRoleForAction(candidate, snapshot),
+      ensureReviewObligations: (boardId, goalId, policy, at) =>
+        this.ensureReviewObligations(boardId, goalId, policy, at),
+      deriveGoalWorkState: (boardId, goal, snapshot, now) =>
+        this.deriveGoalWorkState(boardId, goal, snapshot, now),
+      executorHandoffReasons: (workState) => this.executorHandoffReasons(workState),
+      reconcileLifecycle: (boardId, goalId, actorId, previousActionToken, summary, at) =>
+        this.reconcileLifecycle(boardId, goalId, actorId, previousActionToken, summary, at),
+      hasPostExecutionNeedsChanges: (boardId, goalId) =>
+        this.hasPostExecutionNeedsChanges(boardId, goalId),
+      readRun: (runId) => this.readRun(runId),
+      readReview: (boardId, reviewId) => this.readReview(boardId, reviewId),
+      requireBoard: (boardId) => this.requireBoard(boardId),
+      requireGoalOnBoard: (boardId, goalId) => this.requireGoalOnBoard(boardId, goalId),
+      replay: <T>(boardId: string, actorId: string, operation: string, key: string, hash: string) =>
+        this.replay<T>(boardId, actorId, operation, key, hash),
+      remember: (boardId, actorId, operation, key, hash, outcome, at) =>
+        this.remember(boardId, actorId, operation, key, hash, outcome, at),
+    });
+  }
 
   projectGoalLifecycle(
     snapshot: Pick<BoardSnapshot, "claims" | "runs">,
@@ -1302,848 +1425,8 @@ export class GoalBoardCoordinator {
   }
 
   readProjectGuidance(boardId: string): ProjectGuidanceView {
-    this.requireBoard(boardId);
-    const board = this.store.db
-      .prepare("SELECT title FROM boards WHERE board_id = ?")
-      .get(boardId) as Row;
-    return projectGuidanceView({
-      projectTitle: asText(board.title),
-      entries: this.store.listProjectGuidanceEntries(boardId, true),
-      revisions: this.store.listProjectGuidanceRevisions(boardId),
-    });
+    return this.goalQueries.readProjectGuidance(boardId);
   }
-
-  addProjectGuidance(input: AddProjectGuidanceInput): AddProjectGuidanceResult {
-    const kind = String(input.kind).trim();
-    const content = normalizeProjectGuidanceContent(input.content);
-    const reason = input.reason.trim();
-    const confirmationSummary = input.confirmation_summary.trim();
-    const sourceRefs = unique((input.source_refs ?? []).map((item) => item.trim()).filter(Boolean));
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardV1Error(
-        "project_guidance.user_confirmation_required",
-        "项目长期说明必须先向用户展示精确分类和原文，并获得明确同意后才能写入",
-      );
-    }
-    if (!isProjectGuidanceKind(kind)) {
-      throw new GoalBoardV1Error("project_guidance.kind_invalid", `不支持的项目说明分类: ${kind}`);
-    }
-    if (!content || !reason || !confirmationSummary) {
-      throw new GoalBoardV1Error(
-        "project_guidance.invalid",
-        "项目说明内容、持久化原因和用户确认摘要不能为空",
-      );
-    }
-    if (content.length > PROJECT_GUIDANCE_ENTRY_MAX_CHARS) {
-      throw new GoalBoardV1Error(
-        "project_guidance.entry_too_large",
-        `单条项目说明不能超过 ${PROJECT_GUIDANCE_ENTRY_MAX_CHARS} 个字符`,
-      );
-    }
-    const contentHash = createHash("sha256").update(content).digest("hex");
-    const normalized = {
-      board_id: input.board_id,
-      kind,
-      content,
-      source_refs: sourceRefs,
-      reason,
-      confirmation_summary: confirmationSummary,
-      user_confirmed: true,
-    };
-    const hash = requestHash(normalized);
-    return this.store.immediate(() => {
-      const replay = this.replay<Omit<AddProjectGuidanceResult, "replayed">>(
-        input.board_id,
-        input.actor_id,
-        "add_project_guidance",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-      this.requireBoard(input.board_id);
-      const existing = this.store
-        .listProjectGuidanceEntries(input.board_id, true)
-        .find((entry) => entry.kind === kind && entry.content_hash === contentHash);
-      const now = this.clock().toISOString();
-      if (existing) {
-        const outcome = {
-          entry: existing,
-          created: false,
-          observed_event_cursor: this.store.eventCursor(input.board_id),
-        };
-        this.remember(
-          input.board_id,
-          input.actor_id,
-          "add_project_guidance",
-          input.idempotency_key,
-          hash,
-          outcome,
-          now,
-        );
-        return { ...outcome, replayed: false };
-      }
-      const entries = this.store.listProjectGuidanceEntries(input.board_id, true);
-      const totalChars = entries
-        .filter((entry) => entry.active)
-        .reduce((sum, entry) => sum + entry.content.length, 0) + content.length;
-      if (totalChars > PROJECT_GUIDANCE_TOTAL_MAX_CHARS) {
-        throw new GoalBoardV1Error(
-          "project_guidance.total_too_large",
-          `项目说明总长度不能超过 ${PROJECT_GUIDANCE_TOTAL_MAX_CHARS} 个字符`,
-        );
-      }
-      const guidanceId = randomUUID();
-      const position = entries.reduce((max, entry) => Math.max(max, entry.position), 0) + 1;
-      this.store.db
-        .prepare(`
-          INSERT INTO project_guidance_entries (
-            guidance_id, board_id, position, revision, active, kind, content, content_hash,
-            source_refs_json, created_by, confirmation_summary, reason, created_at, updated_by, updated_at
-          ) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          guidanceId,
-          input.board_id,
-          position,
-          kind,
-          content,
-          contentHash,
-          sqliteJson(sourceRefs),
-          input.actor_id,
-          confirmationSummary,
-          reason,
-          now,
-          input.actor_id,
-          now,
-        );
-      this.store.db
-        .prepare(`
-          INSERT INTO project_guidance_revisions (
-            revision_id, guidance_id, board_id, revision, kind, content, content_hash,
-            source_refs_json, active, changed_by, change_kind, confirmation_summary, reason, created_at
-          ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1, ?, 'created', ?, ?, ?)
-        `)
-        .run(
-          randomUUID(),
-          guidanceId,
-          input.board_id,
-          kind,
-          content,
-          contentHash,
-          sqliteJson(sourceRefs),
-          input.actor_id,
-          confirmationSummary,
-          reason,
-          now,
-        );
-      this.store.db
-        .prepare("UPDATE boards SET updated_at = ? WHERE board_id = ?")
-        .run(now, input.board_id);
-      let cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "project.guidance_added",
-        objectType: "project_guidance",
-        objectId: guidanceId,
-        reason,
-        payload: { kind, content_hash: contentHash, position, revision: 1, source_refs: sourceRefs },
-        at: now,
-      });
-      const entry = this.store
-        .listProjectGuidanceEntries(input.board_id, true)
-        .find((candidate) => candidate.guidance_id === guidanceId)!;
-      const outcome = { entry, created: true, observed_event_cursor: cursor };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "add_project_guidance",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  updateProjectGuidance(input: UpdateProjectGuidanceInput): UpdateProjectGuidanceResult {
-    const action = String(input.action).trim() as UpdateProjectGuidanceInput["action"];
-    const reason = input.reason.trim();
-    const confirmationSummary = input.confirmation_summary.trim();
-    const requestedKind = input.kind == null ? null : String(input.kind).trim();
-    const requestedContent = input.content == null ? null : normalizeProjectGuidanceContent(input.content);
-    const requestedSourceRefs = input.source_refs == null
-      ? null
-      : unique(input.source_refs.map((item) => item.trim()).filter(Boolean));
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardV1Error(
-        "project_guidance.user_confirmation_required",
-        "项目说明修改必须来自用户在当前对话的明确确认，或用户在项目说明页面的直接提交",
-      );
-    }
-    if (!(["edit", "deactivate", "restore"] as const).includes(action)) {
-      throw new GoalBoardV1Error("project_guidance.action_invalid", `不支持的项目说明操作: ${action}`);
-    }
-    if (!input.guidance_id.trim() || !reason || !confirmationSummary) {
-      throw new GoalBoardV1Error(
-        "project_guidance.invalid",
-        "项目说明 ID、变更原因和用户确认摘要不能为空",
-      );
-    }
-    if (action === "edit") {
-      if (requestedKind == null || !isProjectGuidanceKind(requestedKind)) {
-        throw new GoalBoardV1Error(
-          "project_guidance.kind_invalid",
-          `不支持的项目说明分类: ${requestedKind ?? ""}`,
-        );
-      }
-      if (!requestedContent) {
-        throw new GoalBoardV1Error("project_guidance.invalid", "修改后的项目说明内容不能为空");
-      }
-      if (requestedContent.length > PROJECT_GUIDANCE_ENTRY_MAX_CHARS) {
-        throw new GoalBoardV1Error(
-          "project_guidance.entry_too_large",
-          `单条项目说明不能超过 ${PROJECT_GUIDANCE_ENTRY_MAX_CHARS} 个字符`,
-        );
-      }
-    }
-    const request = {
-      board_id: input.board_id,
-      guidance_id: input.guidance_id.trim(),
-      action,
-      kind: requestedKind,
-      content: requestedContent,
-      source_refs: requestedSourceRefs,
-      reason,
-      confirmation_summary: confirmationSummary,
-      user_confirmed: true,
-    };
-    const hash = requestHash(request);
-    return this.store.immediate(() => {
-      const replay = this.replay<Omit<UpdateProjectGuidanceResult, "replayed">>(
-        input.board_id,
-        input.actor_id,
-        "update_project_guidance",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-      this.requireBoard(input.board_id);
-      const entries = this.store.listProjectGuidanceEntries(input.board_id, true);
-      const current = entries.find((entry) => entry.guidance_id === request.guidance_id);
-      if (!current) {
-        throw new GoalBoardV1Error(
-          "project_guidance.not_found",
-          `找不到项目说明: ${request.guidance_id}`,
-        );
-      }
-      if (action === "deactivate" && !current.active) {
-        throw new GoalBoardV1Error("project_guidance.already_inactive", "这条项目说明已经停用");
-      }
-      if (action === "restore" && current.active) {
-        throw new GoalBoardV1Error("project_guidance.already_active", "这条项目说明已经生效");
-      }
-      if (action === "edit" && !current.active) {
-        throw new GoalBoardV1Error("project_guidance.inactive", "请先恢复这条项目说明，再进行修改");
-      }
-
-      const kind = action === "edit" ? requestedKind! : current.kind;
-      const content = action === "edit" ? requestedContent! : current.content;
-      const sourceRefs = action === "edit" && requestedSourceRefs != null
-        ? requestedSourceRefs
-        : current.source_refs;
-      const active = action === "deactivate" ? false : true;
-      const contentHash = createHash("sha256").update(content).digest("hex");
-      if (
-        action === "edit"
-        && kind === current.kind
-        && content === current.content
-        && JSON.stringify(sourceRefs) === JSON.stringify(current.source_refs)
-      ) {
-        throw new GoalBoardV1Error("project_guidance.no_changes", "项目说明没有发生变化");
-      }
-      const duplicate = entries.find(
-        (entry) => entry.guidance_id !== current.guidance_id
-          && entry.kind === kind
-          && entry.content_hash === contentHash,
-      );
-      if (duplicate) {
-        throw new GoalBoardV1Error("project_guidance.duplicate", "相同分类和内容的项目说明已经存在");
-      }
-      const totalChars = entries
-        .filter((entry) => entry.guidance_id !== current.guidance_id && entry.active)
-        .reduce((sum, entry) => sum + entry.content.length, 0)
-        + (active ? content.length : 0);
-      if (totalChars > PROJECT_GUIDANCE_TOTAL_MAX_CHARS) {
-        throw new GoalBoardV1Error(
-          "project_guidance.total_too_large",
-          `项目说明总长度不能超过 ${PROJECT_GUIDANCE_TOTAL_MAX_CHARS} 个字符`,
-        );
-      }
-
-      const revision = current.revision + 1;
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          UPDATE project_guidance_entries
-          SET revision = ?, active = ?, kind = ?, content = ?, content_hash = ?,
-              source_refs_json = ?, confirmation_summary = ?, reason = ?, updated_by = ?, updated_at = ?
-          WHERE guidance_id = ? AND board_id = ?
-        `)
-        .run(
-          revision,
-          active ? 1 : 0,
-          kind,
-          content,
-          contentHash,
-          sqliteJson(sourceRefs),
-          confirmationSummary,
-          reason,
-          input.actor_id,
-          now,
-          current.guidance_id,
-          input.board_id,
-        );
-      const revisionId = randomUUID();
-      this.store.db
-        .prepare(`
-          INSERT INTO project_guidance_revisions (
-            revision_id, guidance_id, board_id, revision, kind, content, content_hash,
-            source_refs_json, active, changed_by, change_kind, confirmation_summary, reason, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          revisionId,
-          current.guidance_id,
-          input.board_id,
-          revision,
-          kind,
-          content,
-          contentHash,
-          sqliteJson(sourceRefs),
-          active ? 1 : 0,
-          input.actor_id,
-          action === "edit" ? "edited" : action === "deactivate" ? "deactivated" : "restored",
-          confirmationSummary,
-          reason,
-          now,
-        );
-      this.store.db
-        .prepare("UPDATE boards SET updated_at = ? WHERE board_id = ?")
-        .run(now, input.board_id);
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: `project.guidance_${action === "edit" ? "edited" : action === "deactivate" ? "deactivated" : "restored"}`,
-        objectType: "project_guidance",
-        objectId: current.guidance_id,
-        reason,
-        payload: { action, revision, kind, content_hash: contentHash, active, source_refs: sourceRefs },
-        at: now,
-      });
-      const entry = this.store
-        .listProjectGuidanceEntries(input.board_id, true)
-        .find((candidate) => candidate.guidance_id === current.guidance_id)!;
-      const revisionRecord = this.store
-        .listProjectGuidanceRevisions(input.board_id)
-        .find((candidate) => candidate.revision_id === revisionId)!;
-      const outcome = { entry, revision: revisionRecord, observed_event_cursor: cursor };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "update_project_guidance",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  createGoal(
-    boardId: string,
-    input: CreateGoalInput,
-    write: ActorWrite,
-  ): { goal: GoalRecord; replayed: boolean; observed_event_cursor: number } {
-    this.validateGoalInput(input);
-    const payload = { board_id: boardId, goal: input };
-    const hash = requestHash(payload);
-    return this.store.immediate(() => {
-      const replay = this.replay<{ goal: GoalRecord; observed_event_cursor: number }>(
-        boardId,
-        write.actor_id,
-        "create_goal",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-
-      this.requireBoard(boardId);
-      const goalId = input.goal_id?.trim() || `goal-${randomUUID()}`;
-      if (this.store.getGoal(goalId)) {
-        throw new GoalBoardV1Error("goal.exists", `Goal 已存在: ${goalId}`);
-      }
-      const at = this.clock().toISOString();
-      const definitionState = input.definition_state ?? "draft";
-      const decompositionState = input.decomposition_state ?? "abstract";
-      const acceptedAt = definitionState === "accepted" ? at : null;
-      const acceptedBy = definitionState === "accepted" ? write.actor_id : null;
-      this.store.db
-        .prepare(`
-          INSERT INTO goals (
-            goal_id, board_id, title, outcome, why, business_logic,
-            in_scope_json, out_of_scope_json, constraints_json,
-            required_inputs_json, promised_outputs_json, decomposition_review_json,
-            definition_state, decomposition_state, validity_state, fulfillment_state,
-            priority, accepted_by, accepted_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'unmet', ?, ?, ?, ?, ?)
-        `)
-        .run(
-          goalId,
-          boardId,
-          input.title.trim(),
-          input.outcome.trim(),
-          input.why.trim(),
-          input.business_logic.trim(),
-          sqliteJson(input.in_scope ?? []),
-          sqliteJson(input.out_of_scope ?? []),
-          sqliteJson(input.constraints ?? []),
-          sqliteJson(input.required_inputs ?? []),
-          sqliteJson(input.promised_outputs ?? []),
-          input.decomposition_review == null ? null : sqliteJson(input.decomposition_review),
-          definitionState,
-          decompositionState,
-          input.priority ?? 0,
-          acceptedBy,
-          acceptedAt,
-          at,
-          at,
-        );
-      const criterionStatement = this.store.db.prepare(`
-        INSERT INTO acceptance_criteria (
-          criterion_id, goal_id, statement, decision_method,
-          pass_condition, target_json, required_evidence_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const criterion of input.acceptance_criteria) {
-        criterionStatement.run(
-          criterion.criterion_id?.trim() || `criterion-${randomUUID()}`,
-          goalId,
-          criterion.statement.trim(),
-          criterion.decision_method,
-          criterion.pass_condition.trim(),
-          criterion.target == null ? null : sqliteJson(criterion.target),
-          sqliteJson(criterion.required_evidence ?? []),
-        );
-      }
-      const createdGoal = this.store.getGoal(goalId);
-      if (!createdGoal) throw new Error(`Goal 写入后无法读取: ${goalId}`);
-      this.store.db
-        .prepare(`
-          INSERT INTO goal_contract_revisions (
-            goal_id, board_id, revision, contract_json, effect, source_proposal_id,
-            changed_by, reason, created_at
-          ) VALUES (?, ?, 1, ?, 'metadata', NULL, ?, ?, ?)
-        `)
-        .run(
-          goalId,
-          boardId,
-          sqliteJson(contractInputFromGoal(createdGoal)),
-          write.actor_id,
-          "创建 Goal Contract revision 1",
-          at,
-        );
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "goal.created",
-        objectType: "goal",
-        objectId: goalId,
-        reason: write.reason ?? "创建新 Goal",
-        payload: { definition_state: definitionState, decomposition_state: decompositionState },
-        at,
-      });
-      const goal = this.store.getGoal(goalId);
-      if (!goal) throw new Error("Goal 写入后无法读取");
-      const outcome = { goal, observed_event_cursor: cursor };
-      this.remember(boardId, write.actor_id, "create_goal", write.idempotency_key, hash, outcome, at);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  updateDraftGoal(
-    boardId: string,
-    goalId: string,
-    input: CreateGoalInput,
-    write: ActorWrite,
-  ): { goal: GoalRecord; replayed: boolean; observed_event_cursor: number } {
-    if (input.definition_state && input.definition_state !== "draft") {
-      throw new GoalBoardV1Error(
-        "goal.draft_update_cannot_accept",
-        "Draft 编辑只能补全草稿；确认 accepted Contract 必须走用户确认流程",
-      );
-    }
-    const changeReason = write.reason?.trim() ?? "";
-    if (!changeReason) {
-      throw new GoalBoardV1Error("goal.draft_update_reason_required", "更新 Draft 时必须说明修改原因");
-    }
-    const normalized: CreateGoalInput = {
-      ...input,
-      goal_id: goalId,
-      definition_state: "draft",
-      in_scope: unique((input.in_scope ?? []).map((item) => item.trim()).filter(Boolean)),
-      out_of_scope: unique((input.out_of_scope ?? []).map((item) => item.trim()).filter(Boolean)),
-      constraints: unique((input.constraints ?? []).map((item) => item.trim()).filter(Boolean)),
-      required_inputs: unique((input.required_inputs ?? []).map((item) => item.trim()).filter(Boolean)),
-      promised_outputs: unique((input.promised_outputs ?? []).map((item) => item.trim()).filter(Boolean)),
-      acceptance_criteria: input.acceptance_criteria.map((criterion) => ({
-        ...criterion,
-        criterion_id: criterion.criterion_id?.trim() || undefined,
-        statement: criterion.statement.trim(),
-        pass_condition: criterion.pass_condition.trim(),
-        required_evidence: unique(
-          (criterion.required_evidence ?? []).map((item) => item.trim()).filter(Boolean),
-        ),
-      })),
-    };
-    this.validateGoalInput(normalized);
-    const hash = requestHash({ board_id: boardId, goal_id: goalId, goal: normalized });
-    return this.store.immediate(() => {
-      const replay = this.replay<{ goal: GoalRecord; observed_event_cursor: number }>(
-        boardId,
-        write.actor_id,
-        "update_draft_goal",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-
-      const current = this.requireGoalOnBoard(boardId, goalId);
-      if (current.definition_state !== "draft") {
-        throw new GoalBoardV1Error(
-          "goal.accepted_contract_immutable",
-          "accepted Contract 不能原地修改；请创建新 Goal 并确认 Rewire",
-        );
-      }
-      const criterionIds = normalized.acceptance_criteria
-        .map((criterion) => criterion.criterion_id)
-        .filter((criterionId): criterionId is string => Boolean(criterionId));
-      if (new Set(criterionIds).size !== criterionIds.length) {
-        throw new GoalBoardV1Error("goal.acceptance_id_duplicate", "验收条件 ID 不能重复");
-      }
-
-      const now = this.clock().toISOString();
-      const pendingProposals = this.store.db
-        .prepare(
-          "SELECT proposal_id FROM contract_proposals WHERE board_id = ? AND goal_id = ? AND state = 'pending' ORDER BY created_at",
-        )
-        .all(boardId, goalId) as Array<{ proposal_id: string }>;
-      if (pendingProposals.length) {
-        this.store.db
-          .prepare(`
-            UPDATE contract_proposals
-            SET state = 'superseded', decided_at = ?, decision_json = ?
-            WHERE board_id = ? AND goal_id = ? AND state = 'pending'
-          `)
-          .run(
-            now,
-            sqliteJson({
-              reason: "用户直接更新了 Draft，需要基于新事实重新提交 Contract Proposal",
-              superseded_by: write.actor_id,
-            }),
-            boardId,
-            goalId,
-          );
-      }
-
-      this.store.db
-        .prepare(`
-          UPDATE goals SET
-            title = ?, outcome = ?, why = ?, business_logic = ?,
-            in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
-            required_inputs_json = ?, promised_outputs_json = ?,
-            decomposition_review_json = ?,
-            decomposition_state = ?, priority = ?, updated_at = ?
-          WHERE goal_id = ? AND board_id = ?
-        `)
-        .run(
-          normalized.title.trim(),
-          normalized.outcome.trim(),
-          normalized.why.trim(),
-          normalized.business_logic.trim(),
-          sqliteJson(normalized.in_scope ?? []),
-          sqliteJson(normalized.out_of_scope ?? []),
-          sqliteJson(normalized.constraints ?? []),
-          sqliteJson(normalized.required_inputs ?? []),
-          sqliteJson(normalized.promised_outputs ?? []),
-          normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
-          normalized.decomposition_state ?? current.decomposition_state,
-          normalized.priority ?? current.priority,
-          now,
-          goalId,
-          boardId,
-        );
-      this.store.db.prepare("DELETE FROM acceptance_criteria WHERE goal_id = ?").run(goalId);
-      const insertCriterion = this.store.db.prepare(`
-        INSERT INTO acceptance_criteria (
-          criterion_id, goal_id, statement, decision_method,
-          pass_condition, target_json, required_evidence_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const criterion of normalized.acceptance_criteria) {
-        insertCriterion.run(
-          criterion.criterion_id || `criterion-${randomUUID()}`,
-          goalId,
-          criterion.statement,
-          criterion.decision_method,
-          criterion.pass_condition,
-          criterion.target == null ? null : sqliteJson(criterion.target),
-          sqliteJson(criterion.required_evidence ?? []),
-        );
-      }
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "goal.draft_updated",
-        objectType: "goal",
-        objectId: goalId,
-        reason: changeReason,
-        payload: {
-          decomposition_state: normalized.decomposition_state ?? current.decomposition_state,
-          acceptance_criterion_count: normalized.acceptance_criteria.length,
-          superseded_contract_proposal_ids: pendingProposals.map((item) => item.proposal_id),
-        },
-        at: now,
-      });
-      const goal = this.requireGoalOnBoard(boardId, goalId);
-      const outcome = { goal, observed_event_cursor: cursor };
-      this.remember(
-        boardId,
-        write.actor_id,
-        "update_draft_goal",
-        write.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  addRelation(
-    boardId: string,
-    input: {
-      from_goal_id: string;
-      to_goal_id: string;
-      type: "part_of" | "depends_on" | "conflicts_with" | "mitigates" | "extends" | "replaces" | "corrects" | "invalidates" | "migrates_from";
-      state?: "proposed" | "active";
-      reason: string;
-    },
-    write: ActorWrite,
-  ): { relation_id: string; replayed: boolean; observed_event_cursor: number } {
-    const hash = requestHash({ board_id: boardId, ...input });
-    return this.store.immediate(() => {
-      const replay = this.replay<{ relation_id: string; observed_event_cursor: number }>(
-        boardId,
-        write.actor_id,
-        "add_relation",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-      this.requireNonTrashedGoalOnBoard(boardId, input.from_goal_id);
-      this.requireNonTrashedGoalOnBoard(boardId, input.to_goal_id);
-      if (input.from_goal_id === input.to_goal_id) {
-        throw new GoalBoardV1Error("relation.self_reference", "Goal 不能关联到自身");
-      }
-      if (
-        (input.state ?? "active") === "active" &&
-        ["part_of", "depends_on"].includes(input.type)
-      ) {
-        const projectedId = "projected:new-relation";
-        const snapshot = this.store.snapshot(boardId);
-        const issues = validatePlanningGraph(
-          snapshot.goals,
-          projectPlanningRelations(snapshot.relations, [{
-            action: "add",
-            relation_id: projectedId,
-            from_goal_id: input.from_goal_id,
-            to_goal_id: input.to_goal_id,
-            type: input.type,
-            reason: input.reason,
-          }]),
-        ).filter((issue) => issue.relation_ids.includes(projectedId));
-        if (issues.length) {
-          throw new GoalBoardV1Error(issues[0]!.code, issues[0]!.message);
-        }
-      }
-      const relationReason = input.reason.trim();
-      if (!relationReason) {
-        throw new GoalBoardV1Error("relation.reason_required", "关系必须说明建立原因");
-      }
-      const alreadyActive = this.store.db
-        .prepare(`
-          SELECT relation_id FROM goal_relations
-          WHERE board_id = ? AND from_goal_id = ? AND to_goal_id = ?
-            AND type = ? AND state = ?
-          LIMIT 1
-        `)
-        .get(
-          boardId,
-          input.from_goal_id,
-          input.to_goal_id,
-          input.type,
-          input.state ?? "active",
-        ) as Row | undefined;
-      if (alreadyActive) {
-        throw new GoalBoardV1Error(
-          "relation.already_exists",
-          input.state === "proposed" ? "这条待确认关系已经存在" : "这条关系已经生效",
-        );
-      }
-      const relationId = `relation-${randomUUID()}`;
-      const at = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          INSERT INTO goal_relations (
-            relation_id, board_id, from_goal_id, to_goal_id, type, state,
-            reason, created_by, created_at, deactivated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        `)
-        .run(
-          relationId,
-          boardId,
-          input.from_goal_id,
-          input.to_goal_id,
-          input.type,
-          input.state ?? "active",
-          relationReason,
-          write.actor_id,
-          at,
-        );
-      let cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "relation.added",
-        objectType: "relation",
-        objectId: relationId,
-        reason: relationReason,
-        payload: { ...input, reason: relationReason },
-        at,
-      });
-      if (input.type === "part_of" && (input.state ?? "active") === "active") {
-        this.store.db.prepare(`
-          INSERT OR REPLACE INTO coverage_contract_revisions (
-            parent_goal_id, child_goal_id, parent_contract_revision, child_contract_revision, recorded_at
-          )
-          SELECT parent.goal_id, child.goal_id,
-                 parent.current_contract_revision, child.current_contract_revision, ?
-          FROM goals parent, goals child
-          WHERE parent.goal_id = ? AND child.goal_id = ?
-        `).run(at, input.to_goal_id, input.from_goal_id);
-        const reopened = this.reopenSatisfiedCompoundParent(
-          boardId,
-          input.to_goal_id,
-          write.actor_id,
-          at,
-        );
-        if (!reopened) {
-          cursor = this.reconcileCompoundAncestors(boardId, input.from_goal_id, write.actor_id, at);
-        }
-      }
-      const outcome = { relation_id: relationId, observed_event_cursor: cursor };
-      this.remember(boardId, write.actor_id, "add_relation", write.idempotency_key, hash, outcome, at);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  deactivateRelation(
-    boardId: string,
-    input: { relation_id: string; reason: string },
-    write: ActorWrite,
-  ): {
-    relation: GoalRelationRecord;
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const reasonText = input.reason.trim();
-    if (!reasonText) {
-      throw new GoalBoardV1Error("relation.deactivation_reason_required", "解除关系时必须说明原因");
-    }
-    const hash = requestHash({ board_id: boardId, relation_id: input.relation_id, reason: reasonText });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        relation: GoalRelationRecord;
-        observed_event_cursor: number;
-      }>(boardId, write.actor_id, "deactivate_relation", write.idempotency_key, hash);
-      if (replay) return { ...replay, replayed: true };
-      this.requireBoard(boardId);
-      const row = this.store.db
-        .prepare("SELECT * FROM goal_relations WHERE board_id = ? AND relation_id = ?")
-        .get(boardId, input.relation_id) as Row | undefined;
-      if (!row) {
-        throw new GoalBoardV1Error("relation.not_found", `找不到关系: ${input.relation_id}`);
-      }
-      if (asText(row.state) !== "active") {
-        throw new GoalBoardV1Error("relation.not_active", "只有正在生效的关系可以解除");
-      }
-      const at = this.clock().toISOString();
-      if (asText(row.type) === "part_of") {
-        this.reopenCompoundAncestorsForUntrustedChild(
-          boardId,
-          asText(row.from_goal_id),
-          write.actor_id,
-          at,
-          "子 Goal 与父 Goal 的 part_of 关系已解除",
-          asText(row.to_goal_id),
-        );
-      }
-      this.store.db
-        .prepare(`
-          UPDATE goal_relations
-          SET state = 'inactive', deactivated_at = ?
-          WHERE relation_id = ?
-        `)
-        .run(at, input.relation_id);
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "relation.deactivated",
-        objectType: "relation",
-        objectId: input.relation_id,
-        reason: reasonText,
-        payload: {
-          from_goal_id: asText(row.from_goal_id),
-          to_goal_id: asText(row.to_goal_id),
-          type: asText(row.type),
-        },
-        at,
-      });
-      const relation = this.store
-        .snapshot(boardId)
-        .relations.find((item) => item.relation_id === input.relation_id);
-      if (!relation) throw new Error("关系停用后无法读取");
-      const outcome = { relation, observed_event_cursor: cursor };
-      this.remember(
-        boardId,
-        write.actor_id,
-        "deactivate_relation",
-        write.idempotency_key,
-        hash,
-        outcome,
-        at,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
   addImpact(
     boardId: string,
     input: ImpactFactsInput,
@@ -2362,717 +1645,168 @@ export class GoalBoardCoordinator {
     };
   }
 
-  setPolicy(
+  private authorizeGoalRiskUpdate(
     boardId: string,
-    input: { goal_id?: string | null; policy: Partial<GoalPolicy>; reason: string },
+    input: GoalsUpdateRiskInput,
     write: ActorWrite,
-  ): { policy_binding_id: string; replayed: boolean; observed_event_cursor: number } {
-    const hash = requestHash({ board_id: boardId, ...input });
-    return this.store.immediate(() => {
-      const replay = this.replay<{ policy_binding_id: string; observed_event_cursor: number }>(
-        boardId,
-        write.actor_id,
-        "set_policy",
-        write.idempotency_key,
-        hash,
+    _current: RiskRecord,
+  ): void {
+    const actionContextValues = [
+      input.action_goal_id,
+      input.contract_revision,
+      input.action_id,
+      input.action_token,
+    ];
+    if (!actionContextValues.some((value) => value != null)) return;
+    const goal = this.requireGoalOnBoard(boardId, input.action_goal_id!);
+    const projection = this.executionValidation.query.getGoalActionProjection({ board_id: boardId, goal_id: goal.goal_id });
+    if (!contractRevisionIsCompatible(goal, this.store.snapshot(boardId), input.contract_revision!)) {
+      throw new GoalBoardV1Error(
+        "contract.revision_stale",
+        "Risk 决定属于旧 Contract revision。",
+        { current_contract_revision: goal.current_contract_revision, projection },
       );
-      if (replay) return { ...replay, replayed: true };
-      this.requireBoard(boardId);
-      if (input.goal_id) this.requireGoalOnBoard(boardId, input.goal_id);
-      if (!input.reason.trim()) {
-        throw new GoalBoardV1Error("policy.reason_required", "保存 Policy 时必须说明原因");
-      }
-      if (
-        input.policy.goal_mode != null &&
-        !["disabled", "preferred", "required"].includes(input.policy.goal_mode)
-      ) {
-        throw new GoalBoardV1Error("policy.goal_mode_invalid", "Goal Mode 必须是关闭、建议或强制");
-      }
-      if (
-        input.policy.required_capabilities != null &&
-        (!Array.isArray(input.policy.required_capabilities) ||
-          input.policy.required_capabilities.some(
-            (capability) => typeof capability !== "string" || !capability.trim(),
-          ))
-      ) {
-        throw new GoalBoardV1Error(
-          "policy.capabilities_invalid",
-          "Runtime 必需能力必须是非空字符串列表",
-        );
-      }
-      for (const [field, value] of [
-        ["cross_reviewers", input.policy.cross_reviewers],
-        ["adversarial_reviewers", input.policy.adversarial_reviewers],
-      ] as const) {
-        if (value != null && (!Number.isInteger(value) || value < 0)) {
-          throw new GoalBoardV1Error("policy.review_count_invalid", `${field} 必须是非负整数`);
-        }
-      }
-      if (
-        input.policy.max_lease_seconds != null &&
-        (!Number.isInteger(input.policy.max_lease_seconds) || input.policy.max_lease_seconds <= 0)
-      ) {
-        throw new GoalBoardV1Error(
-          "policy.max_lease_invalid",
-          "最长领取时间必须是正整数秒数",
-        );
-      }
-      const scope = input.goal_id ? "goal" : "project_default";
-      const normalizedPolicy: Partial<GoalPolicy> = {
-        ...input.policy,
-        ...(input.policy.required_capabilities
-          ? { required_capabilities: unique(input.policy.required_capabilities.map((item) => item.trim())).sort() }
-          : {}),
-      };
-      const bindingId = `policy-${randomUUID()}`;
-      const at = this.clock().toISOString();
-      const replaced = (input.goal_id
-        ? this.store.db
-            .prepare(
-              "SELECT policy_binding_id FROM policy_bindings WHERE board_id = ? AND goal_id = ? AND scope = 'goal' AND state = 'active'",
-            )
-            .all(boardId, input.goal_id)
-        : this.store.db
-            .prepare(
-              "SELECT policy_binding_id FROM policy_bindings WHERE board_id = ? AND goal_id IS NULL AND scope = 'project_default' AND state = 'active'",
-            )
-            .all(boardId)) as Array<{ policy_binding_id: string }>;
-      if (input.goal_id) {
-        this.store.db
-          .prepare(
-            "UPDATE policy_bindings SET state = 'replaced' WHERE board_id = ? AND goal_id = ? AND scope = 'goal' AND state = 'active'",
-          )
-          .run(boardId, input.goal_id);
-      } else {
-        this.store.db
-          .prepare(
-            "UPDATE policy_bindings SET state = 'replaced' WHERE board_id = ? AND goal_id IS NULL AND scope = 'project_default' AND state = 'active'",
-          )
-          .run(boardId);
-      }
-      this.store.db
-        .prepare(`
-          INSERT INTO policy_bindings (
-            policy_binding_id, board_id, goal_id, scope, policy_json,
-            state, created_by, reason, created_at
-          ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
-        `)
-        .run(
-          bindingId,
-          boardId,
-          input.goal_id ?? null,
-          scope,
-          sqliteJson(normalizedPolicy),
-          write.actor_id,
-          input.reason.trim(),
-          at,
-        );
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "policy.added",
-        objectType: "policy",
-        objectId: bindingId,
-        reason: input.reason.trim(),
-        payload: {
-          ...input,
-          policy: normalizedPolicy,
-          scope,
-          replaced_binding_ids: replaced.map((item) => item.policy_binding_id),
-        },
-        at,
-      });
-      const outcome = { policy_binding_id: bindingId, observed_event_cursor: cursor };
-      this.remember(boardId, write.actor_id, "set_policy", write.idempotency_key, hash, outcome, at);
-      return { ...outcome, replayed: false };
-    });
+    }
+    if (input.action_token !== projection.action_token) {
+      throw new GoalBoardV1Error(
+        "action.token_stale",
+        "处理 Risk 前 Goal 已变化；旧决定未生效。",
+        { projection },
+      );
+    }
+    if (!projection.actions.some((action) =>
+      action.action_id === input.action_id &&
+      action.actor === "user" &&
+      action.kind === "accept_risk" &&
+      action.target_type === "risk" &&
+      action.target_id === input.risk_id
+    )) {
+      throw new GoalBoardV1Error(
+        "action.not_available",
+        "当前用户动作不再指向这条 Risk。",
+        { projection },
+      );
+    }
+    if (write.actor_kind !== "user") {
+      throw new GoalBoardV1Error(
+        "risk.user_acceptance_required",
+        "只有用户可以决定是否接受这条 Risk。",
+      );
+    }
   }
 
-  addRisk(
+  private authorizeGoalRiskState(
     boardId: string,
-    input: RiskFactsInput,
+    input: GoalsSetRiskStateInput,
     write: ActorWrite,
-  ): {
-    risk: RiskRecord;
-    transitions: ActionTransitionReceipt[];
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const hash = requestHash({ board_id: boardId, ...input });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        risk: RiskRecord;
-        transitions?: ActionTransitionReceipt[];
-        observed_event_cursor: number;
-      }>(
-        boardId,
-        write.actor_id,
-        "add_risk",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, transitions: replay.transitions ?? [], replayed: true };
-      this.requireBoard(boardId);
-      const facts = this.normalizeRiskFacts(boardId, input);
-      const previousTokens = new Map(facts.goal_ids.map((goalId) => [
-        goalId,
-        this.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).action_token,
-      ]));
-      const riskId = input.risk_id?.trim() || `risk-${randomUUID()}`;
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          INSERT INTO risks (
-            risk_id, board_id, description, probability, impact,
-            affected_surfaces_json, trigger, treatment, treatment_plan, blocking_mode,
-            revisit_condition, owner, state, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
-        `)
-        .run(
-          riskId,
-          boardId,
-          facts.description,
-          facts.probability,
-          facts.impact,
-          sqliteJson(facts.affected_surfaces),
-          facts.trigger,
-          facts.treatment,
-          facts.treatment_plan,
-          facts.blocking_mode,
-          facts.revisit_condition,
-          facts.owner,
-          now,
-          now,
-        );
-      const link = this.store.db.prepare("INSERT INTO goal_risks (goal_id, risk_id) VALUES (?, ?)");
-      for (const goalId of facts.goal_ids) link.run(goalId, riskId);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "risk.created",
-        objectType: "risk",
-        objectId: riskId,
-        reason: write.reason ?? "登记 Goal 风险",
-        payload: { goal_ids: facts.goal_ids, blocking_mode: facts.blocking_mode },
-        at: now,
-      });
-      const transitions = facts.goal_ids.map((goalId) => this.reconcileLifecycle(
-        boardId,
-        goalId,
-        write.actor_id,
-        previousTokens.get(goalId)!,
-        facts.blocking_mode === "none" || facts.treatment === "defer"
-          ? "已记录风险，不新增用户待办"
-          : facts.treatment === "accept"
-            ? "已记录风险，等待用户决定"
-            : "已记录风险，可继续处理",
-        now,
-      ));
-      const risk = this.readRisk(boardId, riskId);
-      const outcome = {
-        risk,
-        transitions,
-        observed_event_cursor: this.store.eventCursor(boardId),
-      };
-      this.remember(boardId, write.actor_id, "add_risk", write.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  updateRisk(
-    boardId: string,
-    input: Omit<RiskFactsInput, "risk_id"> & {
-      risk_id: string;
-      action_goal_id?: string;
-      contract_revision?: number;
-      action_id?: string;
-      action_token?: string;
-    },
-    write: ActorWrite,
-  ): {
-    risk: RiskRecord;
-    transitions: ActionTransitionReceipt[];
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const hash = requestHash({ board_id: boardId, ...input, reason: write.reason });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        risk: RiskRecord;
-        transitions?: ActionTransitionReceipt[];
-        observed_event_cursor: number;
-      }>(
-        boardId,
-        write.actor_id,
-        "update_risk",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, transitions: replay.transitions ?? [], replayed: true };
-      this.requireBoard(boardId);
-      const reasonText = write.reason?.trim();
-      if (!reasonText) {
-        throw new GoalBoardV1Error("risk.reason_required", "更新 Risk 时必须说明原因");
-      }
-      const riskId = input.risk_id.trim();
-      const previous = this.store.db
-        .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
-        .get(riskId, boardId) as Row | undefined;
-      if (!previous) throw new GoalBoardV1Error("risk.not_found", `Risk 不存在: ${riskId}`);
-      const actionContextValues = [
-        input.action_goal_id,
-        input.contract_revision,
-        input.action_id,
-        input.action_token,
-      ];
-      if (actionContextValues.some((value) => value != null)) {
-        if (actionContextValues.some((value) => value == null || value === "")) {
-          throw new GoalBoardV1Error(
-            "action.context_incomplete",
-            "Risk 决定必须同时提交 goal、Contract revision、action_id 和 action_token。",
-          );
-        }
-        if (!input.goal_ids.includes(input.action_goal_id!)) {
-          throw new GoalBoardV1Error("risk.goal_mismatch", "Risk 决定不属于指定 Goal。");
-        }
-        const goal = this.requireGoalOnBoard(boardId, input.action_goal_id!);
-        const projection = this.getGoalActionProjection({ board_id: boardId, goal_id: goal.goal_id });
-        if (!contractRevisionIsCompatible(goal, this.store.snapshot(boardId), input.contract_revision!)) {
-          throw new GoalBoardV1Error(
-            "contract.revision_stale",
-            "Risk 决定属于旧 Contract revision。",
-            { current_contract_revision: goal.current_contract_revision, projection },
-          );
-        }
-        if (input.action_token !== projection.action_token) {
-          throw new GoalBoardV1Error(
-            "action.token_stale",
-            "处理 Risk 前 Goal 已变化；旧决定未生效。",
-            { projection },
-          );
-        }
-        if (!projection.actions.some((action) =>
-          action.action_id === input.action_id &&
-          action.actor === "user" &&
-          action.kind === "accept_risk" &&
-          action.target_type === "risk" &&
-          action.target_id === riskId
-        )) {
-          throw new GoalBoardV1Error("action.not_available", "当前用户动作不再指向这条 Risk。", { projection });
-        }
-        if (write.actor_kind !== "user") {
-          throw new GoalBoardV1Error("risk.user_acceptance_required", "只有用户可以决定是否接受这条 Risk。");
-        }
-      }
-      const facts = this.normalizeRiskFacts(boardId, input);
-      const previousGoalIds = (this.store.db
-        .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
-        .all(riskId) as Row[]).map((item) => asText(item.goal_id));
-      const affectedGoalIds = unique([...previousGoalIds, ...facts.goal_ids]).sort();
-      const previousTokens = new Map(affectedGoalIds.map((goalId) => [
-        goalId,
-        this.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).action_token,
-      ]));
-      const state = asText(previous.state) as RiskRecord["state"];
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          UPDATE risks SET
-            description = ?, probability = ?, impact = ?, affected_surfaces_json = ?,
-            trigger = ?, treatment = ?, treatment_plan = ?, blocking_mode = ?, revisit_condition = ?, owner = ?, updated_at = ?
-          WHERE risk_id = ? AND board_id = ?
-        `)
-        .run(
-          facts.description,
-          facts.probability,
-          facts.impact,
-          sqliteJson(facts.affected_surfaces),
-          facts.trigger,
-          facts.treatment,
-          facts.treatment_plan,
-          facts.blocking_mode,
-          facts.revisit_condition,
-          facts.owner,
-          now,
-          riskId,
-          boardId,
-        );
-      this.store.db.prepare("DELETE FROM goal_risks WHERE risk_id = ?").run(riskId);
-      const link = this.store.db.prepare("INSERT INTO goal_risks (goal_id, risk_id) VALUES (?, ?)");
-      for (const goalId of facts.goal_ids) link.run(goalId, riskId);
-
-      const wasInvalidating = asText(previous.blocking_mode) === "invalidate_on_trigger" && state === "triggered";
-      const isInvalidating = facts.blocking_mode === "invalidate_on_trigger" && state === "triggered";
-      const nextInvalidated = new Set(isInvalidating ? facts.goal_ids : []);
-      if (wasInvalidating) {
-        for (const goalId of previousGoalIds.filter((item) => !nextInvalidated.has(item))) {
-          this.store.db
-            .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
-            .run(now, goalId);
-        }
-      }
-      if (isInvalidating) {
-        for (const goalId of facts.goal_ids) {
-          this.store.db
-            .prepare("UPDATE goals SET validity_state = 'invalidated', updated_at = ? WHERE goal_id = ?")
-            .run(now, goalId);
-        }
-      }
-
-      let cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "risk.updated",
-        objectType: "risk",
-        objectId: riskId,
-        reason: reasonText,
-        payload: {
-          previous_goal_ids: previousGoalIds,
-          goal_ids: facts.goal_ids,
-          previous_blocking_mode: asText(previous.blocking_mode),
-          blocking_mode: facts.blocking_mode,
-          state,
-        },
-        at: now,
-      });
-      if (wasInvalidating || isInvalidating) {
-        for (const goalId of unique([...previousGoalIds, ...facts.goal_ids])) {
-          cursor = this.reopenCompoundAncestorsForUntrustedChild(
-            boardId,
-            goalId,
-            write.actor_id,
-            now,
-            "子 Goal 关联的失效型 Risk 发生变化",
-          );
-        }
-      }
-      const risk = this.readRisk(boardId, riskId);
-      const transitions = affectedGoalIds.map((goalId) => this.reconcileLifecycle(
-        boardId,
-        goalId,
-        write.actor_id,
-        previousTokens.get(goalId)!,
-        facts.treatment === "accept" ? "风险改为等待你的决定" : "已更新风险处理方式",
-        now,
-      ));
-      const outcome = {
-        risk,
-        transitions,
-        observed_event_cursor: Math.max(cursor, this.store.eventCursor(boardId)),
-      };
-      this.remember(boardId, write.actor_id, "update_risk", write.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  setRiskState(
-    boardId: string,
-    input: {
-      risk_id: string;
-      state: RiskRecord["state"];
-      reason: string;
-      resolution_basis?: NonNullable<RiskRecord["resolution_basis"]>;
-      goal_id?: string;
-      contract_revision?: number;
-      action_id?: string;
-      action_token?: string;
-    },
-    write: ActorWrite,
-  ): {
-    risk: RiskRecord;
-    transitions: ActionTransitionReceipt[];
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const hash = requestHash({ board_id: boardId, ...input });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        risk: RiskRecord;
-        transitions?: ActionTransitionReceipt[];
-        observed_event_cursor: number;
-      }>(
-        boardId,
-        write.actor_id,
-        "set_risk_state",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, transitions: replay.transitions ?? [], replayed: true };
-      if (!RISK_STATES.has(input.state)) {
-        throw new GoalBoardV1Error("risk.state_invalid", "Risk 状态必须是开放、已触发、已解决、已接受或已过期");
-      }
-      const reasonText = input.reason.trim();
-      if (!reasonText) {
-        throw new GoalBoardV1Error("risk.reason_required", "变更 Risk 状态时必须说明原因");
-      }
-      const resolutionBasis = input.state === "resolved"
-        ? (() => {
-            const raw = input.resolution_basis;
-            const summary = raw?.summary?.trim() ?? "";
-            const evidenceRefs = unique((raw?.evidence_refs ?? []).map((item) => item.trim()).filter(Boolean));
-            const residualGapsProvided = Array.isArray(raw?.residual_gaps);
-            const residualGaps = unique((raw?.residual_gaps ?? []).map((item) => item.trim()).filter(Boolean));
-            if (!summary || evidenceRefs.length === 0 || !residualGapsProvided) {
-              throw new GoalBoardV1Error(
-                "risk.resolution_basis_required",
-                "Risk 标记为已解决时，必须记录解决摘要、至少一条证据引用，并明确 residual_gaps（没有剩余缺口时传空数组）",
-              );
-            }
-            return { summary, evidence_refs: evidenceRefs, residual_gaps: residualGaps };
-          })()
-        : null;
-      const row = this.store.db
-        .prepare("SELECT * FROM risks WHERE risk_id = ? AND board_id = ?")
-        .get(input.risk_id, boardId) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("risk.not_found", `Risk 不存在: ${input.risk_id}`);
-      if (write.actor_kind === "runtime") {
-        if (input.state === "accepted" || asText(row.treatment) === "accept") {
-          throw new GoalBoardV1Error(
-            "risk.user_acceptance_required",
-            "Runtime 不能代替用户接受残余风险。",
-          );
-        }
-        if (asText(row.treatment) !== "mitigate" && asText(row.treatment) !== "avoid") {
-          throw new GoalBoardV1Error(
-            "risk.runtime_treatment_forbidden",
-            "Runtime 只能处理 mitigate 或 avoid Risk。",
-          );
-        }
-      }
-      if (input.state === "accepted" && asText(row.treatment) !== "accept") {
-        throw new GoalBoardV1Error(
-          "risk.acceptance_not_requested",
-          "这条 Risk 的既定处理方式不是 accept；请先通过显式 Proposal 修改处理方式。",
-        );
-      }
-      const linkedGoals = this.store.db
-        .prepare("SELECT goal_id FROM goal_risks WHERE risk_id = ? ORDER BY goal_id")
-        .all(input.risk_id) as Row[];
-      const linkedGoalIds = linkedGoals.map((item) => asText(item.goal_id));
-      if (input.goal_id && !linkedGoalIds.includes(input.goal_id)) {
-        throw new GoalBoardV1Error("risk.goal_mismatch", "Risk 没有关联到指定 Goal");
-      }
-      const actionContextValues = [
-        input.goal_id,
-        input.contract_revision,
-        input.action_id,
-        input.action_token,
-      ];
+    _current: RiskRecord,
+    linkedGoalIds: string[],
+    resolutionBasis: RiskRecord["resolution_basis"],
+  ): void {
+    const snapshot = this.store.snapshot(boardId);
+    const authorizationGoalIds = input.goal_id ? [input.goal_id] : linkedGoalIds;
+    for (const goalId of linkedGoalIds) {
+      const goal = snapshot.goals.find((candidate) => candidate.goal_id === goalId)!;
+      const projection = deriveGoalActionProjection(goal, snapshot, this.clock().toISOString());
+      const isActionGoal = goalId === input.goal_id;
       if (
-        actionContextValues.some((value) => value != null) &&
-        actionContextValues.some((value) => value == null || value === "")
+        isActionGoal &&
+        !contractRevisionIsCompatible(goal, snapshot, input.contract_revision!)
       ) {
         throw new GoalBoardV1Error(
-          "action.context_incomplete",
-          "Risk 动作必须同时提交 goal、Contract revision、action_id 和 action_token。",
+          "contract.revision_stale",
+          "Risk 写入属于旧 Contract revision。",
+          { current_contract_revision: goal.current_contract_revision, projection },
         );
       }
-      const affectedGoalIds = linkedGoalIds;
-      const authorizationGoalIds = input.goal_id ? [input.goal_id] : linkedGoalIds;
-      const snapshotBefore = this.store.snapshot(boardId);
-      const previousTokens = new Map(affectedGoalIds.map((goalId) => {
-        const goal = snapshotBefore.goals.find((candidate) => candidate.goal_id === goalId)!;
-        const projection = deriveGoalActionProjection(goal, snapshotBefore, this.clock().toISOString());
-        const isActionGoal = goalId === input.goal_id;
+      if (isActionGoal && input.action_token !== projection.action_token) {
+        throw new GoalBoardV1Error(
+          "action.token_stale",
+          "处理 Risk 前 Goal 已变化；旧写入未生效。",
+          { projection },
+        );
+      }
+      if (isActionGoal && !projection.actions.some((candidate) =>
+        candidate.action_id === input.action_id &&
+        candidate.target_type === "risk" &&
+        candidate.target_id === input.risk_id &&
+        candidate.actor === (write.actor_kind === "user" ? "user" : "runtime") &&
+        candidate.kind === (write.actor_kind === "user" ? "accept_risk" : "mitigate_risk")
+      )) {
+        throw new GoalBoardV1Error(
+          "action.not_available",
+          "当前动作已经变化或不属于这个操作者。",
+          { projection },
+        );
+      }
+    }
+    if (
+      input.state === "resolved" &&
+      (write.actor_kind != null ||
+        input.action_token != null ||
+        input.contract_revision != null ||
+        input.goal_id != null)
+    ) {
+      const evidenceById = new Map(
+        snapshot.evidence.map((evidence) => [evidence.evidence_id, evidence]),
+      );
+      for (const evidenceRef of resolutionBasis?.evidence_refs ?? []) {
+        const evidence = evidenceById.get(evidenceRef);
+        const goal = evidence
+          ? snapshot.goals.find((candidate) => candidate.goal_id === evidence.goal_id)
+          : null;
         if (
-          isActionGoal &&
-          !contractRevisionIsCompatible(goal, snapshotBefore, input.contract_revision!)
+          !evidence ||
+          !goal ||
+          !linkedGoalIds.includes(evidence.goal_id) ||
+          !contractRevisionIsCompatible(goal, snapshot, evidence.contract_revision) ||
+          evidence.lifecycle_state !== "effective" ||
+          evidence.historical_unmapped
         ) {
           throw new GoalBoardV1Error(
-            "contract.revision_stale",
-            "Risk 写入属于旧 Contract revision。",
-            { current_contract_revision: goal.current_contract_revision, projection },
-          );
-        }
-        if (isActionGoal && input.action_token !== projection.action_token) {
-          throw new GoalBoardV1Error(
-            "action.token_stale",
-            "处理 Risk 前 Goal 已变化；旧写入未生效。",
-            { projection },
-          );
-        }
-        if (isActionGoal && !projection.actions.some((candidate) =>
-          candidate.action_id === input.action_id &&
-          candidate.target_type === "risk" &&
-          candidate.target_id === input.risk_id &&
-          candidate.actor === (write.actor_kind === "user" ? "user" : "runtime") &&
-          candidate.kind === (write.actor_kind === "user" ? "accept_risk" : "mitigate_risk")
-        )) {
-          throw new GoalBoardV1Error("action.not_available", "当前动作已经变化或不属于这个操作者。", { projection });
-        }
-        return [goalId, projection.action_token] as const;
-      }));
-      // New action-aware callers must prove the Risk was resolved with current,
-      // canonical Evidence. Legacy in-process callers did not identify actor
-      // provenance and remain readable during the compatibility window.
-      if (
-        input.state === "resolved" &&
-        (write.actor_kind != null || input.action_token != null || input.contract_revision != null || input.goal_id != null)
-      ) {
-        const evidenceById = new Map(snapshotBefore.evidence.map((evidence) => [evidence.evidence_id, evidence]));
-        for (const evidenceRef of resolutionBasis?.evidence_refs ?? []) {
-          const evidence = evidenceById.get(evidenceRef);
-          const goal = evidence
-            ? snapshotBefore.goals.find((candidate) => candidate.goal_id === evidence.goal_id)
-            : null;
-          if (
-            !evidence || !goal || !linkedGoalIds.includes(evidence.goal_id) ||
-            !contractRevisionIsCompatible(goal, snapshotBefore, evidence.contract_revision) ||
-            evidence.lifecycle_state !== "effective" || evidence.historical_unmapped
-          ) {
-            throw new GoalBoardV1Error(
-              "risk.evidence_not_current",
-              "Risk resolved 只能引用关联 Goal 当前 Contract revision 的有效 Evidence。",
-              { evidence_id: evidenceRef },
-            );
-          }
-        }
-      }
-      if (write.actor_kind === "runtime") {
-        const authorized = authorizationGoalIds.every((goalId) => {
-          const goal = snapshotBefore.goals.find((candidate) => candidate.goal_id === goalId)!;
-          const claims = snapshotBefore.claims
-            .filter((claim) =>
-              claim.goal_id === goalId &&
-              claim.actor_id === write.actor_id &&
-              contractRevisionIsCompatible(goal, snapshotBefore, claim.contract_revision)
-            )
-            .sort((left, right) => left.claimed_at.localeCompare(right.claimed_at));
-          const claim = claims.at(-1);
-          if (!claim) return false;
-          if (claim.state === "active" && claim.action_kind === "mitigate_risk" && claim.action_target_id === input.risk_id) {
-            return true;
-          }
-          const run = snapshotBefore.runs
-            .filter((candidate) => candidate.claim_id === claim.claim_id)
-            .sort((left, right) => left.started_at.localeCompare(right.started_at))
-            .at(-1);
-          const newerClaim = snapshotBefore.claims.some((candidate) =>
-            candidate.goal_id === goalId && candidate.claimed_at > claim.claimed_at
-          );
-          return run?.state === "completed" && !newerClaim;
-        });
-        if (!authorized) {
-          throw new GoalBoardV1Error(
-            "risk.runtime_authority_missing",
-            "Runtime 没有当前 Risk action，也不是刚完成同一 revision 的原执行者。",
+            "risk.evidence_not_current",
+            "Risk resolved 只能引用关联 Goal 当前 Contract revision 的有效 Evidence。",
+            { evidence_id: evidenceRef },
           );
         }
       }
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare("UPDATE risks SET state = ?, resolution_basis_json = ?, updated_at = ? WHERE risk_id = ?")
-        .run(input.state, resolutionBasis == null ? null : sqliteJson(resolutionBasis), now, input.risk_id);
-      let validity: ValidityState | null = null;
-      if (asText(row.blocking_mode) === "invalidate_on_trigger") {
-        const previousState = asText(row.state) as RiskRecord["state"];
-        validity = input.state === "triggered"
-          ? "invalidated"
-          : previousState === "triggered"
-            ? "needs_revalidation"
-            : null;
-        if (validity) {
-          for (const linked of linkedGoals) {
-            this.store.db
-              .prepare("UPDATE goals SET validity_state = ?, updated_at = ? WHERE goal_id = ?")
-              .run(validity, now, asText(linked.goal_id));
-          }
+    }
+    if (write.actor_kind === "runtime") {
+      const authorized = authorizationGoalIds.every((goalId) => {
+        const goal = snapshot.goals.find((candidate) => candidate.goal_id === goalId)!;
+        const claims = snapshot.claims
+          .filter((claim) =>
+            claim.goal_id === goalId &&
+            claim.actor_id === write.actor_id &&
+            contractRevisionIsCompatible(goal, snapshot, claim.contract_revision)
+          )
+          .sort((left, right) => left.claimed_at.localeCompare(right.claimed_at));
+        const claim = claims.at(-1);
+        if (!claim) return false;
+        if (
+          claim.state === "active" &&
+          claim.action_kind === "mitigate_risk" &&
+          claim.action_target_id === input.risk_id
+        ) {
+          return true;
         }
-      }
-      let cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: `risk.${input.state}`,
-        objectType: "risk",
-        objectId: input.risk_id,
-        reason: reasonText,
-        payload: {
-          previous_state: asText(row.state),
-          state: input.state,
-          resolution_basis: resolutionBasis,
-          blocking_mode: asText(row.blocking_mode),
-          linked_goal_ids: linkedGoals.map((item) => asText(item.goal_id)),
-        },
-        at: now,
+        const run = snapshot.runs
+          .filter((candidate) => candidate.claim_id === claim.claim_id)
+          .sort((left, right) => left.started_at.localeCompare(right.started_at))
+          .at(-1);
+        const newerClaim = snapshot.claims.some((candidate) =>
+          candidate.goal_id === goalId && candidate.claimed_at > claim.claimed_at
+        );
+        return run?.state === "completed" && !newerClaim;
       });
-      if (validity) {
-        for (const linked of linkedGoals) {
-          cursor = this.reopenCompoundAncestorsForUntrustedChild(
-            boardId,
-            asText(linked.goal_id),
-            write.actor_id,
-            now,
-            "子 Goal 关联的失效型 Risk 改变了可信状态",
-          );
-        }
+      if (!authorized) {
+        throw new GoalBoardV1Error(
+          "risk.runtime_authority_missing",
+          "Runtime 没有当前 Risk action，也不是刚完成同一 revision 的原执行者。",
+        );
       }
-      const transitions = affectedGoalIds.map((goalId) => this.reconcileLifecycle(
-        boardId,
-        goalId,
-        write.actor_id,
-        previousTokens.get(goalId)!,
-        input.state === "accepted" ? "已记录风险决定" : "已更新风险状态",
-        now,
-      ));
-      const risk = this.readRisk(boardId, input.risk_id);
-      const outcome = {
-        risk,
-        transitions,
-        observed_event_cursor: Math.max(cursor, this.store.eventCursor(boardId)),
-      };
-      this.remember(boardId, write.actor_id, "set_risk_state", write.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
+    }
   }
-
-  private normalizeRiskFacts(
-    boardId: string,
-    input: Omit<RiskFactsInput, "risk_id">,
-  ): Omit<RiskFactsInput, "risk_id" | "affected_surfaces"> & { affected_surfaces: string[] } {
-    const goalIds = unique(input.goal_ids.map((item) => item.trim()).filter(Boolean));
-    const description = input.description.trim();
-    const probability = input.probability.trim();
-    const impact = input.impact.trim();
-    const affectedSurfaces = unique((input.affected_surfaces ?? []).map((item) => item.trim()).filter(Boolean));
-    const trigger = input.trigger.trim();
-    const treatmentPlan = input.treatment_plan?.trim() ?? "";
-    const revisitCondition = input.revisit_condition.trim();
-    const owner = input.owner.trim();
-    if (!goalIds.length) {
-      throw new GoalBoardV1Error("risk.goal_required", "Risk 必须关联至少一个 Goal");
-    }
-    if (!description || !probability || !impact || !trigger || !revisitCondition || !owner) {
-      throw new GoalBoardV1Error(
-        "risk.required_field_missing",
-        "Risk 必须说明描述、概率、影响、触发条件、复查条件和负责人",
-      );
-    }
-    if (!RISK_TREATMENTS.has(input.treatment)) {
-      throw new GoalBoardV1Error("risk.treatment_invalid", "Risk 处理方式无效");
-    }
-    if (!RISK_BLOCKING_MODES.has(input.blocking_mode)) {
-      throw new GoalBoardV1Error("risk.blocking_mode_invalid", "Risk 阻塞方式无效");
-    }
-    for (const goalId of goalIds) this.requireGoalOnBoard(boardId, goalId);
-    return {
-      goal_ids: goalIds,
-      description,
-      probability,
-      impact,
-      affected_surfaces: affectedSurfaces,
-      trigger,
-      treatment: input.treatment,
-      treatment_plan: treatmentPlan,
-      blocking_mode: input.blocking_mode,
-      revisit_condition: revisitCondition,
-      owner,
-    };
-  }
-
   private clearActiveGoalIfMatches(boardId: string, goalId: string, at: string): boolean {
     return this.store.db
       .prepare(`
@@ -3132,402 +1866,15 @@ export class GoalBoardCoordinator {
     });
   }
 
-  setGoalArchived(
-    boardId: string,
-    input: { goal_id: string; archived: boolean; reason: string },
-    write: ActorWrite,
-  ): {
-    goal: GoalRecord;
-    active_goal_cleared: boolean;
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const hash = requestHash({ board_id: boardId, ...input });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        goal: GoalRecord;
-        active_goal_cleared: boolean;
-        observed_event_cursor: number;
-      }>(boardId, write.actor_id, "set_goal_archived", write.idempotency_key, hash);
-      if (replay) return { ...replay, replayed: true };
-      const goal = this.requireGoalOnBoard(boardId, input.goal_id);
-      if (goal.trashed_at) {
-        throw new GoalBoardV1Error("goal.trashed", "回收站中的 Goal 需要先恢复，才能变更归档状态");
-      }
-      if (input.archived && goal.fulfillment_state !== "satisfied") {
-        throw new GoalBoardV1Error("goal.not_satisfied", "只有已完成的 Goal 可以归档");
-      }
-      if (Boolean(goal.archived_at) === input.archived) {
-        throw new GoalBoardV1Error(
-          "goal.archive_state_unchanged",
-          input.archived ? "Goal 已经归档" : "Goal 当前未归档",
-        );
-      }
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare("UPDATE goals SET archived_at = ?, archived_by = ?, updated_at = ? WHERE goal_id = ?")
-        .run(input.archived ? now : null, input.archived ? write.actor_id : null, now, input.goal_id);
-      const activeGoalCleared = input.archived
-        ? this.clearActiveGoalIfMatches(boardId, input.goal_id, now)
-        : false;
-      let cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: input.archived ? "goal.archived" : "goal.restored",
-        objectType: "goal",
-        objectId: input.goal_id,
-        reason: input.reason,
-        payload: { active_goal_cleared: activeGoalCleared },
-        at: now,
-      });
-      cursor = input.archived
-        ? this.reopenCompoundAncestorsForUntrustedChild(
-            boardId,
-            input.goal_id,
-            write.actor_id,
-            now,
-            "子 Goal 已归档",
-          )
-        : this.reconcileCompoundAncestors(boardId, input.goal_id, write.actor_id, now);
-      const updated = this.requireGoalOnBoard(boardId, input.goal_id);
-      const outcome = {
-        goal: updated,
-        active_goal_cleared: activeGoalCleared,
-        observed_event_cursor: cursor,
-      };
-      this.remember(
-        boardId,
-        write.actor_id,
-        "set_goal_archived",
-        write.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  /**
-   * The one recoverable-deletion domain operation. UI and MCP adapters may
-   * each verify user intent, but both must call this transition instead of
-   * maintaining their own Relation or active-work behavior.
-   */
-  setGoalTrashed(
-    boardId: string,
-    input: { goal_id: string; trashed: boolean; reason: string },
-    write: ActorWrite,
-  ): GoalTrashResult & { replayed: boolean; observed_event_cursor: number } {
-    const reasonText = input.reason.trim();
-    if (!reasonText) {
-      throw new GoalBoardV1Error("goal.trash_reason_required", "移入或恢复回收站时必须说明原因");
-    }
-    const hash = requestHash({ board_id: boardId, ...input, reason: reasonText });
-    return this.store.immediate(() => {
-      const replay = this.replay<GoalTrashResult & { observed_event_cursor: number }>(
-        boardId,
-        write.actor_id,
-        "set_goal_trashed",
-        write.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-
-      const goal = this.requireGoalOnBoard(boardId, input.goal_id);
-      const emptyResult = (status: GoalTrashResult["status"]): GoalTrashResult => ({
-        status,
-        goal,
-        active_goal_cleared: false,
-        deactivated_relation_ids: [],
-        restored_relation_ids: [],
-        pending_relation_ids: [],
-        blocking_claim_ids: [],
-        blocking_run_ids: [],
-      });
-
-      if (input.trashed && goal.trashed_at) {
-        const outcome = { ...emptyResult("already_trashed"), observed_event_cursor: this.store.eventCursor(boardId) };
-        this.remember(boardId, write.actor_id, "set_goal_trashed", write.idempotency_key, hash, outcome, this.clock().toISOString());
-        return { ...outcome, replayed: false };
-      }
-      if (!input.trashed && !goal.trashed_at) {
-        const outcome = { ...emptyResult("already_active"), observed_event_cursor: this.store.eventCursor(boardId) };
-        this.remember(boardId, write.actor_id, "set_goal_trashed", write.idempotency_key, hash, outcome, this.clock().toISOString());
-        return { ...outcome, replayed: false };
-      }
-
-      const now = this.clock().toISOString();
-      if (input.trashed) {
-        const blockingClaimRows = this.store.db
-          .prepare(`
-            SELECT claim_id FROM claims
-            WHERE board_id = ? AND goal_id = ? AND state = 'active' AND expires_at > ?
-            ORDER BY claim_id
-          `)
-          .all(boardId, input.goal_id, now) as Row[];
-        const blockingRunRows = this.store.db
-          .prepare(`
-            SELECT run_id FROM runs
-            WHERE board_id = ? AND goal_id = ? AND state IN ('started', 'blocked')
-            ORDER BY run_id
-          `)
-          .all(boardId, input.goal_id) as Row[];
-        if (blockingClaimRows.length > 0 || blockingRunRows.length > 0) {
-          const outcome = {
-            ...emptyResult("blocked"),
-            blocking_claim_ids: blockingClaimRows.map((row) => asText(row.claim_id)),
-            blocking_run_ids: blockingRunRows.map((row) => asText(row.run_id)),
-            observed_event_cursor: this.store.eventCursor(boardId),
-          };
-          this.remember(boardId, write.actor_id, "set_goal_trashed", write.idempotency_key, hash, outcome, now);
-          return { ...outcome, replayed: false };
-        }
-
-        const activeRelations = this.store.db
-          .prepare(`
-            SELECT relation_id FROM goal_relations
-            WHERE board_id = ? AND state = 'active'
-              AND (from_goal_id = ? OR to_goal_id = ?)
-            ORDER BY relation_id
-          `)
-          .all(boardId, input.goal_id, input.goal_id) as Row[];
-        const trashRecordId = `trash-${randomUUID()}`;
-        this.store.db
-          .prepare(`
-            INSERT INTO goal_trash_records (
-              trash_record_id, board_id, goal_id, trashed_at, trashed_by, trash_reason,
-              restored_at, restored_by, restore_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
-          `)
-          .run(trashRecordId, boardId, input.goal_id, now, write.actor_id, reasonText);
-        this.store.db
-          .prepare(`
-            UPDATE goals
-            SET trashed_at = ?, trashed_by = ?, updated_at = ?
-            WHERE board_id = ? AND goal_id = ?
-          `)
-          .run(now, write.actor_id, now, boardId, input.goal_id);
-        this.reopenCompoundAncestorsForUntrustedChild(
-          boardId,
-          input.goal_id,
-          write.actor_id,
-          now,
-          "子 Goal 已移入回收站",
-        );
-
-        const deactivatedRelationIds: string[] = [];
-        for (const relation of activeRelations) {
-          const relationId = asText(relation.relation_id);
-          this.store.db
-            .prepare("UPDATE goal_relations SET state = 'inactive', deactivated_at = ? WHERE relation_id = ?")
-            .run(now, relationId);
-          this.store.db
-            .prepare(`
-              INSERT INTO goal_trash_relation_records (
-                trash_record_id, relation_id, prior_state, deactivated_at, restored_at
-              ) VALUES (?, ?, 'active', ?, NULL)
-            `)
-            .run(trashRecordId, relationId, now);
-          deactivatedRelationIds.push(relationId);
-        }
-
-        const activeGoalCleared = this.clearActiveGoalIfMatches(boardId, input.goal_id, now);
-        const cursor = this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId: write.actor_id,
-          type: "goal.trashed",
-          objectType: "goal",
-          objectId: input.goal_id,
-          reason: reasonText,
-          payload: {
-            trash_record_id: trashRecordId,
-            deactivated_relation_ids: deactivatedRelationIds,
-            active_goal_cleared: activeGoalCleared,
-          },
-          at: now,
-        });
-        const outcome = {
-          status: "trashed" as const,
-          goal: this.requireGoalOnBoard(boardId, input.goal_id),
-          active_goal_cleared: activeGoalCleared,
-          deactivated_relation_ids: deactivatedRelationIds,
-          restored_relation_ids: [],
-          pending_relation_ids: [],
-          blocking_claim_ids: [],
-          blocking_run_ids: [],
-          observed_event_cursor: cursor,
-        };
-        this.remember(boardId, write.actor_id, "set_goal_trashed", write.idempotency_key, hash, outcome, now);
-        return { ...outcome, replayed: false };
-      }
-
-      const trashRecord = this.store.db
-        .prepare(`
-          SELECT trash_record_id FROM goal_trash_records
-          WHERE board_id = ? AND goal_id = ? AND restored_at IS NULL
-          ORDER BY trashed_at DESC, trash_record_id DESC LIMIT 1
-        `)
-        .get(boardId, input.goal_id) as Row | undefined;
-      if (!trashRecord) {
-        throw new GoalBoardV1Error("goal.trash_record_missing", "回收站 Goal 缺少可恢复的删除记录");
-      }
-      this.store.db
-        .prepare(`
-          UPDATE goals
-          SET trashed_at = NULL, trashed_by = NULL, updated_at = ?
-          WHERE board_id = ? AND goal_id = ?
-        `)
-        .run(now, boardId, input.goal_id);
-      this.store.db
-        .prepare(`
-          UPDATE goal_trash_records
-          SET restored_at = ?, restored_by = ?, restore_reason = ?
-          WHERE trash_record_id = ?
-        `)
-        .run(now, write.actor_id, reasonText, asText(trashRecord.trash_record_id));
-
-      const recoverableRelations = this.store.db
-        .prepare(`
-          SELECT DISTINCT relation.relation_id, relation.from_goal_id, relation.to_goal_id
-          FROM goal_relations relation
-          JOIN goal_trash_relation_records record ON record.relation_id = relation.relation_id
-          WHERE relation.board_id = ?
-            AND (relation.from_goal_id = ? OR relation.to_goal_id = ?)
-            AND relation.state = 'inactive'
-            AND record.prior_state = 'active'
-            AND record.restored_at IS NULL
-          ORDER BY relation.relation_id
-        `)
-        .all(boardId, input.goal_id, input.goal_id) as Row[];
-      const restoredRelationIds: string[] = [];
-      const pendingRelationIds: string[] = [];
-      const restoredPartOfChildIds: string[] = [];
-      for (const relation of recoverableRelations) {
-        const relationId = asText(relation.relation_id);
-        const availableEndpoints = this.store.db
-          .prepare(`
-            SELECT goal_id FROM goals
-            WHERE board_id = ? AND goal_id IN (?, ?) AND trashed_at IS NULL
-          `)
-          .all(boardId, asText(relation.from_goal_id), asText(relation.to_goal_id)) as Row[];
-        if (availableEndpoints.length !== 2) {
-          pendingRelationIds.push(relationId);
-          continue;
-        }
-        this.store.db
-          .prepare("UPDATE goal_relations SET state = 'active', deactivated_at = NULL WHERE relation_id = ?")
-          .run(relationId);
-        this.store.db
-          .prepare("UPDATE goal_trash_relation_records SET restored_at = ? WHERE relation_id = ? AND restored_at IS NULL")
-          .run(now, relationId);
-        restoredRelationIds.push(relationId);
-        const type = this.store.db
-          .prepare("SELECT type, from_goal_id FROM goal_relations WHERE relation_id = ?")
-          .get(relationId) as Row;
-        if (asText(type.type) === "part_of") restoredPartOfChildIds.push(asText(type.from_goal_id));
-      }
-      for (const childGoalId of restoredPartOfChildIds) {
-        this.reconcileCompoundAncestors(boardId, childGoalId, write.actor_id, now);
-      }
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId: write.actor_id,
-        type: "goal.restored_from_trash",
-        objectType: "goal",
-        objectId: input.goal_id,
-        reason: reasonText,
-        payload: {
-          trash_record_id: asText(trashRecord.trash_record_id),
-          restored_relation_ids: restoredRelationIds,
-          pending_relation_ids: pendingRelationIds,
-        },
-        at: now,
-      });
-      const outcome = {
-        status: "restored" as const,
-        goal: this.requireGoalOnBoard(boardId, input.goal_id),
-        active_goal_cleared: false,
-        deactivated_relation_ids: [],
-        restored_relation_ids: restoredRelationIds,
-        pending_relation_ids: pendingRelationIds,
-        blocking_claim_ids: [],
-        blocking_run_ids: [],
-        observed_event_cursor: cursor,
-      };
-      this.remember(boardId, write.actor_id, "set_goal_trashed", write.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
-  }
-
   /** A dedicated read path for a later trash UI/MCP; ordinary work lists exclude these Goals. */
   listTrashedGoals(boardId: string): GoalRecord[] {
-    this.requireBoard(boardId);
-    return this.store.listTrashedGoals(boardId);
-  }
-
-  effectivePlanningMethods(boardId: string): PlanningMethodPack[] {
-    this.requireBoard(boardId);
-    return resolvePlanningMethodPacks(
-      this.personalPlanningMethodPacks,
-      this.store.listPlanningMethodPacks(boardId),
-    );
-  }
-
-  projectPlanningComposition(boardId: string): PlanningMethodComposition {
-    return composePlanningMethodPacks(
-      this.effectivePlanningMethods(boardId)
-        .filter((method) => method.scope === "project" && method.enabled),
-    );
-  }
-
-  saveProjectPlanningMethod(input: {
-    board_id: string;
-    method: PlanningMethodPackInput;
-    actor_id: string;
-    user_confirmed: boolean;
-  }): { method: PlanningMethodPack; observed_event_cursor: number } {
-    this.requireBoard(input.board_id);
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardV1Error(
-        "planning.user_confirmation_required",
-        "项目方法会改变后续 Goal 的拆分和依赖判断，必须由用户确认",
-      );
-    }
-    const current = this.store.listPlanningMethodPacks(input.board_id)
-      .find((pack) => pack.method_id === input.method.method_id) ?? null;
-    const at = this.clock().toISOString();
-    const method = normalizePlanningMethodPack(input.method, "project", current, at);
-    return this.store.immediate(() => {
-      this.store.putPlanningMethodPack(input.board_id, method);
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "planning.method_saved",
-        objectType: "planning_method",
-        objectId: method.method_id,
-        reason: `更新项目规划方法：${method.name}`,
-        payload: { method_id: method.method_id, version: method.version, enabled: method.enabled },
-        at,
-      });
-      return { method, observed_event_cursor: cursor };
-    });
-  }
-
-  analyzePlanningChange(input: { board_id: string; changed_goal_ids: string[] }): GoalChangeImpact {
-    this.requireBoard(input.board_id);
-    const snapshot = this.store.snapshot(input.board_id);
-    for (const goalId of input.changed_goal_ids) this.requireGoalOnBoard(input.board_id, goalId);
-    return analyzeGoalChangeImpact(snapshot.goals, snapshot.relations, input.changed_goal_ids);
+    return this.goalQueries.listTrashedGoals(boardId);
   }
 
   private goalTreeSemanticReview(boardId: string, changedGoalIds: string[]): GoalTreeSemanticReview | null {
     const changed = unique(changedGoalIds).sort();
     if (changed.length === 0) return null;
-    const impact = this.analyzePlanningChange({ board_id: boardId, changed_goal_ids: changed });
+    const impact = this.goals.planning.analyzeChange(boardId, changed);
     const required = impact.affected_ancestors.length > 0 ||
       impact.affected_dependents.length > 0 ||
       impact.adjacent_dependencies.length > 0;
@@ -3541,18 +1888,12 @@ export class GoalBoardCoordinator {
     };
   }
 
-  validatePlanningGraph(boardId: string): { issues: PlanningGraphIssue[]; observed_event_cursor: number } {
-    this.requireBoard(boardId);
-    const snapshot = this.store.snapshot(boardId);
-    return { issues: validatePlanningGraph(snapshot.goals, snapshot.relations), observed_event_cursor: snapshot.cursor };
-  }
-
   queryReady(input: ReadyQuery): ReadyQueryResult {
     this.requireBoard(input.board_id);
     const now = this.clock().toISOString();
     const role = input.role ?? "executor";
     const ready: ReadyGoal[] = [];
-    for (const goal of this.store.listGoals(input.board_id)) {
+    for (const goal of this.goalsModule.query.listGoals(input.board_id)) {
       const evaluation = this.evaluate({
         boardId: input.board_id,
         goalId: goal.goal_id,
@@ -3596,7 +1937,7 @@ export class GoalBoardCoordinator {
     const snapshot = this.store.snapshot(input.board_id);
     const snapshotIndex = snapshotEvaluationIndex(snapshot);
     const policyRows = this.store.activePolicyRowsForBoard(input.board_id);
-    const metrics = planningMetrics(snapshot.goals, snapshot.relations);
+    const metrics = this.goalsModule.planning.metrics(snapshot.goals, snapshot.relations);
     const available: AvailableGoal[] = [];
     const blocked: BlockedAvailableGoal[] = [];
     const blockedOverview: BlockedAvailableOverview[] = [];
@@ -3732,33 +2073,6 @@ export class GoalBoardCoordinator {
     };
   }
 
-  /** Read the canonical work state that Web, MCP and CLI should present. */
-  getGoalWorkState(input: { board_id: string; goal_id: string }): GoalWorkStateView {
-    this.requireBoard(input.board_id);
-    const snapshot = this.store.snapshot(input.board_id);
-    const goal = snapshot.goals.find((item) => item.goal_id === input.goal_id);
-    if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${input.goal_id}`);
-    return this.deriveGoalWorkState(input.board_id, goal, snapshot, this.clock().toISOString());
-  }
-
-  /** Canonical action view for new Runtime and UI flows. */
-  getGoalActionProjection(input: { board_id: string; goal_id: string }): GoalActionProjection {
-    this.requireBoard(input.board_id);
-    const snapshot = this.store.snapshot(input.board_id);
-    const goal = snapshot.goals.find((item) => item.goal_id === input.goal_id);
-    if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${input.goal_id}`);
-    return deriveGoalActionProjection(goal, snapshot, this.clock().toISOString());
-  }
-
-  /** Batch action projection from one Board snapshot; never re-queries per Goal. */
-  getGoalActionProjections(input: { board_id: string; snapshot?: BoardSnapshot }): GoalActionProjection[] {
-    this.requireBoard(input.board_id);
-    const snapshot = input.snapshot ?? this.store.snapshot(input.board_id);
-    if (snapshot.board.board_id !== input.board_id) {
-      throw new GoalBoardV1Error("board.snapshot_mismatch", "BoardSnapshot 不属于请求的 Board");
-    }
-    return deriveGoalActionProjections(snapshot, this.clock().toISOString());
-  }
 
   /** Apply mechanical close-out and return the exact state produced by the same transaction. */
   private reconcileLifecycle(
@@ -3777,13 +2091,12 @@ export class GoalBoardCoordinator {
       if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${goalId}`);
       const plan = planGoalLifecycleReconciliation(goal, snapshot, at);
       if (plan.release_claim) {
-        this.store.db
-          .prepare(`
-            UPDATE claims
-            SET state = 'released', released_at = ?, release_reason = ?
-            WHERE claim_id = ? AND state = 'active'
-          `)
-          .run(at, plan.release_reason, plan.release_claim.claim_id);
+        this.executionModule.repository.updateClaimState(
+          plan.release_claim.claim_id,
+          "released",
+          at,
+          plan.release_reason ?? "角色产物齐全，自动释放 Claim",
+        );
         this.store.appendEvent({
           eventId: randomUUID(),
           boardId,
@@ -3803,50 +2116,17 @@ export class GoalBoardCoordinator {
         continue;
       }
       if (plan.reopen_goal && goal.fulfillment_state === "satisfied") {
-        this.store.db
-          .prepare("UPDATE goals SET fulfillment_state = 'unmet', updated_at = ? WHERE goal_id = ?")
-          .run(at, goalId);
-        this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId,
-          type: "goal.reopened",
-          objectType: "goal",
-          objectId: goalId,
-          reason: plan.reopen_reason ?? "新的当前事实使旧完成结论不再成立",
-          payload: { contract_revision: goal.current_contract_revision },
-          at,
-        });
-        this.reopenCompoundAncestorsForUntrustedChild(
+        this.goalsModule.lifecycle.reopenForLifecycleFacts(
           boardId,
           goalId,
           actorId,
           at,
-          plan.reopen_reason ?? "子 Goal 已重新打开",
+          plan.reopen_reason ?? "新的当前事实使旧完成结论不再成立",
         );
         continue;
       }
       if (plan.satisfy_goal && goal.fulfillment_state !== "satisfied") {
-        this.store.db
-          .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
-          .run(at, goalId);
-        const activeGoalCleared = this.clearActiveGoalIfMatches(boardId, goalId, at);
-        this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId,
-          type: "goal.satisfied",
-          objectType: "goal",
-          objectId: goalId,
-          reason: "当前 Contract revision 的执行、依据、复核和风险门禁均已满足",
-          payload: {
-            auto: true,
-            contract_revision: goal.current_contract_revision,
-            active_goal_cleared: activeGoalCleared,
-          },
-          at,
-        });
-        this.reconcileCompoundAncestors(boardId, goalId, actorId, at);
+        this.goalsModule.lifecycle.satisfyForLifecycleFacts(boardId, goalId, actorId, at);
         continue;
       }
       break;
@@ -3876,28 +2156,10 @@ export class GoalBoardCoordinator {
     };
   }
 
-  /**
-   * Read every canonical Goal work state from one Board snapshot. Web surfaces
-   * need the whole navigator, so repeating `getGoalWorkState` would otherwise
-   * reload the same Board once per Goal.
-   */
-  getGoalWorkStates(input: { board_id: string; snapshot?: BoardSnapshot }): GoalWorkStateView[] {
-    this.requireBoard(input.board_id);
-    const snapshot = input.snapshot ?? this.store.snapshot(input.board_id);
-    if (snapshot.board.board_id !== input.board_id) {
-      throw new GoalBoardV1Error("board.snapshot_mismatch", "BoardSnapshot 不属于请求的 Board");
-    }
-    const now = this.clock().toISOString();
-    return snapshot.goals.map((goal) =>
-      this.deriveGoalWorkState(input.board_id, goal, snapshot, now),
-    );
-  }
 
   /** Read the canonical effective policy without running a full readiness evaluation. */
   getResolvedGoalPolicy(input: { board_id: string; goal_id: string }): GoalPolicy {
-    this.requireBoard(input.board_id);
-    this.requireGoalOnBoard(input.board_id, input.goal_id);
-    return this.resolvePolicy(input.board_id, input.goal_id);
+    return this.goalQueries.getResolvedGoalPolicy(input);
   }
 
   explainGoal(input: ReadyQuery & { goal_id: string }): ExplainGoalResult {
@@ -3912,7 +2174,7 @@ export class GoalBoardCoordinator {
       goalModeAttestation: input.goal_mode_attestation ?? false,
       now: this.clock().toISOString(),
     });
-    const workState = this.getGoalWorkState({ board_id: input.board_id, goal_id: input.goal_id });
+    const workState = this.executionValidation.query.getGoalWorkState({ board_id: input.board_id, goal_id: input.goal_id });
     const completionReasons = role === "executor"
       ? this.executorHandoffReasons(workState)
       : workState.work_state === "waiting_for_human" &&
@@ -3942,80 +2204,7 @@ export class GoalBoardCoordinator {
   }
 
   readGoalContract(boardId: string, goalId: string): GoalContractView {
-    this.requireBoard(boardId);
-    const snapshot = this.store.snapshot(boardId);
-    const goal = snapshot.goals.find((item) => item.goal_id === goalId);
-    if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${goalId}`);
-    const now = this.clock().toISOString();
-    const { claims, runs } = this.projectGoalLifecycle(snapshot, goalId, now);
-    const runIds = new Set(runs.map((item) => item.run_id));
-    const candidates = snapshot.candidates.filter(
-      (item) => item.discovered_in_run_id != null && runIds.has(item.discovered_in_run_id),
-    );
-    const candidateIds = new Set(candidates.map((item) => item.candidate_id));
-    const clarificationSessions = snapshot.clarification_sessions.filter((item) => item.goal_id === goalId);
-    const clarificationSessionIds = new Set(clarificationSessions.map((item) => item.session_id));
-    const goalTreeProposals = this.listGoalTreeProposals({ board_id: boardId, root_goal_id: goalId }).proposals;
-    const riskIds = new Set(
-      (this.store.db
-        .prepare("SELECT risk_id FROM goal_risks WHERE goal_id = ? ORDER BY risk_id")
-        .all(goalId) as Row[]).map((row) => asText(row.risk_id)),
-    );
-    const parentContractCoverage = snapshot.relations
-      .filter((relation) => relation.state === "active" && relation.type === "part_of" && relation.from_goal_id === goalId)
-      .map((relation) => snapshot.goals.find((candidate) => candidate.goal_id === relation.to_goal_id))
-      .filter((parent): parent is GoalRecord => parent != null)
-      .map((parent) => {
-        const coverage = parent.decomposition_review?.contract_coverage;
-        return {
-          parent_goal_id: parent.goal_id,
-          parent_goal_title: parent.title,
-          record_status: coverage == null ? "unrecorded" as const : "recorded" as const,
-          promised_outputs: coverage?.promised_outputs.filter((entry) =>
-            entry.child_outputs.some((reference) => reference.goal_id === goalId),
-          ) ?? [],
-          acceptance_criteria: coverage?.acceptance_criteria.filter((entry) =>
-            entry.child_criteria.some((reference) => reference.goal_id === goalId),
-          ) ?? [],
-        };
-      });
-    return {
-      board: snapshot.board,
-      observed_event_cursor: snapshot.cursor,
-      goal_path: `/goals/${encodeURIComponent(goalId)}`,
-      goal,
-      parent_contract_coverage: parentContractCoverage,
-      work_state: this.deriveGoalWorkState(boardId, goal, snapshot, now),
-      action_projection: deriveGoalActionProjection(goal, snapshot, now),
-      relations: snapshot.relations.filter(
-        (item) => item.from_goal_id === goalId || item.to_goal_id === goalId,
-      ),
-      impacts: snapshot.impacts.filter((item) => item.goal_id === goalId),
-      risks: snapshot.risks.filter((item) => riskIds.has(item.risk_id)),
-      resolved_policy: this.resolvePolicy(boardId, goalId),
-      claims,
-      runs,
-      evidence: snapshot.evidence.filter((item) => item.goal_id === goalId),
-      evidence_corrections: snapshot.evidence_corrections.filter((item) => item.goal_id === goalId),
-      review_obligations: snapshot.review_obligations.filter((item) => item.goal_id === goalId),
-      reviews: snapshot.reviews.filter((item) => item.goal_id === goalId),
-      candidates,
-      contract_proposals: snapshot.contract_proposals.filter((item) => item.goal_id === goalId),
-      rewires: snapshot.rewires.filter((item) => {
-        if (item.candidate_id != null && candidateIds.has(item.candidate_id)) return true;
-        return (item.proposal.relations ?? []).some((relation) => {
-          const fromGoalId = String(relation.from_goal_id ?? "");
-          const toGoalId = String(relation.to_goal_id ?? "");
-          return fromGoalId === goalId || toGoalId === goalId;
-        });
-      }),
-      clarification_sessions: clarificationSessions,
-      clarification_turns: snapshot.clarification_turns.filter((item) =>
-        clarificationSessionIds.has(item.session_id),
-      ),
-      goal_tree_proposals: goalTreeProposals,
-      project_guidance: snapshot.project_guidance,
-    };
+    return this.goalQueries.readGoalContract(boardId, goalId);
   }
 
   /**
@@ -4072,7 +2261,7 @@ export class GoalBoardCoordinator {
           "这条 Goal 已有可恢复的澄清对话；请使用 draft_dialogue_resume 而不是创建第二份会话",
         );
       }
-      const goal = existingGoal ?? this.createGoal(
+      const goal = existingGoal ?? this.goals.commands.createGoal(
         input.board_id,
         {
           goal_id: goalId,
@@ -4090,7 +2279,7 @@ export class GoalBoardCoordinator {
           reason: "用户在当前 Runtime 中提交了粗略想法，开始自然语言澄清",
         },
       ).goal;
-      const currentWorkState = this.getGoalWorkState({
+      const currentWorkState = this.executionValidation.query.getGoalWorkState({
         board_id: input.board_id,
         goal_id: goal.goal_id,
       });
@@ -4104,7 +2293,7 @@ export class GoalBoardCoordinator {
           );
         }
       } else {
-        const selected = this.selectGoalAndStart({
+        const selected = this.executionValidation.commands.selectGoalAndStart({
           board_id: input.board_id,
           goal_id: goal.goal_id,
           actor_id: actorId,
@@ -4397,7 +2586,7 @@ export class GoalBoardCoordinator {
         return { ...outcome, replayed: false };
       }
 
-      const projection = this.getGoalActionProjection({
+      const projection = this.executionValidation.query.getGoalActionProjection({
         board_id: input.board_id,
         goal_id: input.goal_id,
       });
@@ -4407,7 +2596,7 @@ export class GoalBoardCoordinator {
         : projection.actions.filter((action) => action.actor === "runtime" && action.kind === "clarify").length === 1
           ? projection.actions.find((action) => action.actor === "runtime" && action.kind === "clarify")!
           : null;
-      const selected = this.selectGoalAndStart({
+      const selected = this.executionValidation.commands.selectGoalAndStart({
         board_id: input.board_id,
         goal_id: input.goal_id,
         actor_id: actorId,
@@ -4521,8 +2710,8 @@ export class GoalBoardCoordinator {
       const decompositionIssue = goalTreeProposalDecompositionIssues(
         items,
         this.store.snapshot(input.board_id),
-        this.effectivePlanningMethods(input.board_id),
-        this.projectPlanningComposition(input.board_id).method_pack_ids,
+        this.goals.planning.effectiveMethods(input.board_id),
+        this.goals.planning.projectComposition(input.board_id).method_pack_ids,
       )[0];
       if (decompositionIssue) {
         const { code, message, recovery, ...details } = decompositionIssue;
@@ -4637,15 +2826,9 @@ export class GoalBoardCoordinator {
       }
 
       for (const [index, item] of items.entries()) {
-        const existingItem = this.store.db
-          .prepare(`
-            SELECT proposal_id, board_id
-            FROM goal_tree_proposal_items
-            WHERE item_id = ?
-          `)
-          .get(item.item_id) as Row | undefined;
+        const existingItem = this.governance.records.findGoalTreeItemOwner(item.item_id);
         if (!existingItem) continue;
-        const conflictingProposalId = asText(existingItem.proposal_id);
+        const conflictingProposalId = existingItem.proposal_id;
         throw new GoalBoardV1Error(
           "goal_tree_proposal.item_id_conflict",
           `items[${index}].item_id=${item.item_id} 已被提案 ${conflictingProposalId} 使用；请为修订条目提供新的全局唯一 item_id，并用 supersedes_item_id 保留来源关联。`,
@@ -4653,7 +2836,7 @@ export class GoalBoardCoordinator {
             path: `items[${index}].item_id`,
             received_value: item.item_id,
             conflicting_proposal_id: conflictingProposalId,
-            conflicting_board_id: asText(existingItem.board_id),
+            conflicting_board_id: existingItem.board_id,
             next_action: "use_unique_item_id",
             recovery: "生成新的全局唯一 item_id；若这是对旧条目的修订，同时填写 supersedes_proposal_id 和 supersedes_item_id。失败调用不会创建 Proposal。",
           },
@@ -4663,91 +2846,63 @@ export class GoalBoardCoordinator {
       const proposalId = `goal-tree-proposal-${randomUUID()}`;
       const now = this.clock().toISOString();
       const version = (previous?.version ?? 0) + 1;
-      this.store.db
-        .prepare(`
-          INSERT INTO goal_tree_proposals (
-            proposal_id, board_id, root_goal_id, submitted_by, discovered_in_run_id,
-            state, version, supersedes_proposal_id, supersedes_legacy_proposal_id,
-            base_event_cursor, summary, narrative_json, decision_json,
-            created_at, updated_at, decided_at
-          ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
-        `)
-        .run(
-          proposalId,
-          input.board_id,
-          effectiveRootGoalId,
-          actorId,
-          input.discovered_in_run_id,
-          version,
-          supersedesNativeProposalId,
-          supersedesLegacyProposalId,
-          baseEventCursor,
-          summary,
-          narrative == null ? null : sqliteJson(narrative),
-          now,
-          now,
-        );
-      const insertItem = this.store.db.prepare(`
-        INSERT INTO goal_tree_proposal_items (
-          item_id, proposal_id, board_id, ordinal, kind, operation, payload_json,
-          source_refs_json, reason, explanation_json, confidence, affected_objects_json,
-          baseline_versions_json, requires_user_confirmation, state, conflict_json,
-          supersedes_item_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', NULL, ?, ?, ?)
-      `);
+      this.governance.records.insertGoalTreeProposal({
+        proposal_id: proposalId,
+        board_id: input.board_id,
+        root_goal_id: effectiveRootGoalId,
+        submitted_by: actorId,
+        discovered_in_run_id: input.discovered_in_run_id,
+        state: "pending",
+        version,
+        supersedes_proposal_id: supersedesNativeProposalId,
+        supersedes_legacy_proposal_id: supersedesLegacyProposalId,
+        base_event_cursor: baseEventCursor,
+        summary,
+        narrative,
+        created_at: now,
+        updated_at: now,
+      });
       for (const [index, item] of items.entries()) {
         const baselineVersions = item.affected_objects.map((object) =>
           this.proposalObjectVersion(input.board_id, object, item),
         );
-        insertItem.run(
-          item.item_id,
-          proposalId,
-          input.board_id,
-          index + 1,
-          item.kind,
-          item.operation,
-          sqliteJson(item.payload),
-          sqliteJson(item.source_refs),
-          item.reason,
-          item.explanation == null ? null : sqliteJson(item.explanation),
-          item.confidence,
-          sqliteJson(item.affected_objects),
-          sqliteJson(baselineVersions),
-          item.supersedes_item_id,
-          now,
-          now,
-        );
+        this.governance.records.insertGoalTreeProposalItem({
+          item_id: item.item_id,
+          proposal_id: proposalId,
+          board_id: input.board_id,
+          ordinal: index + 1,
+          kind: item.kind,
+          operation: item.operation,
+          payload: item.payload,
+          source_refs: item.source_refs,
+          reason: item.reason,
+          explanation: item.explanation,
+          confidence: item.confidence,
+          affected_objects: item.affected_objects,
+          baseline_versions: baselineVersions,
+          requires_user_confirmation: true,
+          state: "pending",
+          supersedes_item_id: item.supersedes_item_id,
+          created_at: now,
+          updated_at: now,
+        });
       }
       if (previous) {
         if (previous.origin === "native") {
-          this.store.db
-            .prepare("UPDATE goal_tree_proposals SET state = 'superseded', updated_at = ? WHERE proposal_id = ?")
-            .run(now, previous.proposal_id);
-          this.store.db
-            .prepare(`
-              UPDATE goal_tree_proposal_items
-              SET state = 'superseded', updated_at = ?
-              WHERE proposal_id = ? AND state IN ('pending', 'conflict')
-            `)
-            .run(now, previous.proposal_id);
+          this.governance.records.supersedeGoalTreeProposal(previous.proposal_id, now);
         } else {
           const rawLegacyProposalId = previous.proposal_id.slice("legacy-contract-proposal:".length);
-          this.store.db
-            .prepare(`
-              UPDATE contract_proposals
-              SET state = 'superseded', decided_at = ?, decision_json = ?
-              WHERE board_id = ? AND proposal_id = ? AND state = 'pending'
-            `)
-            .run(
-              now,
-              sqliteJson({
-                reason: "clarifier 用新的 native Goal Tree Proposal 修订了这份历史 Contract Proposal",
-                superseded_by: actorId,
-                superseded_by_goal_tree_proposal_id: proposalId,
-              }),
-              input.board_id,
-              rawLegacyProposalId,
-            );
+          this.governance.records.transitionContractProposal(
+            input.board_id,
+            rawLegacyProposalId,
+            "superseded",
+            {
+              reason: "clarifier 用新的 native Goal Tree Proposal 修订了这份历史 Contract Proposal",
+              superseded_by: actorId,
+              superseded_by_goal_tree_proposal_id: proposalId,
+            },
+            now,
+          );
         }
       }
       let cursor = this.store.appendEvent({
@@ -4771,11 +2926,7 @@ export class GoalBoardCoordinator {
         at: now,
       });
       if (proposalRun.role === "clarifier") {
-        this.store.db.prepare(`
-          UPDATE runs
-          SET state = 'completed', ended_at = ?, block_reason = NULL
-          WHERE run_id = ? AND state IN ('started', 'blocked')
-        `).run(now, input.discovered_in_run_id);
+        this.executionModule.repository.completeRun(input.discovered_in_run_id, now);
         cursor = this.store.appendEvent({
           eventId: randomUUID(),
           boardId: input.board_id,
@@ -4787,7 +2938,7 @@ export class GoalBoardCoordinator {
           payload: { goal_id: proposalRun.goal_id, proposal_id: proposalId },
           at: now,
         });
-        const beforeRelease = this.getGoalActionProjection({
+        const beforeRelease = this.executionValidation.query.getGoalActionProjection({
           board_id: input.board_id,
           goal_id: proposalRun.goal_id,
         });
@@ -4886,11 +3037,6 @@ export class GoalBoardCoordinator {
       const proposal = this.readNativeGoalTreeProposal(input.board_id, canonicalProposalId);
       const now = this.clock().toISOString();
       const conflictItemIdSet = new Set<string>();
-      const updateItem = this.store.db.prepare(`
-        UPDATE goal_tree_proposal_items
-        SET state = ?, conflict_json = ?, updated_at = ?
-        WHERE item_id = ? AND proposal_id = ?
-      `);
       for (const item of proposal.items) {
         if (item.state !== "pending" && item.state !== "conflict") continue;
         const validationIssue = goalTreeProposalItemValidationIssues(item)[0];
@@ -4911,7 +3057,13 @@ export class GoalBoardCoordinator {
             ? { objects: baselineConflicts }
             : null;
         if (conflict) conflictItemIdSet.add(item.item_id);
-        updateItem.run(conflict ? "conflict" : "pending", conflict ? sqliteJson(conflict) : null, now, item.item_id, canonicalProposalId);
+        this.governance.records.setGoalTreeItemCheck(
+          canonicalProposalId,
+          item.item_id,
+          conflict ? "conflict" : "pending",
+          conflict,
+          now,
+        );
       }
       const checkedItems = this.readNativeGoalTreeProposal(input.board_id, canonicalProposalId).items;
       const materializationConflicts = this.preflightGoalTreeProposalMaterialization(
@@ -4924,7 +3076,13 @@ export class GoalBoardCoordinator {
         const conflict = materializationConflicts.get(item.item_id);
         if (!conflict) continue;
         conflictItemIdSet.add(item.item_id);
-        updateItem.run("conflict", sqliteJson(conflict), now, item.item_id, canonicalProposalId);
+        this.governance.records.setGoalTreeItemCheck(
+          canonicalProposalId,
+          item.item_id,
+          "conflict",
+          conflict,
+          now,
+        );
       }
       const conflictItemIds = proposal.items
         .filter((item) => conflictItemIdSet.has(item.item_id))
@@ -5133,7 +3291,7 @@ export class GoalBoardCoordinator {
       reason: input.reason ?? null,
       confirm_all_pending: wholeConfirmation,
     });
-    return this.store.immediate(() => {
+    return this.governance.decisions.materializeAtomically(() => {
       const replay = this.replay<Omit<GoalTreeProposalDecisionResult, "replayed">>(
         input.board_id,
         authority.actor_id,
@@ -5292,8 +3450,8 @@ export class GoalBoardCoordinator {
       const decompositionIssue = goalTreeProposalDecompositionIssues(
         confirmedItems,
         this.store.snapshot(input.board_id),
-        this.effectivePlanningMethods(input.board_id),
-        this.projectPlanningComposition(input.board_id).method_pack_ids,
+        this.goals.planning.effectiveMethods(input.board_id),
+        this.goals.planning.projectComposition(input.board_id).method_pack_ids,
       )[0];
       if (decompositionIssue) {
         throw new GoalBoardV1Error(
@@ -5409,7 +3567,7 @@ export class GoalBoardCoordinator {
       }
 
       const projectionsBeforeDecision = new Map(
-        this.getGoalActionProjections({ board_id: input.board_id })
+        this.executionValidation.query.getGoalActionProjections({ board_id: input.board_id })
           .map((projection) => [projection.goal_id, projection]),
       );
       const materializationOrder: GoalTreeProposalItemRecord["kind"][][] = [
@@ -5488,7 +3646,7 @@ export class GoalBoardCoordinator {
           authority.actor_id,
           now,
         );
-        this.reconcileAllClosedCompoundGoals(input.board_id, authority.actor_id, now);
+        this.goalsModule.lifecycle.reconcileAllClosedCompoundGoals(input.board_id, authority.actor_id, now);
       }
 
       const revisionInputs = decisions.filter(
@@ -5564,7 +3722,7 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
-      const projectionsAfterDecision = this.getGoalActionProjections({ board_id: input.board_id });
+      const projectionsAfterDecision = this.executionValidation.query.getGoalActionProjections({ board_id: input.board_id });
       const changedProjections = projectionsAfterDecision.filter((projection) =>
         projectionsBeforeDecision.get(projection.goal_id)?.action_token !== projection.action_token
       );
@@ -5757,2724 +3915,6 @@ export class GoalBoardCoordinator {
     };
   }
 
-  claimGoal(request: ClaimRequest): ClaimDecision {
-    let role = request.role ?? "executor";
-    const hash = requestHash({
-      board_id: request.board_id,
-      goal_id: request.goal_id,
-      actor_id: request.actor_id,
-      role,
-      capabilities: request.capabilities ?? [],
-      goal_mode_attestation: request.goal_mode_attestation ?? false,
-      lease_seconds: request.lease_seconds ?? null,
-      strengthen_policy: request.strengthen_policy ?? null,
-      action_id: request.action_id ?? null,
-      action_token: request.action_token ?? null,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<ClaimDecision>(
-        request.board_id,
-        request.actor_id,
-        "claim_goal",
-        request.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-
-      this.requireBoard(request.board_id);
-      const now = this.clock().toISOString();
-      const observedCursor = this.store.eventCursor(request.board_id);
-      const snapshot = this.store.snapshot(request.board_id);
-      const goal = snapshot.goals.find((item) => item.goal_id === request.goal_id);
-      if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${request.goal_id}`);
-      const projection = deriveGoalActionProjection(goal, snapshot, now);
-      if (request.action_token && request.action_token !== projection.action_token) {
-        throw new GoalBoardV1Error(
-          "action.token_stale",
-          "这条 Goal 在你操作前已经变化；旧动作未执行，请按最新状态继续。",
-          {
-            submitted_action_token: request.action_token,
-            latest_action_token: projection.action_token,
-            projection,
-            recovery: "刷新当前 Goal，并使用最新 action_id + action_token 重试。",
-          },
-        );
-      }
-      const claimable = projection.actions.filter((candidate) =>
-        candidate.actor === "runtime" &&
-        candidate.status === "ready" &&
-        CLAIMABLE_GOAL_ACTION_KINDS.has(candidate.kind)
-      );
-      let selectedAction: GoalAction | null = null;
-      if (request.action_id) {
-        selectedAction = claimable.find((candidate) => candidate.action_id === request.action_id) ?? null;
-        if (!selectedAction) {
-          throw new GoalBoardV1Error(
-            "action.not_available",
-            "这个动作已经不可用；没有创建 Claim 或 Run。",
-            { action_id: request.action_id, projection },
-          );
-        }
-        const derivedRole = this.claimRoleForAction(selectedAction, snapshot);
-        if (request.role && request.role !== derivedRole) {
-          throw new GoalBoardV1Error(
-            "action.role_mismatch",
-            `动作要求 ${derivedRole}，不能按 ${request.role} 领取。`,
-            { action_id: selectedAction.action_id, expected_role: derivedRole },
-          );
-        }
-        role = derivedRole;
-      } else {
-        const legacyCompatibleKinds = new Set<GoalAction["kind"]>([
-          "clarify",
-          "execute",
-          "review",
-          "revalidate",
-        ]);
-        const legacyMatches = claimable.filter((candidate) =>
-          legacyCompatibleKinds.has(candidate.kind) &&
-          this.claimRoleForAction(candidate, snapshot) === role
-        );
-        selectedAction = legacyMatches.length === 1 ? legacyMatches[0]! : null;
-      }
-      const evaluation = this.evaluate({
-        boardId: request.board_id,
-        goalId: request.goal_id,
-        actorId: request.actor_id,
-        role,
-        capabilities: request.capabilities ?? [],
-        goalModeAttestation: request.goal_mode_attestation ?? false,
-        strengthenPolicy: request.strengthen_policy,
-        now,
-        snapshot,
-      });
-      if (selectedAction?.kind === "mitigate_risk") {
-        evaluation.reasons = evaluation.reasons.filter((item) =>
-          !(item.subject_type === "risk" && item.subject_id === selectedAction!.target_id)
-        );
-      }
-      const requestedLease = request.lease_seconds ?? evaluation.policy.max_lease_seconds;
-      if (!Number.isInteger(requestedLease) || requestedLease <= 0) {
-        evaluation.reasons.push(
-          reason(
-            "lease.duration_invalid",
-            "policy",
-            request.goal_id,
-            "领取时长必须是正整数秒",
-            { requested_lease_seconds: requestedLease },
-          ),
-        );
-      } else if (requestedLease > evaluation.policy.max_lease_seconds) {
-        evaluation.reasons.push(
-          reason(
-            "lease.duration_exceeds_policy",
-            "policy",
-            request.goal_id,
-            `领取时长不能超过 ${evaluation.policy.max_lease_seconds} 秒`,
-            {
-              requested_lease_seconds: requestedLease,
-              max_lease_seconds: evaluation.policy.max_lease_seconds,
-            },
-          ),
-        );
-      }
-
-      if (evaluation.reasons.length > 0) {
-        const decision: ClaimDecision = {
-          allowed: false,
-          observed_event_cursor: observedCursor,
-          reasons: evaluation.reasons.sort(compareReasons),
-          claim: null,
-          replayed: false,
-        };
-        this.remember(
-          request.board_id,
-          request.actor_id,
-          "claim_goal",
-          request.idempotency_key,
-          hash,
-          decision,
-          now,
-        );
-        return decision;
-      }
-
-      if (!selectedAction) {
-        const availableSummary = claimable
-          .map((candidate) =>
-            `${candidate.kind}:${this.claimRoleForAction(candidate, snapshot)}:${candidate.target_id}`
-          )
-          .join("、");
-        throw new GoalBoardV1Error(
-          "action.id_required",
-          claimable.length === 0
-            ? "当前没有与这个角色唯一匹配的可领取动作。"
-            : `当前没有与 ${role} 唯一匹配的动作；可领取动作：${availableSummary}。请指定 action_id，避免领取错 Review 或 Risk。`,
-          { role, actions: claimable, projection },
-        );
-      }
-
-      this.expirePastClaims(request.board_id, now, request.actor_id);
-      const claimId = `claim-${randomUUID()}`;
-      const expiresAt = addSeconds(now, requestedLease);
-      this.store.db
-        .prepare(`
-          INSERT INTO claims (
-            claim_id, board_id, goal_id, actor_id, role, contract_revision,
-            action_kind, action_target_id, state,
-            capabilities_json, goal_mode_attestation, resolved_policy_json,
-            claimed_at, expires_at, renewed_at, released_at, release_reason
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, NULL)
-        `)
-        .run(
-          claimId,
-          request.board_id,
-          request.goal_id,
-          request.actor_id,
-          role,
-          goal.current_contract_revision,
-          selectedAction.kind,
-          selectedAction.target_id,
-          sqliteJson(unique(request.capabilities ?? []).sort()),
-          request.goal_mode_attestation ? 1 : 0,
-          sqliteJson(evaluation.policy),
-          now,
-          expiresAt,
-        );
-      if (
-        role === "executor" ||
-        role === "revalidator" ||
-        role === "self_verifier" ||
-        role === "cross_reviewer" ||
-        role === "adversarial_reviewer"
-      ) {
-        this.ensureReviewObligations(request.board_id, request.goal_id, evaluation.policy, now);
-      }
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: request.board_id,
-        actorId: request.actor_id,
-        type: "claim.created",
-        objectType: "claim",
-        objectId: claimId,
-        reason:
-          role === "clarifier"
-            ? "Runtime 自主领取待澄清 Goal"
-            : role === "revalidator"
-              ? "Runtime 自主领取待重新验证 Goal"
-              : "Runtime 自主领取 Ready Goal",
-        payload: {
-          goal_id: request.goal_id,
-          role,
-          contract_revision: goal.current_contract_revision,
-          action_id: selectedAction.action_id,
-          action_kind: selectedAction.kind,
-          action_target_id: selectedAction.target_id,
-          expires_at: expiresAt,
-        },
-        at: now,
-      });
-      const claimRow = this.store.db.prepare("SELECT * FROM claims WHERE claim_id = ?").get(claimId) as Row;
-      const claim = mapSqliteClaim(claimRow);
-      const decision: ClaimDecision = {
-        allowed: true,
-        observed_event_cursor: observedCursor,
-        reasons: [],
-        claim,
-        replayed: false,
-      };
-      this.remember(
-        request.board_id,
-        request.actor_id,
-        "claim_goal",
-        request.idempotency_key,
-        hash,
-        decision,
-        now,
-      );
-      return decision;
-    });
-  }
-
-  renewClaim(input: ClaimRenewRequest): ClaimRenewResult {
-    const hash = requestHash({
-      board_id: input.board_id,
-      claim_id: input.claim_id,
-      actor_id: input.actor_id,
-      lease_seconds: input.lease_seconds ?? null,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<Omit<ClaimRenewResult, "replayed" | "transition"> & {
-        transition?: ActionTransitionReceipt;
-      }>(
-        input.board_id,
-        input.actor_id,
-        "renew_claim",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        const projection = this.getGoalActionProjection({
-          board_id: input.board_id,
-          goal_id: replay.claim.goal_id,
-        });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: replay.claim.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已续期当前工作",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-
-      this.requireBoard(input.board_id);
-      const row = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
-        .get(input.claim_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
-      const claim = mapSqliteClaim(row);
-      if (claim.actor_id !== input.actor_id) {
-        throw new GoalBoardV1Error(
-          "claim.not_owner",
-          "只有领取者可以续租 Claim；若这是 compaction 后继续同一项工作，请复用领取时的 actor_id 原样重试",
-          {
-            claim_id: claim.claim_id,
-            goal_id: claim.goal_id,
-            owner_actor_id: claim.actor_id,
-            request_actor_id: input.actor_id,
-            next_action: "retry_claim_renew_as_owner",
-            retry_tool: "goalboard_v1_claim_renew",
-            requires_user_confirmation: false,
-            same_runtime_continuation_only: true,
-          },
-        );
-      }
-      if (claim.state !== "active") {
-        throw new GoalBoardV1Error("claim.not_active", "只有 active Claim 可以续租");
-      }
-
-      const now = this.clock().toISOString();
-      if (claim.expires_at <= now) {
-        throw new GoalBoardV1Error(
-          "claim.lease_expired",
-          "Claim 租约已过期，不能续租；请重新领取 Goal",
-          {
-            claim_id: claim.claim_id,
-            goal_id: claim.goal_id,
-            next_action: "select_goal",
-            requires_user_confirmation: false,
-          },
-        );
-      }
-      const maxLeaseSeconds = claim.resolved_policy.max_lease_seconds;
-      const requestedLease = input.lease_seconds ?? maxLeaseSeconds;
-      if (!Number.isInteger(requestedLease) || requestedLease <= 0) {
-        throw new GoalBoardV1Error(
-          "lease.duration_invalid",
-          "续租时长必须是正整数秒",
-          { requested_lease_seconds: requestedLease },
-        );
-      }
-      if (requestedLease > maxLeaseSeconds) {
-        throw new GoalBoardV1Error(
-          "lease.duration_exceeds_policy",
-          `续租时长不能超过领取时确认的 ${maxLeaseSeconds} 秒`,
-          {
-            requested_lease_seconds: requestedLease,
-            max_lease_seconds: maxLeaseSeconds,
-          },
-        );
-      }
-
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: claim.goal_id,
-      });
-      const requestedExpiry = addSeconds(now, requestedLease);
-      const expiresAt = requestedExpiry > claim.expires_at ? requestedExpiry : claim.expires_at;
-      this.store.db
-        .prepare("UPDATE claims SET expires_at = ?, renewed_at = ? WHERE claim_id = ?")
-        .run(expiresAt, now, input.claim_id);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "claim.renewed",
-        objectType: "claim",
-        objectId: input.claim_id,
-        reason: "领取者确认工作仍在继续并续租 Claim",
-        payload: {
-          goal_id: claim.goal_id,
-          previous_expires_at: claim.expires_at,
-          expires_at: expiresAt,
-          lease_seconds: requestedLease,
-        },
-        at: now,
-      });
-      const updated = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ?")
-        .get(input.claim_id) as Row;
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        claim.goal_id,
-        input.actor_id,
-        previousProjection.action_token,
-        "已续期当前工作",
-        now,
-      );
-      const outcome = {
-        claim: mapSqliteClaim(updated),
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "renew_claim",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  /**
-   * The normal Runtime entry point after it has chosen an item from
-   * `queryAvailable`: both the Claim and its working Run are created in one
-   * SQLite transaction. Legacy `claimGoal` / `startRun` remain available for
-   * compatibility, but cannot be used by a new Runtime flow to leave a
-   * claimed-without-a-Run gap.
-   */
-  selectGoalAndStart(request: ClaimRequest): ClaimRunDecision {
-    const role = request.role ?? "executor";
-    const hash = requestHash({
-      board_id: request.board_id,
-      goal_id: request.goal_id,
-      actor_id: request.actor_id,
-      role,
-      capabilities: request.capabilities ?? [],
-      goal_mode_attestation: request.goal_mode_attestation ?? false,
-      lease_seconds: request.lease_seconds ?? null,
-      strengthen_policy: request.strengthen_policy ?? null,
-      action_id: request.action_id ?? null,
-      action_token: request.action_token ?? null,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<ClaimRunDecision>(
-        request.board_id,
-        request.actor_id,
-        "select_goal_and_start",
-        request.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-      const previousProjection = this.getGoalActionProjection({
-        board_id: request.board_id,
-        goal_id: request.goal_id,
-      });
-
-      let claimDecision: ClaimDecision;
-      try {
-        claimDecision = this.claimGoal({
-          ...request,
-          role,
-          idempotency_key: `select-goal-claim:${request.idempotency_key}`,
-        });
-      } catch (error) {
-        if (!(error instanceof GoalBoardV1Error) || error.code !== "action.id_required") throw error;
-        const snapshot = this.store.snapshot(request.board_id);
-        const goal = snapshot.goals.find((item) => item.goal_id === request.goal_id);
-        const workState = goal
-          ? this.deriveGoalWorkState(request.board_id, goal, snapshot, this.clock().toISOString())
-          : null;
-        const compatibilityReasons = workState && role === "executor"
-          ? this.executorHandoffReasons(workState)
-          : workState?.reasons ?? [];
-        const reasons = compatibilityReasons.length
-          ? compatibilityReasons
-          : previousProjection.primary_action?.reasons.length
-            ? previousProjection.primary_action.reasons
-            : [reason(
-                error.code,
-                "goal",
-                request.goal_id,
-                error.message,
-                error.details,
-                "刷新动作投影，并明确提交 action_id + action_token。",
-              )];
-        const outcome: ClaimRunDecision = {
-          allowed: false,
-          observed_event_cursor: snapshot.cursor,
-          reasons,
-          claim: null,
-          run: null,
-          work_state: workState,
-          projection: previousProjection,
-          transition: null,
-          replayed: false,
-        };
-        this.remember(
-          request.board_id,
-          request.actor_id,
-          "select_goal_and_start",
-          request.idempotency_key,
-          hash,
-          outcome,
-          this.clock().toISOString(),
-        );
-        return outcome;
-      }
-      if (!claimDecision.allowed || !claimDecision.claim) {
-        const outcome: ClaimRunDecision = {
-          allowed: false,
-          observed_event_cursor: claimDecision.observed_event_cursor,
-          reasons: claimDecision.reasons,
-          claim: null,
-          run: null,
-          work_state: null,
-          projection: this.getGoalActionProjection({
-            board_id: request.board_id,
-            goal_id: request.goal_id,
-          }),
-          transition: null,
-          replayed: false,
-        };
-        const now = this.clock().toISOString();
-        this.remember(
-          request.board_id,
-          request.actor_id,
-          "select_goal_and_start",
-          request.idempotency_key,
-          hash,
-          outcome,
-          now,
-        );
-        return outcome;
-      }
-
-      const started = this.startRun({
-        board_id: request.board_id,
-        claim_id: claimDecision.claim.claim_id,
-        actor_id: request.actor_id,
-        idempotency_key: `select-goal-run:${request.idempotency_key}`,
-      });
-      const transition = this.reconcileLifecycle(
-        request.board_id,
-        request.goal_id,
-        request.actor_id,
-        previousProjection.action_token,
-        "已开始推进",
-        this.clock().toISOString(),
-      );
-      const outcome: ClaimRunDecision = {
-        allowed: true,
-        observed_event_cursor: transition.observed_event_cursor,
-        reasons: [],
-        claim: claimDecision.claim,
-        run: started.run,
-        work_state: this.getGoalWorkState({
-          board_id: request.board_id,
-          goal_id: request.goal_id,
-        }),
-        projection: transition.projection,
-        transition,
-        replayed: false,
-      };
-      this.remember(
-        request.board_id,
-        request.actor_id,
-        "select_goal_and_start",
-        request.idempotency_key,
-        hash,
-        outcome,
-        this.clock().toISOString(),
-      );
-      return outcome;
-    });
-  }
-
-  releaseClaim(input: {
-    board_id: string;
-    claim_id: string;
-    actor_id: string;
-    reason: string;
-    idempotency_key: string;
-  }): ClaimReleaseResult {
-    const hash = requestHash({
-      board_id: input.board_id,
-      claim_id: input.claim_id,
-      actor_id: input.actor_id,
-      reason: input.reason,
-    });
-    const replay = this.replay<{
-      claim: ClaimRecord;
-      observed_event_cursor: number;
-      handoff?: ClaimReleaseHandoff;
-      transition?: ActionTransitionReceipt;
-    }>(
-      input.board_id,
-      input.actor_id,
-      "release_claim",
-      input.idempotency_key,
-      hash,
-    );
-    if (replay) {
-      const projection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: replay.claim.goal_id,
-      });
-      return {
-        ...replay,
-        handoff: CLAIM_RELEASE_HANDOFF,
-        transition: replay.transition ?? {
-          goal_id: replay.claim.goal_id,
-          previous_action_token: projection.action_token,
-          projection,
-          affected_goals: [compactGoalActionProjection(projection)],
-          summary: "已结束当前工作",
-          observed_event_cursor: replay.observed_event_cursor,
-        },
-        replayed: true,
-      };
-    }
-    const leaseRecovery = this.store.immediate(() => {
-      this.requireBoard(input.board_id);
-      const row = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
-        .get(input.claim_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
-      if (asText(row.actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以释放 Claim");
-      }
-      const at = this.clock().toISOString();
-      if (asText(row.state) === "active" && asText(row.expires_at) <= at) {
-        this.expirePastClaims(input.board_id, at, input.actor_id);
-        return {
-          goal_id: asText(row.goal_id),
-          claim_id: input.claim_id,
-        };
-      }
-      if (asText(row.state) === "expired") {
-        return {
-          goal_id: asText(row.goal_id),
-          claim_id: input.claim_id,
-        };
-      }
-      return null;
-    });
-    if (leaseRecovery) {
-      throw new GoalBoardV1Error(
-        "claim.lease_expired",
-        "Claim 租约已过期，旧 Runtime 不需要再释放；请重新领取 Goal",
-        {
-          ...leaseRecovery,
-          next_action: "select_goal",
-          requires_user_confirmation: false,
-          retry_same_idempotency_key: false,
-        },
-      );
-    }
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        claim: ClaimRecord;
-        observed_event_cursor: number;
-        handoff?: ClaimReleaseHandoff;
-        transition?: ActionTransitionReceipt;
-      }>(
-        input.board_id,
-        input.actor_id,
-        "release_claim",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        const projection = this.getGoalActionProjection({
-          board_id: input.board_id,
-          goal_id: replay.claim.goal_id,
-        });
-        return {
-          ...replay,
-          handoff: CLAIM_RELEASE_HANDOFF,
-          transition: replay.transition ?? {
-            goal_id: replay.claim.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已结束当前工作",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-      this.requireBoard(input.board_id);
-      const row = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
-        .get(input.claim_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
-      if (asText(row.actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以释放 Claim");
-      }
-      const goalId = asText(row.goal_id);
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: goalId,
-      });
-      if (asText(row.state) === "released") {
-        const projection = this.getGoalActionProjection({
-          board_id: input.board_id,
-          goal_id: goalId,
-        });
-        const transition: ActionTransitionReceipt = {
-          goal_id: goalId,
-          previous_action_token: previousProjection.action_token,
-          projection,
-          affected_goals: [compactGoalActionProjection(projection)],
-          summary: "工作已经结束",
-          observed_event_cursor: this.store.eventCursor(input.board_id),
-        };
-        const outcome = {
-          claim: mapSqliteClaim(row),
-          observed_event_cursor: transition.observed_event_cursor,
-          handoff: CLAIM_RELEASE_HANDOFF,
-          transition,
-        };
-        this.remember(
-          input.board_id,
-          input.actor_id,
-          "release_claim",
-          input.idempotency_key,
-          hash,
-          outcome,
-          this.clock().toISOString(),
-        );
-        return { ...outcome, replayed: false };
-      }
-      if (asText(row.state) !== "active") {
-        throw new GoalBoardV1Error("claim.not_active", "Claim 已经不是 active 状态");
-      }
-      const at = this.clock().toISOString();
-      this.store.db
-        .prepare("UPDATE claims SET state = 'released', released_at = ?, release_reason = ? WHERE claim_id = ?")
-        .run(at, input.reason, input.claim_id);
-      this.abandonActiveRunsForClaim(
-        input.board_id,
-        input.claim_id,
-        input.actor_id,
-        `Claim 被领取者释放：${input.reason}`,
-        at,
-      );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "claim.released",
-        objectType: "claim",
-        objectId: input.claim_id,
-        reason: input.reason,
-        payload: {},
-        at,
-      });
-      const updated = this.store.db.prepare("SELECT * FROM claims WHERE claim_id = ?").get(input.claim_id) as Row;
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        goalId,
-        input.actor_id,
-        previousProjection.action_token,
-        "已结束当前工作",
-        at,
-      );
-      const outcome = {
-        claim: mapSqliteClaim(updated),
-        observed_event_cursor: transition.observed_event_cursor,
-        handoff: CLAIM_RELEASE_HANDOFF,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "release_claim",
-        input.idempotency_key,
-        hash,
-        outcome,
-        at,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  /**
-   * Management/system recovery can revoke a stalled Claim without pretending
-   * that the original Runtime still owns its Run. Runtime callers only get
-   * the owner-scoped `releaseClaim` surface.
-   */
-  revokeClaim(input: {
-    board_id: string;
-    claim_id: string;
-    actor_id: string;
-    reason: string;
-    idempotency_key: string;
-  }): {
-    claim: ClaimRecord;
-    replayed: boolean;
-    observed_event_cursor: number;
-    transition: ActionTransitionReceipt;
-  } {
-    const hash = requestHash({
-      board_id: input.board_id,
-      claim_id: input.claim_id,
-      actor_id: input.actor_id,
-      reason: input.reason,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        claim: ClaimRecord;
-        observed_event_cursor: number;
-        transition?: ActionTransitionReceipt;
-      }>(
-        input.board_id,
-        input.actor_id,
-        "revoke_claim",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        const projection = this.getGoalActionProjection({
-          board_id: input.board_id,
-          goal_id: replay.claim.goal_id,
-        });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: replay.claim.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已撤销当前工作",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-      this.requireBoard(input.board_id);
-      const row = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
-        .get(input.claim_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
-      if (asText(row.state) !== "active") {
-        throw new GoalBoardV1Error("claim.not_active", "Claim 已经不是 active 状态");
-      }
-      const goalId = asText(row.goal_id);
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: goalId,
-      });
-      const at = this.clock().toISOString();
-      this.store.db
-        .prepare("UPDATE claims SET state = 'revoked', released_at = ?, release_reason = ? WHERE claim_id = ?")
-        .run(at, input.reason, input.claim_id);
-      this.abandonActiveRunsForClaim(
-        input.board_id,
-        input.claim_id,
-        input.actor_id,
-        `Claim 被撤销：${input.reason}`,
-        at,
-      );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "claim.revoked",
-        objectType: "claim",
-        objectId: input.claim_id,
-        reason: input.reason,
-        payload: {},
-        at,
-      });
-      const updated = this.store.db.prepare("SELECT * FROM claims WHERE claim_id = ?").get(input.claim_id) as Row;
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        goalId,
-        input.actor_id,
-        previousProjection.action_token,
-        "已撤销当前工作",
-        at,
-      );
-      const outcome = {
-        claim: mapSqliteClaim(updated),
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "revoke_claim",
-        input.idempotency_key,
-        hash,
-        outcome,
-        at,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  startRun(input: {
-    board_id: string;
-    claim_id: string;
-    actor_id: string;
-    idempotency_key: string;
-  }): { run: RunRecord; replayed: boolean; observed_event_cursor: number } {
-    const hash = requestHash({
-      board_id: input.board_id,
-      claim_id: input.claim_id,
-      actor_id: input.actor_id,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<{ run: RunRecord; observed_event_cursor: number }>(
-        input.board_id,
-        input.actor_id,
-        "start_run",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-      this.requireBoard(input.board_id);
-      const now = this.clock().toISOString();
-      const claim = this.store.db
-        .prepare("SELECT * FROM claims WHERE claim_id = ? AND board_id = ?")
-        .get(input.claim_id, input.board_id) as Row | undefined;
-      if (!claim) throw new GoalBoardV1Error("claim.not_found", `Claim 不存在: ${input.claim_id}`);
-      if (asText(claim.actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("claim.not_owner", "只有领取者可以开始 Run");
-      }
-      if (asText(claim.state) !== "active" || asText(claim.expires_at) <= now) {
-        throw new GoalBoardV1Error("run.claim_inactive", "Claim 已释放、撤销或过期，不能开始 Run");
-      }
-      const role = asText(claim.role);
-      if (
-        role !== "clarifier" &&
-        role !== "executor" &&
-        role !== "self_verifier" &&
-        role !== "cross_reviewer" &&
-        role !== "adversarial_reviewer" &&
-        role !== "revalidator"
-      ) {
-        throw new GoalBoardV1Error("run.role_invalid", "这个 Claim 角色不能启动工作 Run");
-      }
-      const goal = this.store.getGoal(asText(claim.goal_id));
-      if (!goal || goal.validity_state === "invalidated") {
-        throw new GoalBoardV1Error("goal.invalidated", "Goal 已失效，不能开始 Run");
-      }
-      if (goal.trashed_at) {
-        throw new GoalBoardV1Error("goal.trashed", "回收站中的 Goal 不能开始 Run");
-      }
-      const active = this.store.db
-        .prepare("SELECT run_id FROM runs WHERE claim_id = ? AND state IN ('started', 'blocked')")
-        .get(input.claim_id);
-      if (active) throw new GoalBoardV1Error("run.already_active", "这个 Claim 已有未结束的 Run");
-
-      const runId = `run-${randomUUID()}`;
-      this.store.db
-        .prepare(`
-          INSERT INTO runs (
-            run_id, board_id, goal_id, claim_id, actor_id, role, state,
-            block_reason, output_refs_json, discovery_refs_json, started_at, ended_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'started', NULL, '[]', '[]', ?, NULL)
-        `)
-        .run(
-          runId,
-          input.board_id,
-          asText(claim.goal_id),
-          input.claim_id,
-          input.actor_id,
-          role,
-          now,
-        );
-      const cursor = this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "run.started",
-        objectType: "run",
-        objectId: runId,
-        reason: "开始执行已领取的 Goal",
-        payload: { goal_id: asText(claim.goal_id), claim_id: input.claim_id },
-        at: now,
-      });
-      const run = this.readRun(runId);
-      const outcome = { run, observed_event_cursor: cursor };
-      this.remember(input.board_id, input.actor_id, "start_run", input.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  requestGoalRework(input: {
-    board_id: string;
-    goal_id: string;
-    actor_id: string;
-    criterion_ids: string[];
-    reason: string;
-    evidence_refs: string[];
-    idempotency_key: string;
-  }): {
-    goal: GoalRecord;
-    rework_request_id: string;
-    criterion_ids: string[];
-    evidence_refs: string[];
-    replayed: boolean;
-    observed_event_cursor: number;
-    transition: ActionTransitionReceipt;
-  } {
-    const criterionIds = unique(input.criterion_ids.map((item) => item.trim()).filter(Boolean)).sort();
-    const evidenceRefs = unique(input.evidence_refs.map((item) => item.trim()).filter(Boolean)).sort();
-    const reasonText = input.reason.trim();
-    const hash = requestHash({
-      board_id: input.board_id,
-      goal_id: input.goal_id,
-      actor_id: input.actor_id,
-      criterion_ids: criterionIds,
-      reason: reasonText,
-      evidence_refs: evidenceRefs,
-    });
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        goal: GoalRecord;
-        rework_request_id: string;
-        criterion_ids: string[];
-        evidence_refs: string[];
-        observed_event_cursor: number;
-        transition?: ActionTransitionReceipt;
-      }>(input.board_id, input.actor_id, "request_goal_rework", input.idempotency_key, hash);
-      if (replay) {
-        const projection = this.getGoalActionProjection({
-          board_id: input.board_id,
-          goal_id: input.goal_id,
-        });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: input.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已记录返工要求",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-
-      const goal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      if (!reasonText) {
-        throw new GoalBoardV1Error("goal.rework_reason_required", "请求返工必须说明哪项既有完成前提已经不成立");
-      }
-      if (criterionIds.length === 0) {
-        throw new GoalBoardV1Error("goal.rework_criterion_required", "请求返工必须指出至少一条受新反证影响的验收条件");
-      }
-      if (evidenceRefs.length === 0) {
-        throw new GoalBoardV1Error("goal.rework_evidence_required", "请求返工必须引用至少一项可追溯的新反证或检查记录");
-      }
-      const validCriterionIds = new Set(goal.acceptance_criteria.map((criterion) => criterion.criterion_id));
-      const invalidCriterionIds = criterionIds.filter((criterionId) => !validCriterionIds.has(criterionId));
-      if (invalidCriterionIds.length > 0) {
-        throw new GoalBoardV1Error(
-          "goal.rework_criterion_invalid",
-          `返工请求引用了不属于这条 Goal 的验收条件: ${invalidCriterionIds.join("、")}`,
-          { invalid_criterion_ids: invalidCriterionIds },
-        );
-      }
-      if (
-        goal.definition_state !== "accepted" ||
-        goal.decomposition_state !== "closed_leaf" ||
-        goal.fulfillment_state !== "unmet" ||
-        goal.validity_state !== "valid" ||
-        goal.trashed_at ||
-        goal.archived_at
-      ) {
-        throw new GoalBoardV1Error(
-          "goal.rework_state_invalid",
-          "只有仍未完成、当前有效且已经接受的最小 Goal 可以从完成前门禁返回返工",
-          {
-            definition_state: goal.definition_state,
-            decomposition_state: goal.decomposition_state,
-            fulfillment_state: goal.fulfillment_state,
-            validity_state: goal.validity_state,
-          },
-        );
-      }
-      const now = this.clock().toISOString();
-      const activeClaim = this.store.db
-        .prepare("SELECT claim_id FROM claims WHERE board_id = ? AND goal_id = ? AND state = 'active' AND expires_at > ? LIMIT 1")
-        .get(input.board_id, input.goal_id, now) as Row | undefined;
-      if (activeClaim) {
-        throw new GoalBoardV1Error(
-          "goal.rework_active_claim",
-          "这条 Goal 仍有有效 Claim；请在当前工作流内处理新发现，不要并行开启返工",
-          { claim_id: asText(activeClaim.claim_id) },
-        );
-      }
-      const latestWorkRun = this.store.db
-        .prepare(`
-          SELECT run_id, state FROM runs
-          WHERE board_id = ? AND goal_id = ? AND role IN ('executor', 'revalidator')
-          ORDER BY started_at DESC, run_id DESC
-          LIMIT 1
-        `)
-        .get(input.board_id, input.goal_id) as Row | undefined;
-      if (!latestWorkRun || asText(latestWorkRun.state) !== "completed") {
-        throw new GoalBoardV1Error(
-          "goal.rework_completed_run_required",
-          "只有既有执行已经结束、随后出现新反证时才需要返工请求；未结束的工作应继续当前 Run",
-        );
-      }
-      const projectionBefore = deriveGoalActionProjection(
-        goal,
-        this.store.snapshot(input.board_id),
-        now,
-      );
-      const currentAction = projectionBefore.primary_action;
-      const atCompletionGate = currentAction != null && (
-        (currentAction.kind === "review" && currentAction.actor === "user") ||
-        currentAction.kind === "accept_risk" ||
-        currentAction.kind === "mitigate_risk" ||
-        (
-          currentAction.kind === "repair" &&
-          currentAction.reasons.some((item) => item.code === "action.completion_reconciliation_required")
-        )
-      );
-      if (!atCompletionGate) {
-        throw new GoalBoardV1Error(
-          "goal.rework_not_at_completion_gate",
-          "这条 Goal 当前不在完成前门禁；请按 Available 返回的现有阶段继续，不要制造重复返工",
-          { projection: projectionBefore },
-        );
-      }
-
-      const reworkRequestId = `rework-request-${randomUUID()}`;
-      this.store.db
-        .prepare("UPDATE review_obligations SET state = 'pending' WHERE goal_id = ? AND state = 'satisfied'")
-        .run(input.goal_id);
-      this.store.appendEvent({
-        eventId: reworkRequestId,
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "goal.rework_requested",
-        objectType: "goal",
-        objectId: input.goal_id,
-        reason: reasonText,
-        payload: {
-          criterion_ids: criterionIds,
-          evidence_refs: evidenceRefs,
-          previous_display_status: projectionBefore.display_status,
-          previous_action_id: currentAction.action_id,
-          latest_completed_run_id: asText(latestWorkRun.run_id),
-        },
-        at: now,
-      });
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        projectionBefore.action_token,
-        "已记录返工要求",
-        now,
-      );
-      const outcome = {
-        goal: this.requireGoalOnBoard(input.board_id, input.goal_id),
-        rework_request_id: reworkRequestId,
-        criterion_ids: criterionIds,
-        evidence_refs: evidenceRefs,
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "request_goal_rework",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  revalidateGoal(input: {
-    board_id: string;
-    goal_id: string;
-    run_id: string;
-    actor_id: string;
-    reason: string;
-    evidence_refs: string[];
-    contract_revision?: number;
-    action_token?: string;
-    idempotency_key: string;
-  }): RevalidationDecision {
-    const hash = requestHash(input);
-    return this.store.immediate(() => {
-      const replay = this.replay<Omit<RevalidationDecision, "replayed">>(
-        input.board_id,
-        input.actor_id,
-        "revalidate_goal",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) return { ...replay, replayed: true };
-
-      this.requireBoard(input.board_id);
-      const reasonText = input.reason.trim();
-      const evidenceRefs = unique(input.evidence_refs.map((item) => item.trim()).filter(Boolean));
-      if (!reasonText) {
-        throw new GoalBoardV1Error("revalidation.reason_required", "重新验证必须说明核对结论");
-      }
-      if (evidenceRefs.length === 0) {
-        throw new GoalBoardV1Error("revalidation.evidence_required", "重新验证必须引用至少一项核对证据");
-      }
-
-      const now = this.clock().toISOString();
-      const run = this.store.db
-        .prepare(`
-          SELECT
-            r.*,
-            c.state AS claim_state,
-            c.expires_at AS claim_expires_at,
-            c.role AS claim_role,
-            c.actor_id AS claim_actor_id,
-            c.contract_revision AS claim_contract_revision
-          FROM runs r
-          JOIN claims c ON c.claim_id = r.claim_id
-          WHERE r.run_id = ? AND r.board_id = ?
-        `)
-        .get(input.run_id, input.board_id) as Row | undefined;
-      if (!run) throw new GoalBoardV1Error("run.not_found", `Run 不存在: ${input.run_id}`);
-      if (asText(run.goal_id) !== input.goal_id) {
-        throw new GoalBoardV1Error("revalidation.goal_mismatch", "这个 Run 领取的不是待重新验证的 Goal");
-      }
-      if (asText(run.actor_id) !== input.actor_id || asText(run.claim_actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("run.not_owner", "只有这个 Run 的领取者可以提交重新验证");
-      }
-      if (asText(run.role) !== "revalidator" || asText(run.claim_role) !== "revalidator") {
-        throw new GoalBoardV1Error("revalidation.role_required", "只有 revalidator Run 可以恢复 Goal 的可信状态");
-      }
-      if (asText(run.claim_state) !== "active" || asText(run.claim_expires_at) <= now) {
-        throw new GoalBoardV1Error("revalidation.claim_inactive", "重新验证 Claim 已释放、撤销或过期");
-      }
-      if (asText(run.state) !== "started") {
-        throw new GoalBoardV1Error("revalidation.run_not_started", "重新验证只能由正在执行的 Run 提交");
-      }
-
-      const goal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      const revisionSnapshot = this.store.snapshot(input.board_id);
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-      });
-      if (
-        !contractRevisionIsCompatible(goal, revisionSnapshot, Number(run.claim_contract_revision ?? 1)) ||
-        (input.contract_revision != null && !contractRevisionIsCompatible(goal, revisionSnapshot, input.contract_revision))
-      ) {
-        throw new GoalBoardV1Error(
-          "contract.revision_stale",
-          "重新验证 Run 属于旧 Contract revision。",
-          { current_contract_revision: goal.current_contract_revision, projection: previousProjection },
-        );
-      }
-      if (input.action_token && input.action_token !== previousProjection.action_token) {
-        throw new GoalBoardV1Error(
-          "action.token_stale",
-          "提交重新验证前 Goal 已变化；旧写入未生效。",
-          { projection: previousProjection },
-        );
-      }
-      if (goal.trashed_at) {
-        throw new GoalBoardV1Error("goal.trashed", "回收站中的 Goal 不能重新验证");
-      }
-      const reasons: DecisionReason[] = [];
-      if (goal.definition_state !== "accepted") {
-        reasons.push(reason("goal.not_accepted", "goal", goal.goal_id, "Goal 还没有被接受"));
-      }
-      if (goal.decomposition_state !== "closed_leaf") {
-        reasons.push(
-          reason(
-            "goal.not_closed_leaf",
-            "goal",
-            goal.goal_id,
-            "这个 Goal 还不是可以直接验证的最小 Goal",
-            { decomposition_state: goal.decomposition_state },
-          ),
-        );
-      }
-      if (goal.acceptance_criteria.length === 0) {
-        reasons.push(reason("goal.acceptance_missing", "criterion", goal.goal_id, "Goal 没有明确验收条件"));
-      }
-      if (goal.validity_state === "valid") {
-        reasons.push(reason("goal.revalidation_not_needed", "goal", goal.goal_id, "Goal 当前已经是可信状态"));
-      } else if (goal.validity_state === "invalidated") {
-        reasons.push(reason("goal.invalidated", "goal", goal.goal_id, "Goal 已失效，不能通过重新验证直接恢复"));
-      }
-
-      const dependencies = this.store.db
-        .prepare(`
-          SELECT g.goal_id, g.title, g.fulfillment_state, g.validity_state
-          FROM goal_relations r
-          JOIN goals g ON g.goal_id = r.to_goal_id
-          WHERE r.board_id = ? AND r.from_goal_id = ?
-            AND r.type = 'depends_on' AND r.state = 'active'
-          ORDER BY g.goal_id
-        `)
-        .all(input.board_id, input.goal_id) as Row[];
-      for (const dependency of dependencies) {
-        const dependencyId = asText(dependency.goal_id);
-        if (asText(dependency.fulfillment_state) !== "satisfied") {
-          reasons.push(
-            reason(
-              "dependency.unsatisfied",
-              "dependency",
-              dependencyId,
-              `前置 Goal「${asText(dependency.title)}」还未完成，不能恢复可信状态`,
-              { dependency_goal_id: dependencyId },
-            ),
-          );
-        }
-        if (asText(dependency.validity_state) !== "valid") {
-          reasons.push(
-            reason(
-              "dependency.not_valid",
-              "dependency",
-              dependencyId,
-              `前置 Goal「${asText(dependency.title)}」当前不可信`,
-              { validity_state: asText(dependency.validity_state) },
-            ),
-          );
-        }
-      }
-
-      const risks = this.store.db
-        .prepare(`
-          SELECT r.* FROM risks r
-          JOIN goal_risks gr ON gr.risk_id = r.risk_id
-          WHERE gr.goal_id = ?
-            AND r.state IN ('open', 'triggered')
-            AND r.blocking_mode <> 'none'
-          ORDER BY r.risk_id
-        `)
-        .all(input.goal_id) as Row[];
-      for (const risk of risks) {
-        reasons.push(
-          reason(
-            "risk.blocks_revalidation",
-            "risk",
-            asText(risk.risk_id),
-            `风险仍未解除：${asText(risk.description)}`,
-            { blocking_mode: asText(risk.blocking_mode), state: asText(risk.state) },
-            asText(risk.revisit_condition),
-          ),
-        );
-      }
-
-      if (reasons.length > 0) {
-        const outcome: Omit<RevalidationDecision, "replayed"> = {
-          revalidated: false,
-          goal,
-          observed_event_cursor: this.store.eventCursor(input.board_id),
-          reasons: reasons.sort(compareReasons),
-        };
-        this.remember(
-          input.board_id,
-          input.actor_id,
-          "revalidate_goal",
-          input.idempotency_key,
-          hash,
-          outcome,
-          now,
-        );
-        return { ...outcome, replayed: false };
-      }
-
-      this.store.db
-        .prepare("UPDATE goals SET validity_state = 'valid', updated_at = ? WHERE goal_id = ?")
-        .run(now, input.goal_id);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "goal.revalidated",
-        objectType: "goal",
-        objectId: input.goal_id,
-        reason: reasonText,
-        payload: {
-          run_id: input.run_id,
-          evidence_refs: evidenceRefs,
-          previous_validity_state: goal.validity_state,
-        },
-        at: now,
-      });
-      this.store.db
-        .prepare("UPDATE runs SET state = 'completed', ended_at = ?, block_reason = NULL WHERE run_id = ?")
-        .run(now, input.run_id);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "run.completed",
-        objectType: "run",
-        objectId: input.run_id,
-        reason: "重新验证结果已写入，Revalidator Run 自动结束",
-        payload: { goal_id: input.goal_id },
-        at: now,
-      });
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        previousProjection.action_token,
-        "已完成重新验证",
-        now,
-      );
-      const updatedGoal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      const outcome: Omit<RevalidationDecision, "replayed"> = {
-        revalidated: true,
-        goal: updatedGoal,
-        observed_event_cursor: transition.observed_event_cursor,
-        reasons: [],
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "revalidate_goal",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  reportRun(input: {
-    board_id: string;
-    run_id: string;
-    actor_id: string;
-    state: "started" | "blocked" | "completed" | "failed" | "abandoned";
-    block_reason?: string | null;
-    output_refs?: string[];
-    discovery_refs?: string[];
-    contract_revision?: number;
-    action_token?: string;
-    idempotency_key: string;
-  }): RunReportResult {
-    const hash = requestHash(input);
-    const replay = this.replay<Omit<RunReportResult, "replayed">>(
-      input.board_id,
-      input.actor_id,
-      "report_run",
-      input.idempotency_key,
-      hash,
-    );
-    if (replay) {
-      return { ...replay, replayed: true };
-    }
-    const leaseRecovery = this.store.immediate(() => {
-      const row = this.store.db
-        .prepare(`
-          SELECT r.actor_id, r.goal_id, r.claim_id,
-                 c.state AS claim_state, c.expires_at AS claim_expires_at
-          FROM runs r
-          JOIN claims c ON c.claim_id = r.claim_id
-          WHERE r.run_id = ? AND r.board_id = ?
-        `)
-        .get(input.run_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("run.not_found", `Run 不存在: ${input.run_id}`);
-      if (asText(row.actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("run.not_owner", "只有执行者可以报告这个 Run");
-      }
-      const at = this.clock().toISOString();
-      if (asText(row.claim_state) === "active" && asText(row.claim_expires_at) <= at) {
-        this.expirePastClaims(input.board_id, at, input.actor_id);
-        return {
-          goal_id: asText(row.goal_id),
-          claim_id: asText(row.claim_id),
-          run_id: input.run_id,
-        };
-      }
-      if (asText(row.claim_state) === "expired") {
-        return {
-          goal_id: asText(row.goal_id),
-          claim_id: asText(row.claim_id),
-          run_id: input.run_id,
-        };
-      }
-      return null;
-    });
-    if (leaseRecovery) {
-      throw new GoalBoardV1Error(
-        "run.claim_expired",
-        "Run 对应的 Claim 租约已过期，旧 Runtime 不能再报告终态；请重新领取 Goal",
-        {
-          ...leaseRecovery,
-          next_action: "select_goal",
-          requires_user_confirmation: false,
-          retry_same_idempotency_key: false,
-        },
-      );
-    }
-    return this.store.immediate(() => {
-      const replay = this.replay<Omit<RunReportResult, "replayed">>(
-        input.board_id,
-        input.actor_id,
-        "report_run",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        return { ...replay, replayed: true };
-      }
-      const row = this.store.db
-        .prepare(`
-          SELECT run.*, claim.state AS claim_state,
-                 claim.contract_revision AS claim_contract_revision
-          FROM runs run
-          JOIN claims claim ON claim.claim_id = run.claim_id
-          WHERE run.run_id = ? AND run.board_id = ?
-        `)
-        .get(input.run_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("run.not_found", `Run 不存在: ${input.run_id}`);
-      if (asText(row.actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error("run.not_owner", "只有执行者可以报告这个 Run");
-      }
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: asText(row.goal_id),
-      });
-      const current = asText(row.state);
-      const now = this.clock().toISOString();
-      if (current === "completed" && input.state === "completed") {
-        const transition = this.reconcileLifecycle(
-          input.board_id,
-          asText(row.goal_id),
-          input.actor_id,
-          previousProjection.action_token,
-          "本阶段已经完成",
-          now,
-        );
-        const outcome = {
-          run: this.readRun(input.run_id),
-          observed_event_cursor: transition.observed_event_cursor,
-          transition,
-        };
-        this.remember(input.board_id, input.actor_id, "report_run", input.idempotency_key, hash, outcome, now);
-        return { ...outcome, replayed: false };
-      }
-      const currentGoal = this.requireGoalOnBoard(input.board_id, asText(row.goal_id));
-      const revisionSnapshot = this.store.snapshot(input.board_id);
-      if (
-        asText(row.claim_state) !== "active" ||
-        !contractRevisionIsCompatible(currentGoal, revisionSnapshot, Number(row.claim_contract_revision ?? 1)) ||
-        (input.contract_revision != null && !contractRevisionIsCompatible(currentGoal, revisionSnapshot, input.contract_revision))
-      ) {
-        throw new GoalBoardV1Error(
-          "contract.revision_stale",
-          "这个 Run 属于旧 Contract revision，写入没有生效。",
-          { current_contract_revision: currentGoal.current_contract_revision, projection: previousProjection },
-        );
-      }
-      if (input.action_token && input.action_token !== previousProjection.action_token) {
-        throw new GoalBoardV1Error(
-          "action.token_stale",
-          "报告 Run 前 Goal 已变化；旧写入没有生效。",
-          { projection: previousProjection },
-        );
-      }
-      const allowed =
-        (current === "started" && ["blocked", "completed", "failed", "abandoned"].includes(input.state)) ||
-        (current === "blocked" && ["started", "completed", "failed", "abandoned"].includes(input.state));
-      if (!allowed) {
-        throw new GoalBoardV1Error("run.transition_invalid", `Run 不能从 ${current} 变为 ${input.state}`);
-      }
-      if (input.state === "blocked" && !input.block_reason?.trim()) {
-        throw new GoalBoardV1Error("run.block_reason_required", "阻塞 Run 必须说明原因");
-      }
-      const terminal = ["completed", "failed", "abandoned"].includes(input.state);
-      this.store.db
-        .prepare(`
-          UPDATE runs SET state = ?, block_reason = ?, output_refs_json = ?,
-            discovery_refs_json = ?, ended_at = ? WHERE run_id = ?
-        `)
-        .run(
-          input.state,
-          input.block_reason ?? null,
-          sqliteJson(unique(input.output_refs ?? parseJson<string[]>(row.output_refs_json, []))),
-          sqliteJson(unique(input.discovery_refs ?? parseJson<string[]>(row.discovery_refs_json, []))),
-          terminal ? now : null,
-          input.run_id,
-        );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: `run.${input.state}`,
-        objectType: "run",
-        objectId: input.run_id,
-        reason: input.block_reason ?? `Run 状态变为 ${input.state}`,
-        payload: { output_refs: input.output_refs ?? [], discovery_refs: input.discovery_refs ?? [] },
-        at: now,
-      });
-      if (["failed", "abandoned"].includes(input.state)) {
-        const claim = this.store.db
-          .prepare("SELECT state FROM claims WHERE claim_id = ?")
-          .get(asText(row.claim_id)) as Row | undefined;
-        if (claim && asText(claim.state) === "active") {
-          const recoveryReason =
-            input.state === "abandoned"
-              ? "Runtime 已中断或放弃当前 Run，自动释放 Claim"
-              : "Run 执行失败，自动释放 Claim 以便其他 Runtime 继续推进";
-          this.store.db
-            .prepare("UPDATE claims SET state = 'released', released_at = ?, release_reason = ? WHERE claim_id = ?")
-            .run(now, recoveryReason, asText(row.claim_id));
-          this.store.appendEvent({
-            eventId: randomUUID(),
-            boardId: input.board_id,
-            actorId: input.actor_id,
-            type: "claim.released",
-            objectType: "claim",
-            objectId: asText(row.claim_id),
-            reason: recoveryReason,
-            payload: { run_id: input.run_id, recovery: true },
-            at: now,
-          });
-        }
-      }
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        asText(row.goal_id),
-        input.actor_id,
-        previousProjection.action_token,
-        input.state === "completed"
-          ? "已记录本阶段产物"
-          : input.state === "blocked"
-            ? "已记录当前卡点"
-            : input.state === "failed"
-              ? "已记录失败并释放工作"
-              : "已更新工作状态",
-        now,
-      );
-      const outcome = {
-        run: this.readRun(input.run_id),
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      const reportOutcome = outcome;
-      this.remember(input.board_id, input.actor_id, "report_run", input.idempotency_key, hash, reportOutcome, now);
-      return { ...reportOutcome, replayed: false };
-    });
-  }
-
-  submitEvidence(input: {
-    board_id: string;
-    goal_id: string;
-    actor_id: string;
-    criterion_ids: string[];
-    run_id?: string | null;
-    review_id?: string | null;
-    kind: EvidenceRecord["kind"];
-    locator: string;
-    /** Host-only validation context; Runtime and Web schemas never accept a user-supplied root. */
-    locator_context?: { project_root?: string | null; workspace_id?: string | null };
-    digest?: string | null;
-    result: EvidenceRecord["result"];
-    contract_revision?: number;
-    action_token?: string;
-    idempotency_key: string;
-  }): {
-    evidence: EvidenceRecord;
-    replayed: boolean;
-    observed_event_cursor: number;
-    transition: ActionTransitionReceipt;
-  } {
-    const hash = requestHash(input);
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        evidence: EvidenceRecord;
-        observed_event_cursor: number;
-        transition?: ActionTransitionReceipt;
-      }>(
-        input.board_id,
-        input.actor_id,
-        "submit_evidence",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        const projection = this.getGoalActionProjection({ board_id: input.board_id, goal_id: input.goal_id });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: input.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已记录完成依据",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-      const goal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      const revisionSnapshot = this.store.snapshot(input.board_id);
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-      });
-      if (
-        input.contract_revision != null &&
-        !contractRevisionIsCompatible(goal, revisionSnapshot, input.contract_revision)
-      ) {
-        throw new GoalBoardV1Error(
-          "contract.revision_stale",
-          "Evidence 属于旧 Contract revision，未写入当前 Goal。",
-          { current_contract_revision: goal.current_contract_revision, projection: previousProjection },
-        );
-      }
-      if (input.action_token && input.action_token !== previousProjection.action_token) {
-        throw new GoalBoardV1Error(
-          "action.token_stale",
-          "提交 Evidence 前 Goal 已变化；旧写入未生效。",
-          { projection: previousProjection },
-        );
-      }
-      if (!input.locator.trim()) throw new GoalBoardV1Error("evidence.locator_required", "Evidence 必须有可查找的位置");
-      if (input.criterion_ids.length === 0) {
-        throw new GoalBoardV1Error("evidence.criterion_required", "Evidence 至少要对应一条验收条件");
-      }
-      const validCriteria = new Set(goal.acceptance_criteria.map((item) => item.criterion_id));
-      for (const criterionId of input.criterion_ids) {
-        if (!validCriteria.has(criterionId)) {
-          throw new GoalBoardV1Error(
-            "evidence.criterion_invalid",
-            `验收条件不属于这个 Goal: ${criterionId}`,
-          );
-        }
-      }
-      if (input.run_id) {
-        const run = this.store.db
-          .prepare(`
-            SELECT run.actor_id, run.goal_id, claim.contract_revision
-            FROM runs run JOIN claims claim ON claim.claim_id = run.claim_id
-            WHERE run.run_id = ? AND run.board_id = ?
-          `)
-          .get(input.run_id, input.board_id) as Row | undefined;
-        if (!run || asText(run.goal_id) !== input.goal_id) {
-          throw new GoalBoardV1Error("evidence.run_invalid", "Evidence 引用的 Run 不属于这个 Goal");
-        }
-        if (asText(run.actor_id) !== input.actor_id) {
-          throw new GoalBoardV1Error("evidence.actor_invalid", "只有 Run 执行者可以提交它的 Evidence");
-        }
-        if (!contractRevisionIsCompatible(goal, revisionSnapshot, Number(run.contract_revision ?? 1))) {
-          throw new GoalBoardV1Error(
-            "contract.revision_stale",
-            "这个 Run 属于旧 Contract revision，不能继续写入当前 Evidence。",
-            { current_contract_revision: goal.current_contract_revision, projection: previousProjection },
-          );
-        }
-      }
-      const evidenceId = `evidence-${randomUUID()}`;
-      const now = this.clock().toISOString();
-      let locatorValidation;
-      try {
-        locatorValidation = validateEvidenceLocator(input.locator, {
-          projectRoot: input.locator_context?.project_root,
-          now,
-        });
-      } catch (error) {
-        if (!(error instanceof ProjectReferenceError)) throw error;
-        const code = /anchor 不存在/.test(error.message)
-          ? "evidence.locator_anchor_missing"
-          : /文件不存在/.test(error.message)
-            ? "evidence.locator_file_missing"
-            : /范围外|跳出项目目录|相对路径/.test(error.message)
-              ? "evidence.locator_outside_project"
-              : /根目录不可用/.test(error.message)
-                ? "evidence.locator_project_unavailable"
-                : "evidence.locator_invalid";
-        throw new GoalBoardV1Error(code, error.message);
-      }
-      const locatorWorkspaceRoot = locatorValidation.status === "verified"
-        ? locatorValidation.verified_project_root ?? input.locator_context?.project_root ?? null
-        : null;
-      const locatorWorkspaceId = locatorValidation.status === "verified"
-        && locatorValidation.verified_via !== "registered_git_worktree"
-        ? input.locator_context?.workspace_id ?? null
-        : null;
-      this.store.db
-        .prepare(`
-          INSERT INTO evidence (
-            evidence_id, board_id, goal_id, contract_revision, criterion_ids_json, producer_actor_id,
-            run_id, review_id, kind, locator, locator_status, locator_validation_reason,
-            locator_checked_at, locator_workspace_id, locator_workspace_root, digest, captured_at, result
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          evidenceId,
-          input.board_id,
-          input.goal_id,
-          goal.current_contract_revision,
-          sqliteJson(unique(input.criterion_ids).sort()),
-          input.actor_id,
-          input.run_id ?? null,
-          input.review_id ?? null,
-          input.kind,
-          locatorValidation.normalized_locator,
-          locatorValidation.status,
-          locatorValidation.reason,
-          locatorValidation.checked_at,
-          locatorWorkspaceId,
-          locatorWorkspaceRoot,
-          input.digest ?? null,
-          now,
-          input.result,
-        );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "evidence.submitted",
-        objectType: "evidence",
-        objectId: evidenceId,
-        reason: "提交验收证据",
-        payload: { goal_id: input.goal_id, criterion_ids: input.criterion_ids, result: input.result },
-        at: now,
-      });
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        previousProjection.action_token,
-        "已记录完成依据",
-        now,
-      );
-      const evidence = this.readEvidence(evidenceId);
-      const outcome = {
-        evidence,
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "submit_evidence",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  correctEvidence(input: {
-    board_id: string;
-    goal_id: string;
-    actor_id: string;
-    target_evidence_id: string;
-    action: EvidenceCorrectionRecord["action"];
-    replacement_evidence_id?: string | null;
-    reason: string;
-    idempotency_key: string;
-  }): {
-    correction: EvidenceCorrectionRecord;
-    target_evidence: EvidenceRecord;
-    replacement_evidence: EvidenceRecord | null;
-    replayed: boolean;
-    observed_event_cursor: number;
-    transition: ActionTransitionReceipt;
-  } {
-    const hash = requestHash(input);
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        correction: EvidenceCorrectionRecord;
-        target_evidence: EvidenceRecord;
-        replacement_evidence: EvidenceRecord | null;
-        observed_event_cursor: number;
-        transition?: ActionTransitionReceipt;
-      }>(input.board_id, input.actor_id, "correct_evidence", input.idempotency_key, hash);
-      if (replay) {
-        const projection = this.getGoalActionProjection({ board_id: input.board_id, goal_id: input.goal_id });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: input.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已更正完成依据",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-
-      this.requireBoard(input.board_id);
-      this.requireGoalOnBoard(input.board_id, input.goal_id);
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-      });
-      const reasonText = input.reason.trim();
-      if (!reasonText) {
-        throw new GoalBoardV1Error("evidence.correction_reason_required", "更正 Evidence 必须说明原因");
-      }
-      if (input.action !== "supersede" && input.action !== "retract") {
-        throw new GoalBoardV1Error("evidence.correction_action_invalid", "Evidence 更正必须是 supersede 或 retract");
-      }
-
-      const target = this.store.db
-        .prepare("SELECT * FROM evidence WHERE evidence_id = ? AND board_id = ?")
-        .get(input.target_evidence_id, input.board_id) as Row | undefined;
-      if (!target || asText(target.goal_id) !== input.goal_id) {
-        throw new GoalBoardV1Error("evidence.correction_target_invalid", "待更正的 Evidence 不属于这个 Goal");
-      }
-      if (asText(target.producer_actor_id) !== input.actor_id) {
-        throw new GoalBoardV1Error(
-          "evidence.correction_not_owner",
-          "Runtime 只能更正自己提交的 Evidence",
-        );
-      }
-      const existingCorrection = this.store.db
-        .prepare("SELECT correction_id FROM evidence_corrections WHERE target_evidence_id = ?")
-        .get(input.target_evidence_id);
-      if (existingCorrection) {
-        throw new GoalBoardV1Error(
-          "evidence.already_corrected",
-          "这条 Evidence 已有不可变更正记录，不能再次改写同一历史节点",
-        );
-      }
-
-      let replacement: Row | undefined;
-      const replacementId = input.replacement_evidence_id?.trim() || null;
-      if (input.action === "supersede") {
-        if (!replacementId) {
-          throw new GoalBoardV1Error(
-            "evidence.replacement_required",
-            "supersede 必须引用一条已经提交的替代 Evidence",
-          );
-        }
-        if (replacementId === input.target_evidence_id) {
-          throw new GoalBoardV1Error("evidence.correction_cycle", "Evidence 不能用自己替代自己");
-        }
-        replacement = this.store.db
-          .prepare("SELECT * FROM evidence WHERE evidence_id = ? AND board_id = ?")
-          .get(replacementId, input.board_id) as Row | undefined;
-        if (!replacement || asText(replacement.goal_id) !== input.goal_id) {
-          throw new GoalBoardV1Error(
-            "evidence.replacement_invalid",
-            "替代 Evidence 必须属于同一个 Board 和 Goal",
-          );
-        }
-        if (asText(replacement.producer_actor_id) !== input.actor_id) {
-          throw new GoalBoardV1Error(
-            "evidence.replacement_not_owner",
-            "Runtime 只能用自己提交的 Evidence 建立替代关系",
-          );
-        }
-
-        let cursor: string | null = replacementId;
-        const visited = new Set<string>();
-        while (cursor) {
-          if (cursor === input.target_evidence_id) {
-            throw new GoalBoardV1Error("evidence.correction_cycle", "Evidence 更正关系不能形成循环");
-          }
-          if (visited.has(cursor)) {
-            throw new GoalBoardV1Error("evidence.correction_cycle", "现有 Evidence 更正链已经形成循环");
-          }
-          visited.add(cursor);
-          const next = this.store.db
-            .prepare("SELECT action, replacement_evidence_id FROM evidence_corrections WHERE target_evidence_id = ?")
-            .get(cursor) as Row | undefined;
-          if (!next) break;
-          cursor = asText(next.action) === "supersede" && next.replacement_evidence_id != null
-            ? asText(next.replacement_evidence_id)
-            : null;
-        }
-        const replacementCorrection = this.store.db
-          .prepare("SELECT action FROM evidence_corrections WHERE target_evidence_id = ?")
-          .get(replacementId) as Row | undefined;
-        if (replacementCorrection) {
-          throw new GoalBoardV1Error(
-            "evidence.replacement_not_effective",
-            "替代 Evidence 必须是当前有效记录，不能再引用已被替代或撤销的历史",
-          );
-        }
-      } else if (replacementId) {
-        throw new GoalBoardV1Error(
-          "evidence.replacement_not_allowed",
-          "retract 只撤销当前 Evidence，不能同时指定替代记录",
-        );
-      }
-
-      const correctionId = `evidence-correction-${randomUUID()}`;
-      const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          INSERT INTO evidence_corrections (
-            correction_id, board_id, goal_id, target_evidence_id, action,
-            replacement_evidence_id, actor_id, reason, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          correctionId,
-          input.board_id,
-          input.goal_id,
-          input.target_evidence_id,
-          input.action,
-          replacementId,
-          input.actor_id,
-          reasonText,
-          now,
-        );
-      const eventType = input.action === "supersede" ? "evidence.superseded" : "evidence.retracted";
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: eventType,
-        objectType: "evidence_correction",
-        objectId: correctionId,
-        reason: reasonText,
-        payload: {
-          goal_id: input.goal_id,
-          target_evidence_id: input.target_evidence_id,
-          replacement_evidence_id: replacementId,
-        },
-        at: now,
-      });
-      if (asText(target.result) === "passed") {
-        this.markSatisfiedGoalForEvidenceRevalidation(
-          input.board_id,
-          input.goal_id,
-          input.actor_id,
-          input.target_evidence_id,
-          correctionId,
-          now,
-        );
-      }
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        previousProjection.action_token,
-        input.action === "supersede" ? "已替换旧完成依据" : "已撤回旧完成依据",
-        now,
-      );
-      const snapshot = this.store.snapshot(input.board_id);
-      const correction = snapshot.evidence_corrections.find((item) => item.correction_id === correctionId);
-      const targetEvidence = snapshot.evidence.find((item) => item.evidence_id === input.target_evidence_id);
-      const replacementEvidence = replacementId
-        ? snapshot.evidence.find((item) => item.evidence_id === replacementId) ?? null
-        : null;
-      if (!correction || !targetEvidence) {
-        throw new Error(`Evidence 更正写入后无法读取: ${correctionId}`);
-      }
-      const outcome = {
-        correction,
-        target_evidence: targetEvidence,
-        replacement_evidence: replacementEvidence,
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "correct_evidence",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  submitReview(input: {
-    board_id: string;
-    goal_id: string;
-    obligation_id: string;
-    actor_id: string;
-    actor_kind?: "user" | "runtime";
-    verdict: ReviewRecord["verdict"];
-    evidence_refs?: string[];
-    reasoning: string;
-    contract_revision?: number;
-    action_token?: string;
-    idempotency_key: string;
-  }): {
-    review: ReviewRecord;
-    replayed: boolean;
-    observed_event_cursor: number;
-    transition: ActionTransitionReceipt;
-  } {
-    const hash = requestHash(input);
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        review: ReviewRecord;
-        observed_event_cursor: number;
-        transition?: ActionTransitionReceipt;
-      }>(
-        input.board_id,
-        input.actor_id,
-        "submit_review",
-        input.idempotency_key,
-        hash,
-      );
-      if (replay) {
-        const projection = this.getGoalActionProjection({ board_id: input.board_id, goal_id: input.goal_id });
-        return {
-          ...replay,
-          transition: replay.transition ?? {
-            goal_id: input.goal_id,
-            previous_action_token: projection.action_token,
-            projection,
-            affected_goals: [compactGoalActionProjection(projection)],
-            summary: "已记录复核结果",
-            observed_event_cursor: replay.observed_event_cursor,
-          },
-          replayed: true,
-        };
-      }
-      const reviewGoal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      const revisionSnapshot = this.store.snapshot(input.board_id);
-      if (reviewGoal.trashed_at) {
-        throw new GoalBoardV1Error("goal.trashed", "回收站中的 Goal 不能提交 Review");
-      }
-      const previousProjection = this.getGoalActionProjection({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-      });
-      if (
-        input.contract_revision != null &&
-        !contractRevisionIsCompatible(reviewGoal, revisionSnapshot, input.contract_revision)
-      ) {
-        throw new GoalBoardV1Error(
-          "contract.revision_stale",
-          "Review 属于旧 Contract revision，未写入当前 Goal。",
-          { current_contract_revision: reviewGoal.current_contract_revision, projection: previousProjection },
-        );
-      }
-      if (input.action_token && input.action_token !== previousProjection.action_token) {
-        throw new GoalBoardV1Error(
-          "action.token_stale",
-          "提交 Review 前 Goal 已变化；旧写入未生效。",
-          { projection: previousProjection },
-        );
-      }
-      if (!input.reasoning.trim()) throw new GoalBoardV1Error("review.reasoning_required", "Review 必须说明判断理由");
-      const obligation = this.store.db
-        .prepare("SELECT * FROM review_obligations WHERE obligation_id = ? AND goal_id = ?")
-        .get(input.obligation_id, input.goal_id) as Row | undefined;
-      if (!obligation) throw new GoalBoardV1Error("review.obligation_not_found", "找不到这项 Review 要求");
-      if (asText(obligation.state) !== "pending") {
-        throw new GoalBoardV1Error("review.obligation_closed", "这项 Review 要求已经关闭");
-      }
-      if (!contractRevisionIsCompatible(reviewGoal, revisionSnapshot, Number(obligation.contract_revision ?? 1))) {
-        throw new GoalBoardV1Error(
-          "contract.revision_stale",
-          "这项 Review 要求属于旧 Contract revision。",
-          { current_contract_revision: reviewGoal.current_contract_revision, projection: previousProjection },
-        );
-      }
-      const latestWorkRun = this.store.db
-        .prepare(`
-          SELECT state FROM runs
-          WHERE board_id = ? AND goal_id = ? AND role IN ('executor', 'revalidator')
-          ORDER BY started_at DESC, run_id DESC
-          LIMIT 1
-        `)
-        .get(input.board_id, input.goal_id) as Row | undefined;
-      if (!latestWorkRun || asText(latestWorkRun.state) !== "completed") {
-        throw new GoalBoardV1Error("review.execution_not_completed", "执行 Run 尚未完成，不能提交 Review");
-      }
-      if (this.hasPostExecutionNeedsChanges(input.board_id, input.goal_id)) {
-        throw new GoalBoardV1Error(
-          "review.rework_pending",
-          "Review 已要求返工，必须先完成新的执行 Run 再重新复核",
-        );
-      }
-      const evidenceRefs = unique(input.evidence_refs ?? []);
-      if (input.verdict === "pass") {
-        for (const evidenceRef of evidenceRefs) {
-          const referenced = this.store.db
-            .prepare(`
-              SELECT
-                evidence.board_id,
-                evidence.goal_id,
-                evidence.criterion_ids_json,
-                evidence_event.seq AS submitted_seq,
-                correction.correction_id
-              FROM evidence
-              JOIN events evidence_event
-                ON evidence_event.board_id = evidence.board_id
-               AND evidence_event.object_id = evidence.evidence_id
-               AND evidence_event.type = 'evidence.submitted'
-              LEFT JOIN evidence_corrections correction
-                ON correction.target_evidence_id = evidence.evidence_id
-              WHERE evidence.evidence_id = ?
-            `)
-            .get(evidenceRef) as Row | undefined;
-          if (!referenced) continue;
-          if (asText(referenced.board_id) !== input.board_id || asText(referenced.goal_id) !== input.goal_id) {
-            throw new GoalBoardV1Error(
-              "review.evidence_wrong_goal",
-              "Review 引用的 Evidence 不属于这个 Goal",
-            );
-          }
-          if (referenced.correction_id != null) {
-            throw new GoalBoardV1Error(
-              "review.evidence_not_effective",
-              "Review 通过只能引用当前有效 Evidence；已被替代或撤销的记录只保留为历史",
-            );
-          }
-          const staleCriterionIds = parseJson<string[]>(referenced.criterion_ids_json, []).filter(
-            (criterionId) =>
-              this.latestCriterionReworkSeq(input.board_id, input.goal_id, criterionId) >=
-              Number(referenced.submitted_seq ?? 0),
-          );
-          if (staleCriterionIds.length > 0) {
-            throw new GoalBoardV1Error(
-              "review.evidence_stale_after_rework",
-              "Review 通过不能复用返工请求之前的旧 Evidence",
-              {
-                stale_criterion_ids: staleCriterionIds,
-                evidence_id: evidenceRef,
-                recovery_action: "请在新的执行 Run 中提交覆盖这些验收条件的新 Evidence，再重新复核。",
-              },
-            );
-          }
-        }
-      }
-      const role = asText(obligation.role);
-      if (role === "human_approver" && input.actor_kind !== "user") {
-        throw new GoalBoardV1Error(
-          "review.user_authority_required",
-          "只有用户可以提交 human approval Review",
-        );
-      }
-      if (role === "cross_reviewer" || role === "adversarial_reviewer") {
-        const executor = this.store.db
-          .prepare(`
-            SELECT actor_id FROM claims WHERE goal_id = ? AND role IN ('executor', 'revalidator')
-            ORDER BY claimed_at DESC LIMIT 1
-          `)
-          .get(input.goal_id) as Row | undefined;
-        if (executor && asText(executor.actor_id) === input.actor_id) {
-          throw new GoalBoardV1Error(
-            "review.independence_failed",
-            "执行者不能交叉或对抗性复核自己的 Goal",
-          );
-        }
-      }
-      const reviewId = `review-${randomUUID()}`;
-      const now = this.clock().toISOString();
-      const activeReviewerClaim = role === "human_approver"
-        ? null
-        : revisionSnapshot.claims
-            .filter((claim) =>
-              claim.board_id === input.board_id &&
-              claim.goal_id === input.goal_id &&
-              claim.actor_id === input.actor_id &&
-              claim.state === "active" &&
-              contractRevisionIsCompatible(reviewGoal, revisionSnapshot, claim.contract_revision) &&
-              claim.action_kind === "review" &&
-              claim.action_target_id === input.obligation_id
-            )
-            .sort((left, right) =>
-              left.claimed_at.localeCompare(right.claimed_at) ||
-              left.claim_id.localeCompare(right.claim_id)
-            )
-            .at(-1) ?? null;
-      // Pre-action-model Runtimes submitted a unique Review directly. Keep that
-      // boundary-compatible path, while new action-aware callers bind the
-      // review to its Claim and receive automatic Run/Claim close-out below.
-      this.store.db
-        .prepare(`
-          INSERT INTO reviews (
-            review_id, board_id, goal_id, obligation_id, claim_id, actor_id,
-            verdict, evidence_refs_json, reasoning, submitted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          reviewId,
-          input.board_id,
-          input.goal_id,
-          input.obligation_id,
-          activeReviewerClaim?.claim_id ?? null,
-          input.actor_id,
-          input.verdict,
-          sqliteJson(evidenceRefs),
-          input.reasoning.trim(),
-          now,
-        );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "review.submitted",
-        objectType: "review",
-        objectId: reviewId,
-        reason: input.reasoning,
-        payload: { goal_id: input.goal_id, obligation_id: input.obligation_id, verdict: input.verdict },
-        at: now,
-      });
-      if (input.verdict === "needs_changes") {
-        this.store.db
-          .prepare("UPDATE review_obligations SET state = 'pending' WHERE goal_id = ? AND state = 'satisfied'")
-          .run(input.goal_id);
-      }
-      if (input.verdict === "pass") {
-        const passed = this.store.db
-          .prepare(`
-            SELECT COUNT(DISTINCT review.actor_id) AS count
-            FROM reviews review
-            JOIN events event
-              ON event.object_id = review.review_id
-             AND event.type = 'review.submitted'
-            WHERE review.obligation_id = ?
-              AND review.verdict = 'pass'
-              AND event.seq > COALESCE((
-                SELECT MAX(work_event.seq)
-                FROM events work_event
-                JOIN runs run ON run.run_id = work_event.object_id
-                WHERE work_event.board_id = ?
-                  AND work_event.type = 'run.completed'
-                  AND run.goal_id = ?
-                  AND run.role IN ('executor', 'revalidator')
-              ), 0)
-          `)
-          .get(input.obligation_id, input.board_id, input.goal_id) as Row;
-        if (Number(passed.count ?? 0) >= Number(obligation.required_count ?? 0)) {
-          this.store.db
-            .prepare("UPDATE review_obligations SET state = 'satisfied' WHERE obligation_id = ?")
-            .run(input.obligation_id);
-        }
-      }
-      if (activeReviewerClaim) {
-        const activeRun = this.store.db.prepare(`
-          SELECT run_id FROM runs
-          WHERE claim_id = ? AND state IN ('started', 'blocked')
-          ORDER BY started_at DESC, run_id DESC LIMIT 1
-        `).get(activeReviewerClaim.claim_id) as Row | undefined;
-        if (activeRun) {
-          this.store.db
-            .prepare("UPDATE runs SET state = 'completed', ended_at = ?, block_reason = NULL WHERE run_id = ?")
-            .run(now, asText(activeRun.run_id));
-          this.store.appendEvent({
-            eventId: randomUUID(),
-            boardId: input.board_id,
-            actorId: input.actor_id,
-            type: "run.completed",
-            objectType: "run",
-            objectId: asText(activeRun.run_id),
-            reason: "Review 已提交，Reviewer Run 自动结束",
-            payload: { review_id: reviewId, obligation_id: input.obligation_id },
-            at: now,
-          });
-        }
-      }
-      const transition = this.reconcileLifecycle(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        previousProjection.action_token,
-        input.verdict === "needs_changes" ? "已记录修改要求" : "已记录复核结果",
-        now,
-      );
-      const review = this.readReview(reviewId);
-      const outcome = {
-        review,
-        observed_event_cursor: transition.observed_event_cursor,
-        transition,
-      };
-      this.remember(input.board_id, input.actor_id, "submit_review", input.idempotency_key, hash, outcome, now);
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  /**
-   * Record one unambiguous user verdict from a trusted local dialogue. The
-   * caller supplies provenance discovered by the host; the Runtime only
-   * carries the exact quote, target and current attention token.
-   */
-  submitHumanReviewFromDialogue(input: {
-    board_id: string;
-    goal_id: string;
-    obligation_id: string;
-    attention_token: string;
-    verdict: "approve" | "request_changes";
-    exact_user_quote: string;
-    user_id: string;
-    session_id: string;
-    message_id: string;
-    idempotency_key: string;
-  }): {
-    evidence: EvidenceRecord;
-    review: ReviewRecord;
-    transition: ActionTransitionReceipt;
-    observed_event_cursor: number;
-    replayed: boolean;
-  } {
-    const normalized = {
-      ...input,
-      exact_user_quote: input.exact_user_quote.trim(),
-      user_id: input.user_id.trim(),
-      session_id: input.session_id.trim(),
-      message_id: input.message_id.trim(),
-    };
-    const hash = requestHash(normalized);
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        evidence: EvidenceRecord;
-        review: ReviewRecord;
-        transition: ActionTransitionReceipt;
-        observed_event_cursor: number;
-      }>(input.board_id, input.user_id, "human_review_dialogue", input.idempotency_key, hash);
-      if (replay) return { ...replay, replayed: true };
-      if (
-        !normalized.exact_user_quote || !normalized.user_id ||
-        !normalized.session_id || !normalized.message_id
-      ) {
-        throw new GoalBoardV1Error(
-          "review.dialogue_provenance_required",
-          "对话验收必须保留用户原话、用户、Session 和消息来源。",
-        );
-      }
-      const snapshot = this.store.snapshot(input.board_id);
-      const goal = snapshot.goals.find((candidate) => candidate.goal_id === input.goal_id);
-      if (!goal) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${input.goal_id}`);
-      const compatibleRevisions = compatibleContractRevisions(goal, snapshot);
-      const pendingHuman = snapshot.review_obligations.filter((obligation) =>
-        obligation.goal_id === input.goal_id &&
-        compatibleRevisions.has(obligation.contract_revision) &&
-        obligation.role === "human_approver" &&
-        obligation.state === "pending"
-      );
-      const completedHuman = snapshot.review_obligations.filter((obligation) =>
-        obligation.goal_id === input.goal_id &&
-        compatibleRevisions.has(obligation.contract_revision) &&
-        obligation.role === "human_approver" &&
-        obligation.state === "satisfied"
-      );
-      const candidates = pendingHuman.length > 0
-        ? pendingHuman
-        : input.verdict === "request_changes" && goal.fulfillment_state === "satisfied"
-          ? completedHuman
-          : [];
-      const obligation = candidates.find((candidate) => candidate.obligation_id === input.obligation_id);
-      if (!obligation || candidates.length !== 1) {
-        throw new GoalBoardV1Error(
-          "review.dialogue_target_ambiguous",
-          "当前对话不能唯一对应一项用户验收；请到 Decision Center 逐项处理。",
-          { pending_obligation_ids: pendingHuman.map((item) => item.obligation_id) },
-        );
-      }
-      const expectedToken = humanReviewAttentionToken(goal, obligation, snapshot);
-      if (input.attention_token !== expectedToken) {
-        throw new GoalBoardV1Error(
-          "review.attention_token_stale",
-          "验收内容在用户回答前已经变化；旧回答没有写入。",
-          {
-            obligation_id: obligation.obligation_id,
-            current_attention_token: expectedToken,
-            projection: deriveGoalActionProjection(goal, snapshot, this.clock().toISOString()),
-          },
-        );
-      }
-      if (obligation.state === "satisfied" && input.verdict === "request_changes") {
-        this.store.db
-          .prepare("UPDATE review_obligations SET state = 'pending' WHERE obligation_id = ?")
-          .run(obligation.obligation_id);
-      }
-      const evidence = this.submitEvidence({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-        actor_id: normalized.user_id,
-        criterion_ids: obligation.criterion_scope,
-        kind: "human_verdict",
-        locator: `conversation://${encodeURIComponent(normalized.session_id)}/${encodeURIComponent(normalized.message_id)}`,
-        digest: dialogueEvidenceDigest(normalized.exact_user_quote),
-        result: input.verdict === "approve" ? "passed" : "failed",
-        contract_revision: goal.current_contract_revision,
-        idempotency_key: `human-evidence:${input.idempotency_key}`,
-      }).evidence;
-      const reviewResult = this.submitReview({
-        board_id: input.board_id,
-        goal_id: input.goal_id,
-        obligation_id: input.obligation_id,
-        actor_id: normalized.user_id,
-        actor_kind: "user",
-        verdict: input.verdict === "approve" ? "pass" : "needs_changes",
-        evidence_refs: [evidence.evidence_id],
-        reasoning: normalized.exact_user_quote,
-        contract_revision: goal.current_contract_revision,
-        idempotency_key: `human-review:${input.idempotency_key}`,
-      });
-      this.store.db
-        .prepare("UPDATE evidence SET review_id = ? WHERE evidence_id = ? AND review_id IS NULL")
-        .run(reviewResult.review.review_id, evidence.evidence_id);
-      const linkedEvidence = this.store.snapshot(input.board_id).evidence.find(
-        (item) => item.evidence_id === evidence.evidence_id,
-      );
-      if (!linkedEvidence) throw new Error(`Human Evidence 写入后无法读取: ${evidence.evidence_id}`);
-      const outcome = {
-        evidence: linkedEvidence,
-        review: reviewResult.review,
-        transition: {
-          ...reviewResult.transition,
-          summary: input.verdict === "approve" ? "已记录你的验收" : "已记录你的修改要求",
-        },
-        observed_event_cursor: reviewResult.transition.observed_event_cursor,
-      };
-      this.remember(
-        input.board_id,
-        normalized.user_id,
-        "human_review_dialogue",
-        input.idempotency_key,
-        hash,
-        outcome,
-        this.clock().toISOString(),
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
-
-  evaluateLeafCompletion(input: {
-    board_id: string;
-    goal_id: string;
-    actor_id: string;
-    idempotency_key: string;
-  }): {
-    satisfied: boolean;
-    reasons: DecisionReason[];
-    replayed: boolean;
-    observed_event_cursor: number;
-  } {
-    const hash = requestHash(input);
-    return this.store.immediate(() => {
-      const replay = this.replay<{
-        satisfied: boolean;
-        reasons: DecisionReason[];
-        observed_event_cursor: number;
-      }>(input.board_id, input.actor_id, "evaluate_leaf_completion", input.idempotency_key, hash);
-      if (replay) return { ...replay, replayed: true };
-      const goal = this.requireGoalOnBoard(input.board_id, input.goal_id);
-      if (goal.fulfillment_state === "satisfied" && goal.validity_state === "valid") {
-        const outcome = {
-          satisfied: true,
-          reasons: [],
-          observed_event_cursor: this.store.eventCursor(input.board_id),
-        };
-        this.remember(
-          input.board_id,
-          input.actor_id,
-          "evaluate_leaf_completion",
-          input.idempotency_key,
-          hash,
-          outcome,
-          this.clock().toISOString(),
-        );
-        return { ...outcome, replayed: false };
-      }
-      const reasons: DecisionReason[] = [];
-      if (goal.trashed_at) {
-        reasons.push(reason("goal.trashed", "goal", goal.goal_id, "回收站中的 Goal 不能完成", { trashed_at: goal.trashed_at }));
-      }
-      if (goal.definition_state !== "accepted" || goal.decomposition_state !== "closed_leaf") {
-        reasons.push(reason("goal.not_closed_leaf", "goal", goal.goal_id, "只有已接受的最小 Goal 才能完成"));
-      }
-      if (goal.validity_state !== "valid") {
-        reasons.push(reason("goal.not_valid", "goal", goal.goal_id, "Goal 当前不可信，不能完成"));
-      }
-      const dependencies = this.store.db
-        .prepare(`
-          SELECT g.goal_id, g.title, g.fulfillment_state, g.validity_state
-          FROM goal_relations r
-          JOIN goals g ON g.goal_id = r.to_goal_id
-          WHERE r.board_id = ? AND r.from_goal_id = ?
-            AND r.type = 'depends_on' AND r.state = 'active'
-          ORDER BY g.goal_id
-        `)
-        .all(input.board_id, input.goal_id) as Row[];
-      for (const dependency of dependencies) {
-        const dependencyId = asText(dependency.goal_id);
-        if (asText(dependency.fulfillment_state) !== "satisfied") {
-          reasons.push(
-            reason(
-              "dependency.unsatisfied",
-              "dependency",
-              dependencyId,
-              `前置 Goal「${asText(dependency.title)}」尚未完成，不能完成当前 Goal`,
-            ),
-          );
-        }
-        if (asText(dependency.validity_state) !== "valid") {
-          reasons.push(
-            reason(
-              "dependency.not_valid",
-              "dependency",
-              dependencyId,
-              `前置 Goal「${asText(dependency.title)}」当前不可信，不能完成当前 Goal`,
-              { validity_state: asText(dependency.validity_state) },
-            ),
-          );
-        }
-      }
-      for (const criterion of goal.acceptance_criteria) {
-        if (!this.criterionHasPassingEvidence(goal, criterion.criterion_id)) {
-          reasons.push(
-            reason(
-              "evidence.criterion_uncovered",
-              "criterion",
-              criterion.criterion_id,
-              `验收条件「${criterion.statement}」还没有通过证据`,
-              undefined,
-              criterion.pass_condition,
-            ),
-          );
-        }
-      }
-      const pendingReviews = this.store.db
-        .prepare("SELECT obligation_id, role FROM review_obligations WHERE goal_id = ? AND state = 'pending'")
-        .all(input.goal_id) as Row[];
-      for (const pending of pendingReviews) {
-        reasons.push(
-          reason(
-            "policy.review_pending",
-            "review",
-            asText(pending.obligation_id),
-            `还缺少 ${asText(pending.role)} Review`,
-          ),
-        );
-      }
-      reasons.push(...this.completionRiskReasons(input.goal_id));
-      const pendingCandidates = this.store.db
-        .prepare(`
-          SELECT c.candidate_id FROM candidates c
-          JOIN runs r ON r.run_id = c.discovered_in_run_id
-          WHERE r.goal_id = ? AND c.state = 'pending' AND c.blocking_mode = 'current_run'
-        `)
-        .all(input.goal_id) as Row[];
-      for (const candidate of pendingCandidates) {
-        reasons.push(
-          reason(
-            "candidate.user_decision_required",
-            "candidate",
-            asText(candidate.candidate_id),
-            "执行中发现的新工作需要用户决定",
-          ),
-        );
-      }
-      const pendingRewires = this.store.db
-        .prepare(`
-          SELECT w.rewire_id, c.candidate_id FROM rewires w
-          JOIN candidates c ON c.candidate_id = w.candidate_id
-          JOIN runs r ON r.run_id = c.discovered_in_run_id
-          WHERE r.goal_id = ? AND w.state = 'pending'
-            AND c.blocking_mode = 'current_run'
-        `)
-        .all(input.goal_id) as Row[];
-      for (const pending of pendingRewires) {
-        reasons.push(
-          reason(
-            "rewire.user_confirmation_required",
-            "rewire",
-            asText(pending.rewire_id),
-            "用户已接受 Candidate Goal，但关系调整尚未确认",
-            { candidate_id: asText(pending.candidate_id) },
-          ),
-        );
-      }
-      const directPendingRewires = this.store
-        .snapshot(input.board_id)
-        .rewires.filter(
-          (rewire) =>
-            rewire.candidate_id == null &&
-            rewire.state === "pending" &&
-            rewire.proposal.proposal_kind === "dependency" &&
-            rewire.proposal.blocking_mode === "current_run" &&
-            rewire.proposal.discovered_in_run_id != null,
-        );
-      for (const pending of directPendingRewires) {
-        const discoveredRun = this.store
-          .snapshot(input.board_id)
-          .runs.find((run) => run.run_id === pending.proposal.discovered_in_run_id);
-        if (discoveredRun?.goal_id !== input.goal_id) continue;
-        reasons.push(
-          reason(
-            "rewire.user_confirmation_required",
-            "rewire",
-            pending.rewire_id,
-            "Runtime 提出了依赖调整，等待用户决定",
-          ),
-        );
-      }
-      const now = this.clock().toISOString();
-      const observedCursor = this.store.eventCursor(input.board_id);
-      if (reasons.length > 0) {
-        const outcome = { satisfied: false, reasons: reasons.sort(compareReasons), observed_event_cursor: observedCursor };
-        this.remember(
-          input.board_id,
-          input.actor_id,
-          "evaluate_leaf_completion",
-          input.idempotency_key,
-          hash,
-          outcome,
-          now,
-        );
-        return { ...outcome, replayed: false };
-      }
-      this.store.db
-        .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
-        .run(now, input.goal_id);
-      const activeGoalCleared = this.clearActiveGoalIfMatches(
-        input.board_id,
-        input.goal_id,
-        now,
-      );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId: input.board_id,
-        actorId: input.actor_id,
-        type: "goal.satisfied",
-        objectType: "goal",
-        objectId: input.goal_id,
-        reason: "全部验收证据和 Review 要求已满足",
-        payload: { active_goal_cleared: activeGoalCleared },
-        at: now,
-      });
-      const cursor = this.reconcileCompoundAncestors(
-        input.board_id,
-        input.goal_id,
-        input.actor_id,
-        now,
-      );
-      const outcome = { satisfied: true, reasons: [], observed_event_cursor: cursor };
-      this.remember(
-        input.board_id,
-        input.actor_id,
-        "evaluate_leaf_completion",
-        input.idempotency_key,
-        hash,
-        outcome,
-        now,
-      );
-      return { ...outcome, replayed: false };
-    });
-  }
 
   submitContractProposal(input: SubmitContractProposalInput): {
     proposal: ContractProposalRecord;
@@ -8510,9 +3950,7 @@ export class GoalBoardCoordinator {
           "Contract Proposal 只能补全尚未接受的 Draft Goal",
         );
       }
-      const run = this.store.db
-        .prepare("SELECT actor_id, goal_id, role, state FROM runs WHERE run_id = ? AND board_id = ?")
-        .get(input.discovered_in_run_id, input.board_id) as Row | undefined;
+      const run = this.execution.query.getRun(input.board_id, input.discovered_in_run_id);
       if (!run) {
         throw new GoalBoardV1Error(
           "contract_proposal.run_not_found",
@@ -8520,16 +3958,16 @@ export class GoalBoardCoordinator {
         );
       }
       if (
-        asText(run.actor_id) !== input.actor_id ||
-        asText(run.goal_id) !== input.goal_id ||
-        asText(run.role) !== "clarifier"
+        run.actor_id !== input.actor_id ||
+        run.goal_id !== input.goal_id ||
+        run.role !== "clarifier"
       ) {
         throw new GoalBoardV1Error(
           "contract_proposal.run_invalid",
           "只有认领这个 Draft 的 clarifier 可以提交它的 Contract Proposal",
         );
       }
-      if (["failed", "abandoned"].includes(asText(run.state))) {
+      if (["failed", "abandoned"].includes(run.state)) {
         throw new GoalBoardV1Error(
           "contract_proposal.run_closed",
           "失败或放弃的 clarifier Run 不能提交 Contract Proposal",
@@ -8548,42 +3986,30 @@ export class GoalBoardCoordinator {
       );
 
       const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          UPDATE contract_proposals
-          SET state = 'superseded', decided_at = ?, decision_json = ?
-          WHERE board_id = ? AND goal_id = ? AND state = 'pending'
-        `)
-        .run(
-          now,
-          sqliteJson({ reason: "clarifier 提交了新的完整 Proposal", superseded_by: input.actor_id }),
-          input.board_id,
-          input.goal_id,
-        );
+      this.governance.records.supersedePendingContractProposals(
+        input.board_id,
+        input.goal_id,
+        now,
+        { reason: "clarifier 提交了新的完整 Proposal", superseded_by: input.actor_id },
+      );
       const proposalId = `contract-proposal-${randomUUID()}`;
-      this.store.db
-        .prepare(`
-          INSERT INTO contract_proposals (
-            proposal_id, board_id, goal_id, submitted_by, discovered_in_run_id,
-            proposed_goal_json, field_sources_json, review_policy_json,
-            proposed_impacts_json, proposed_risks_json, dependency_rewire_ids_json,
-            state, decision_json, created_at, decided_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)
-        `)
-        .run(
-          proposalId,
-          input.board_id,
-          input.goal_id,
-          input.actor_id,
-          input.discovered_in_run_id,
-          sqliteJson(input.proposed_goal),
-          sqliteJson(input.field_sources),
-          sqliteJson(input.review_policy),
-          sqliteJson(input.proposed_impacts ?? []),
-          sqliteJson(input.proposed_risks ?? []),
-          sqliteJson(normalizedDependencyIds),
-          now,
-        );
+      this.governance.records.insertContractProposal({
+        proposal_id: proposalId,
+        board_id: input.board_id,
+        goal_id: input.goal_id,
+        submitted_by: input.actor_id,
+        discovered_in_run_id: input.discovered_in_run_id,
+        proposed_goal: input.proposed_goal,
+        field_sources: input.field_sources,
+        review_policy: input.review_policy,
+        proposed_impacts: input.proposed_impacts ?? [],
+        proposed_risks: input.proposed_risks ?? [],
+        dependency_rewire_ids: normalizedDependencyIds,
+        state: "pending",
+        decision: null,
+        created_at: now,
+        decided_at: null,
+      });
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -8599,7 +4025,7 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
-      const proposal = this.readContractProposal(proposalId);
+      const proposal = this.readContractProposal(input.board_id, proposalId);
       const outcome = { proposal, observed_event_cursor: cursor };
       this.remember(
         input.board_id,
@@ -8639,7 +4065,7 @@ export class GoalBoardCoordinator {
       );
     }
     const hash = requestHash(input);
-    return this.store.immediate(() => {
+    return this.governance.decisions.materializeAtomically(() => {
       const replay = this.replay<{
         proposal: ContractProposalRecord;
         goal: GoalRecord;
@@ -8653,22 +4079,20 @@ export class GoalBoardCoordinator {
       );
       if (replay) return { ...replay, replayed: true };
 
-      const row = this.store.db
-        .prepare("SELECT * FROM contract_proposals WHERE proposal_id = ? AND board_id = ?")
-        .get(input.proposal_id, input.board_id) as Row | undefined;
-      if (!row) {
+      const pendingProposal = this.governance.query.getContractProposal(input.board_id, input.proposal_id);
+      if (!pendingProposal) {
         throw new GoalBoardV1Error(
           "contract_proposal.not_found",
           "Contract Proposal 不存在",
         );
       }
-      if (asText(row.state) !== "pending") {
+      if (pendingProposal.state !== "pending") {
         throw new GoalBoardV1Error(
           "contract_proposal.already_decided",
           "Contract Proposal 已经做过决定",
         );
       }
-      const goalId = asText(row.goal_id);
+      const goalId = pendingProposal.goal_id;
       const goal = this.requireGoalOnBoard(input.board_id, goalId);
       if (goal.definition_state !== "draft") {
         throw new GoalBoardV1Error(
@@ -8678,17 +4102,13 @@ export class GoalBoardCoordinator {
       }
       const now = this.clock().toISOString();
       if (input.decision === "rejected") {
-        this.store.db
-          .prepare(`
-            UPDATE contract_proposals
-            SET state = 'rejected', decision_json = ?, decided_at = ?
-            WHERE proposal_id = ?
-          `)
-          .run(
-            sqliteJson({ reason: input.reason, decided_by: input.actor_id }),
-            now,
-            input.proposal_id,
-          );
+        this.governance.records.transitionContractProposal(
+          input.board_id,
+          input.proposal_id,
+          "rejected",
+          { reason: input.reason, decided_by: input.actor_id },
+          now,
+        );
         const cursor = this.store.appendEvent({
           eventId: randomUUID(),
           boardId: input.board_id,
@@ -8700,7 +4120,7 @@ export class GoalBoardCoordinator {
           payload: { goal_id: goalId, canonical_goal_changed: false },
           at: now,
         });
-        const proposal = this.readContractProposal(input.proposal_id);
+        const proposal = this.readContractProposal(input.board_id, input.proposal_id);
         const unchangedGoal = this.requireGoalOnBoard(input.board_id, goalId);
         const outcome = { proposal, goal: unchangedGoal, observed_event_cursor: cursor };
         this.remember(
@@ -8715,15 +4135,12 @@ export class GoalBoardCoordinator {
         return { ...outcome, replayed: false };
       }
 
-      const proposedGoal = parseJson<CreateGoalInput>(
-        row.proposed_goal_json,
-        {} as CreateGoalInput,
-      );
-      const fieldSources = parseJson<ContractFieldSource[]>(row.field_sources_json, []);
-      const reviewPolicy = parseJson<GoalPolicy>(row.review_policy_json, {} as GoalPolicy);
-      const proposedImpacts = parseJson<ContractProposalImpact[]>(row.proposed_impacts_json, []);
-      const proposedRisks = parseJson<ContractProposalRisk[]>(row.proposed_risks_json, []);
-      const dependencyRewireIds = parseJson<string[]>(row.dependency_rewire_ids_json, []);
+      const proposedGoal = pendingProposal.proposed_goal;
+      const fieldSources = pendingProposal.field_sources;
+      const reviewPolicy = pendingProposal.review_policy;
+      const proposedImpacts = pendingProposal.proposed_impacts;
+      const proposedRisks = pendingProposal.proposed_risks;
+      const dependencyRewireIds = pendingProposal.dependency_rewire_ids;
       this.validateContractProposal(
         input.board_id,
         goalId,
@@ -8736,53 +4153,20 @@ export class GoalBoardCoordinator {
         true,
       );
 
-      this.store.db
-        .prepare(`
-          UPDATE goals SET
-            title = ?, outcome = ?, why = ?, business_logic = ?,
-            in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
-            required_inputs_json = ?, promised_outputs_json = ?,
-            decomposition_review_json = NULL,
-            definition_state = 'accepted', decomposition_state = 'closed_leaf',
-            validity_state = 'valid', fulfillment_state = 'unmet', priority = ?,
-            accepted_by = ?, accepted_at = ?, updated_at = ?
-          WHERE goal_id = ? AND board_id = ?
-        `)
-        .run(
-          proposedGoal.title.trim(),
-          proposedGoal.outcome.trim(),
-          proposedGoal.why.trim(),
-          proposedGoal.business_logic.trim(),
-          sqliteJson(proposedGoal.in_scope ?? []),
-          sqliteJson(proposedGoal.out_of_scope ?? []),
-          sqliteJson(proposedGoal.constraints ?? []),
-          sqliteJson(proposedGoal.required_inputs ?? []),
-          sqliteJson(proposedGoal.promised_outputs ?? []),
-          proposedGoal.priority ?? goal.priority,
-          input.actor_id,
-          now,
-          now,
-          goalId,
-          input.board_id,
-        );
-      this.store.db.prepare("DELETE FROM acceptance_criteria WHERE goal_id = ?").run(goalId);
-      const insertCriterion = this.store.db.prepare(`
-        INSERT INTO acceptance_criteria (
-          criterion_id, goal_id, statement, decision_method,
-          pass_condition, target_json, required_evidence_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const criterion of proposedGoal.acceptance_criteria) {
-        insertCriterion.run(
-          criterion.criterion_id?.trim() || `criterion-${randomUUID()}`,
-          goalId,
-          criterion.statement.trim(),
-          criterion.decision_method,
-          criterion.pass_condition.trim(),
-          criterion.target == null ? null : sqliteJson(criterion.target),
-          sqliteJson(criterion.required_evidence ?? []),
-        );
-      }
+      this.goalsModule.lifecycle.acceptDraft({
+        board_id: input.board_id,
+        goal_id: goalId,
+        proposed_goal: {
+          ...proposedGoal,
+          goal_id: goalId,
+          definition_state: "accepted",
+          decomposition_state: "closed_leaf",
+          decomposition_review: undefined,
+          priority: proposedGoal.priority ?? goal.priority,
+        },
+        actor_id: input.actor_id,
+        accepted_at: now,
+      });
 
       this.store.db
         .prepare(`
@@ -8866,14 +4250,11 @@ export class GoalBoardCoordinator {
       }
 
       const confirmedFields = unique(fieldSources.map((source) => source.field)).sort();
-      this.store.db
-        .prepare(`
-          UPDATE contract_proposals
-          SET state = 'approved', decision_json = ?, decided_at = ?
-          WHERE proposal_id = ?
-        `)
-        .run(
-          sqliteJson({
+      this.governance.records.transitionContractProposal(
+        input.board_id,
+        input.proposal_id,
+        "approved",
+        {
             reason: input.reason,
             decided_by: input.actor_id,
             confirmed_fields: confirmedFields,
@@ -8881,10 +4262,9 @@ export class GoalBoardCoordinator {
             impact_binding_ids: impactBindingIds,
             risk_ids: riskIds,
             dependency_rewire_ids: dependencyRewireIds,
-          }),
-          now,
-          input.proposal_id,
-        );
+        },
+        now,
+      );
       this.closeOpenClarificationSessions(
         input.board_id,
         goalId,
@@ -8907,7 +4287,7 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
-      const proposal = this.readContractProposal(input.proposal_id);
+      const proposal = this.readContractProposal(input.board_id, input.proposal_id);
       const acceptedGoal = this.requireGoalOnBoard(input.board_id, goalId);
       const outcome = { proposal, goal: acceptedGoal, observed_event_cursor: cursor };
       this.remember(
@@ -8934,7 +4314,7 @@ export class GoalBoardCoordinator {
     blocking_mode?: CandidateGoalRecord["blocking_mode"];
     idempotency_key: string;
   }): { candidate: CandidateGoalRecord; replayed: boolean; observed_event_cursor: number } {
-    this.validateGoalInput(input.proposed_goal);
+    this.goalsModule.commands.validateGoalInput(input.proposed_goal);
     const proposedRelations = this.normalizeProposedRelations(input.proposed_relations ?? [], true);
     if (input.blocking_mode === "current_run" && !input.discovered_in_run_id) {
       throw new GoalBoardV1Error(
@@ -8961,36 +4341,29 @@ export class GoalBoardCoordinator {
       );
       this.requireBoard(input.board_id);
       if (input.discovered_in_run_id) {
-        const run = this.store.db
-          .prepare("SELECT run_id, actor_id FROM runs WHERE run_id = ? AND board_id = ?")
-          .get(input.discovered_in_run_id, input.board_id) as Row | undefined;
+        const run = this.execution.query.getRun(input.board_id, input.discovered_in_run_id);
         if (!run) throw new GoalBoardV1Error("candidate.run_not_found", "Candidate 引用的 Run 不存在");
-        if (asText(run.actor_id) !== input.actor_id) {
+        if (run.actor_id !== input.actor_id) {
           throw new GoalBoardV1Error("candidate.run_not_owner", "只有 Run 执行者可以报告它发现的新工作");
         }
       }
       const candidateId = `candidate-${randomUUID()}`;
       const now = this.clock().toISOString();
-      this.store.db
-        .prepare(`
-          INSERT INTO candidates (
-            candidate_id, board_id, submitted_by, discovered_in_run_id,
-            proposed_goal_json, proposed_relations_json, proposed_impacts_json,
-            proposed_risks_json, blocking_mode, state, decision_json, created_at, decided_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)
-        `)
-        .run(
-          candidateId,
-          input.board_id,
-          input.actor_id,
-          input.discovered_in_run_id ?? null,
-          sqliteJson(input.proposed_goal),
-          sqliteJson(proposedRelations),
-          sqliteJson(input.proposed_impacts ?? []),
-          sqliteJson(input.proposed_risks ?? []),
-          input.blocking_mode ?? "none",
-          now,
-        );
+      this.governance.records.insertCandidate({
+        candidate_id: candidateId,
+        board_id: input.board_id,
+        submitted_by: input.actor_id,
+        discovered_in_run_id: input.discovered_in_run_id ?? null,
+        proposed_goal: input.proposed_goal,
+        proposed_relations: proposedRelations,
+        proposed_impacts: input.proposed_impacts ?? [],
+        proposed_risks: input.proposed_risks ?? [],
+        blocking_mode: input.blocking_mode ?? "none",
+        state: "pending",
+        decision: null,
+        created_at: now,
+        decided_at: null,
+      });
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -9002,7 +4375,7 @@ export class GoalBoardCoordinator {
         payload: { blocking_mode: input.blocking_mode ?? "none" },
         at: now,
       });
-      const candidate = this.readCandidate(candidateId);
+      const candidate = this.readCandidate(input.board_id, candidateId);
       const outcome = { candidate, observed_event_cursor: cursor };
       this.remember(
         input.board_id,
@@ -9052,16 +4425,14 @@ export class GoalBoardCoordinator {
       );
       if (replay) return { ...replay, replayed: true };
       this.requireBoard(input.board_id);
-      const run = this.store.db
-        .prepare("SELECT run_id, actor_id, goal_id FROM runs WHERE run_id = ? AND board_id = ?")
-        .get(input.discovered_in_run_id, input.board_id) as Row | undefined;
+      const run = this.execution.query.getRun(input.board_id, input.discovered_in_run_id);
       if (!run) {
         throw new GoalBoardV1Error(
           "dependency_proposal.run_not_found",
           "Dependency Proposal 引用的 Run 不存在",
         );
       }
-      if (asText(run.actor_id) !== input.actor_id) {
+      if (run.actor_id !== input.actor_id) {
         throw new GoalBoardV1Error(
           "dependency_proposal.run_not_owner",
           "只有 Run 执行者可以提交它发现的依赖",
@@ -9070,7 +4441,7 @@ export class GoalBoardCoordinator {
       this.validateStandaloneDependencies(input.board_id, dependencies);
       if (
         blockingMode === "current_run" &&
-        !dependencies.some((dependency) => dependency.from_goal_id === asText(run.goal_id))
+        !dependencies.some((dependency) => dependency.from_goal_id === run.goal_id)
       ) {
         throw new GoalBoardV1Error(
           "dependency_proposal.current_run_unrelated",
@@ -9082,13 +4453,7 @@ export class GoalBoardCoordinator {
       const affectedGoalIds = unique(
         dependencies.flatMap((dependency) => [dependency.from_goal_id, dependency.to_goal_id]),
       ).sort();
-      const activeRuns = this.store.db
-        .prepare(`
-          SELECT run_id, goal_id FROM runs
-          WHERE board_id = ? AND state IN ('started', 'blocked')
-          ORDER BY run_id
-        `)
-        .all(input.board_id) as Row[];
+      const activeRuns = this.executionModule.repository.listNonterminalRuns(input.board_id);
       const proposal: RewireRecord["proposal"] = {
         proposal_kind: "dependency",
         submitted_by: input.actor_id,
@@ -9099,21 +4464,23 @@ export class GoalBoardCoordinator {
       const impact = {
         affected_goal_ids: affectedGoalIds,
         active_runs_protected: activeRuns
-          .filter((activeRun) => affectedGoalIds.includes(asText(activeRun.goal_id)))
+          .filter((activeRun) => affectedGoalIds.includes(activeRun.goal_id))
           .map((activeRun) => ({
-            run_id: asText(activeRun.run_id),
-            goal_id: asText(activeRun.goal_id),
+            run_id: activeRun.run_id,
+            goal_id: activeRun.goal_id,
           })),
         proposed_changes_applied: false,
       };
-      this.store.db
-        .prepare(`
-          INSERT INTO rewires (
-            rewire_id, board_id, candidate_id, proposal_json, impact_json,
-            state, created_at, decided_at
-          ) VALUES (?, ?, NULL, ?, ?, 'pending', ?, NULL)
-        `)
-        .run(rewireId, input.board_id, sqliteJson(proposal), sqliteJson(impact), now);
+      this.governance.records.insertRewire({
+        rewire_id: rewireId,
+        board_id: input.board_id,
+        candidate_id: null,
+        proposal,
+        impact,
+        state: "pending",
+        created_at: now,
+        decided_at: null,
+      });
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -9129,7 +4496,7 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
-      const rewire = this.readRewire(rewireId);
+      const rewire = this.readRewire(input.board_id, rewireId);
       const outcome = { rewire, observed_event_cursor: cursor };
       this.remember(
         input.board_id,
@@ -9160,7 +4527,7 @@ export class GoalBoardCoordinator {
       );
     }
     const hash = requestHash(input);
-    return this.store.immediate(() => {
+    return this.governance.decisions.materializeAtomically(() => {
       const replay = this.replay<{ candidate: CandidateGoalRecord; observed_event_cursor: number }>(
         input.board_id,
         input.actor_id,
@@ -9169,29 +4536,27 @@ export class GoalBoardCoordinator {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
-      const row = this.store.db
-        .prepare("SELECT * FROM candidates WHERE candidate_id = ? AND board_id = ?")
-        .get(input.candidate_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("candidate.not_found", "Candidate Goal 不存在");
-      if (asText(row.state) !== "pending") {
+      const pendingCandidate = this.governance.query.getCandidate(input.board_id, input.candidate_id);
+      if (!pendingCandidate) throw new GoalBoardV1Error("candidate.not_found", "Candidate Goal 不存在");
+      if (pendingCandidate.state !== "pending") {
         throw new GoalBoardV1Error("candidate.already_decided", "Candidate Goal 已经做过决定");
       }
       const now = this.clock().toISOString();
       let decision: Record<string, unknown> = { reason: input.reason, decided_by: input.actor_id };
       if (input.decision === "approved") {
-        const proposed = parseJson<CreateGoalInput>(row.proposed_goal_json, {} as CreateGoalInput);
+        const proposed = pendingCandidate.proposed_goal;
         const proposedRelations = this.normalizeProposedRelations(
-          parseJson<Array<Record<string, unknown>>>(row.proposed_relations_json, []),
+          pendingCandidate.proposed_relations,
           true,
         );
         this.validateCandidateCoordination(
           input.board_id,
           proposed,
           proposedRelations,
-          parseJson<Array<Record<string, unknown>>>(row.proposed_impacts_json, []),
-          parseJson<Array<Record<string, unknown>>>(row.proposed_risks_json, []),
+          pendingCandidate.proposed_impacts,
+          pendingCandidate.proposed_risks,
         );
-        const created = this.createGoal(
+        const created = this.goals.commands.createGoal(
           input.board_id,
           { ...proposed, definition_state: "accepted" },
           {
@@ -9200,42 +4565,38 @@ export class GoalBoardCoordinator {
             reason: `批准 Candidate Goal ${input.candidate_id}`,
           },
         );
-        this.store.db
-          .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
-          .run(now, created.goal.goal_id);
+        this.goalsModule.lifecycle.setValidityState(
+          input.board_id,
+          created.goal.goal_id,
+          "needs_revalidation",
+          now,
+        );
         const rewireId = `rewire-${randomUUID()}`;
         const proposal = {
           formal_goal_id: created.goal.goal_id,
           proposal_kind: "candidate" as const,
           relations: proposedRelations,
-          impacts: parseJson<Array<Record<string, unknown>>>(row.proposed_impacts_json, []),
-          risks: parseJson<Array<Record<string, unknown>>>(row.proposed_risks_json, []),
+          impacts: pendingCandidate.proposed_impacts,
+          risks: pendingCandidate.proposed_risks,
         };
-        const activeRuns = this.store.db
-          .prepare("SELECT run_id, goal_id FROM runs WHERE board_id = ? AND state IN ('started', 'blocked') ORDER BY run_id")
-          .all(input.board_id) as Row[];
+        const activeRuns = this.executionModule.repository.listNonterminalRuns(input.board_id);
         const impact = {
           active_runs_protected: activeRuns.map((run) => ({
-            run_id: asText(run.run_id),
-            goal_id: asText(run.goal_id),
+            run_id: run.run_id,
+            goal_id: run.goal_id,
           })),
           new_goal_requires_rewire_confirmation: true,
         };
-        this.store.db
-          .prepare(`
-            INSERT INTO rewires (
-              rewire_id, board_id, candidate_id, proposal_json, impact_json,
-              state, created_at, decided_at
-            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL)
-          `)
-          .run(
-            rewireId,
-            input.board_id,
-            input.candidate_id,
-            sqliteJson(proposal),
-            sqliteJson(impact),
-            now,
-          );
+        this.governance.records.insertRewire({
+          rewire_id: rewireId,
+          board_id: input.board_id,
+          candidate_id: input.candidate_id,
+          proposal,
+          impact,
+          state: "pending",
+          created_at: now,
+          decided_at: null,
+        });
         decision = {
           ...decision,
           formal_goal_id: created.goal.goal_id,
@@ -9243,9 +4604,13 @@ export class GoalBoardCoordinator {
           next_action: "confirm_rewire",
         };
       }
-      this.store.db
-        .prepare("UPDATE candidates SET state = ?, decision_json = ?, decided_at = ? WHERE candidate_id = ?")
-        .run(input.decision, sqliteJson(decision), now, input.candidate_id);
+      this.governance.records.transitionCandidate(
+        input.board_id,
+        input.candidate_id,
+        input.decision,
+        decision,
+        now,
+      );
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -9257,7 +4622,7 @@ export class GoalBoardCoordinator {
         payload: {},
         at: now,
       });
-      const candidate = this.readCandidate(input.candidate_id);
+      const candidate = this.readCandidate(input.board_id, input.candidate_id);
       const outcome = { candidate, observed_event_cursor: cursor };
       this.remember(
         input.board_id,
@@ -9289,7 +4654,7 @@ export class GoalBoardCoordinator {
       throw new GoalBoardV1Error("rewire.decision_invalid", "Rewire 决定必须是 confirmed 或 rejected");
     }
     const hash = requestHash(input);
-    return this.store.immediate(() => {
+    return this.governance.decisions.materializeAtomically(() => {
       const replay = this.replay<{ rewire: RewireRecord; observed_event_cursor: number }>(
         input.board_id,
         input.actor_id,
@@ -9298,32 +4663,32 @@ export class GoalBoardCoordinator {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
-      const row = this.store.db
-        .prepare("SELECT * FROM rewires WHERE rewire_id = ? AND board_id = ?")
-        .get(input.rewire_id, input.board_id) as Row | undefined;
-      if (!row) throw new GoalBoardV1Error("rewire.not_found", "Rewire 不存在");
-      if (asText(row.state) !== "pending") {
+      const pendingRewire = this.governance.query.getRewire(input.board_id, input.rewire_id);
+      if (!pendingRewire) throw new GoalBoardV1Error("rewire.not_found", "Rewire 不存在");
+      if (pendingRewire.state !== "pending") {
         throw new GoalBoardV1Error("rewire.not_pending", "Rewire 已经做过决定");
       }
-      const proposal = parseJson<RewireRecord["proposal"]>(row.proposal_json, {});
+      const proposal = pendingRewire.proposal;
       const formalGoalId = String(proposal.formal_goal_id ?? "");
       if (formalGoalId) this.requireGoalOnBoard(input.board_id, formalGoalId);
       const now = this.clock().toISOString();
       if (decision === "rejected") {
         if (formalGoalId) {
-          this.store.db
-            .prepare("UPDATE goals SET validity_state = 'valid', updated_at = ? WHERE goal_id = ?")
-            .run(now, formalGoalId);
+          this.goalsModule.lifecycle.setValidityState(input.board_id, formalGoalId, "valid", now);
         }
-        const previousImpact = parseJson<Record<string, unknown>>(row.impact_json, {});
+        const previousImpact = pendingRewire.impact;
         const rejectedImpact = {
           ...previousImpact,
           proposed_changes_applied: false,
           rejection_reason: input.reason,
         };
-        this.store.db
-          .prepare("UPDATE rewires SET state = 'rejected', impact_json = ?, decided_at = ? WHERE rewire_id = ?")
-          .run(sqliteJson(rejectedImpact), now, input.rewire_id);
+        this.governance.records.transitionRewire(
+          input.board_id,
+          input.rewire_id,
+          "rejected",
+          { impact: rejectedImpact },
+          now,
+        );
         const cursor = this.store.appendEvent({
           eventId: randomUUID(),
           boardId: input.board_id,
@@ -9335,7 +4700,7 @@ export class GoalBoardCoordinator {
           payload: { formal_goal_id: formalGoalId, proposed_changes_applied: false },
           at: now,
         });
-        const rewire = this.readRewire(input.rewire_id);
+        const rewire = this.readRewire(input.board_id, input.rewire_id);
         const outcome = { rewire, observed_event_cursor: cursor };
         this.remember(
           input.board_id,
@@ -9381,12 +4746,12 @@ export class GoalBoardCoordinator {
         }];
       });
       const baselinePlanningIssues = new Set(
-        validatePlanningGraph(snapshotBeforeRewire.goals, snapshotBeforeRewire.relations)
+        this.goalsModule.planning.validateGraph(snapshotBeforeRewire.goals, snapshotBeforeRewire.relations)
           .map((issue) => `${issue.code}:${issue.path.join("\u0000")}`),
       );
-      const projectedPlanningIssue = validatePlanningGraph(
+      const projectedPlanningIssue = this.goalsModule.planning.validateGraph(
         snapshotBeforeRewire.goals,
-        projectPlanningRelations(snapshotBeforeRewire.relations, projectedChanges),
+        this.goalsModule.planning.projectRelations(snapshotBeforeRewire.relations, projectedChanges),
       ).find((issue) => !baselinePlanningIssues.has(`${issue.code}:${issue.path.join("\u0000")}`));
       if (projectedPlanningIssue) {
         throw new GoalBoardV1Error(projectedPlanningIssue.code, projectedPlanningIssue.message);
@@ -9488,14 +4853,14 @@ export class GoalBoardCoordinator {
         if (fromGoalId !== formalGoalId) revalidatedGoals.add(fromGoalId);
       }
       for (const relation of addedPartOfRelations) {
-        const reopened = this.reopenSatisfiedCompoundParent(
+        const reopened = this.goalsModule.lifecycle.reopenSatisfiedCompoundParent(
           input.board_id,
           relation.toGoalId,
           input.actor_id,
           now,
         );
         if (!reopened) {
-          this.reconcileCompoundAncestors(
+          this.goalsModule.lifecycle.reconcileCompoundAncestors(
             input.board_id,
             relation.fromGoalId,
             input.actor_id,
@@ -9600,16 +4965,17 @@ export class GoalBoardCoordinator {
         });
       }
       for (const goalId of revalidatedGoals) {
-        this.store.db
-          .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
-          .run(now, goalId);
+        this.goalsModule.lifecycle.setValidityState(
+          input.board_id,
+          goalId,
+          "needs_revalidation",
+          now,
+        );
       }
       if (formalGoalId) {
-        this.store.db
-          .prepare("UPDATE goals SET validity_state = 'valid', updated_at = ? WHERE goal_id = ?")
-          .run(now, formalGoalId);
+        this.goalsModule.lifecycle.setValidityState(input.board_id, formalGoalId, "valid", now);
       }
-      const previousImpact = parseJson<Record<string, unknown>>(row.impact_json, {});
+      const previousImpact = pendingRewire.impact;
       const appliedImpact = {
         ...previousImpact,
         proposed_changes_applied: true,
@@ -9618,9 +4984,13 @@ export class GoalBoardCoordinator {
         added_risk_ids: addedRiskIds,
         goals_needing_revalidation: [...revalidatedGoals].sort(),
       };
-      this.store.db
-        .prepare("UPDATE rewires SET state = 'applied', impact_json = ?, decided_at = ? WHERE rewire_id = ?")
-        .run(sqliteJson(appliedImpact), now, input.rewire_id);
+      this.governance.records.transitionRewire(
+        input.board_id,
+        input.rewire_id,
+        "applied",
+        { impact: appliedImpact },
+        now,
+      );
       const cursor = this.store.appendEvent({
         eventId: randomUUID(),
         boardId: input.board_id,
@@ -9638,7 +5008,7 @@ export class GoalBoardCoordinator {
         },
         at: now,
       });
-      const rewire = this.readRewire(input.rewire_id);
+      const rewire = this.readRewire(input.board_id, input.rewire_id);
       const outcome = { rewire, observed_event_cursor: cursor };
       this.remember(
         input.board_id,
@@ -9712,57 +5082,19 @@ export class GoalBoardCoordinator {
       });
     }
 
-    const desiredRoles = new Set(obligations.map((obligation) => obligation.role));
-    const existingObligations = (this.store.db
-      .prepare(`
-        SELECT obligation_id, role, state, contract_revision, criterion_scope_json
-        FROM review_obligations
-        WHERE goal_id = ?
-      `)
-      .all(goalId) as Row[]).filter((row) =>
-        compatibleRevisions.has(Number(row.contract_revision ?? 1))
-      );
-    const existingRuntimeObligations = existingObligations.filter((row) =>
-      ["self_verifier", "cross_reviewer", "adversarial_reviewer"].includes(asText(row.role))
-    );
-    for (const existing of existingRuntimeObligations) {
-      if (desiredRoles.has(asText(existing.role) as typeof obligations[number]["role"])) continue;
-      if (asText(existing.state) !== "pending") continue;
-      this.store.db
-        .prepare("UPDATE review_obligations SET criterion_scope_json = '[]', state = 'waived' WHERE obligation_id = ?")
-        .run(asText(existing.obligation_id));
-    }
-
-    for (const obligation of obligations) {
-      const existing = existingObligations.find((row) => asText(row.role) === obligation.role);
-      if (existing) {
-        const currentScope = parseJson<string[]>(existing.criterion_scope_json, []);
-        if (JSON.stringify(currentScope) !== JSON.stringify(obligation.criterionIds)) {
-          this.store.db
-            .prepare("UPDATE review_obligations SET criterion_scope_json = ? WHERE obligation_id = ?")
-            .run(sqliteJson(obligation.criterionIds), asText(existing.obligation_id));
-        }
-        continue;
-      }
-      this.store.db
-        .prepare(`
-          INSERT INTO review_obligations (
-            obligation_id, board_id, goal_id, contract_revision, role, required_count,
-            independence_rule, criterion_scope_json, state, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-        `)
-        .run(
-          `obligation-${randomUUID()}`,
-          boardId,
-          goalId,
-          contractRevision,
-          obligation.role,
-          obligation.count,
-          obligation.independence,
-          sqliteJson(obligation.criterionIds),
-          at,
-        );
-    }
+    this.governance.reviews.reconcileObligations({
+      board_id: boardId,
+      goal_id: goalId,
+      contract_revision: contractRevision,
+      compatible_contract_revisions: [...compatibleRevisions],
+      created_at: at,
+      desired: obligations.map((obligation) => ({
+        role: obligation.role,
+        required_count: obligation.count,
+        independence_rule: obligation.independence,
+        criterion_scope: obligation.criterionIds,
+      })),
+    });
   }
 
   private readDraftDialogueView(
@@ -9856,29 +5188,23 @@ export class GoalBoardCoordinator {
     runId: string,
     actorId: string,
   ): { claim_id: string } {
-    const row = this.store.db
-      .prepare(`
-        SELECT r.claim_id, r.actor_id AS run_actor_id, r.role AS run_role, r.state AS run_state,
-               c.actor_id AS claim_actor_id, c.state AS claim_state, c.expires_at AS claim_expires_at
-        FROM runs r
-        JOIN claims c ON c.claim_id = r.claim_id
-        WHERE r.board_id = ? AND r.goal_id = ? AND r.run_id = ?
-      `)
-      .get(boardId, goalId, runId) as Row | undefined;
-    if (!row) throw new GoalBoardV1Error("draft_dialogue.run_not_found", "找不到这条 Goal 澄清 Run");
-    if (asText(row.run_actor_id) !== actorId || asText(row.claim_actor_id) !== actorId) {
+    const pair = this.execution.query.getRunWithClaim(boardId, runId);
+    if (!pair || pair.run.goal_id !== goalId) {
+      throw new GoalBoardV1Error("draft_dialogue.run_not_found", "找不到这条 Goal 澄清 Run");
+    }
+    if (pair.run.actor_id !== actorId || pair.claim.actor_id !== actorId) {
       throw new GoalBoardV1Error("draft_dialogue.run_not_owner", "只有当前澄清 Runtime 可以写入本轮对话进展");
     }
-    if (asText(row.run_role) !== "clarifier") {
+    if (pair.run.role !== "clarifier") {
       throw new GoalBoardV1Error("draft_dialogue.clarifier_required", "只有 clarifier Run 可以记录 Goal 澄清");
     }
-    if (asText(row.run_state) !== "started") {
+    if (pair.run.state !== "started") {
       throw new GoalBoardV1Error("draft_dialogue.run_not_active", "这条澄清 Run 已不在进行中，请先恢复 Goal 澄清对话");
     }
-    if (asText(row.claim_state) !== "active" || asText(row.claim_expires_at) <= this.clock().toISOString()) {
+    if (pair.claim.state !== "active" || pair.claim.expires_at <= this.clock().toISOString()) {
       throw new GoalBoardV1Error("draft_dialogue.claim_not_active", "澄清 Claim 已释放、撤销或过期，请先恢复 Goal 澄清对话");
     }
-    return { claim_id: asText(row.claim_id) };
+    return { claim_id: pair.claim.claim_id };
   }
 
   private requireActiveGoalTreeProposalRun(
@@ -9895,44 +5221,36 @@ export class GoalBoardCoordinator {
       retry_with: "returned run.run_id",
       rejected_run_id: runId,
     };
-    const row = this.store.db
-      .prepare(`
-        SELECT r.goal_id, r.actor_id AS run_actor_id, r.role AS run_role, r.state AS run_state,
-               c.actor_id AS claim_actor_id, c.state AS claim_state, c.expires_at AS claim_expires_at
-        FROM runs r
-        JOIN claims c ON c.claim_id = r.claim_id
-        WHERE r.board_id = ? AND r.run_id = ?
-      `)
-      .get(boardId, runId) as Row | undefined;
-    if (!row) {
+    const pair = this.execution.query.getRunWithClaim(boardId, runId);
+    if (!pair) {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.run_not_found",
         "找不到提交 Goal Tree 提案所引用的澄清 Run。请先调用 goalboard_v1_draft_dialogue_resume 恢复同一 Draft 的澄清生命周期，再用返回的新 run_id 重试 goalboard_v1_goal_tree_propose。",
         recovery,
       );
     }
-    if (asText(row.run_actor_id) !== actorId || asText(row.claim_actor_id) !== actorId) {
+    if (pair.run.actor_id !== actorId || pair.claim.actor_id !== actorId) {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.run_not_owner",
         "只有当前澄清 Runtime 可以提交这份 Goal Tree 提案",
       );
     }
-    const role = asText(row.run_role);
-    if ((role !== "clarifier" && role !== "executor" && role !== "revalidator") || asText(row.run_state) !== "started") {
+    const role = pair.run.role;
+    if ((role !== "clarifier" && role !== "executor" && role !== "revalidator") || pair.run.state !== "started") {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.active_run_required",
         "Goal Tree 提案必须来自正在进行中的 clarifier Run，或来自同一 Goal 上只提交 Risk 生命周期结果的 executor / revalidator Run",
         recovery,
       );
     }
-    if (asText(row.claim_state) !== "active" || asText(row.claim_expires_at) <= this.clock().toISOString()) {
+    if (pair.claim.state !== "active" || pair.claim.expires_at <= this.clock().toISOString()) {
       throw new GoalBoardV1Error(
         "goal_tree_proposal.claim_not_active",
         "澄清 Claim 已释放、撤销或过期。请先调用 goalboard_v1_draft_dialogue_resume 恢复同一 Draft，再用返回的新 run_id 重试。",
         recovery,
       );
     }
-    return { goal_id: asText(row.goal_id), role };
+    return { goal_id: pair.run.goal_id, role };
   }
 
   private readNativeGoalTreeProposal(boardId: string, proposalId: string): GoalTreeProposalRecord {
@@ -10070,9 +5388,9 @@ export class GoalBoardCoordinator {
   private wouldCreatePartOfCycle(boardId: string, fromGoalId: string, toGoalId: string): boolean {
     const snapshot = this.store.snapshot(boardId);
     const projectedId = "projected:part-of-cycle-check";
-    return validatePlanningGraph(
+    return this.goalsModule.planning.validateGraph(
       snapshot.goals,
-      projectPlanningRelations(snapshot.relations, [{
+      this.goalsModule.planning.projectRelations(snapshot.relations, [{
         action: "add",
         relation_id: projectedId,
         from_goal_id: fromGoalId,
@@ -10097,47 +5415,32 @@ export class GoalBoardCoordinator {
     at: string;
   }): GoalTreeProposalDecisionRecord {
     const decisionId = `goal-tree-decision-${randomUUID()}`;
-    this.store.db
-      .prepare(`
-        INSERT INTO goal_tree_proposal_decisions (
-          decision_id, board_id, proposal_id, item_id, decision, actor_id,
-          authority_source, runtime_actor_id, conversation_ref, message_ref,
-          reason, revision_proposal_id, materialized_objects_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        decisionId,
-        input.board_id,
-        input.proposal_id,
-        input.item.item_id,
-        input.decision,
-        input.authority.actor_id,
-        input.authority.authority_source,
-        input.runtime_actor_id,
-        input.authority.conversation_ref,
-        input.authority.message_ref,
-        input.reason,
-        input.revision_proposal_id,
-        sqliteJson(input.materialized_objects),
-        input.at,
-      );
-    this.store.db
-      .prepare(`
-        UPDATE goal_tree_proposal_items
-        SET state = ?, conflict_json = ?, materialized_objects_json = ?,
-            revision_proposal_id = ?, updated_at = ?
-        WHERE board_id = ? AND proposal_id = ? AND item_id = ?
-      `)
-      .run(
-        input.item_state,
-        input.conflict == null ? null : sqliteJson(input.conflict),
-        sqliteJson(input.materialized_objects),
-        input.revision_proposal_id,
-        input.at,
-        input.board_id,
-        input.proposal_id,
-        input.item.item_id,
-      );
+    const decisionRecord: GoalTreeProposalDecisionRecord = {
+      decision_id: decisionId,
+      board_id: input.board_id,
+      proposal_id: input.proposal_id,
+      item_id: input.item.item_id,
+      decision: input.decision,
+      actor_id: input.authority.actor_id,
+      authority_source: input.authority.authority_source,
+      runtime_actor_id: input.runtime_actor_id,
+      conversation_ref: input.authority.conversation_ref,
+      message_ref: input.authority.message_ref,
+      reason: input.reason,
+      revision_proposal_id: input.revision_proposal_id,
+      materialized_objects: input.materialized_objects,
+      created_at: input.at,
+    };
+    this.governance.records.insertGoalTreeDecision(decisionRecord);
+    this.governance.records.transitionGoalTreeItem({
+      proposal_id: input.proposal_id,
+      item_id: input.item.item_id,
+      state: input.item_state,
+      conflict: input.conflict,
+      materialized_objects: input.materialized_objects,
+      revision_proposal_id: input.revision_proposal_id,
+      updated_at: input.at,
+    });
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId: input.board_id,
@@ -10161,22 +5464,7 @@ export class GoalBoardCoordinator {
       },
       at: input.at,
     });
-    return {
-      decision_id: decisionId,
-      board_id: input.board_id,
-      proposal_id: input.proposal_id,
-      item_id: input.item.item_id,
-      decision: input.decision,
-      actor_id: input.authority.actor_id,
-      authority_source: input.authority.authority_source,
-      runtime_actor_id: input.runtime_actor_id,
-      conversation_ref: input.authority.conversation_ref,
-      message_ref: input.authority.message_ref,
-      reason: input.reason,
-      revision_proposal_id: input.revision_proposal_id,
-      materialized_objects: input.materialized_objects,
-      created_at: input.at,
-    };
+    return decisionRecord;
   }
 
   private refreshGoalTreeProposalState(
@@ -10187,43 +5475,19 @@ export class GoalBoardCoordinator {
     semanticReview: GoalTreeSemanticReview | null,
   ): void {
     const proposal = this.readNativeGoalTreeProposal(boardId, proposalId);
-    const states = proposal.items.map((item) => item.state);
-    const hasOpen = states.some((state) => state === "pending" || state === "conflict");
-    const hasApplied = states.includes("applied");
-    const hasRejected = states.includes("rejected");
-    const hasSuperseded = states.includes("superseded");
-    let state: GoalTreeProposalRecord["state"];
-    if (hasOpen) {
-      state = hasApplied || hasRejected || hasSuperseded ? "partially_applied" : "pending";
-    } else if (states.length > 0 && states.every((item) => item === "applied")) {
-      state = "approved";
-    } else if (states.length > 0 && states.every((item) => item === "rejected")) {
-      state = "rejected";
-    } else if (states.length > 0 && states.every((item) => item === "superseded")) {
-      state = "superseded";
-    } else if (hasRejected) {
-      state = "closed";
-    } else {
-      state = "closed";
-    }
-    this.store.db
-      .prepare(`
-        UPDATE goal_tree_proposals
-        SET state = ?, decision_json = ?, updated_at = ?, decided_at = ?
-        WHERE board_id = ? AND proposal_id = ?
-      `)
-      .run(
-        state,
-        sqliteJson({
+    const hasOpen = proposal.items.some((item) => item.state === "pending" || item.state === "conflict");
+    const state = deriveGoalTreeProposalState(proposal.items);
+    this.governance.records.transitionGoalTreeProposal(
+      proposalId,
+      state,
+      {
           item_states: Object.fromEntries(proposal.items.map((item) => [item.item_id, item.state])),
           latest_decision_ids: proposal.decisions.map((decision) => decision.decision_id),
           semantic_review: semanticReview ?? proposal.decision?.semantic_review ?? null,
-        }),
-        at,
-        hasOpen ? null : at,
-        boardId,
-        proposalId,
-      );
+      },
+      at,
+      hasOpen ? null : at,
+    );
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId,
@@ -10255,9 +5519,9 @@ export class GoalBoardCoordinator {
         );
       }
       itemIds.add(revision.revised_item.item_id);
-      const existing = this.store.db
-        .prepare("SELECT item_id FROM goal_tree_proposal_items WHERE item_id = ?")
-        .get(revision.revised_item.item_id);
+      const existing = this.governance.records.findGoalTreeItemOwner(
+        revision.revised_item.item_id,
+      );
       if (existing) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.revision_item_id_exists",
@@ -10267,57 +5531,44 @@ export class GoalBoardCoordinator {
     }
     const version = proposal.version + 1;
     const summary = `用户要求修订 v${proposal.version}：${revisions.map((item) => item.reason).join("；")}`;
-    this.store.db
-      .prepare(`
-        INSERT INTO goal_tree_proposals (
-          proposal_id, board_id, root_goal_id, submitted_by, discovered_in_run_id,
-          state, version, supersedes_proposal_id, base_event_cursor, summary,
-          narrative_json, decision_json, created_at, updated_at, decided_at
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
-      `)
-      .run(
-        proposalId,
-        boardId,
-        proposal.root_goal_id,
-        runtimeActorId ?? authority.actor_id,
-        proposal.discovered_in_run_id,
-        version,
-        proposal.proposal_id,
-        this.store.eventCursor(boardId),
-        summary,
-        proposal.narrative == null ? null : sqliteJson(proposal.narrative),
-        at,
-        at,
-      );
-    const insertItem = this.store.db.prepare(`
-      INSERT INTO goal_tree_proposal_items (
-        item_id, proposal_id, board_id, ordinal, kind, operation, payload_json,
-        source_refs_json, reason, explanation_json, confidence, affected_objects_json,
-        baseline_versions_json, requires_user_confirmation, state, conflict_json,
-        materialized_objects_json, revision_proposal_id, supersedes_item_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', NULL, '[]', NULL, ?, ?, ?)
-    `);
+    this.governance.records.insertGoalTreeProposal({
+      proposal_id: proposalId,
+      board_id: boardId,
+      root_goal_id: proposal.root_goal_id,
+      submitted_by: runtimeActorId ?? authority.actor_id,
+      discovered_in_run_id: proposal.discovered_in_run_id,
+      state: "pending",
+      version,
+      supersedes_proposal_id: proposal.proposal_id,
+      base_event_cursor: this.store.eventCursor(boardId),
+      summary,
+      narrative: proposal.narrative,
+      created_at: at,
+      updated_at: at,
+    });
     for (const [index, revision] of revisions.entries()) {
       const item = revision.revised_item;
       const baselineVersions = item.affected_objects.map((object) => this.proposalObjectVersion(boardId, object, item));
-      insertItem.run(
-        item.item_id,
-        proposalId,
-        boardId,
-        index + 1,
-        item.kind,
-        item.operation,
-        sqliteJson(item.payload),
-        sqliteJson(item.source_refs),
-        item.reason,
-        item.explanation == null ? null : sqliteJson(item.explanation),
-        item.confidence,
-        sqliteJson(item.affected_objects),
-        sqliteJson(baselineVersions),
-        revision.item_id,
-        at,
-        at,
-      );
+      this.governance.records.insertGoalTreeProposalItem({
+        item_id: item.item_id,
+        proposal_id: proposalId,
+        board_id: boardId,
+        ordinal: index + 1,
+        kind: item.kind,
+        operation: item.operation,
+        payload: item.payload,
+        source_refs: item.source_refs,
+        reason: item.reason,
+        explanation: item.explanation,
+        confidence: item.confidence,
+        affected_objects: item.affected_objects,
+        baseline_versions: baselineVersions,
+        requires_user_confirmation: true,
+        state: "pending",
+        supersedes_item_id: revision.item_id,
+        created_at: at,
+        updated_at: at,
+      });
     }
     this.store.appendEvent({
       eventId: randomUUID(),
@@ -10408,7 +5659,7 @@ export class GoalBoardCoordinator {
       ...(typeof raw.priority === "number" ? { priority: raw.priority } : {}),
       acceptance_criteria: acceptance,
     };
-    this.validateGoalInput(goal);
+    this.goalsModule.commands.validateGoalInput(goal);
     return goal;
   }
 
@@ -10497,10 +5748,10 @@ export class GoalBoardCoordinator {
   ): PlanningGraphIssue[] {
     const snapshot = this.store.snapshot(boardId);
     const existing = new Set(
-      validatePlanningGraph(snapshot.goals, snapshot.relations)
+      this.goalsModule.planning.validateGraph(snapshot.goals, snapshot.relations)
         .map((issue) => `${issue.code}:${issue.path.join("\u0000")}`),
     );
-    return validatePlanningProposalGraph(snapshot.goals, snapshot.relations, items)
+    return this.goalsModule.planning.validateProposalGraph(snapshot.goals, snapshot.relations, items)
       .filter((issue) => !existing.has(`${issue.code}:${issue.path.join("\u0000")}`));
   }
 
@@ -10740,29 +5991,17 @@ export class GoalBoardCoordinator {
     goalId: string,
     proposalId: string,
   ): boolean {
-    const rows = this.store.db
-      .prepare(`
-        SELECT item.kind, item.operation, item.affected_objects_json,
-          item.baseline_versions_json, item.materialized_objects_json
-        FROM goal_tree_proposals proposal
-        JOIN goal_tree_proposal_items item ON item.proposal_id = proposal.proposal_id
-        WHERE proposal.board_id = ? AND proposal.proposal_id = ? AND item.state = 'applied'
-        ORDER BY item.ordinal, item.item_id
-      `)
-      .all(boardId, proposalId) as Row[];
-    return rows.some((row) => {
-      if (asText(row.kind) !== "goal" || asText(row.operation) !== "create") return false;
-      const affected = parseJson<ProposalAffectedObject[]>(row.affected_objects_json, []);
-      const baselines = parseJson<ProposalObjectVersion[]>(row.baseline_versions_json, []);
-      const materialized = parseJson<ProposalAffectedObject[]>(row.materialized_objects_json, []);
-      return affected.some(
+    const proposal = this.governance.query.getGoalTreeProposal(boardId, proposalId);
+    return (proposal?.items ?? []).some((item) => {
+      if (item.state !== "applied" || item.kind !== "goal" || item.operation !== "create") return false;
+      return item.affected_objects.some(
         (object) => object.object_type === "candidate" && object.object_id === candidateId,
-      ) && baselines.some(
+      ) && item.baseline_versions.some(
         (baseline) =>
           baseline.object_type === "candidate" &&
           baseline.object_id === candidateId &&
           baseline.exists,
-      ) && materialized.some(
+      ) && item.materialized_objects.some(
         (object) => object.object_type === "goal" && object.object_id === goalId,
       );
     });
@@ -10886,10 +6125,8 @@ export class GoalBoardCoordinator {
       const payload = this.goalTreePayloadRecord(item.payload, "Candidate 条目");
       const candidateId = String(payload.candidate_id ?? "").trim();
       const candidateRow = candidateId
-        ? this.store.db
-            .prepare("SELECT * FROM candidates WHERE board_id = ? AND candidate_id = ?")
-            .get(boardId, candidateId) as Row | undefined
-        : undefined;
+        ? this.governance.query.getCandidate(boardId, candidateId)
+        : null;
       if (item.operation === "create") {
         if (candidateRow) {
           return {
@@ -10918,7 +6155,7 @@ export class GoalBoardCoordinator {
       if (!candidateId || !candidateRow) {
         return missingObject("candidate", candidateId || "candidate_id", "要晋升的 Candidate 不存在");
       }
-      if (asText(candidateRow.state) !== "pending") {
+      if (candidateRow.state !== "pending") {
         return {
           code: "goal_tree_proposal.candidate_not_pending",
           message: "只有仍待用户决定的 Candidate 可以通过统一提案晋升",
@@ -10952,7 +6189,7 @@ export class GoalBoardCoordinator {
           ],
         };
       }
-      const originalGoal = parseJson<CreateGoalInput>(candidateRow.proposed_goal_json, {} as CreateGoalInput);
+      const originalGoal = candidateRow.proposed_goal;
       const originalGoalId = originalGoal.goal_id?.trim() ?? "";
       if (originalGoalId && originalGoalId !== goalId) {
         return {
@@ -11079,8 +6316,8 @@ export class GoalBoardCoordinator {
           : payload;
       const rewireId = String(payload.rewire_id ?? nested.rewire_id ?? "").trim();
       const existing = rewireId
-        ? this.store.db.prepare("SELECT rewire_id, state FROM rewires WHERE board_id = ? AND rewire_id = ?").get(boardId, rewireId) as Row | undefined
-        : undefined;
+        ? this.governance.query.getRewire(boardId, rewireId)
+        : null;
       if (item.operation === "create" && existing) {
         return {
           code: "goal_tree_proposal.rewire_exists",
@@ -11318,31 +6555,15 @@ export class GoalBoardCoordinator {
           if (conflict) {
             throw new GoalBoardV1Error(String(conflict.code), String(conflict.message), conflict);
           }
-          const children = this.activePartOfChildren(boardId, goalId).map((child) => asText(child.goal_id));
-          this.store.db
-            .prepare(`
-              UPDATE goals
-              SET decomposition_state = 'closed_compound', decomposition_review_json = ?, fulfillment_state = 'unmet', updated_at = ?
-              WHERE board_id = ? AND goal_id = ?
-            `)
-            .run(goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review), at, boardId, goalId);
-          this.store.appendEvent({
-            eventId: randomUUID(),
-            boardId,
-            actorId,
-            type: "goal.accepted_compound_closed_from_tree_proposal",
-            objectType: "goal",
-            objectId: goalId,
+          this.goalsModule.lifecycle.closeAcceptedCompound({
+            board_id: boardId,
+            goal_id: goalId,
+            decomposition_review: goal.decomposition_review,
+            actor_id: actorId,
             reason: reasonText,
-            payload: {
-              previous_decomposition_state: existing.decomposition_state,
-              decomposition_state: "closed_compound",
-              child_goal_ids: children,
-              proposal_item_id: item.item_id,
-            },
+            source_item_id: item.item_id,
             at,
           });
-          this.reconcileCompoundGoalAndAncestors(boardId, goalId, actorId, at);
           return { object_type: "goal", object_id: goalId };
         }
         const structuralConflict = this.acceptedContractRevisionStructureConflict(boardId, existing, goal);
@@ -11367,31 +6588,15 @@ export class GoalBoardCoordinator {
       if (conflict) {
         throw new GoalBoardV1Error(String(conflict.code), String(conflict.message));
       }
-      const children = this.activePartOfChildren(boardId, goalId).map((child) => asText(child.goal_id));
-      this.store.db
-        .prepare(`
-          UPDATE goals
-          SET decomposition_state = 'closed_compound', decomposition_review_json = ?, fulfillment_state = 'unmet', updated_at = ?
-          WHERE board_id = ? AND goal_id = ?
-        `)
-        .run(goal.decomposition_review == null ? null : sqliteJson(goal.decomposition_review), at, boardId, goalId);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId,
-        type: "goal.accepted_compound_closed_from_tree_proposal",
-        objectType: "goal",
-        objectId: goalId,
+      this.goalsModule.lifecycle.closeAcceptedCompound({
+        board_id: boardId,
+        goal_id: goalId,
+        decomposition_review: goal.decomposition_review,
+        actor_id: actorId,
         reason: reasonText,
-        payload: {
-          previous_decomposition_state: existing.decomposition_state,
-          decomposition_state: "closed_compound",
-          child_goal_ids: children,
-          proposal_item_id: item.item_id,
-        },
+        source_item_id: item.item_id,
         at,
       });
-      this.reconcileCompoundGoalAndAncestors(boardId, goalId, actorId, at);
       return { object_type: "goal", object_id: goalId };
     }
     const definitionState = goal.definition_state ?? existing.definition_state;
@@ -11408,50 +6613,53 @@ export class GoalBoardCoordinator {
       promised_outputs: goal.promised_outputs?.length ? goal.promised_outputs : existing.promised_outputs,
       acceptance_criteria: goal.acceptance_criteria.length ? goal.acceptance_criteria : existing.acceptance_criteria,
     };
-    this.validateGoalInput(normalized);
-    this.store.db
-      .prepare(`
-        UPDATE goals SET
-          title = ?, outcome = ?, why = ?, business_logic = ?,
-          in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
-          required_inputs_json = ?, promised_outputs_json = ?,
-          decomposition_review_json = ?,
-          definition_state = ?, decomposition_state = ?, priority = ?,
-          accepted_by = ?, accepted_at = ?, updated_at = ?
-        WHERE board_id = ? AND goal_id = ?
-      `)
-      .run(
-        normalized.title.trim(),
-        normalized.outcome.trim(),
-        normalized.why.trim(),
-        normalized.business_logic.trim(),
-        sqliteJson(normalized.in_scope ?? []),
-        sqliteJson(normalized.out_of_scope ?? []),
-        sqliteJson(normalized.constraints ?? []),
-        sqliteJson(normalized.required_inputs ?? []),
-        sqliteJson(normalized.promised_outputs ?? []),
-        normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
-        definitionState,
-        decompositionState,
-        normalized.priority ?? existing.priority,
-        definitionState === "accepted" ? actorId : null,
-        definitionState === "accepted" ? at : null,
-        at,
-        boardId,
-        goalId,
-      );
-    this.replaceGoalTreeAcceptanceCriteria(goalId, normalized, at);
-    this.store.db
-      .prepare(`
-        UPDATE contract_proposals SET state = 'superseded', decided_at = ?, decision_json = ?
-        WHERE board_id = ? AND goal_id = ? AND state = 'pending'
-      `)
-      .run(
-        at,
-        sqliteJson({ reason: "用户通过统一 Goal Tree 决定确认了更新后的 Contract", decided_by: actorId }),
-        boardId,
-        goalId,
-      );
+    this.goalsModule.commands.validateGoalInput(normalized);
+    if (definitionState === "accepted") {
+      this.goalsModule.lifecycle.acceptDraft({
+        board_id: boardId,
+        goal_id: goalId,
+        proposed_goal: normalized,
+        actor_id: actorId,
+        accepted_at: at,
+      });
+    } else {
+      this.store.db
+        .prepare(`
+          UPDATE goals SET
+            title = ?, outcome = ?, why = ?, business_logic = ?,
+            in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
+            required_inputs_json = ?, promised_outputs_json = ?,
+            decomposition_review_json = ?,
+            definition_state = ?, decomposition_state = ?, priority = ?,
+            accepted_by = NULL, accepted_at = NULL, updated_at = ?
+          WHERE board_id = ? AND goal_id = ?
+        `)
+        .run(
+          normalized.title.trim(),
+          normalized.outcome.trim(),
+          normalized.why.trim(),
+          normalized.business_logic.trim(),
+          sqliteJson(normalized.in_scope ?? []),
+          sqliteJson(normalized.out_of_scope ?? []),
+          sqliteJson(normalized.constraints ?? []),
+          sqliteJson(normalized.required_inputs ?? []),
+          sqliteJson(normalized.promised_outputs ?? []),
+          normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
+          definitionState,
+          decompositionState,
+          normalized.priority ?? existing.priority,
+          at,
+          boardId,
+          goalId,
+        );
+      this.replaceGoalTreeAcceptanceCriteria(goalId, normalized, at);
+    }
+    this.governance.records.supersedePendingContractProposals(
+      boardId,
+      goalId,
+      at,
+      { reason: "用户通过统一 Goal Tree 决定确认了更新后的 Contract", decided_by: actorId },
+    );
     if (definitionState === "accepted") {
       this.closeOpenClarificationSessions(
         boardId,
@@ -11475,6 +6683,74 @@ export class GoalBoardCoordinator {
     return { object_type: "goal", object_id: goalId };
   }
 
+  private transitionGoalRevisionDependents(input: GoalRevisionDependentTransition): void {
+    const activeClaims = this.executionModule.repository
+      .listClaimsForGoal(input.board_id, input.goal_id)
+      .filter((claim) => claim.state === "active")
+      .sort((left, right) => left.claimed_at.localeCompare(right.claimed_at) || left.claim_id.localeCompare(right.claim_id));
+    if (input.effect !== "metadata") {
+      for (const claim of activeClaims) {
+        const activeRunIds = this.executionModule.repository.activeRunIdsForClaim(claim.claim_id);
+        for (const runId of activeRunIds) {
+          const run = this.executionModule.repository.getRunById(runId);
+          if (!run) continue;
+          this.executionModule.repository.updateRun(
+            runId,
+            "abandoned",
+            "abandoned_by_contract_revision",
+            run.output_refs,
+            run.discovery_refs,
+            input.at,
+          );
+          this.store.appendEvent({
+            eventId: randomUUID(),
+            boardId: input.board_id,
+            actorId: input.actor_id,
+            type: "run.abandoned",
+            objectType: "run",
+            objectId: runId,
+            reason: "Contract revision 已确认，旧版本 Run 安全结束",
+            payload: {
+              goal_id: input.goal_id,
+              previous_contract_revision: input.previous_contract_revision,
+              contract_revision: input.contract_revision,
+            },
+            at: input.at,
+          });
+        }
+        this.executionModule.repository.updateClaimState(
+          claim.claim_id,
+          "revoked",
+          input.at,
+          "abandoned_by_contract_revision",
+        );
+        this.store.appendEvent({
+          eventId: randomUUID(),
+          boardId: input.board_id,
+          actorId: input.actor_id,
+          type: "claim.revoked_by_contract_revision",
+          objectType: "claim",
+          objectId: claim.claim_id,
+          reason: "Contract revision 已确认，旧版本 Claim 被撤销",
+          payload: {
+            goal_id: input.goal_id,
+            previous_contract_revision: input.previous_contract_revision,
+            contract_revision: input.contract_revision,
+          },
+          at: input.at,
+        });
+      }
+      this.governance.reviews.waivePendingObligationsForRevision(
+        input.goal_id,
+        input.previous_contract_revision,
+      );
+      return;
+    }
+    for (const claim of activeClaims) {
+      this.executionModule.repository.updateClaimContractRevision(claim.claim_id, input.contract_revision);
+    }
+  }
+
   private materializeAcceptedGoalContractRevision(
     boardId: string,
     item: GoalTreeProposalItemRecord,
@@ -11484,229 +6760,18 @@ export class GoalBoardCoordinator {
     reasonText: string,
     at: string,
   ): ProposalAffectedObject {
-    const goalId = existing.goal_id;
-    if (proposed.goal_id?.trim() && proposed.goal_id.trim() !== goalId) {
-      throw new GoalBoardV1Error("contract.goal_id_immutable", "Contract revision 必须保留原 Goal ID");
-    }
-    if ((proposed.definition_state ?? "accepted") !== "accepted") {
-      throw new GoalBoardV1Error("contract.definition_state_immutable", "已接受 Goal 的 revision 不能退回 Draft");
-    }
-    const normalized: CreateGoalInput = {
-      ...proposed,
-      goal_id: goalId,
-      definition_state: "accepted",
-      decomposition_state: proposed.decomposition_state ?? existing.decomposition_state,
-      priority: proposed.priority ?? existing.priority,
-    };
-    this.validateGoalInput(normalized);
-    const currentContract = contractInputFromGoal(existing);
-    const effect = contractRevisionEffect(currentContract, normalized);
-    const revision = existing.current_contract_revision + 1;
-    const activeClaims = this.store.db.prepare(`
-      SELECT claim_id FROM claims
-      WHERE board_id = ? AND goal_id = ? AND state = 'active'
-      ORDER BY claimed_at, claim_id
-    `).all(boardId, goalId) as Row[];
-
-    if (effect !== "metadata") {
-      for (const claimRow of activeClaims) {
-        const claimId = asText(claimRow.claim_id);
-        const activeRuns = this.store.db.prepare(`
-          SELECT run_id FROM runs
-          WHERE claim_id = ? AND state IN ('started', 'blocked')
-          ORDER BY started_at, run_id
-        `).all(claimId) as Row[];
-        for (const runRow of activeRuns) {
-          const runId = asText(runRow.run_id);
-          this.store.db.prepare(`
-            UPDATE runs
-            SET state = 'abandoned', ended_at = ?, block_reason = 'abandoned_by_contract_revision'
-            WHERE run_id = ?
-          `).run(at, runId);
-          this.store.appendEvent({
-            eventId: randomUUID(),
-            boardId,
-            actorId,
-            type: "run.abandoned",
-            objectType: "run",
-            objectId: runId,
-            reason: "Contract revision 已确认，旧版本 Run 安全结束",
-            payload: { goal_id: goalId, previous_contract_revision: existing.current_contract_revision, contract_revision: revision },
-            at,
-          });
-        }
-        this.store.db.prepare(`
-          UPDATE claims
-          SET state = 'revoked', released_at = ?, release_reason = ?
-          WHERE claim_id = ? AND state = 'active'
-        `).run(at, "abandoned_by_contract_revision", claimId);
-        this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId,
-          type: "claim.revoked_by_contract_revision",
-          objectType: "claim",
-          objectId: claimId,
-          reason: "Contract revision 已确认，旧版本 Claim 被撤销",
-          payload: { goal_id: goalId, previous_contract_revision: existing.current_contract_revision, contract_revision: revision },
-          at,
-        });
-      }
-    }
-
-    const nextValidity = effect === "revalidate" ? "needs_revalidation" : effect === "rework" ? "valid" : existing.validity_state;
-    const nextFulfillment = effect === "metadata" ? existing.fulfillment_state : "unmet";
-    this.store.db.prepare(`
-      UPDATE goals SET
-        title = ?, outcome = ?, why = ?, business_logic = ?,
-        in_scope_json = ?, out_of_scope_json = ?, constraints_json = ?,
-        required_inputs_json = ?, promised_outputs_json = ?,
-        decomposition_review_json = ?, definition_state = 'accepted',
-        decomposition_state = ?, validity_state = ?, fulfillment_state = ?,
-        priority = ?, current_contract_revision = ?, updated_at = ?
-      WHERE board_id = ? AND goal_id = ?
-    `).run(
-      normalized.title.trim(),
-      normalized.outcome.trim(),
-      normalized.why.trim(),
-      normalized.business_logic.trim(),
-      sqliteJson(normalized.in_scope ?? []),
-      sqliteJson(normalized.out_of_scope ?? []),
-      sqliteJson(normalized.constraints ?? []),
-      sqliteJson(normalized.required_inputs ?? []),
-      sqliteJson(normalized.promised_outputs ?? []),
-      normalized.decomposition_review == null ? null : sqliteJson(normalized.decomposition_review),
-      normalized.decomposition_state,
-      nextValidity,
-      nextFulfillment,
-      normalized.priority,
-      revision,
-      at,
-      boardId,
-      goalId,
-    );
-    this.replaceGoalTreeAcceptanceCriteria(goalId, normalized, at);
-    if (effect !== "metadata") {
-      this.store.db.prepare(`
-        UPDATE review_obligations
-        SET state = 'waived'
-        WHERE goal_id = ? AND contract_revision = ? AND state = 'pending'
-      `).run(goalId, existing.current_contract_revision);
-    }
-    if (effect === "metadata") {
-      this.store.db.prepare(`
-        UPDATE claims SET contract_revision = ?
-        WHERE board_id = ? AND goal_id = ? AND state = 'active'
-      `).run(revision, boardId, goalId);
-    }
-
-    const revised = this.store.getGoal(goalId);
-    if (!revised) throw new GoalBoardV1Error("goal.not_found", `找不到这个 Goal: ${goalId}`);
-    this.store.db.prepare(`
-      INSERT INTO goal_contract_revisions (
-        goal_id, board_id, revision, contract_json, effect, source_proposal_id,
-        changed_by, reason, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      goalId,
-      boardId,
-      revision,
-      sqliteJson(contractInputFromGoal(revised)),
-      effect,
-      item.proposal_id,
-      actorId,
-      reasonText,
-      at,
-    );
-
-    const coverageWasExplicitlyUpdated =
-      JSON.stringify(canonicalize(currentContract.decomposition_review)) !==
-      JSON.stringify(canonicalize(normalized.decomposition_review));
-    if (
-      revised.decomposition_state === "closed_compound" &&
-      revised.decomposition_review != null &&
-      (effect === "metadata" || coverageWasExplicitlyUpdated)
-    ) {
-      const children = this.activePartOfChildren(boardId, goalId);
-      const insertCoverage = this.store.db.prepare(`
-        INSERT OR REPLACE INTO coverage_contract_revisions (
-          parent_goal_id, child_goal_id, parent_contract_revision, child_contract_revision, recorded_at
-        ) VALUES (?, ?, ?, ?, ?)
-      `);
-      for (const child of children) {
-        insertCoverage.run(
-          goalId,
-          asText(child.goal_id),
-          revision,
-          Number(child.current_contract_revision ?? this.store.getGoal(asText(child.goal_id))?.current_contract_revision ?? 1),
-          at,
-        );
-      }
-    }
-
-    const downstream = this.store.db.prepare(`
-      SELECT DISTINCT relation.from_goal_id AS goal_id
-      FROM goal_relations relation
-      WHERE relation.board_id = ? AND relation.to_goal_id = ?
-        AND relation.type = 'depends_on' AND relation.state = 'active'
-      ORDER BY relation.from_goal_id
-    `).all(boardId, goalId) as Row[];
-    if (effect !== "metadata") {
-      for (const row of downstream) {
-        const downstreamGoalId = asText(row.goal_id);
-        this.store.db.prepare(`
-          UPDATE goals
-          SET validity_state = 'needs_revalidation', fulfillment_state = 'unmet', updated_at = ?
-          WHERE board_id = ? AND goal_id = ?
-        `).run(at, boardId, downstreamGoalId);
-        this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId,
-          type: "contract.downstream_revalidation_required",
-          objectType: "goal",
-          objectId: downstreamGoalId,
-          reason: "直接依赖的上游 Contract 已实质修改",
-          payload: { changed_goal_id: goalId, contract_revision: revision },
-          at,
-        });
-        this.reopenCompoundAncestorsForUntrustedChild(
-          boardId,
-          downstreamGoalId,
-          actorId,
-          at,
-          "下游 Goal 需要重新验证",
-        );
-      }
-      this.reopenCompoundAncestorsForUntrustedChild(
-        boardId,
-        goalId,
-        actorId,
-        at,
-        "子 Goal Contract revision 已变化，旧 coverage 不再可信",
-      );
-    }
-    this.store.appendEvent({
-      eventId: randomUUID(),
-      boardId,
-      actorId,
-      type: "contract.revision_applied",
-      objectType: "goal",
-      objectId: goalId,
+    const applied = this.goalsModule.lifecycle.applyAcceptedContractRevision({
+      board_id: boardId,
+      goal_id: existing.goal_id,
+      proposed_goal: proposed,
+      source_proposal_id: item.proposal_id,
+      source_item_id: item.item_id,
+      actor_id: actorId,
       reason: reasonText,
-      payload: {
-        proposal_id: item.proposal_id,
-        proposal_item_id: item.item_id,
-        previous_contract_revision: existing.current_contract_revision,
-        contract_revision: revision,
-        effect,
-        downstream_goal_ids: downstream.map((row) => asText(row.goal_id)),
-      },
-      at,
+      applied_at: at,
     });
-    return { object_type: "goal", object_id: goalId };
+    return { object_type: "goal", object_id: applied.goal.goal_id };
   }
-
   private materializeGoalTreeRelations(
     boardId: string,
     item: GoalTreeProposalItemRecord,
@@ -11798,8 +6863,10 @@ export class GoalBoardCoordinator {
       if (relation.type === "part_of") addedPartOfRelations.push(relation);
     }
     for (const relation of addedPartOfRelations) {
-      const reopened = this.reopenSatisfiedCompoundParent(boardId, relation.to_goal_id, actorId, at);
-      if (!reopened) this.reconcileCompoundAncestors(boardId, relation.from_goal_id, actorId, at);
+      const reopened = this.goalsModule.lifecycle.reopenSatisfiedCompoundParent(boardId, relation.to_goal_id, actorId, at);
+      if (!reopened) {
+        this.goalsModule.lifecycle.reconcileCompoundAncestors(boardId, relation.from_goal_id, actorId, at);
+      }
     }
     return materialized;
   }
@@ -11961,7 +7028,7 @@ export class GoalBoardCoordinator {
       });
       return { object_type: "risk", object_id: riskId };
     }
-    const facts = this.normalizeRiskFacts(boardId, {
+    const facts = this.goalsModule.commands.normalizeRiskFacts(boardId, {
       goal_ids: this.goalTreeStringArray(payload.goal_ids),
       description: String(payload.description ?? ""),
       probability: String(payload.probability ?? ""),
@@ -12091,16 +7158,12 @@ export class GoalBoardCoordinator {
       const nextInvalidated = new Set(isInvalidating ? facts.goal_ids : []);
       if (wasInvalidating) {
         for (const goalId of previousGoalIds.filter((candidate) => !nextInvalidated.has(candidate))) {
-          this.store.db
-            .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE goal_id = ?")
-            .run(at, goalId);
+          this.goalsModule.lifecycle.setValidityState(boardId, goalId, "needs_revalidation", at);
         }
       }
       if (isInvalidating) {
         for (const goalId of facts.goal_ids) {
-          this.store.db
-            .prepare("UPDATE goals SET validity_state = 'invalidated', updated_at = ? WHERE goal_id = ?")
-            .run(at, goalId);
+          this.goalsModule.lifecycle.setValidityState(boardId, goalId, "invalidated", at);
         }
       }
     }
@@ -12150,7 +7213,7 @@ export class GoalBoardCoordinator {
       if (!candidateId) {
         throw new GoalBoardV1Error("goal_tree_proposal.candidate_id_required", "晋升已有 Candidate 需要 candidate_id");
       }
-      const existingCandidate = this.readCandidate(candidateId);
+      const existingCandidate = this.readCandidate(boardId, candidateId);
       const proposedRelations = this.goalTreeCandidatePromotionRelations(payload, goalId);
       const proposedImpacts = Array.isArray(payload.proposed_impacts)
         ? payload.proposed_impacts.map((value) => this.goalTreePayloadRecord(value, "Candidate Impact"))
@@ -12215,14 +7278,14 @@ export class GoalBoardCoordinator {
         promotion_mode: existingGoal ? "bootstrap_reconciliation" : "goal_tree_proposal",
         ...(materializedByProposalId == null ? {} : { materialized_by_proposal_id: materializedByProposalId }),
       };
-      const updated = this.store.db
-        .prepare(`
-          UPDATE candidates
-          SET state = 'approved', decision_json = ?, decided_at = ?
-          WHERE board_id = ? AND candidate_id = ? AND state = 'pending'
-        `)
-        .run(sqliteJson(decision), at, boardId, candidateId);
-      if (updated.changes !== 1) {
+      const updated = this.governance.records.transitionCandidate(
+        boardId,
+        candidateId,
+        "approved",
+        decision,
+        at,
+      );
+      if (!updated) {
         throw new GoalBoardV1Error(
           "goal_tree_proposal.candidate_not_pending",
           "Candidate 已不存在或不再待确认，统一晋升未写入",
@@ -12254,9 +7317,7 @@ export class GoalBoardCoordinator {
       );
     }
     const candidateId = String(payload.candidate_id ?? "").trim() || `candidate-${randomUUID()}`;
-    const existingCandidate = this.store.db
-      .prepare("SELECT candidate_id FROM candidates WHERE board_id = ? AND candidate_id = ?")
-      .get(boardId, candidateId) as Row | undefined;
+    const existingCandidate = this.governance.query.getCandidate(boardId, candidateId);
     if (existingCandidate) {
       throw new GoalBoardV1Error("goal_tree_proposal.candidate_exists", "要确认的 Candidate 已存在，需要重新决定");
     }
@@ -12289,27 +7350,21 @@ export class GoalBoardCoordinator {
     if (!["none", "current_run", "dependent_claims"].includes(blockingMode)) {
       throw new GoalBoardV1Error("goal_tree_proposal.candidate_blocking_mode_invalid", "Candidate blocking_mode 无效");
     }
-    this.store.db
-      .prepare(`
-        INSERT INTO candidates (
-          candidate_id, board_id, submitted_by, discovered_in_run_id,
-          proposed_goal_json, proposed_relations_json, proposed_impacts_json,
-          proposed_risks_json, blocking_mode, state, decision_json, created_at, decided_at
-        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)
-      `)
-      .run(
-        candidateId,
-        boardId,
-        actorId,
-        sqliteJson(proposedGoal),
-        sqliteJson(proposedRelations),
-        sqliteJson(proposedImpacts),
-        sqliteJson(proposedRisks),
-        blockingMode,
-        sqliteJson({ decided_by: actorId, reason: reasonText, formal_goal_id: goalObject.object_id }),
-        at,
-        at,
-      );
+    this.governance.records.insertCandidate({
+      candidate_id: candidateId,
+      board_id: boardId,
+      submitted_by: actorId,
+      discovered_in_run_id: null,
+      proposed_goal: proposedGoal,
+      proposed_relations: proposedRelations,
+      proposed_impacts: proposedImpacts,
+      proposed_risks: proposedRisks,
+      blocking_mode: blockingMode as CandidateGoalRecord["blocking_mode"],
+      state: "approved",
+      decision: { decided_by: actorId, reason: reasonText, formal_goal_id: goalObject.object_id },
+      created_at: at,
+      decided_at: at,
+    });
     this.store.appendEvent({
       eventId: randomUUID(),
       boardId,
@@ -12339,10 +7394,15 @@ export class GoalBoardCoordinator {
         : payload;
     const rewireId = String(payload.rewire_id ?? nested.rewire_id ?? "").trim() || `rewire-${randomUUID()}`;
     if (item.operation === "deactivate") {
-      const result = this.store.db
-        .prepare("UPDATE rewires SET state = 'rejected', decided_at = ? WHERE board_id = ? AND rewire_id = ? AND state = 'pending'")
-        .run(at, boardId, rewireId);
-      if (result.changes !== 1) {
+      const current = this.governance.query.getRewire(boardId, rewireId);
+      const changed = current?.state === "pending" && this.governance.records.transitionRewire(
+        boardId,
+        rewireId,
+        "rejected",
+        {},
+        at,
+      );
+      if (!changed) {
         throw new GoalBoardV1Error("goal_tree_proposal.rewire_not_pending", "要停用的 Rewire 不存在或已经处理");
       }
       this.store.appendEvent({
@@ -12361,9 +7421,7 @@ export class GoalBoardCoordinator {
     if (item.operation !== "create" && item.operation !== "update") {
       throw new GoalBoardV1Error("goal_tree_proposal.rewire_operation_invalid", "Rewire 操作无效");
     }
-    const exists = this.store.db
-      .prepare("SELECT rewire_id FROM rewires WHERE board_id = ? AND rewire_id = ?")
-      .get(boardId, rewireId) as Row | undefined;
+    const exists = this.governance.query.getRewire(boardId, rewireId);
     if (exists && item.operation === "create") {
       throw new GoalBoardV1Error("goal_tree_proposal.rewire_exists", "要创建的 Rewire 已存在");
     }
@@ -12372,26 +7430,25 @@ export class GoalBoardCoordinator {
       relations: this.goalTreeRelationEntries(item),
     };
     if (item.operation === "create") {
-      this.store.db
-        .prepare(`
-          INSERT INTO rewires (
-            rewire_id, board_id, candidate_id, proposal_json, impact_json,
-            state, created_at, decided_at
-          ) VALUES (?, ?, NULL, ?, ?, 'applied', ?, ?)
-        `)
-        .run(
-          rewireId,
-          boardId,
-          sqliteJson(proposal),
-          sqliteJson({ proposed_changes_applied: true, decided_by: actorId }),
-          at,
-          at,
-        );
+      this.governance.records.insertRewire({
+        rewire_id: rewireId,
+        board_id: boardId,
+        candidate_id: null,
+        proposal,
+        impact: { proposed_changes_applied: true, decided_by: actorId },
+        state: "applied",
+        created_at: at,
+        decided_at: at,
+      });
     } else {
-      const result = this.store.db
-        .prepare("UPDATE rewires SET proposal_json = ?, state = 'applied', decided_at = ? WHERE board_id = ? AND rewire_id = ?")
-        .run(sqliteJson(proposal), at, boardId, rewireId);
-      if (result.changes !== 1) throw new GoalBoardV1Error("goal_tree_proposal.rewire_not_found", "要更新的 Rewire 不存在");
+      const changed = this.governance.records.transitionRewire(
+        boardId,
+        rewireId,
+        "applied",
+        { proposal },
+        at,
+      );
+      if (!changed) throw new GoalBoardV1Error("goal_tree_proposal.rewire_not_found", "要更新的 Rewire 不存在");
     }
     const relations = this.materializeGoalTreeRelations(boardId, item, actorId, reasonText, at);
     this.store.appendEvent({
@@ -12529,14 +7586,14 @@ export class GoalBoardCoordinator {
         superseded_by_goal_tree_proposal_id: nativeProposalId,
         supersession_reason: "同一关系变更已由用户确认的 native Goal Tree Proposal 落地",
       };
-      const updated = this.store.db
-        .prepare(`
-          UPDATE rewires
-          SET state = 'applied', impact_json = ?, decided_at = ?
-          WHERE board_id = ? AND rewire_id = ? AND state = 'pending'
-        `)
-        .run(sqliteJson(impact), at, boardId, rewire.rewire_id);
-      if (updated.changes !== 1) continue;
+      const updated = this.governance.records.transitionRewire(
+        boardId,
+        rewire.rewire_id,
+        "applied",
+        { impact },
+        at,
+      );
+      if (!updated) continue;
       this.store.appendEvent({
         eventId: randomUUID(),
         boardId,
@@ -12737,79 +7794,34 @@ export class GoalBoardCoordinator {
   }
 
   private readRun(runId: string): RunRecord {
-    const row = this.store.db.prepare("SELECT board_id FROM runs WHERE run_id = ?").get(runId) as
-      | Row
-      | undefined;
-    if (!row) throw new Error(`Run 写入后无法读取: ${runId}`);
-    const run = this.store.snapshot(asText(row.board_id)).runs.find((item) => item.run_id === runId);
+    const run = this.executionModule.repository.getRunById(runId);
     if (!run) throw new Error(`Run 写入后无法读取: ${runId}`);
     return run;
   }
 
-  private readEvidence(evidenceId: string): EvidenceRecord {
-    const row = this.store.db
-      .prepare("SELECT board_id FROM evidence WHERE evidence_id = ?")
-      .get(evidenceId) as Row | undefined;
-    if (!row) throw new Error(`Evidence 写入后无法读取: ${evidenceId}`);
-    const evidence = this.store
-      .snapshot(asText(row.board_id))
-      .evidence.find((item) => item.evidence_id === evidenceId);
-    if (!evidence) throw new Error(`Evidence 写入后无法读取: ${evidenceId}`);
-    return evidence;
-  }
-
-  private readReview(reviewId: string): ReviewRecord {
-    const row = this.store.db
-      .prepare("SELECT board_id FROM reviews WHERE review_id = ?")
-      .get(reviewId) as Row | undefined;
-    if (!row) throw new Error(`Review 写入后无法读取: ${reviewId}`);
-    const review = this.store
-      .snapshot(asText(row.board_id))
-      .reviews.find((item) => item.review_id === reviewId);
+  private readReview(boardId: string, reviewId: string): ReviewRecord {
+    const review = this.governance.query.listReviews(boardId)
+      .find((item) => item.review_id === reviewId);
     if (!review) throw new Error(`Review 写入后无法读取: ${reviewId}`);
     return review;
   }
 
-  private readCandidate(candidateId: string): CandidateGoalRecord {
-    const row = this.store.db
-      .prepare("SELECT board_id FROM candidates WHERE candidate_id = ?")
-      .get(candidateId) as Row | undefined;
-    if (!row) throw new Error(`Candidate 写入后无法读取: ${candidateId}`);
-    const candidate = this.store
-      .snapshot(asText(row.board_id))
-      .candidates.find((item) => item.candidate_id === candidateId);
+  private readCandidate(boardId: string, candidateId: string): CandidateGoalRecord {
+    const candidate = this.governance.query.getCandidate(boardId, candidateId);
     if (!candidate) throw new Error(`Candidate 写入后无法读取: ${candidateId}`);
     return candidate;
   }
 
-  private readContractProposal(proposalId: string): ContractProposalRecord {
-    const row = this.store.db
-      .prepare("SELECT board_id FROM contract_proposals WHERE proposal_id = ?")
-      .get(proposalId) as Row | undefined;
-    if (!row) throw new Error(`Contract Proposal 写入后无法读取: ${proposalId}`);
-    const proposal = this.store
-      .snapshot(asText(row.board_id))
-      .contract_proposals.find((item) => item.proposal_id === proposalId);
+  private readContractProposal(boardId: string, proposalId: string): ContractProposalRecord {
+    const proposal = this.governance.query.getContractProposal(boardId, proposalId);
     if (!proposal) throw new Error(`Contract Proposal 写入后无法读取: ${proposalId}`);
     return proposal;
   }
 
-  private readRewire(rewireId: string): RewireRecord {
-    const row = this.store.db
-      .prepare("SELECT board_id FROM rewires WHERE rewire_id = ?")
-      .get(rewireId) as Row | undefined;
-    if (!row) throw new Error(`Rewire 写入后无法读取: ${rewireId}`);
-    const rewire = this.store
-      .snapshot(asText(row.board_id))
-      .rewires.find((item) => item.rewire_id === rewireId);
+  private readRewire(boardId: string, rewireId: string): RewireRecord {
+    const rewire = this.governance.query.getRewire(boardId, rewireId);
     if (!rewire) throw new Error(`Rewire 写入后无法读取: ${rewireId}`);
     return rewire;
-  }
-
-  private readRisk(boardId: string, riskId: string): RiskRecord {
-    const risk = this.store.snapshot(boardId).risks.find((item) => item.risk_id === riskId);
-    if (!risk) throw new Error(`Risk 写入后无法读取: ${riskId}`);
-    return risk;
   }
 
   private readImpact(boardId: string, bindingId: string): ImpactBindingRecord {
@@ -13438,49 +8450,14 @@ export class GoalBoardCoordinator {
     );
   }
 
-  private latestCriterionReworkSeq(boardId: string, goalId: string, criterionId: string): number {
-    const rows = this.store.db
-      .prepare(`
-        SELECT seq, payload_json FROM events
-        WHERE board_id = ? AND object_id = ? AND type = 'goal.rework_requested'
-        ORDER BY seq DESC
-      `)
-      .all(boardId, goalId) as Row[];
-    for (const row of rows) {
-      const payload = parseJson<Record<string, unknown>>((row.payload_json as string | null) ?? null, {});
-      const affected = Array.isArray(payload.criterion_ids)
-        ? payload.criterion_ids.map(String)
-        : [];
-      if (affected.includes(criterionId)) return Number(row.seq ?? 0);
-    }
-    return 0;
-  }
-
   private criterionHasPassingEvidence(goal: GoalRecord, criterionId: string): boolean {
     const snapshot = this.store.snapshot(goal.board_id);
-    const compatibleRevisions = compatibleContractRevisions(goal, snapshot);
-    const afterSeq = this.latestCriterionReworkSeq(goal.board_id, goal.goal_id, criterionId);
-    const rows = this.store.db
-      .prepare(`
-        SELECT evidence.criterion_ids_json, evidence.contract_revision, event.seq
-        FROM evidence
-        JOIN events event
-          ON event.board_id = evidence.board_id
-         AND event.object_id = evidence.evidence_id
-         AND event.type = 'evidence.submitted'
-        LEFT JOIN evidence_corrections correction
-          ON correction.target_evidence_id = evidence.evidence_id
-        WHERE evidence.board_id = ? AND evidence.goal_id = ?
-          AND evidence.result = 'passed'
-          AND correction.correction_id IS NULL
-          AND event.seq > ?
-        ORDER BY event.seq DESC
-      `)
-      .all(goal.board_id, goal.goal_id, afterSeq) as Row[];
-    return rows.some((row) =>
-      compatibleRevisions.has(Number(row.contract_revision ?? 1)) &&
-      parseJson<string[]>(row.criterion_ids_json, []).includes(criterionId),
-    );
+    return this.evidenceVerification.query.hasPassingEvidence({
+      board_id: goal.board_id,
+      goal_id: goal.goal_id,
+      criterion_id: criterionId,
+      compatible_contract_revisions: [...compatibleContractRevisions(goal, snapshot)],
+    });
   }
 
   private executorHandoffReasons(workState: GoalWorkStateView): DecisionReason[] {
@@ -13554,41 +8531,103 @@ export class GoalBoardCoordinator {
     );
   }
 
+  /**
+   * Compatibility port for facts owned by Evidence, Governance and
+   * Collaboration while Goal lifecycle rules live in modules/goals.
+   */
+  private externalCompletionGateReasons(boardId: string, goalId: string): DecisionReason[] {
+    const goal = this.requireGoalOnBoard(boardId, goalId);
+    const snapshot = this.store.snapshot(boardId);
+    const reasons: DecisionReason[] = [];
+    for (const criterion of goal.acceptance_criteria) {
+      if (!this.criterionHasPassingEvidence(goal, criterion.criterion_id)) {
+        reasons.push(
+          reason(
+            "evidence.criterion_uncovered",
+            "criterion",
+            criterion.criterion_id,
+            `验收条件「${criterion.statement}」还没有通过证据`,
+            undefined,
+            criterion.pass_condition,
+          ),
+        );
+      }
+    }
+    const pendingReviews = this.governance.query.listReviewObligations(boardId, goalId)
+      .filter((obligation) => obligation.state === "pending");
+    for (const pending of pendingReviews) {
+      reasons.push(
+        reason(
+          "policy.review_pending",
+          "review",
+          pending.obligation_id,
+          `还缺少 ${pending.role} Review`,
+        ),
+      );
+    }
+    const currentRunCandidates = snapshot.candidates.filter((candidate) => {
+      const run = snapshot.runs.find((item) => item.run_id === candidate.discovered_in_run_id);
+      return run?.goal_id === goalId && candidate.blocking_mode === "current_run";
+    });
+    const pendingCandidates = currentRunCandidates.filter((candidate) => candidate.state === "pending");
+    for (const candidate of pendingCandidates) {
+      reasons.push(reason(
+        "candidate.user_decision_required",
+        "candidate",
+        candidate.candidate_id,
+        "执行中发现的新工作需要用户决定",
+      ));
+    }
+    const currentRunCandidateIds = new Set(currentRunCandidates.map((candidate) => candidate.candidate_id));
+    const pendingRewires = snapshot.rewires.filter(
+      (rewire) => rewire.state === "pending" && rewire.candidate_id != null && currentRunCandidateIds.has(rewire.candidate_id),
+    );
+    for (const pending of pendingRewires) {
+      reasons.push(reason(
+        "rewire.user_confirmation_required",
+        "rewire",
+        pending.rewire_id,
+        "用户已接受 Candidate Goal，但关系调整尚未确认",
+        { candidate_id: pending.candidate_id },
+      ));
+    }
+    const directPendingRewires = snapshot.rewires.filter(
+      (rewire) =>
+        rewire.candidate_id == null &&
+        rewire.state === "pending" &&
+        rewire.proposal.proposal_kind === "dependency" &&
+        rewire.proposal.blocking_mode === "current_run" &&
+        rewire.proposal.discovered_in_run_id != null,
+    );
+    for (const pending of directPendingRewires) {
+      const discoveredRun = snapshot.runs.find(
+        (run) => run.run_id === pending.proposal.discovered_in_run_id,
+      );
+      if (discoveredRun?.goal_id !== goalId) continue;
+      reasons.push(reason(
+        "rewire.user_confirmation_required",
+        "rewire",
+        pending.rewire_id,
+        "Runtime 提出了依赖调整，等待用户决定",
+      ));
+    }
+    return reasons;
+  }
+
   private hasPostExecutionNeedsChanges(boardId: string, goalId: string): boolean {
-    const row = this.store.db
-      .prepare(`
-        SELECT
-          COALESCE((
-            SELECT MAX(event.seq)
-            FROM events event
-            JOIN reviews review ON review.review_id = event.object_id
-            WHERE event.board_id = ?
-              AND event.type = 'review.submitted'
-              AND review.goal_id = ?
-              AND review.verdict = 'needs_changes'
-          ), 0) AS latest_needs_changes_seq,
-          COALESCE((
-            SELECT MAX(event.seq)
-            FROM events event
-            WHERE event.board_id = ?
-              AND event.type = 'goal.rework_requested'
-              AND event.object_id = ?
-          ), 0) AS latest_rework_seq,
-          COALESCE((
-            SELECT MAX(event.seq)
-            FROM events event
-            JOIN runs run ON run.run_id = event.object_id
-            WHERE event.board_id = ?
-              AND event.type = 'run.completed'
-              AND run.goal_id = ?
-              AND run.role IN ('executor', 'revalidator')
-          ), 0) AS latest_work_completed_seq
-      `)
-      .get(boardId, goalId, boardId, goalId, boardId, goalId) as Row;
+    const latestWorkCompletedSeq = this.executionModule.repository.latestCompletedWorkRunEventSeq(
+      boardId,
+      goalId,
+    );
+    const latestNeedsChangesSeq = this.governance.query
+      .latestNeedsChangesReviewEventSeq(boardId, goalId);
+    const latestReworkSeq = this.store.snapshot(boardId).lifecycle_events
+      .filter((event) => event.type === "goal.rework_requested" && event.object_id === goalId)
+      .reduce((latest, event) => Math.max(latest, event.seq), 0);
     return Math.max(
-      Number(row.latest_needs_changes_seq),
-      Number(row.latest_rework_seq),
-    ) > Number(row.latest_work_completed_seq);
+      latestNeedsChangesSeq,
+      latestReworkSeq,
+    ) > latestWorkCompletedSeq;
   }
 
   private workStatePhaseReasons(
@@ -13675,289 +8714,6 @@ export class GoalBoardCoordinator {
    * a Draft again so the user can confirm the expanded tree instead of
    * silently presenting a completed parent with unfinished children.
    */
-  private reopenSatisfiedCompoundParent(
-    boardId: string,
-    parentGoalId: string,
-    actorId: string,
-    at: string,
-  ): boolean {
-    const parent = this.requireGoalOnBoard(boardId, parentGoalId);
-    if (
-      parent.trashed_at ||
-      parent.archived_at ||
-      parent.fulfillment_state !== "satisfied" ||
-      parent.definition_state !== "accepted" ||
-      parent.decomposition_state !== "closed_compound"
-    ) {
-      return false;
-    }
-    this.store.db
-      .prepare(`
-        UPDATE goals SET
-          definition_state = 'draft', decomposition_state = 'frontier_open',
-          fulfillment_state = 'unmet', accepted_by = NULL, accepted_at = NULL,
-          updated_at = ?
-        WHERE goal_id = ? AND board_id = ?
-      `)
-      .run(at, parentGoalId, boardId);
-    this.store.appendEvent({
-      eventId: randomUUID(),
-      boardId,
-      actorId,
-      type: "goal.reopened_for_clarification",
-      objectType: "goal",
-      objectId: parentGoalId,
-      reason: "用户确认新增子 Goal，父 Goal 需要重新确认拆分",
-      payload: { decomposition_state: "frontier_open" },
-      at,
-    });
-    return true;
-  }
-
-  private satisfyClosedCompoundGoalIfReady(
-    boardId: string,
-    goalId: string,
-    actorId: string,
-    at: string,
-  ): boolean {
-    const goal = this.requireGoalOnBoard(boardId, goalId);
-    if (
-      goal.trashed_at ||
-      goal.archived_at ||
-      goal.definition_state !== "accepted" ||
-      goal.decomposition_state !== "closed_compound" ||
-      goal.validity_state !== "valid" ||
-      goal.fulfillment_state === "satisfied"
-    ) {
-      return false;
-    }
-    const snapshot = this.store.snapshot(boardId);
-    if (recordedContractCoverageBlocksClosure(goal, {
-      goals: snapshot.goals,
-      relations: snapshot.relations,
-    })) {
-      return false;
-    }
-    const children = this.activePartOfChildren(boardId, goalId);
-    if (
-      children.length === 0 ||
-      children.some(
-        (child) =>
-          asText(child.fulfillment_state) !== "satisfied" ||
-          asText(child.validity_state) !== "valid" ||
-          child.trashed_at != null ||
-          child.archived_at != null,
-      )
-    ) {
-      return false;
-    }
-    this.store.db
-      .prepare("UPDATE goals SET fulfillment_state = 'satisfied', updated_at = ? WHERE goal_id = ?")
-      .run(at, goalId);
-    const activeGoalCleared = this.clearActiveGoalIfMatches(boardId, goalId, at);
-    this.store.appendEvent({
-      eventId: randomUUID(),
-      boardId,
-      actorId,
-      type: "goal.compound_satisfied",
-      objectType: "goal",
-      objectId: goalId,
-      reason: "所有必需子 Goal 已完成，复合父 Goal 自动完成",
-      payload: {
-        child_goal_ids: children.map((child) => asText(child.goal_id)),
-        active_goal_cleared: activeGoalCleared,
-      },
-      at,
-    });
-    return true;
-  }
-
-  /**
-   * Evidence history is immutable, but a passing fact that supported an
-   * already-completed Goal can stop being effective. Keep the completion
-   * history and require an explicit revalidation before presenting it as
-   * trustworthy again.
-   */
-  private markSatisfiedGoalForEvidenceRevalidation(
-    boardId: string,
-    goalId: string,
-    actorId: string,
-    evidenceId: string,
-    correctionId: string,
-    at: string,
-  ): number {
-    const goal = this.requireGoalOnBoard(boardId, goalId);
-    if (goal.fulfillment_state !== "satisfied") return this.store.eventCursor(boardId);
-    if (goal.validity_state === "valid") {
-      this.store.db
-        .prepare("UPDATE goals SET validity_state = 'needs_revalidation', updated_at = ? WHERE board_id = ? AND goal_id = ?")
-        .run(at, boardId, goalId);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId,
-        type: "goal.completion_revalidation_required",
-        objectType: "goal",
-        objectId: goalId,
-        reason: "支撑已完成结果的通过 Evidence 已被更正，需要重新验证",
-        payload: { evidence_id: evidenceId, correction_id: correctionId },
-        at,
-      });
-    }
-    return this.reopenCompoundAncestorsForUntrustedChild(
-      boardId,
-      goalId,
-      actorId,
-      at,
-      "子 Goal 的完成 Evidence 已被更正",
-    );
-  }
-
-  /**
-   * A compound completion consumes child results. If a consumed result later
-   * becomes untrusted, retain the old completion event but reopen every active
-   * compound ancestor so downstream Goals cannot consume a stale success.
-   */
-  private reopenCompoundAncestorsForUntrustedChild(
-    boardId: string,
-    childGoalId: string,
-    actorId: string,
-    at: string,
-    triggerReason: string,
-    directParentGoalId?: string,
-  ): number {
-    const pendingChildren = [childGoalId];
-    const visitedParents = new Set<string>();
-    while (pendingChildren.length > 0) {
-      const childId = pendingChildren.shift()!;
-      const parentRows = this.store.db
-        .prepare(`
-          SELECT to_goal_id FROM goal_relations
-          WHERE board_id = ? AND from_goal_id = ?
-            AND type = 'part_of' AND state = 'active'
-          ORDER BY to_goal_id
-        `)
-        .all(boardId, childId) as Row[];
-      const relevantParentRows = childId === childGoalId && directParentGoalId
-        ? parentRows.filter((row) => asText(row.to_goal_id) === directParentGoalId)
-        : parentRows;
-      for (const row of relevantParentRows) {
-        const parentGoalId = asText(row.to_goal_id);
-        if (visitedParents.has(parentGoalId)) continue;
-        visitedParents.add(parentGoalId);
-        pendingChildren.push(parentGoalId);
-        const parent = this.requireGoalOnBoard(boardId, parentGoalId);
-        if (
-          parent.trashed_at ||
-          parent.archived_at ||
-          parent.definition_state !== "accepted" ||
-          parent.decomposition_state !== "closed_compound" ||
-          parent.fulfillment_state !== "satisfied"
-        ) {
-          continue;
-        }
-        this.store.db
-          .prepare("UPDATE goals SET fulfillment_state = 'unmet', updated_at = ? WHERE board_id = ? AND goal_id = ?")
-          .run(at, boardId, parentGoalId);
-        this.store.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId,
-          type: "goal.compound_completion_reopened",
-          objectType: "goal",
-          objectId: parentGoalId,
-          reason: "子 Goal 当前不再是可信完成，复合父 Goal 重新等待子结果",
-          payload: { child_goal_id: childId, trigger_goal_id: childGoalId, trigger_reason: triggerReason },
-          at,
-        });
-      }
-    }
-    return this.store.eventCursor(boardId);
-  }
-
-  private reconcileCompoundGoalAndAncestors(
-    boardId: string,
-    goalId: string,
-    actorId: string,
-    at: string,
-  ): number {
-    return this.satisfyClosedCompoundGoalIfReady(boardId, goalId, actorId, at)
-      ? this.reconcileCompoundAncestors(boardId, goalId, actorId, at)
-      : this.store.eventCursor(boardId);
-  }
-
-  /**
-   * A Goal Tree decision can accept a compound parent after its children have
-   * already finished, so there is no later child-completion event to trigger
-   * ancestor propagation. Reconcile every eligible parent to a fixed point in
-   * the same write transaction, while keeping the completion predicate and
-   * audit event in satisfyClosedCompoundGoalIfReady().
-   */
-  private reconcileAllClosedCompoundGoals(
-    boardId: string,
-    actorId: string,
-    at: string,
-  ): number {
-    const pendingGoalIds = new Set(
-      (this.store.db
-        .prepare(`
-          SELECT goal_id FROM goals
-          WHERE board_id = ?
-            AND definition_state = 'accepted'
-            AND decomposition_state = 'closed_compound'
-            AND validity_state = 'valid'
-            AND fulfillment_state = 'unmet'
-            AND trashed_at IS NULL
-            AND archived_at IS NULL
-          ORDER BY goal_id
-        `)
-        .all(boardId) as Row[])
-        .map((row) => asText(row.goal_id)),
-    );
-
-    while (pendingGoalIds.size > 0) {
-      let changed = false;
-      for (const goalId of pendingGoalIds) {
-        if (!this.satisfyClosedCompoundGoalIfReady(boardId, goalId, actorId, at)) continue;
-        pendingGoalIds.delete(goalId);
-        changed = true;
-      }
-      if (!changed) break;
-    }
-    return this.store.eventCursor(boardId);
-  }
-
-  /** Propagate a completed child through every completed compound ancestor. */
-  private reconcileCompoundAncestors(
-    boardId: string,
-    childGoalId: string,
-    actorId: string,
-    at: string,
-  ): number {
-    const pendingChildren = [childGoalId];
-    const visitedParents = new Set<string>();
-    while (pendingChildren.length > 0) {
-      const childId = pendingChildren.shift()!;
-      const parentRows = this.store.db
-        .prepare(`
-          SELECT to_goal_id FROM goal_relations
-          WHERE board_id = ? AND from_goal_id = ?
-            AND type = 'part_of' AND state = 'active'
-          ORDER BY to_goal_id
-        `)
-        .all(boardId, childId) as Row[];
-      for (const row of parentRows) {
-        const parentGoalId = asText(row.to_goal_id);
-        if (visitedParents.has(parentGoalId)) continue;
-        visitedParents.add(parentGoalId);
-        if (this.satisfyClosedCompoundGoalIfReady(boardId, parentGoalId, actorId, at)) {
-          pendingChildren.push(parentGoalId);
-        }
-      }
-    }
-    return this.store.eventCursor(boardId);
-  }
-
   private evaluate(input: EvaluationInput): Evaluation {
     const snapshotIndex = input.snapshot_index ?? (
       input.snapshot ? snapshotEvaluationIndex(input.snapshot) : undefined
@@ -14023,13 +8779,8 @@ export class GoalBoardCoordinator {
       }
       const pendingContractProposal = snapshotIndex
         ? snapshotIndex.pending_contract_proposal_by_goal.get(goal.goal_id)
-        : this.store.db
-          .prepare(`
-            SELECT proposal_id FROM contract_proposals
-            WHERE board_id = ? AND goal_id = ? AND state = 'pending'
-            ORDER BY created_at DESC LIMIT 1
-          `)
-          .get(input.boardId, goal.goal_id) as Row | undefined;
+        : this.governance.query.snapshot(input.boardId).contract_proposals
+          .find((proposal) => proposal.goal_id === goal.goal_id && proposal.state === "pending");
       if (pendingContractProposal) {
         reasons.push(
           reason(
@@ -14054,11 +8805,8 @@ export class GoalBoardCoordinator {
       ) {
         const pendingReview = snapshotIndex
           ? snapshotIndex.pending_review_keys.has(`${input.goalId}\u0000${input.role}`)
-          : Boolean(this.store.db
-            .prepare(
-              "SELECT obligation_id FROM review_obligations WHERE goal_id = ? AND role = ? AND state = 'pending' LIMIT 1",
-            )
-            .get(input.goalId, input.role));
+          : this.governance.query.listReviewObligations(input.boardId, input.goalId)
+            .some((obligation) => obligation.role === input.role && obligation.state === "pending");
         if (!pendingReview) {
           reasons.push(
             reason(
@@ -14071,14 +8819,11 @@ export class GoalBoardCoordinator {
         }
         const latestWorkRun = snapshotIndex
           ? snapshotIndex.latest_work_run_by_goal.get(input.goalId)
-          : this.store.db
-            .prepare(`
-              SELECT state FROM runs
-              WHERE board_id = ? AND goal_id = ? AND role IN ('executor', 'revalidator')
-              ORDER BY started_at DESC, run_id DESC
-              LIMIT 1
-            `)
-            .get(input.boardId, input.goalId) as Row | undefined;
+          : this.executionModule.repository.latestRunForGoal(
+              input.boardId,
+              input.goalId,
+              ["executor", "revalidator"],
+            );
         if (!latestWorkRun || latestWorkRun.state !== "completed") {
           reasons.push(
             reason(
@@ -14226,13 +8971,10 @@ export class GoalBoardCoordinator {
       ? (snapshotIndex.claims_by_goal.get(input.goalId) ?? [])
         .filter((claim) => claim.state === "active" && claim.expires_at > input.now)
         .sort((left, right) => left.claim_id.localeCompare(right.claim_id))[0]
-      : this.store.db
-        .prepare(`
-          SELECT claim_id, actor_id FROM claims
-          WHERE goal_id = ? AND state = 'active' AND expires_at > ?
-          ORDER BY claim_id LIMIT 1
-        `)
-        .get(input.goalId, input.now) as Row | undefined;
+      : this.executionModule.repository
+        .listClaimsForGoal(input.boardId, input.goalId)
+        .filter((claim) => claim.state === "active" && claim.expires_at > input.now)
+        .sort((left, right) => left.claim_id.localeCompare(right.claim_id))[0];
     if (sameGoalClaim) {
       reasons.push(
         reason(
@@ -14266,51 +9008,10 @@ export class GoalBoardCoordinator {
     const rows = allActiveRows
       ? allActiveRows.filter((row) => row.goal_id == null || row.goal_id === goalId)
       : this.store.activePolicyRows(boardId, goalId);
-    let resolved: GoalPolicy = { ...DEFAULT_GOAL_POLICY, required_capabilities: [] };
-    for (const { policy } of rows.filter((row) => row.scope === "project_default")) {
-      if (policy.goal_mode != null) resolved.goal_mode = policy.goal_mode;
-      if (policy.required_capabilities != null) {
-        resolved.required_capabilities = unique(policy.required_capabilities).sort();
-      }
-      if (policy.self_verification != null) {
-        resolved.self_verification = policy.self_verification;
-      }
-      if (policy.cross_reviewers != null) resolved.cross_reviewers = policy.cross_reviewers;
-      if (policy.adversarial_reviewers != null) {
-        resolved.adversarial_reviewers = policy.adversarial_reviewers;
-      }
-      if (policy.human_approval != null) resolved.human_approval = policy.human_approval;
-      if (policy.max_lease_seconds != null) {
-        resolved.max_lease_seconds = Math.max(1, policy.max_lease_seconds);
-      }
-    }
-    const strengtheningPolicies = rows
-      .filter((row) => row.scope !== "project_default")
-      .map((row) => row.policy);
-    if (strengthen) strengtheningPolicies.push(strengthen);
-    for (const policy of strengtheningPolicies) {
-      if (policy.goal_mode && GOAL_MODE_ORDER[policy.goal_mode] > GOAL_MODE_ORDER[resolved.goal_mode]) {
-        resolved.goal_mode = policy.goal_mode;
-      }
-      resolved.required_capabilities = unique([
-        ...resolved.required_capabilities,
-        ...(policy.required_capabilities ?? []),
-      ]).sort();
-      resolved.self_verification ||= policy.self_verification ?? false;
-      resolved.cross_reviewers = Math.max(resolved.cross_reviewers, policy.cross_reviewers ?? 0);
-      resolved.adversarial_reviewers = Math.max(
-        resolved.adversarial_reviewers,
-        policy.adversarial_reviewers ?? 0,
-      );
-      resolved.human_approval ||= policy.human_approval ?? false;
-      if (policy.max_lease_seconds != null) {
-        resolved.max_lease_seconds = Math.min(
-          resolved.max_lease_seconds,
-          Math.max(1, policy.max_lease_seconds),
-        );
-      }
-    }
-    return resolved;
+    return resolveGoalPolicy(
+      rows as Parameters<typeof resolveGoalPolicy>[0],
+      strengthen,
+    );
   }
 
   private impactConflicts(
@@ -14337,17 +9038,25 @@ export class GoalBoardCoordinator {
         .sort((left, right) =>
           left.surface.localeCompare(right.surface) || left.claim_id.localeCompare(right.claim_id)
         )
-      : this.store.db
-        .prepare(`
-          SELECT c.claim_id, c.goal_id AS existing_goal_id,
-                 i.surface, i.access, i.input_snapshot
-          FROM claims c
-          JOIN impact_bindings i ON i.goal_id = c.goal_id AND i.state = 'confirmed'
-          WHERE c.board_id = ? AND c.state = 'active' AND c.expires_at > ?
-            AND c.goal_id <> ?
-          ORDER BY i.surface, c.claim_id
-        `)
-        .all(boardId, now, goalId) as Row[];
+      : (() => {
+          const snapshot = this.store.snapshot(boardId);
+          return snapshot.claims
+            .filter((claim) =>
+              claim.goal_id !== goalId && claim.state === "active" && claim.expires_at > now
+            )
+            .flatMap((claim) => snapshot.impacts
+              .filter((impact) => impact.goal_id === claim.goal_id && impact.state === "confirmed")
+              .map((impact) => ({
+                claim_id: claim.claim_id,
+                existing_goal_id: claim.goal_id,
+                surface: impact.surface,
+                access: impact.access,
+                input_snapshot: impact.input_snapshot,
+              })))
+            .sort((left, right) =>
+              left.surface.localeCompare(right.surface) || left.claim_id.localeCompare(right.claim_id)
+            );
+        })();
     const conflicts: DecisionReason[] = [];
     for (const wanted of requested) {
       if (wanted.state !== "confirmed") continue;
@@ -14491,84 +9200,6 @@ export class GoalBoardCoordinator {
       .all(goalId) as Row[]).map((row) => asText(row.description));
   }
 
-  private expirePastClaims(boardId: string, now: string, actorId: string): void {
-    const expired = this.store.db
-      .prepare(`
-        SELECT claim_id, goal_id, expires_at FROM claims
-        WHERE board_id = ? AND state = 'active' AND expires_at <= ?
-        ORDER BY claim_id
-      `)
-      .all(boardId, now) as Row[];
-    if (expired.length === 0) return;
-    for (const claim of expired) {
-      const claimId = asText(claim.claim_id);
-      const expiredAt = asText(claim.expires_at);
-      this.store.db
-        .prepare("UPDATE claims SET state = 'expired', released_at = ?, release_reason = ? WHERE claim_id = ?")
-        .run(expiredAt, "领取租约已到期", claimId);
-      this.abandonActiveRunsForClaim(
-        boardId,
-        claimId,
-        actorId,
-        "领取租约已到期，当前 Run 自动中断",
-        expiredAt,
-      );
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId,
-        type: "lease.expired",
-        objectType: "claim",
-        objectId: claimId,
-        reason: "领取期限已到",
-        payload: { goal_id: asText(claim.goal_id), expired_at: expiredAt },
-        at: now,
-      });
-    }
-  }
-
-  /**
-   * A non-terminal Run is meaningful only while its Claim is active. Release,
-   * revoke and lease expiry therefore close it in the same transaction instead
-   * of leaving a stale `started`/`blocked` record behind.
-   */
-  private abandonActiveRunsForClaim(
-    boardId: string,
-    claimId: string,
-    actorId: string,
-    reasonText: string,
-    at: string,
-  ): string[] {
-    const runs = this.store.db
-      .prepare(`
-        SELECT run_id, goal_id FROM runs
-        WHERE board_id = ? AND claim_id = ? AND state IN ('started', 'blocked')
-        ORDER BY run_id
-      `)
-      .all(boardId, claimId) as Row[];
-    for (const run of runs) {
-      const runId = asText(run.run_id);
-      this.store.db
-        .prepare(`
-          UPDATE runs SET state = 'abandoned', block_reason = ?, ended_at = ?
-          WHERE run_id = ? AND state IN ('started', 'blocked')
-        `)
-        .run(reasonText, at, runId);
-      this.store.appendEvent({
-        eventId: randomUUID(),
-        boardId,
-        actorId,
-        type: "run.abandoned",
-        objectType: "run",
-        objectId: runId,
-        reason: reasonText,
-        payload: { claim_id: claimId, recovery: true, goal_id: asText(run.goal_id) },
-        at,
-      });
-    }
-    return runs.map((run) => asText(run.run_id));
-  }
-
   private validateContractProposal(
     boardId: string,
     goalId: string,
@@ -14595,7 +9226,7 @@ export class GoalBoardCoordinator {
         "Contract Proposal 必须明确形成 accepted / closed_leaf 的最小可执行 Goal",
       );
     }
-    this.validateGoalInput(proposedGoal);
+    this.goalsModule.commands.validateGoalInput(proposedGoal);
     const leafReadinessIssue = goalProposalLeafReadinessIssues(
       {
         item_id: `contract-proposal:${goalId}`,
@@ -14790,16 +9421,14 @@ export class GoalBoardCoordinator {
       );
     }
     for (const rewireId of dependencyRewireIds) {
-      const row = this.store.db
-        .prepare("SELECT state, proposal_json FROM rewires WHERE board_id = ? AND rewire_id = ?")
-        .get(boardId, rewireId) as Row | undefined;
-      if (!row) {
+      const rewire = this.governance.query.getRewire(boardId, rewireId);
+      if (!rewire) {
         throw new GoalBoardV1Error(
           "contract_proposal.dependency_not_found",
           `找不到 Dependency Rewire: ${rewireId}`,
         );
       }
-      const proposal = parseJson<RewireRecord["proposal"]>(row.proposal_json, {});
+      const proposal = rewire.proposal;
       if (
         proposal.proposal_kind !== "dependency" ||
         !(proposal.relations ?? []).some(
@@ -14813,40 +9442,12 @@ export class GoalBoardCoordinator {
       }
       if (
         requireResolvedDependencies &&
-        !["applied", "rejected"].includes(asText(row.state))
+        !["applied", "rejected"].includes(rewire.state)
       ) {
         throw new GoalBoardV1Error(
           "contract_proposal.dependency_pending",
           `请先确认或拒绝依赖调整，再接受 Contract: ${rewireId}`,
         );
-      }
-    }
-  }
-
-  private validateGoalInput(input: CreateGoalInput): void {
-    if (!input.title?.trim()) {
-      throw new GoalBoardV1Error("goal.title_required", "Goal 必须有名称");
-    }
-    const requiresCompleteContract =
-      input.definition_state === "accepted" || input.decomposition_state === "closed_leaf";
-    const requiredContract = [input.outcome, input.why, input.business_logic];
-    if (requiresCompleteContract && requiredContract.some((value) => !value?.trim())) {
-      throw new GoalBoardV1Error(
-        "goal.required_field_missing",
-        "可执行 Goal 必须包含结果、原因和非技术业务逻辑",
-      );
-    }
-    const requiresAcceptance =
-      input.definition_state === "accepted" || input.decomposition_state === "closed_leaf";
-    if (requiresAcceptance && input.acceptance_criteria.length === 0) {
-      throw new GoalBoardV1Error(
-        "goal.acceptance_missing",
-        "被接受或可直接执行的最小 Goal 至少需要一条明确验收条件",
-      );
-    }
-    for (const criterion of input.acceptance_criteria) {
-      if (!criterion.statement.trim() || !criterion.pass_condition.trim()) {
-        throw new GoalBoardV1Error("goal.acceptance_invalid", "每条验收条件都要说明检查什么和怎样算通过");
       }
     }
   }
@@ -15106,13 +9707,14 @@ export class GoalBoardCoordinator {
   }
 
   private requireBoard(boardId: string): void {
-    const row = this.store.db.prepare("SELECT board_id FROM boards WHERE board_id = ?").get(boardId);
-    if (!row) throw new GoalBoardV1Error("board.not_found", `Board 不存在: ${boardId}`);
+    if (!this.goalsModule.query.getBoard(boardId)) {
+      throw new GoalBoardV1Error("board.not_found", `Board 不存在: ${boardId}`);
+    }
   }
 
   private requireGoalOnBoard(boardId: string, goalId: string): GoalRecord {
-    const goal = this.store.getGoal(goalId);
-    if (!goal || goal.board_id !== boardId) {
+    const goal = this.goalsModule.query.getGoal(boardId, goalId);
+    if (!goal) {
       throw new GoalBoardV1Error("goal.not_found", `Goal 不存在: ${goalId}`);
     }
     return goal;

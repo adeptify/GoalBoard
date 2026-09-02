@@ -16,7 +16,7 @@ const TOKEN = "goalboard-session-workspace-e2e-token-0123456789";
 function addAcceptedGoal(databasePath: string, boardId: string, goalId: string, title: string): void {
   const store = new SqliteGoalBoardStore(databasePath);
   try {
-    new GoalBoardCoordinator(store).createGoal(
+    new GoalBoardCoordinator(store).goals.commands.createGoal(
       boardId,
       {
         goal_id: goalId,

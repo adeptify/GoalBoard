@@ -1,0 +1,55 @@
+{
+  "name": "@adeptify/goalboard-app-workbench",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local product UI composition root for the Workbench.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-plugin-goals": "workspace:*",
+    "@adeptify/goalboard-plugin-feed": "workspace:*",
+    "@adeptify/goalboard-ui-host": "workspace:*"
+  },
+  "goalboard": {
+    "path": "apps/workbench",
+    "kind": "app",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/app-host",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-fd4",
+      "goal-reorg-ap3",
+      "goal-reorg-gw4",
+      "goal-reorg-gw5",
+      "goal-reorg-ex4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "workbench.shell.v1",
+      "workbench.ui-slots.v1",
+      "workbench.feed-composition.v1",
+      "workbench.goals-command-adapter.v1",
+      "workbench.execution-validation-adapter.v1"
+    ]
+  }
+}

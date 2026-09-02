@@ -303,6 +303,60 @@ test("home install rejects dependency links that would escape the installed rele
   });
 });
 
+test("home install flattens transitive workspace dependencies without copying package-manager links", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const source = await fixtureSource(directory, "1.0.0");
+    const dependencyDirectory = await realpath(join(source, "node_modules", "fixture-dependency"));
+    const transitiveDirectory = join(
+      source,
+      "node_modules",
+      ".pnpm",
+      "fixture-transitive@1.0.0",
+      "node_modules",
+      "fixture-transitive",
+    );
+    await Promise.all([
+      mkdir(join(dependencyDirectory, "node_modules"), { recursive: true }),
+      mkdir(transitiveDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(dependencyDirectory, "package.json"),
+        JSON.stringify({
+          name: "fixture-dependency",
+          version: "1.0.0",
+          type: "module",
+          exports: "./index.js",
+          dependencies: { "fixture-transitive": "1.0.0" },
+        }),
+      ),
+      writeFile(
+        join(dependencyDirectory, "index.js"),
+        "import { suffix } from 'fixture-transitive';\nexport const marker = 'embedded-' + suffix;\n",
+      ),
+      writeFile(
+        join(transitiveDirectory, "package.json"),
+        JSON.stringify({ name: "fixture-transitive", version: "1.0.0", type: "module", exports: "./index.js" }),
+      ),
+      writeFile(join(transitiveDirectory, "index.js"), "export const suffix = 'transitive';\n"),
+    ]);
+    await symlink(
+      transitiveDirectory,
+      join(dependencyDirectory, "node_modules", "fixture-transitive"),
+      "dir",
+    );
+
+    const installed = await installGoalBoardHome({
+      homeDirectory: join(directory, "home", ".goalboard"),
+      sourceDirectory: source,
+    });
+    await assert.rejects(stat(join(installed.release_directory, "node_modules", "fixture-dependency", "node_modules")));
+    assert.ok((await stat(join(installed.release_directory, "node_modules", "fixture-transitive", "index.js"))).isFile());
+    const output = await execFileAsync(process.execPath, [installed.launchers.cli], { cwd: directory });
+    assert.equal(output.stdout.trim(), "cli:embedded-transitive");
+  });
+});
+
 test("home install resolves production dependencies from a standard ancestor node_modules", async () => {
   await withTemporaryDirectory(async (directory) => {
     const packageDirectory = join(directory, "runtime", "node_modules", "fixture-goalboard");

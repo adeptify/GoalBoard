@@ -25,7 +25,7 @@ function createContract(databasePath: string, boardId: string, goalId: string) {
     actor_id: "owner",
     idempotency_key: `${boardId}-init`,
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     boardId,
     {
       goal_id: goalId,
@@ -257,7 +257,7 @@ test("project Handoff web API keeps the editable draft, requires confirmation, a
   const goalId = "goal-handoff-web";
   const store = new SqliteGoalBoardStore(project.database_path);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     project.board_id,
     {
       goal_id: goalId,

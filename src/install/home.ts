@@ -551,14 +551,39 @@ async function createRelease(
   }
   for (const dependency of source.runtimeDependencies) {
     const target = path.join(embeddedNodeModules, dependency.name);
-    await assertContainedDependencyLinks(dependency.directory);
+    // Runtime dependencies are collected recursively and flattened into the
+    // release's top-level node_modules. Package-manager links inside a
+    // dependency's own node_modules are therefore build inputs, not files we
+    // should copy into the self-contained release.
+    await assertContainedDependencyLinks(dependency.directory, {
+      ignoredTopLevelDirectories: ["node_modules"],
+    });
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.cp(dependency.directory, target, {
       recursive: true,
       force: false,
       errorOnExist: true,
       dereference: true,
+      filter(sourcePath) {
+        const relative = path.relative(dependency.directory, sourcePath);
+        return relative === "" || relative.split(path.sep)[0] !== "node_modules";
+      },
     });
+  }
+  const planningMethodsDirectory = path.join(
+    embeddedNodeModules,
+    "@adeptify",
+    "goalboard-module-goals",
+    "methods",
+  );
+  if ((await pathState(planningMethodsDirectory))?.isDirectory()) {
+    const skillMethodsDirectory = path.join(stagingDirectory, "skills", "goal-advance", "methods");
+    await fs.rm(skillMethodsDirectory, { recursive: true, force: true });
+    await fs.symlink(
+      path.relative(path.dirname(skillMethodsDirectory), planningMethodsDirectory),
+      skillMethodsDirectory,
+      "dir",
+    );
   }
   await assertContainedDependencyLinks(embeddedNodeModules);
   await writeAtomic(
@@ -595,13 +620,18 @@ async function createRelease(
   );
 }
 
-async function assertContainedDependencyLinks(rootDirectory: string): Promise<void> {
+async function assertContainedDependencyLinks(
+  rootDirectory: string,
+  options: { ignoredTopLevelDirectories?: readonly string[] } = {},
+): Promise<void> {
+  const ignoredTopLevelDirectories = new Set(options.ignoredTopLevelDirectories ?? []);
   const pending = [rootDirectory];
   while (pending.length > 0) {
     const directory = pending.pop()!;
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const entryPath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
+        if (directory === rootDirectory && ignoredTopLevelDirectories.has(entry.name)) continue;
         pending.push(entryPath);
         continue;
       }

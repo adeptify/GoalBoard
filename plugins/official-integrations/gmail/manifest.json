@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "plugin_id": "io.goalboard.integration.gmail",
+  "version": "1.0.0",
+  "name": "Gmail",
+  "kind": "integration",
+  "publisher": { "publisher_id": "io.adeptify", "signature": "adeptify-official-signature-v1" },
+  "host_api_version": 1,
+  "entrypoints": [
+    { "deployment": "local", "entrypoint": "./dist/index.js" }
+  ],
+  "permissions": [
+    { "permission": "network:googleapis.com", "required": true, "reason": "读取 Gmail profile、history 和 message" },
+    { "permission": "secret:gmail", "required": true, "reason": "使用按账号隔离的 OAuth credential reference" }
+  ],
+  "capabilities": {
+    "provides": ["connector.driver.gmail.v1", "signal.adapter.gmail.v1"],
+    "consumes": ["connector.host.v1", "listener.host.v1", "signals.command.v1"]
+  },
+  "artifacts": { "produces": [], "consumes": [] },
+  "ui": { "contributions": ["settings.integration.gmail"] }
+}

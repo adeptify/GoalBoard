@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "plugin_id": "io.goalboard.integration.github",
+  "version": "1.0.0",
+  "name": "GitHub",
+  "kind": "integration",
+  "publisher": {
+    "publisher_id": "io.adeptify",
+    "signature": "adeptify-official-signature-v1"
+  },
+  "host_api_version": 1,
+  "entrypoints": [
+    { "deployment": "local", "entrypoint": "./dist/index.js" }
+  ],
+  "permissions": [
+    { "permission": "network:github.com", "required": true, "reason": "读取 GitHub 身份与通知" },
+    { "permission": "secret:github", "required": true, "reason": "使用不可导出的 GitHub credential reference" }
+  ],
+  "capabilities": {
+    "provides": ["connector.driver.github.v1", "signal.adapter.github.v1"],
+    "consumes": ["connector.host.v1", "listener.host.v1", "signals.command.v1"]
+  },
+  "artifacts": { "produces": [], "consumes": [] },
+  "ui": { "contributions": ["settings.integration.github"] }
+}

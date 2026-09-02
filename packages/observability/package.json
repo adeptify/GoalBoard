@@ -1,0 +1,41 @@
+{
+  "name": "@adeptify/goalboard-observability",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Structured logs, traces, diagnostics, and redaction mechanisms.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "packages/observability",
+    "kind": "foundation",
+    "maturity": "contract-only",
+    "contract": "@adeptify/goalboard-contracts/platform/observability",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-7f442b3c-bf89-4696-ba50-721211740ff1"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

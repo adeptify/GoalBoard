@@ -5,22 +5,23 @@ import path from "node:path";
 import test from "node:test";
 import {
   BUILTIN_PLANNING_METHOD_PACKS,
+  GoalsModule,
   composePlanningMethodPacks,
   hydratePlanningMethodPack,
   loadBuiltinPlanningMethodPacks,
   normalizePlanningMethodPack,
   resolvePlanningMethodPacks,
   type PlanningMethodPackInput,
-} from "../src/planning/method-packs.js";
+} from "@adeptify/goalboard-module-goals";
 import {
   analyzeGoalChangeImpact,
   planningMetrics,
   projectPlanningRelations,
   validatePlanningGraph,
-} from "../src/planning/goal-graph.js";
+} from "@adeptify/goalboard-module-goals";
 import { GoalBoardProjectCatalog, readPersonalPlanningMethodPacks } from "../src/projects/catalog.js";
 import { GoalBoardCoordinator } from "../src/v1/coordinator.js";
-import { goalTreeProposalDecompositionIssues } from "../src/v1/goal-decomposition-validation.js";
+import { goalTreeProposalDecompositionIssues } from "@adeptify/goalboard-module-goals";
 import { SqliteGoalBoardStore } from "../src/v1/store.js";
 import type { GoalRecord, GoalRelationRecord } from "../src/v1/types.js";
 
@@ -408,7 +409,7 @@ test("project and personal methods persist without a second Goal truth model", a
   const coordinator = new GoalBoardCoordinator(store, () => new Date("2026-08-22T03:00:00.000Z"));
   coordinator.initializeBoard({ board_id: "board-1", title: "规划测试", actor_id: "user", idempotency_key: "init" });
   assert.throws(
-    () => coordinator.saveProjectPlanningMethod({
+    () => coordinator.goals.planning.saveProjectMethod({
       board_id: "board-1",
       method: customMethod("domain-unconfirmed-research"),
       actor_id: "runtime",
@@ -416,7 +417,7 @@ test("project and personal methods persist without a second Goal truth model", a
     }),
     /必须由用户确认/,
   );
-  const saved = coordinator.saveProjectPlanningMethod({
+  const saved = coordinator.goals.planning.saveProjectMethod({
     board_id: "board-1",
     method: customMethod("domain-customer-research"),
     actor_id: "user",
@@ -431,6 +432,98 @@ test("project and personal methods persist without a second Goal truth model", a
   catalog.putPersonalPlanningMethodPack(personal);
   catalog.close();
   assert.equal(readPersonalPlanningMethodPacks(root)[0]?.method_id, personal.method_id);
+});
+
+test("Goals public Planning API owns method versions, graph checks, and change impact", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "goalboard-planning-module-"));
+  const store = new SqliteGoalBoardStore(path.join(root, "board.db"));
+  try {
+    const clock = () => new Date("2026-08-22T05:00:00.000Z");
+    new GoalBoardCoordinator(store, clock).initializeBoard({
+      board_id: "board-module-planning",
+      title: "Planning Module",
+      actor_id: "user",
+      idempotency_key: "init-module-planning",
+    });
+    const goals = new GoalsModule(store.db, {
+      currentActionToken: () => "token:planning",
+      authorizeRiskUpdate: () => undefined,
+      authorizeRiskState: () => undefined,
+      transitionRevisionDependents: () => undefined,
+      reconcileLifecycle: () => ({ observed_event_cursor: 0 }),
+    }, { now: clock });
+
+    const first = goals.planning.saveProjectMethod({
+      board_id: "board-module-planning",
+      method: customMethod("domain-module-planning"),
+      actor_id: "user",
+      user_confirmed: true,
+    });
+    const second = goals.planning.saveProjectMethod({
+      board_id: "board-module-planning",
+      method: { ...customMethod("domain-module-planning"), summary: "第二版研究方法。" },
+      actor_id: "user",
+      user_confirmed: true,
+    });
+    assert.equal(first.method.version, 1);
+    assert.equal(second.method.version, 2);
+    assert.deepEqual(
+      goals.planning.projectComposition("board-module-planning").method_pack_ids,
+      ["domain-module-planning"],
+    );
+    assert.match(second.method.instructions, /拆分时必须回答/u);
+
+    goals.commands.createGoal("board-module-planning", {
+      goal_id: "foundation",
+      title: "基础",
+      outcome: "基础结果",
+      why: "被功能消费",
+      business_logic: "先提供基础结果。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "foundation-ready",
+        statement: "基础结果可用",
+        decision_method: "inspection",
+        pass_condition: "可以被功能消费",
+      }],
+    }, { actor_id: "user", idempotency_key: "create-foundation" });
+    goals.commands.createGoal("board-module-planning", {
+      goal_id: "feature",
+      title: "功能",
+      outcome: "功能结果",
+      why: "消费基础",
+      business_logic: "使用基础结果。",
+      definition_state: "accepted",
+      decomposition_state: "closed_leaf",
+      acceptance_criteria: [{
+        criterion_id: "feature-ready",
+        statement: "功能结果可用",
+        decision_method: "inspection",
+        pass_condition: "功能消费基础结果",
+      }],
+    }, { actor_id: "user", idempotency_key: "create-feature" });
+    goals.commands.addRelation("board-module-planning", {
+      from_goal_id: "feature",
+      to_goal_id: "foundation",
+      type: "depends_on",
+      reason: "功能消费基础结果",
+    }, { actor_id: "user", idempotency_key: "feature-depends-foundation" });
+
+    const impact = goals.planning.analyzeChange("board-module-planning", ["foundation"]);
+    assert.deepEqual(impact.affected_dependents, ["feature"]);
+    assert.deepEqual(goals.planning.validateBoardGraph("board-module-planning").issues, []);
+    assert.ok(goals.planning.validateGraph(
+      [goal("foundation"), goal("feature")],
+      [
+        relation("cycle-1", "feature", "foundation", "depends_on"),
+        relation("cycle-2", "foundation", "feature", "depends_on"),
+      ],
+    ).some((issue) => issue.code === "planning.dependency_cycle"));
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("whole-graph validation catches dependency and combined execution cycles", () => {

@@ -1,0 +1,48 @@
+{
+  "name": "@adeptify/goalboard-app-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Thin CLI protocol, argument, and presentation adapter.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-plugin-goals": "workspace:*"
+  },
+  "goalboard": {
+    "path": "apps/cli",
+    "kind": "app",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/app-host",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-dv1",
+      "goal-reorg-gw4",
+      "goal-reorg-ex4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "cli.goals-command-adapter.v1",
+      "cli.execution-validation-adapter.v1"
+    ]
+  }
+}

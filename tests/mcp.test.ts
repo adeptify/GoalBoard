@@ -1723,7 +1723,7 @@ describe("mcp server", () => {
       actor_id: "user-1",
       idempotency_key: "tree-error-board-init",
     });
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       "tree-error-board",
       {
         goal_id: "tree-error-criterion-owner",
@@ -3664,7 +3664,8 @@ describe("mcp server", () => {
       };
       assert.equal(finalSnapshot.relations.find((item) => item.relation_id === relationId)?.state, "active");
       const mcpSource = fs.readFileSync(path.join(ROOT, "src/mcp/server.ts"), "utf8");
-      assert.match(mcpSource, /coordinator\.setGoalTrashed/);
+      assert.match(mcpSource, /goalsAdapter\.lifecycle\.setTrashed/);
+      assert.doesNotMatch(mcpSource, /coordinator\.setGoalTrashed/);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

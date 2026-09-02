@@ -1,9 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  createGoalBoardLocalHost,
+  createGoalCapability,
+  goalBoardHostProjectReference,
+  initializeBoardCapability,
+  snapshotBoardCapability,
+  type GoalBoardLocalHost,
+} from "../local-host/composition.js";
 import { GoalBoardCoordinator } from "./coordinator.js";
-import { SqliteGoalBoardStore } from "./store.js";
 import type { ClaimRequest, CreateGoalInput } from "./types.js";
 import { importV3Board } from "./migration.js";
+import {
+  createCliExecutionValidationAdapter,
+  createCliGoalsAdapter,
+} from "@adeptify/goalboard-app-cli";
 
 const DEFAULT_DATABASE = ".goalboard/goalboard.db";
 
@@ -41,7 +52,11 @@ The SQLite database defaults to ${DEFAULT_DATABASE}.`);
   console.log("\nInstall GoalBoard itself: goalboard install [--home PATH]");
 }
 
-export async function runV1Cli(args: string[]): Promise<number> {
+export interface V1CliOptions {
+  localHost?: GoalBoardLocalHost;
+}
+
+export async function runV1Cli(args: string[], options: V1CliOptions = {}): Promise<number> {
   const operation = args[0];
   if (!operation || operation === "--help" || operation === "-h") {
     printV1Help();
@@ -55,13 +70,21 @@ export async function runV1Cli(args: string[]): Promise<number> {
     throw new Error(`GoalBoard 数据库不存在: ${databasePath}`);
   }
   const input = payload(args);
-  const store = new SqliteGoalBoardStore(databasePath);
-  const coordinator = new GoalBoardCoordinator(store);
+  const localHost = options.localHost ?? createGoalBoardLocalHost();
+  const ownsLocalHost = !options.localHost;
+  const reference = goalBoardHostProjectReference({
+    databasePath,
+    boardId: String(input.board_id ?? value(args, "--board-id") ?? `database:${databasePath}`),
+  });
+  const client = localHost.client(reference);
   try {
-    switch (operation) {
+    return await localHost.withProject(reference, async ({ store, coordinator }) => {
+      const goalsAdapter = createCliGoalsAdapter(coordinator.goals);
+      const executionAdapter = createCliExecutionValidationAdapter(coordinator.executionValidation);
+      switch (operation) {
       case "init":
         print(
-          coordinator.initializeBoard({
+          await client.invoke(initializeBoardCapability, {
             board_id: String(input.board_id),
             title: String(input.title),
             actor_id: String(input.actor_id),
@@ -71,7 +94,9 @@ export async function runV1Cli(args: string[]): Promise<number> {
         break;
       case "create-goal":
         print(
-          coordinator.createGoal(String(input.board_id), input.goal as CreateGoalInput, {
+          await client.invoke(createGoalCapability, {
+            board_id: String(input.board_id),
+            goal: input.goal as CreateGoalInput,
             actor_id: String(input.actor_id),
             idempotency_key: String(input.idempotency_key),
             reason: input.reason == null ? undefined : String(input.reason),
@@ -129,9 +154,9 @@ export async function runV1Cli(args: string[]): Promise<number> {
         break;
       case "relation-add":
         print(
-          coordinator.addRelation(
+          goalsAdapter.commands.addRelation(
             String(input.board_id),
-            input.relation as Parameters<GoalBoardCoordinator["addRelation"]>[1],
+            input.relation as Parameters<GoalBoardCoordinator["goals"]["commands"]["addRelation"]>[1],
             {
               actor_id: String(input.actor_id),
               idempotency_key: String(input.idempotency_key),
@@ -151,27 +176,27 @@ export async function runV1Cli(args: string[]): Promise<number> {
         break;
       case "policy-set":
         print(
-          coordinator.setPolicy(
+          goalsAdapter.commands.setPolicy(
             String(input.board_id),
-            input.binding as Parameters<GoalBoardCoordinator["setPolicy"]>[1],
+            input.binding as Parameters<GoalBoardCoordinator["goals"]["commands"]["setPolicy"]>[1],
             { actor_id: String(input.actor_id), idempotency_key: String(input.idempotency_key) },
           ),
         );
         break;
       case "risk-add":
         print(
-          coordinator.addRisk(
+          goalsAdapter.commands.addRisk(
             String(input.board_id),
-            input.risk as Parameters<GoalBoardCoordinator["addRisk"]>[1],
+            input.risk as Parameters<GoalBoardCoordinator["goals"]["commands"]["addRisk"]>[1],
             { actor_id: String(input.actor_id), idempotency_key: String(input.idempotency_key) },
           ),
         );
         break;
       case "risk-state":
         print(
-          coordinator.setRiskState(
+          goalsAdapter.commands.setRiskState(
             String(input.board_id),
-            input.risk as Parameters<GoalBoardCoordinator["setRiskState"]>[1],
+            input.risk as Parameters<GoalBoardCoordinator["goals"]["commands"]["setRiskState"]>[1],
             { actor_id: String(input.actor_id), idempotency_key: String(input.idempotency_key) },
           ),
         );
@@ -186,10 +211,10 @@ export async function runV1Cli(args: string[]): Promise<number> {
         );
         break;
       case "snapshot":
-        print(store.snapshot(String(input.board_id)));
+        print(await client.invoke(snapshotBoardCapability, { board_id: String(input.board_id) }));
         break;
       case "contract": {
-        const contract = coordinator.readGoalContract(String(input.board_id), String(input.goal_id));
+        const contract = coordinator.goalQueries.readGoalContract(String(input.board_id), String(input.goal_id));
         const baseUrl =
           value(args, "--web-base-url") ??
           process.env.GOALBOARD_WEB_URL ??
@@ -237,60 +262,60 @@ export async function runV1Cli(args: string[]): Promise<number> {
         );
         break;
       case "claim":
-        print(coordinator.claimGoal(input as unknown as ClaimRequest));
+        print(executionAdapter.commands.claimGoal(input as unknown as ClaimRequest));
         break;
       case "select-goal":
-        print(coordinator.selectGoalAndStart(input as unknown as ClaimRequest));
+        print(executionAdapter.commands.selectGoalAndStart(input as unknown as ClaimRequest));
         break;
       case "release":
         print(
-          coordinator.releaseClaim(
-            input as unknown as Parameters<GoalBoardCoordinator["releaseClaim"]>[0],
+          executionAdapter.commands.releaseClaim(
+            input as unknown as Parameters<typeof executionAdapter.commands.releaseClaim>[0],
           ),
         );
         break;
       case "revoke":
         print(
-          coordinator.revokeClaim(
-            input as unknown as Parameters<GoalBoardCoordinator["revokeClaim"]>[0],
+          executionAdapter.commands.revokeClaim(
+            input as unknown as Parameters<typeof executionAdapter.commands.revokeClaim>[0],
           ),
         );
         break;
       case "run-start":
         print(
-          coordinator.startRun(input as unknown as Parameters<GoalBoardCoordinator["startRun"]>[0]),
+          executionAdapter.commands.startRun(input as unknown as Parameters<typeof executionAdapter.commands.startRun>[0]),
         );
         break;
       case "revalidate":
         print(
-          coordinator.revalidateGoal(
-            input as unknown as Parameters<GoalBoardCoordinator["revalidateGoal"]>[0],
+          goalsAdapter.lifecycle.revalidate(
+            input as unknown as Parameters<GoalBoardCoordinator["goals"]["lifecycle"]["revalidate"]>[0],
           ),
         );
         break;
       case "run-report":
         print(
-          coordinator.reportRun(input as unknown as Parameters<GoalBoardCoordinator["reportRun"]>[0]),
+          executionAdapter.commands.reportRun(input as unknown as Parameters<typeof executionAdapter.commands.reportRun>[0]),
         );
         break;
       case "evidence-submit":
         print(
-          coordinator.submitEvidence(
-            input as unknown as Parameters<GoalBoardCoordinator["submitEvidence"]>[0],
+          executionAdapter.commands.submitEvidence(
+            input as unknown as Parameters<typeof executionAdapter.commands.submitEvidence>[0],
           ),
         );
         break;
       case "review-submit":
         print(
-          coordinator.submitReview(
-            input as unknown as Parameters<GoalBoardCoordinator["submitReview"]>[0],
+          executionAdapter.commands.submitReview(
+            input as unknown as Parameters<typeof executionAdapter.commands.submitReview>[0],
           ),
         );
         break;
       case "complete":
         print(
-          coordinator.evaluateLeafCompletion(
-            input as unknown as Parameters<GoalBoardCoordinator["evaluateLeafCompletion"]>[0],
+          goalsAdapter.lifecycle.evaluateCompletion(
+            input as unknown as Parameters<GoalBoardCoordinator["goals"]["lifecycle"]["evaluateCompletion"]>[0],
           ),
         );
         break;
@@ -347,9 +372,10 @@ export async function runV1Cli(args: string[]): Promise<number> {
         break;
       default:
         throw new Error(`未知 V1 operation: ${operation}`);
-    }
-    return 0;
+      }
+      return 0;
+    });
   } finally {
-    store.close();
+    if (ownsLocalHost) await localHost.close();
   }
 }

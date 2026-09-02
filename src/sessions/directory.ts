@@ -1,5 +1,5 @@
 import { GoalBoardSessionRegistry } from "./registry.js";
-import { RuntimeSessionAdapterRouter } from "./adapters.js";
+import type { RuntimeHostApi } from "@adeptify/goalboard-contracts/services/runtime-host";
 import {
   GoalBoardSessionError,
   type GoalBoardSessionRecord,
@@ -34,7 +34,7 @@ interface NativeSessionMetadata {
 export class SessionDirectoryService {
   constructor(
     private readonly registry: GoalBoardSessionRegistry,
-    private readonly router: RuntimeSessionAdapterRouter,
+    private readonly router: RuntimeHostApi,
   ) {}
 
   async discover(runtimeId: string): Promise<SessionDirectoryDiscoveryResult> {

@@ -35,7 +35,7 @@ function createLegacyBoard(databasePath: string): void {
       idempotency_key: "legacy-init",
     });
     for (const goalId of ["legacy-a", "legacy-b"]) {
-      coordinator.createGoal(
+      coordinator.goals.commands.createGoal(
         "legacy-board",
         {
           goal_id: goalId,
@@ -57,7 +57,7 @@ function createLegacyBoard(databasePath: string): void {
         { actor_id: "user", idempotency_key: `create-${goalId}` },
       );
     }
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       "legacy-board",
       {
         from_goal_id: "legacy-b",
@@ -68,7 +68,7 @@ function createLegacyBoard(databasePath: string): void {
       },
       { actor_id: "user", idempotency_key: "legacy-relation" },
     );
-    const claim = coordinator.claimGoal({
+    const claim = coordinator.executionValidation.commands.claimGoal({
       board_id: "legacy-board",
       goal_id: "legacy-a",
       actor_id: "runtime",
@@ -76,13 +76,13 @@ function createLegacyBoard(databasePath: string): void {
       idempotency_key: "legacy-claim",
     }).claim;
     assert.ok(claim);
-    const run = coordinator.startRun({
+    const run = coordinator.executionValidation.commands.startRun({
       board_id: "legacy-board",
       claim_id: claim.claim_id,
       actor_id: "runtime",
       idempotency_key: "legacy-run",
     }).run;
-    coordinator.reportRun({
+    coordinator.executionValidation.commands.reportRun({
       board_id: "legacy-board",
       run_id: run.run_id,
       actor_id: "runtime",
@@ -240,7 +240,7 @@ test("managed projects have immutable identities, duplicate names, and isolated 
 
       const firstStore = new SqliteGoalBoardStore(first.database_path);
       try {
-        new GoalBoardCoordinator(firstStore).createGoal(
+        new GoalBoardCoordinator(firstStore).goals.commands.createGoal(
           first.board_id,
           {
             goal_id: "only-first",
@@ -340,7 +340,7 @@ test("demo data is classified, idempotently opened, reset, and removable without
         );
         assert.equal(demoSnapshot.risks.find((risk) => risk.risk_id === "RISK-FIRST-RESTART")?.state, "open");
         assert.ok(demoSnapshot.goals.find((goal) => goal.goal_id === "AUTO-CONNECT")?.trashed_at);
-        new GoalBoardCoordinator(demoStore).createGoal(
+        new GoalBoardCoordinator(demoStore).goals.commands.createGoal(
           DEMO_BOARD_ID,
           {
             goal_id: "temporary-demo-change",
@@ -1034,7 +1034,7 @@ test("project deletion needs separate confirmation, protects active work, and re
       let runId = "";
       try {
         const coordinator = new GoalBoardCoordinator(store);
-        coordinator.createGoal(
+        coordinator.goals.commands.createGoal(
           project.board_id,
           {
             goal_id: "active-project-work",
@@ -1055,14 +1055,14 @@ test("project deletion needs separate confirmation, protects active work, and re
           },
           { actor_id: "user", idempotency_key: "create-active-project-work" },
         );
-        const claim = coordinator.claimGoal({
+        const claim = coordinator.executionValidation.commands.claimGoal({
           board_id: project.board_id,
           goal_id: "active-project-work",
           actor_id: "runtime-codex",
           idempotency_key: "claim-active-project-work",
         }).claim;
         assert.ok(claim);
-        runId = coordinator.startRun({
+        runId = coordinator.executionValidation.commands.startRun({
           board_id: project.board_id,
           claim_id: claim.claim_id,
           actor_id: "runtime-codex",
@@ -1081,7 +1081,7 @@ test("project deletion needs separate confirmation, protects active work, and re
 
       const cleanupStore = new SqliteGoalBoardStore(project.database_path);
       try {
-        new GoalBoardCoordinator(cleanupStore).reportRun({
+        new GoalBoardCoordinator(cleanupStore).executionValidation.commands.reportRun({
           board_id: project.board_id,
           run_id: runId,
           actor_id: "runtime-codex",

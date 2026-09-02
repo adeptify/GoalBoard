@@ -1,18 +1,8 @@
-export type DefinitionState = "draft" | "accepted";
-export type DecompositionState =
-  | "abstract"
-  | "frontier_open"
-  | "closed_leaf"
-  | "closed_compound";
-export type ValidityState = "valid" | "needs_revalidation" | "invalidated";
-export type FulfillmentState = "unmet" | "satisfied";
-export type ClaimRole =
-  | "clarifier"
-  | "executor"
-  | "self_verifier"
-  | "cross_reviewer"
-  | "adversarial_reviewer"
-  | "revalidator";
+export type DefinitionState = import("@adeptify/goalboard-contracts/modules/goals").GoalDefinitionState;
+export type DecompositionState = import("@adeptify/goalboard-contracts/modules/goals").GoalDecompositionState;
+export type ValidityState = import("@adeptify/goalboard-contracts/modules/goals").GoalValidityState;
+export type FulfillmentState = import("@adeptify/goalboard-contracts/modules/goals").GoalFulfillmentState;
+export type ClaimRole = import("@adeptify/goalboard-contracts/modules/execution").ExecutionClaimRole;
 export type GoalWorkAction = "clarify" | "execute" | "review" | "revalidate" | "complete";
 export type GoalWorkState =
   | "clarification_pending"
@@ -36,7 +26,7 @@ export type GoalWorkState =
   | "satisfied"
   | "trashed"
   | "archived";
-export type ClaimState = "active" | "released" | "expired" | "revoked";
+export type ClaimState = import("@adeptify/goalboard-contracts/modules/execution").ExecutionClaimState;
 export type GoalActionActor = "runtime" | "user";
 export type GoalActionKind =
   | "clarify"
@@ -55,187 +45,22 @@ export type GoalActionStatus = "ready" | "active" | "blocked";
 export type GoalActionProgress = "not_started" | "in_progress" | "work_recorded" | "verified";
 export type GoalDisplayStatus = "continue" | "in_progress" | "waiting_user" | "waiting" | "blocked" | "completed";
 export type ImpactAccess = "read" | "write" | "decide" | "exclusive";
-export type RiskBlockingMode =
-  | "none"
-  | "claim"
-  | "completion"
-  | "invalidate_on_trigger";
-export type GoalMode = "disabled" | "preferred" | "required";
-export type ProjectGuidanceKind =
-  | "context"
-  | "requirement"
-  | "constraint"
-  | "convention"
-  | "workflow"
-  | "quality_bar";
-
-export interface ProjectGuidanceEntryRecord {
-  guidance_id: string;
-  board_id: string;
-  position: number;
-  revision: number;
-  active: boolean;
-  kind: ProjectGuidanceKind;
-  content: string;
-  content_hash: string;
-  source_refs: string[];
-  created_by: string;
-  confirmation_summary: string;
-  reason: string;
-  created_at: string;
-  updated_by: string;
-  updated_at: string;
-}
-
-export type ProjectGuidanceChangeKind = "created" | "edited" | "deactivated" | "restored";
-
-export interface ProjectGuidanceRevisionRecord {
-  revision_id: string;
-  guidance_id: string;
-  board_id: string;
-  revision: number;
-  kind: ProjectGuidanceKind;
-  content: string;
-  content_hash: string;
-  source_refs: string[];
-  active: boolean;
-  changed_by: string;
-  change_kind: ProjectGuidanceChangeKind;
-  confirmation_summary: string;
-  reason: string;
-  created_at: string;
-}
-
-export interface ProjectGuidanceView {
-  entries: ProjectGuidanceEntryRecord[];
-  inactive_entries: ProjectGuidanceEntryRecord[];
-  revisions: ProjectGuidanceRevisionRecord[];
-  virtual_document: string;
-  runtime_prompt_prefix: string;
-}
-
-export interface AddProjectGuidanceInput {
-  board_id: string;
-  actor_id: string;
-  kind: ProjectGuidanceKind;
-  content: string;
-  source_refs?: string[];
-  reason: string;
-  confirmation_summary: string;
-  user_confirmed: boolean;
-  idempotency_key: string;
-}
-
-export interface AddProjectGuidanceResult {
-  entry: ProjectGuidanceEntryRecord;
-  created: boolean;
-  observed_event_cursor: number;
-  replayed: boolean;
-}
-
-export interface UpdateProjectGuidanceInput {
-  board_id: string;
-  guidance_id: string;
-  actor_id: string;
-  action: "edit" | "deactivate" | "restore";
-  kind?: ProjectGuidanceKind;
-  content?: string;
-  source_refs?: string[];
-  reason: string;
-  confirmation_summary: string;
-  user_confirmed: boolean;
-  idempotency_key: string;
-}
-
-export interface UpdateProjectGuidanceResult {
-  entry: ProjectGuidanceEntryRecord;
-  revision: ProjectGuidanceRevisionRecord;
-  observed_event_cursor: number;
-  replayed: boolean;
-}
-
-export interface AcceptanceCriterion {
-  criterion_id: string;
-  goal_id: string;
-  statement: string;
-  decision_method: "automated_check" | "measurement" | "inspection" | "human_decision";
-  pass_condition: string;
-  target: Record<string, unknown> | null;
-  required_evidence: string[];
-}
-
-export interface GoalRecord {
-  goal_id: string;
-  board_id: string;
-  title: string;
-  outcome: string;
-  why: string;
-  business_logic: string;
-  in_scope: string[];
-  out_of_scope: string[];
-  constraints: string[];
-  required_inputs: string[];
-  promised_outputs: string[];
-  /** Canonical user-confirmed decomposition and parent-to-child Contract trace. */
-  decomposition_review: DecompositionReview | null;
-  definition_state: DefinitionState;
-  decomposition_state: DecompositionState;
-  validity_state: ValidityState;
-  fulfillment_state: FulfillmentState;
-  /** Monotonic accepted Contract identity. Work facts are always scoped to one revision. */
-  current_contract_revision: number;
-  /** A recoverable deletion state. It is distinct from completed-Goal archival. */
-  trashed_at: string | null;
-  trashed_by: string | null;
-  archived_at: string | null;
-  archived_by: string | null;
-  priority: number;
-  accepted_by: string | null;
-  accepted_at: string | null;
-  created_at: string;
-  updated_at: string;
-  acceptance_criteria: AcceptanceCriterion[];
-}
-
-export interface GoalRelationRecord {
-  relation_id: string;
-  board_id: string;
-  from_goal_id: string;
-  to_goal_id: string;
-  type:
-    | "part_of"
-    | "depends_on"
-    | "conflicts_with"
-    | "mitigates"
-    | "extends"
-    | "replaces"
-    | "corrects"
-    | "invalidates"
-    | "migrates_from";
-  state: "proposed" | "active" | "inactive";
-  reason: string;
-  created_by: string;
-  created_at: string;
-  deactivated_at: string | null;
-}
-
-export type GoalTrashStatus = "trashed" | "restored" | "already_trashed" | "already_active" | "blocked";
-
-/**
- * Result from the one shared deletion/recovery domain operation. UI and MCP
- * adapters may add their own confirmation rules, but must not duplicate this
- * state transition or relation-recovery behavior.
- */
-export interface GoalTrashResult {
-  status: GoalTrashStatus;
-  goal: GoalRecord;
-  active_goal_cleared: boolean;
-  deactivated_relation_ids: string[];
-  restored_relation_ids: string[];
-  pending_relation_ids: string[];
-  blocking_claim_ids: string[];
-  blocking_run_ids: string[];
-}
+export type RiskBlockingMode = import("@adeptify/goalboard-contracts/modules/goals").RiskBlockingMode;
+export type GoalMode = import("@adeptify/goalboard-contracts/modules/goals").GoalPolicy["goal_mode"];
+export type ProjectGuidanceKind = import("@adeptify/goalboard-contracts/modules/goals").ProjectGuidanceKind;
+export type ProjectGuidanceEntryRecord = import("@adeptify/goalboard-contracts/modules/goals").ProjectGuidanceEntryRecord;
+export type ProjectGuidanceChangeKind = import("@adeptify/goalboard-contracts/modules/goals").ProjectGuidanceRevisionRecord["change_kind"];
+export type ProjectGuidanceRevisionRecord = import("@adeptify/goalboard-contracts/modules/goals").ProjectGuidanceRevisionRecord;
+export type ProjectGuidanceView = import("@adeptify/goalboard-contracts/modules/goals").ProjectGuidanceView;
+export type AddProjectGuidanceInput = import("@adeptify/goalboard-contracts/modules/goals").AddProjectGuidanceInput;
+export type AddProjectGuidanceResult = import("@adeptify/goalboard-contracts/modules/goals").AddProjectGuidanceResult;
+export type UpdateProjectGuidanceInput = import("@adeptify/goalboard-contracts/modules/goals").UpdateProjectGuidanceInput;
+export type UpdateProjectGuidanceResult = import("@adeptify/goalboard-contracts/modules/goals").UpdateProjectGuidanceResult;
+export type AcceptanceCriterion = import("@adeptify/goalboard-contracts/modules/goals").GoalAcceptanceCriterion;
+export type GoalRecord = import("@adeptify/goalboard-contracts/modules/goals").GoalRecord;
+export type GoalRelationRecord = import("@adeptify/goalboard-contracts/modules/goals").GoalRelationRecord;
+export type GoalTrashStatus = import("@adeptify/goalboard-contracts/modules/goals").GoalTrashStatus;
+export type GoalTrashResult = import("@adeptify/goalboard-contracts/modules/goals").GoalTrashResult;
 
 export interface ImpactBindingRecord {
   binding_id: string;
@@ -253,206 +78,26 @@ export interface ImpactBindingRecord {
   deactivation_reason: string | null;
 }
 
-export interface RiskRecord {
-  risk_id: string;
-  board_id: string;
-  description: string;
-  probability: string;
-  impact: string;
-  affected_surfaces: string[];
-  trigger: string;
-  treatment: "accept" | "mitigate" | "avoid" | "defer";
-  treatment_plan: string;
-  blocking_mode: RiskBlockingMode;
-  revisit_condition: string;
-  owner: string;
-  state: "open" | "triggered" | "resolved" | "accepted" | "expired";
-  resolution_basis: {
-    summary: string;
-    evidence_refs: string[];
-    residual_gaps: string[];
-  } | null;
-  created_at: string;
-  updated_at: string;
-}
+export type RiskRecord = import("@adeptify/goalboard-contracts/modules/goals").RiskRecord;
+export type GoalPolicy = import("@adeptify/goalboard-contracts/modules/goals").GoalPolicy;
+export type TaskContext = import("@adeptify/goalboard-contracts/modules/goals").GoalTaskContext;
+export type LegacyProductContext = import("@adeptify/goalboard-contracts/modules/goals").GoalLegacyProductContext;
+export type DecompositionReview = import("@adeptify/goalboard-contracts/modules/goals").GoalDecompositionReview;
+export type LeafReadiness = import("@adeptify/goalboard-contracts/modules/goals").GoalLeafReadiness;
+export type ClaimRecord = import("@adeptify/goalboard-contracts/modules/execution").ExecutionClaimRecord;
+export type RunRecord = import("@adeptify/goalboard-contracts/modules/execution").ExecutionRunRecord;
 
-export interface GoalPolicy {
-  goal_mode: GoalMode;
-  required_capabilities: string[];
-  self_verification: boolean;
-  cross_reviewers: number;
-  adversarial_reviewers: number;
-  human_approval: boolean;
-  max_lease_seconds: number;
-}
+export type EvidenceRecord =
+  import("@adeptify/goalboard-contracts/modules/evidence-verification").EvidenceRecord;
+export type EvidenceCorrectionRecord =
+  import("@adeptify/goalboard-contracts/modules/evidence-verification").EvidenceCorrectionRecord;
 
-export type TaskContext = "game" | "app" | "ai_data" | "content_research" | "operations" | "other";
-export type LegacyProductContext = "game" | "app" | "other";
+export type ReviewObligationRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ReviewObligationRecord;
+export type ReviewRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ReviewRecord;
 
-export interface DecompositionReview {
-  status: "complete" | "paused";
-  /** The effective planning methods used to derive coverage and dependencies. */
-  method_pack_ids?: string[];
-  /** New proposals use this task-neutral context. */
-  task_context?: TaskContext;
-  /** Compatibility input for proposals created before task_context existed. */
-  product_context?: LegacyProductContext;
-  coverage: Array<{
-    area: string;
-    disposition: "goal" | "owned" | "not_applicable";
-    goal_ids: string[];
-    reason: string;
-  }>;
-  open_goal_ids: string[];
-  next_step: string;
-  /**
-   * User-confirmed structural trace from this compound Goal's Contract to
-   * descendant Contracts. GoalBoard validates exact references; it does not
-   * infer semantic equivalence between differently worded results.
-   */
-  contract_coverage?: {
-    promised_outputs: Array<{
-      parent_promised_output: string;
-      status: "complete" | "partial" | "integration_required" | "uncovered";
-      child_outputs: Array<{ goal_id: string; promised_output: string; contract_revision?: number }>;
-      reason: string;
-    }>;
-    acceptance_criteria: Array<{
-      parent_criterion_id: string;
-      status: "complete" | "partial" | "integration_required" | "uncovered";
-      child_criteria: Array<{ goal_id: string; criterion_id: string; contract_revision?: number }>;
-      reason: string;
-    }>;
-  };
-}
-
-/**
- * Runtime-supplied evidence that a proposed executable leaf contains one
- * independently verifiable result. It remains proposal history rather than a
- * second canonical Goal state.
- */
-export interface LeafReadiness {
-  verdict: "ready" | "split_required";
-  primary_deliverable: string;
-  output_coverage: Array<{
-    promised_output: string;
-    role: "primary" | "supporting" | "independent";
-    reason: string;
-  }>;
-  split_candidates: Array<{
-    work_item: string;
-    separately_deliverable: boolean;
-    separately_acceptable: boolean;
-    independently_reworkable: boolean;
-    decision: "keep" | "split";
-    reason: string;
-  }>;
-  rationale: string;
-  unresolved_decisions: string[];
-  independent_deliverables: string[];
-  acceptance_criterion_ids: string[];
-}
-
-export interface ClaimRecord {
-  claim_id: string;
-  board_id: string;
-  goal_id: string;
-  actor_id: string;
-  role: ClaimRole;
-  contract_revision: number;
-  action_kind: GoalActionKind | null;
-  action_target_id: string | null;
-  state: ClaimState;
-  capabilities: string[];
-  goal_mode_attestation: boolean;
-  resolved_policy: GoalPolicy;
-  claimed_at: string;
-  expires_at: string;
-  renewed_at: string | null;
-  released_at: string | null;
-  release_reason: string | null;
-}
-
-export interface RunRecord {
-  run_id: string;
-  board_id: string;
-  goal_id: string;
-  claim_id: string;
-  actor_id: string;
-  role: ClaimRole;
-  state: "started" | "blocked" | "completed" | "failed" | "abandoned";
-  block_reason: string | null;
-  output_refs: string[];
-  discovery_refs: string[];
-  started_at: string;
-  ended_at: string | null;
-}
-
-export interface EvidenceRecord {
-  evidence_id: string;
-  board_id: string;
-  goal_id: string;
-  contract_revision: number;
-  criterion_ids: string[];
-  producer_actor_id: string;
-  run_id: string | null;
-  review_id: string | null;
-  kind: "test" | "measurement" | "artifact" | "inspection" | "attestation" | "human_verdict";
-  locator: string;
-  locator_status: "verified" | "unverified";
-  locator_validation_reason: string;
-  locator_checked_at: string | null;
-  /** Opaque catalog identity for the Runtime workspace used by verified project locators. */
-  locator_workspace_id: string | null;
-  digest: string | null;
-  captured_at: string;
-  result: "passed" | "failed" | "inconclusive";
-  /** Derived from the immutable correction ledger; the Evidence row itself is never rewritten. */
-  lifecycle_state: "effective" | "superseded" | "retracted";
-  correction: EvidenceCorrectionRecord | null;
-  /** Old rows that cannot be safely attributed remain readable but do not satisfy a current revision. */
-  historical_unmapped: boolean;
-}
-
-export interface EvidenceCorrectionRecord {
-  correction_id: string;
-  board_id: string;
-  goal_id: string;
-  target_evidence_id: string;
-  action: "supersede" | "retract";
-  replacement_evidence_id: string | null;
-  actor_id: string;
-  reason: string;
-  created_at: string;
-}
-
-export interface ReviewObligationRecord {
-  obligation_id: string;
-  board_id: string;
-  goal_id: string;
-  contract_revision: number;
-  role: "self_verifier" | "cross_reviewer" | "adversarial_reviewer" | "human_approver";
-  required_count: number;
-  independence_rule: string;
-  criterion_scope: string[];
-  state: "pending" | "satisfied" | "waived";
-  created_at: string;
-}
-
-export interface ReviewRecord {
-  review_id: string;
-  board_id: string;
-  goal_id: string;
-  obligation_id: string;
-  claim_id: string | null;
-  actor_id: string;
-  verdict: "pass" | "fail" | "needs_changes" | "inconclusive";
-  evidence_refs: string[];
-  reasoning: string;
-  submitted_at: string;
-}
-
-export type ContractRevisionEffect = "metadata" | "revalidate" | "rework";
+export type ContractRevisionEffect = import("@adeptify/goalboard-contracts/modules/goals").GoalContractRevisionEffect;
 
 export interface GoalContractRevisionRecord {
   goal_id: string;
@@ -527,88 +172,20 @@ export interface ActionTransitionReceipt {
 }
 
 export type DependencyProposalBasis =
-  | "contract_output"
-  | "code_reference"
-  | "test_dependency"
-  | "business_sequence"
-  | "impact_conflict"
-  | "risk_policy";
-
-export interface DependencyProposal {
-  from_goal_id: string;
-  to_goal_id: string;
-  type: "depends_on";
-  action: "add" | "deactivate";
-  reason: string;
-  basis: DependencyProposalBasis;
-  evidence_refs: string[];
-  impact_if_rejected: string;
-  confidence: number;
-  direction_reason: string;
-}
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").DependencyProposalBasis;
+export type DependencyProposal =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").DependencyProposal;
 
 export type ContractFieldName =
-  | "title"
-  | "outcome"
-  | "why"
-  | "business_logic"
-  | "in_scope"
-  | "out_of_scope"
-  | "constraints"
-  | "required_inputs"
-  | "promised_outputs"
-  | "priority"
-  | "acceptance_criteria"
-  | "review_policy";
-
-export interface ContractFieldSource {
-  field: ContractFieldName;
-  source_kind: "user_answer" | "repository_fact" | "document_fact" | "runtime_inference";
-  source_refs: string[];
-  confidence: number;
-  rationale: string;
-  status: "proposed";
-  requires_user_confirmation: true;
-}
-
-export interface ContractProposalImpact {
-  surface: string;
-  access: ImpactAccess;
-  input_snapshot?: string | null;
-  reason: string;
-}
-
-export interface ContractProposalRisk {
-  risk_id: string;
-  description: string;
-  probability: string;
-  impact: string;
-  affected_surfaces: string[];
-  trigger: string;
-  treatment: RiskRecord["treatment"];
-  treatment_plan?: string;
-  blocking_mode: RiskBlockingMode;
-  revisit_condition: string;
-  owner: string;
-}
-
-export interface ContractProposalRecord {
-  proposal_id: string;
-  board_id: string;
-  goal_id: string;
-  submitted_by: string;
-  discovered_in_run_id: string;
-  proposed_goal: CreateGoalInput;
-  field_sources: ContractFieldSource[];
-  review_policy: GoalPolicy;
-  proposed_impacts: ContractProposalImpact[];
-  proposed_risks: ContractProposalRisk[];
-  dependency_rewire_ids: string[];
-  state: "pending" | "approved" | "rejected" | "superseded";
-  decision: Record<string, unknown> | null;
-  created_at: string;
-  decided_at: string | null;
-}
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ContractFieldName;
+export type ContractFieldSource =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ContractFieldSource;
+export type ContractProposalImpact =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ContractProposalImpact;
+export type ContractProposalRisk =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ContractProposalRisk;
+export type ContractProposalRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ContractProposalRecord;
 
 /**
  * Dialogue facts live beside, rather than inside, the canonical Goal
@@ -673,49 +250,25 @@ export interface ClarificationTurnRecord {
  * should become real.
  */
 export type GoalTreeProposalOrigin =
-  | "native"
-  | "legacy_contract_proposal"
-  | "legacy_candidate"
-  | "legacy_rewire";
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalOrigin;
 export type GoalTreeProposalState =
-  | "pending"
-  | "superseded"
-  | "approved"
-  | "partially_applied"
-  | "rejected"
-  | "dismissed"
-  | "closed";
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalState;
 export type GoalTreeProposalItemKind =
-  | "goal"
-  | "contract"
-  | "relation"
-  | "dependency"
-  | "risk"
-  | "policy"
-  | "candidate"
-  | "rewire";
-export type GoalTreeProposalOperation = "create" | "update" | "deactivate";
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemKind;
+export type GoalTreeProposalOperation =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalOperation;
 export type GoalTreeProposalItemState =
-  | "pending"
-  | "conflict"
-  | "superseded"
-  | "approved"
-  | "applied"
-  | "rejected"
-  | "dismissed";
-export type GoalTreeProposalDecisionAction = "confirm" | "reject" | "revise";
-export type GoalTreeProposalDecisionState = "confirmed" | "rejected" | "revised" | "conflict";
-export type ProposalAffectedObjectType = "goal" | "relation" | "risk" | "policy" | "candidate" | "rewire";
-
-export interface ProposalAffectedObject {
-  object_type: ProposalAffectedObjectType;
-  object_id: string;
-}
-
-export interface ProposalObjectVersion extends ProposalAffectedObject {
-  exists: boolean;
-  version: string;
-}
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemState;
+export type GoalTreeProposalDecisionAction =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalDecisionAction;
+export type GoalTreeProposalDecisionState =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalDecisionState;
+export type ProposalAffectedObjectType =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ProposalAffectedObjectType;
+export type ProposalAffectedObject =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ProposalAffectedObject;
+export type ProposalObjectVersion =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").ProposalObjectVersion;
 
 /**
  * The user decision audit is recorded separately from the Runtime that
@@ -723,205 +276,37 @@ export interface ProposalObjectVersion extends ProposalAffectedObject {
  * confirmed in the current dialogue; this is auditable provenance, not a
  * cryptographic trust boundary.
  */
-export interface GoalTreeProposalDecisionAuthority {
-  actor_id: string;
-  actor_kind: "user";
-  authority_source: "runtime_dialogue" | "web" | "management";
-  conversation_ref: string;
-  message_ref: string;
-  whole_confirmation_prompted?: boolean;
-  prompted_proposal_id?: string;
-}
+export type GoalTreeProposalDecisionAuthority =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalDecisionAuthority;
+export type GoalTreeProposalDecisionRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalDecisionRecord;
+export type GoalTreeProposalNarrative =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalNarrative;
+export type GoalTreeProposalItemExplanation =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemExplanation;
 
-export interface GoalTreeProposalDecisionRecord {
-  decision_id: string;
-  board_id: string;
-  proposal_id: string;
-  item_id: string;
-  decision: GoalTreeProposalDecisionState;
-  actor_id: string;
-  authority_source: GoalTreeProposalDecisionAuthority["authority_source"];
-  runtime_actor_id: string | null;
-  conversation_ref: string;
-  message_ref: string;
-  reason: string;
-  revision_proposal_id: string | null;
-  materialized_objects: ProposalAffectedObject[];
-  created_at: string;
-}
+export type GoalTreeProposalItemRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemRecord;
+export type GoalTreeProposalRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalRecord;
 
-export interface GoalTreeProposalNarrative {
-  /** Why the proposal needs a decision now, rather than its implementation detail. */
-  why_now: string;
-  /** Which current user or product problem makes the old Goal Tree insufficient. */
-  problem: string;
-  /** The user-readable result chain after confirmation, in dependency order. */
-  main_path: string[];
-  /** What should become different for the user or downstream work. */
-  expected_effect: string;
-  /** Explicit boundaries that this proposal intentionally leaves unchanged. */
-  non_goals: string[];
-}
+export type GoalTreeProposalItemInput =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemInput;
+export type GoalTreeProposalSubmitInput =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalSubmitInput;
+export type GoalTreeProposalCheckInput =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalCheckInput;
+export type GoalTreeProposalItemDecisionInput =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalItemDecisionInput;
+export type GoalTreeProposalDecideInput =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").GoalTreeProposalDecideInput;
 
-export interface GoalTreeProposalItemExplanation {
-  /** The concrete problem this one change item addresses. */
-  problem: string;
-  /** The user-visible or downstream effect of this one change. */
-  expected_effect: string;
-  /** Boundaries that this one change intentionally leaves untouched. */
-  non_goals: string[];
-  /** Other item IDs whose semantic change this item relies on. */
-  depends_on_item_ids: string[];
-}
+export type CandidateGoalRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").CandidateGoalRecord;
+export type RewireRecord =
+  import("@adeptify/goalboard-contracts/modules/governance-collaboration").RewireRecord;
 
-export interface GoalTreeProposalItemRecord {
-  item_id: string;
-  proposal_id: string;
-  board_id: string;
-  ordinal: number;
-  kind: GoalTreeProposalItemKind;
-  operation: GoalTreeProposalOperation;
-  payload: Record<string, unknown>;
-  source_refs: string[];
-  reason: string;
-  explanation: GoalTreeProposalItemExplanation | null;
-  confidence: number;
-  affected_objects: ProposalAffectedObject[];
-  baseline_versions: ProposalObjectVersion[];
-  requires_user_confirmation: boolean;
-  state: GoalTreeProposalItemState;
-  conflict: Record<string, unknown> | null;
-  decision: GoalTreeProposalDecisionRecord | null;
-  materialized_objects: ProposalAffectedObject[];
-  revision_proposal_id: string | null;
-  supersedes_item_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GoalTreeProposalRecord {
-  proposal_id: string;
-  board_id: string;
-  origin: GoalTreeProposalOrigin;
-  root_goal_id: string | null;
-  submitted_by: string;
-  discovered_in_run_id: string | null;
-  state: GoalTreeProposalState;
-  version: number;
-  supersedes_proposal_id: string | null;
-  base_event_cursor: number;
-  summary: string;
-  narrative: GoalTreeProposalNarrative | null;
-  decision: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
-  decided_at: string | null;
-  items: GoalTreeProposalItemRecord[];
-  decisions: GoalTreeProposalDecisionRecord[];
-}
-
-export interface GoalTreeProposalItemInput {
-  item_id?: string;
-  kind: GoalTreeProposalItemKind;
-  operation: GoalTreeProposalOperation;
-  payload: Record<string, unknown>;
-  source_refs: string[];
-  reason: string;
-  explanation?: GoalTreeProposalItemExplanation | null;
-  confidence: number;
-  affected_objects: ProposalAffectedObject[];
-  requires_user_confirmation?: boolean;
-  supersedes_item_id?: string | null;
-}
-
-export interface GoalTreeProposalSubmitInput {
-  board_id: string;
-  actor_id: string;
-  discovered_in_run_id: string;
-  root_goal_id?: string | null;
-  summary: string;
-  narrative?: GoalTreeProposalNarrative | null;
-  items: GoalTreeProposalItemInput[];
-  base_event_cursor?: number;
-  supersedes_proposal_id?: string | null;
-  idempotency_key: string;
-}
-
-export interface GoalTreeProposalCheckInput {
-  board_id: string;
-  proposal_id: string;
-  actor_id: string;
-  idempotency_key: string;
-}
-
-export interface GoalTreeProposalItemDecisionInput {
-  item_id: string;
-  decision: GoalTreeProposalDecisionAction;
-  reason: string;
-  /** A revised item becomes a new pending proposal version; it is never written as canonical directly. */
-  revised_item?: GoalTreeProposalItemInput;
-}
-
-export interface GoalTreeProposalDecideInput {
-  board_id: string;
-  proposal_id: string;
-  /** The current Runtime that carried the user message; null for direct Web/management decisions. */
-  runtime_actor_id?: string | null;
-  authority: GoalTreeProposalDecisionAuthority;
-  decisions?: GoalTreeProposalItemDecisionInput[];
-  /** Shared reason for a whole-proposal confirmation; item reasons take precedence. */
-  reason?: string;
-  /** True only when the preceding Runtime prompt named this one whole proposal for confirmation. */
-  confirm_all_pending?: boolean;
-  idempotency_key: string;
-}
-
-export interface CandidateGoalRecord {
-  candidate_id: string;
-  board_id: string;
-  submitted_by: string;
-  discovered_in_run_id: string | null;
-  proposed_goal: CreateGoalInput;
-  proposed_relations: Array<Record<string, unknown>>;
-  proposed_impacts: Array<Record<string, unknown>>;
-  proposed_risks: Array<Record<string, unknown>>;
-  blocking_mode: "none" | "current_run" | "dependent_claims";
-  state: "pending" | "approved" | "rejected" | "dismissed" | "superseded";
-  decision: Record<string, unknown> | null;
-  created_at: string;
-  decided_at: string | null;
-}
-
-export interface RewireRecord {
-  rewire_id: string;
-  board_id: string;
-  candidate_id: string | null;
-  proposal: {
-    formal_goal_id?: string;
-    proposal_kind?: "candidate" | "dependency";
-    submitted_by?: string;
-    discovered_in_run_id?: string | null;
-    blocking_mode?: "none" | "current_run";
-    relations?: Array<Record<string, unknown>>;
-    impacts?: Array<Record<string, unknown>>;
-    risks?: Array<Record<string, unknown>>;
-    [key: string]: unknown;
-  };
-  impact: Record<string, unknown>;
-  state: "pending" | "confirmed" | "rejected" | "applied";
-  created_at: string;
-  decided_at: string | null;
-}
-
-export interface DecisionReason {
-  code: string;
-  severity: "info" | "warning" | "blocker";
-  subject_type: string;
-  subject_id: string;
-  message: string;
-  facts?: Record<string, unknown>;
-  remediation?: string;
-}
+export type DecisionReason = import("@adeptify/goalboard-contracts/modules/goals").GoalLifecycleReason;
 
 export interface ReadyGoal {
   goal: GoalRecord;
@@ -1084,34 +469,7 @@ export interface GoalContractView {
   project_guidance: ProjectGuidanceEntryRecord[];
 }
 
-export interface CreateGoalInput {
-  goal_id?: string;
-  title: string;
-  outcome: string;
-  why: string;
-  business_logic: string;
-  in_scope?: string[];
-  out_of_scope?: string[];
-  constraints?: string[];
-  required_inputs?: string[];
-  promised_outputs?: string[];
-  /** Runtime proposal evidence; it is retained in proposal history, not as a second Goal state. */
-  leaf_readiness?: LeafReadiness;
-  /** User-confirmed decomposition evidence and parent-to-child Contract trace. */
-  decomposition_review?: DecompositionReview;
-  definition_state?: DefinitionState;
-  decomposition_state?: DecompositionState;
-  priority?: number;
-  acceptance_criteria: Array<{
-    criterion_id?: string;
-    statement: string;
-    decision_method: AcceptanceCriterion["decision_method"];
-    pass_condition: string;
-    target?: Record<string, unknown> | null;
-    required_evidence?: string[];
-  }>;
-}
-
+export type CreateGoalInput = import("@adeptify/goalboard-contracts/modules/goals").CreateGoalInput;
 export interface ClaimRequest {
   board_id: string;
   goal_id: string;
@@ -1217,14 +575,7 @@ export interface DraftDialogueView {
   observed_event_cursor: number;
 }
 
-export interface RevalidationDecision {
-  revalidated: boolean;
-  goal: GoalRecord;
-  observed_event_cursor: number;
-  reasons: DecisionReason[];
-  replayed: boolean;
-  transition?: ActionTransitionReceipt;
-}
+export type RevalidationDecision = import("@adeptify/goalboard-contracts/modules/goals").GoalRevalidationDecision<ActionTransitionReceipt>;
 
 export const DEFAULT_GOAL_POLICY: GoalPolicy = {
   goal_mode: "preferred",
@@ -1235,4 +586,4 @@ export const DEFAULT_GOAL_POLICY: GoalPolicy = {
   human_approval: false,
   max_lease_seconds: 1800,
 };
-import type { PlanningMethodPack } from "../planning/method-packs.js";
+import type { PlanningMethodPack } from "@adeptify/goalboard-contracts/modules/goals";

@@ -2,7 +2,7 @@ import type {
   GoalBoardProjectCatalog,
   GoalBoardWorkspaceDirectoryRecord,
 } from "../projects/catalog.js";
-import type { GoalBoardSessionRegistry } from "../sessions/registry.js";
+import type { GoalBoardSessionRegistry } from "@adeptify/goalboard-module-private-work-context";
 import type { GoalBoardSessionRecord } from "../sessions/types.js";
 
 export interface ProjectWorkspaceActionRecord {

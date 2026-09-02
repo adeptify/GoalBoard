@@ -1,10 +1,10 @@
 import {
   currentRevisionCriteriaPassed,
   currentRevisionRuntimeCriteriaPassed,
+  compatibleContractRevisions,
   deriveGoalActionProjection,
-} from "./action-projection.js";
-import { recordedContractCoverageBlocksClosure } from "./goal-decomposition-validation.js";
-import { compatibleContractRevisions } from "./contract-revisions.js";
+} from "@adeptify/goalboard-plugin-goals";
+import { recordedContractCoverageBlocksClosure } from "@adeptify/goalboard-module-goals";
 import type { BoardSnapshot, ClaimRecord, GoalRecord, RunRecord } from "./types.js";
 
 export interface LifecycleReconciliationPlan {

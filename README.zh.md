@@ -152,6 +152,7 @@ pnpm desktop:start:macos
 
 ## 更多文档
 
+- [架构 SSOT 与迁移归属](docs/SSOT-MATRIX.md)
 - [安装与维护](docs/installation.md)
 - [运行时协议](docs/runtime.md)
 - [MCP 接入](docs/mcp.md)

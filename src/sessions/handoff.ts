@@ -1,5 +1,5 @@
 import type { GoalContractView } from "../v1/types.js";
-import { RuntimeSessionAdapterRouter } from "./adapters.js";
+import type { RuntimeHostApi } from "@adeptify/goalboard-contracts/services/runtime-host";
 import { SessionContentService } from "./content.js";
 import { SessionDirectoryService } from "./directory.js";
 import { GoalBoardSessionRegistry } from "./registry.js";
@@ -42,7 +42,7 @@ export interface SessionHandoffResult {
 export class SessionHandoffService {
   constructor(
     private readonly registry: GoalBoardSessionRegistry,
-    private readonly router: RuntimeSessionAdapterRouter,
+    private readonly router: RuntimeHostApi,
     private readonly directory: SessionDirectoryService,
     private readonly content: SessionContentService,
   ) {}

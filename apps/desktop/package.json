@@ -1,0 +1,50 @@
+{
+  "name": "@adeptify/goalboard-app-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GoalBoard macOS product shell and native bridge composition root.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-plugin-feed": "workspace:*"
+  },
+  "goalboard": {
+    "path": "apps/desktop",
+    "kind": "app",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/app-host",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ap4",
+      "goal-reorg-dv4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "desktop.shell.v1",
+      "desktop.runtime-launch.v1",
+      "desktop.advance-prompt.v1",
+      "desktop.panels.v1",
+      "desktop.capsule-shell.v1"
+    ]
+  }
+}

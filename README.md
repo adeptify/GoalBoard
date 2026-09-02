@@ -152,6 +152,7 @@ Each architecture ships separately because GoalBoard's SQLite and PTY native add
 
 ## Further reading
 
+- [Architecture SSOT and migration ownership](docs/SSOT-MATRIX.md)
 - [Install & Maintenance](docs/installation.en.md)
 - [Runtime Protocol](docs/runtime.en.md)
 - [MCP Integration](docs/mcp.en.md)

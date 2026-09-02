@@ -1,0 +1,49 @@
+{
+  "name": "@adeptify/goalboard-plugin-goals",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Protected first-party Goals navigation, UI, commands, and composition.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-module-evidence-verification": "workspace:*",
+    "@adeptify/goalboard-module-goals": "workspace:*"
+  },
+  "goalboard": {
+    "path": "plugins/native/goals",
+    "kind": "native-plugin",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/plugin",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-f826dfb8-bf63-4e98-b6b7-57f6b4b7c3b8",
+      "goal-reorg-gw4",
+      "goal-reorg-gw5",
+      "goal-reorg-ex4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "goals.execution-validation-application.v1"
+    ]
+  }
+}

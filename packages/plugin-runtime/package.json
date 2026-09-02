@@ -1,0 +1,42 @@
+{
+  "name": "@adeptify/goalboard-plugin-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Plugin identity, install, grants, isolation, lifecycle, and rollback boundary.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "packages/plugin-runtime",
+    "kind": "foundation",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/plugin",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-fd3",
+      "goal-reorg-dv3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

@@ -1,4 +1,4 @@
-import { RuntimeSessionAdapterRouter } from "./adapters.js";
+import type { RuntimeHostApi } from "@adeptify/goalboard-contracts/services/runtime-host";
 import { GoalBoardSessionRegistry } from "./registry.js";
 import type {
   GoalBoardSessionEventRecord,
@@ -15,7 +15,7 @@ const MIN_BINARY_RUN_LENGTH = 4_096;
 export class SessionContentService {
   constructor(
     private readonly registry: GoalBoardSessionRegistry,
-    private readonly adapters: RuntimeSessionAdapterRouter,
+    private readonly adapters: RuntimeHostApi,
   ) {}
 
   async read(sessionId: string): Promise<SessionContentResult> {

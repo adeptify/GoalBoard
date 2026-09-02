@@ -1,6 +1,13 @@
-# Standalone package root (pnpm 11+ settings live here, not package.json#pnpm).
-# Empty packages list keeps this a single-package project.
-packages: []
+# F2 Monorepo package roots. The legacy root package remains the current
+# compatibility/release surface until the later Cutover Goal retires it.
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'modules/*'
+  - 'horizontal/*'
+  - 'plugins/native/*'
+  - 'plugins/official-integrations/*'
+  - 'tooling/plugin-cli'
 
 # Allow esbuild postinstall (required by tsx for pnpm goalboard / tests).
 allowBuilds:

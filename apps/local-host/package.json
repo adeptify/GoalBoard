@@ -1,0 +1,46 @@
+{
+  "name": "@adeptify/goalboard-app-local-host",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The single local composition root for Modules, services, plugins, and storage.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-kernel": "workspace:*"
+  },
+  "goalboard": {
+    "path": "apps/local-host",
+    "kind": "app",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/app-host",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ap2"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "local-host.client.v1",
+      "local-host.single-writer.v1"
+    ]
+  }
+}

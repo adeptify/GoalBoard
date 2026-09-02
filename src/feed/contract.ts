@@ -7,29 +7,34 @@ import type {
   InboxEntrySubjectType,
   SourceHistoryDecision,
 } from "./types.js";
+import {
+  ATTENTION_STATUS_TRANSITIONS,
+  assertAttentionEntryShape,
+  assertAttentionTransition,
+} from "@adeptify/goalboard-module-attention-resumption";
 
 export const INFOFLOW_CONTRACT_VERSION = 1 as const;
 export const INFOFLOW_SCHEMA_MIGRATION_ID = 29 as const;
 
 export const INFOFLOW_MODULE_OWNERSHIP = {
   Source: {
-    owner: "src/feed/store.ts",
+    owner: "modules/sources",
     writes: ["configuration", "credential_ref", "connection_state", "schedule", "cursor"],
     does_not_write: ["message_body", "attention_status"],
   },
   SyncRun: {
-    owner: "src/feed/store.ts",
+    owner: "horizontal/listener-host",
     writes: ["operation_id", "phase", "outcome", "safe_error", "receipt", "counts"],
     does_not_write: ["provider_secret", "source_configuration"],
   },
   FeedItem: {
-    owner: "src/feed/store.ts",
+    owner: "modules/feed",
     identity: ["board_id", "source_id", "external_id"],
     writes: ["external_fact_snapshot", "local_destination", "linked_goal", "read_state"],
     does_not_write: ["attention_reason", "attention_status"],
   },
   InboxEntry: {
-    owner: "src/feed/store.ts",
+    owner: "modules/attention-resumption",
     writes: ["subject_reference", "attention_reason", "attention_status", "resolution_metadata"],
     does_not_write: ["title", "summary", "body", "provider_cursor", "credential"],
   },
@@ -78,12 +83,8 @@ export const INFOFLOW_PROVIDER_ACCESS = {
   },
 } as const;
 
-export const INBOX_ENTRY_STATUS_TRANSITIONS: Readonly<Record<InboxEntryStatus, readonly InboxEntryStatus[]>> = {
-  open: ["in_progress", "done", "dismissed"],
-  in_progress: ["open", "done", "dismissed"],
-  done: ["open"],
-  dismissed: ["open"],
-};
+export const INBOX_ENTRY_STATUS_TRANSITIONS: Readonly<Record<InboxEntryStatus, readonly InboxEntryStatus[]>> =
+  ATTENTION_STATUS_TRANSITIONS;
 
 export const SOURCE_STATUS_TRANSITIONS: Readonly<Record<FeedSourceStatus, readonly FeedSourceStatus[]>> = {
   active: ["paused", "error", "disconnected"],
@@ -120,31 +121,48 @@ export function assertInboxEntryReference(
   subjectType: InboxEntrySubjectType,
   subjectId: string,
 ): void {
-  if (!subjectId.trim()) throw new Error("feed_contract_invalid_inbox_reference");
-  if (!["feed_item", "goal_decision", "source_fault"].includes(subjectType)) {
+  const reason = subjectType === "feed_item"
+    ? "manual"
+    : subjectType === "source_fault"
+      ? "source_fault"
+      : "goal_decision";
+  try {
+    assertAttentionEntryShape({
+      project_id: "compatibility-check",
+      entry_id: "compatibility-check",
+      subject_type: subjectType,
+      subject_id: subjectId,
+      reason,
+      status: "open",
+      detail: {},
+      revision: 1,
+      created_at: "1970-01-01T00:00:00.000Z",
+      updated_at: "1970-01-01T00:00:00.000Z",
+      completed_at: null,
+    });
+  } catch {
     throw new Error("feed_contract_invalid_inbox_reference");
   }
 }
 
 export function assertInboxEntryShape(entry: InboxEntryRecord): void {
-  assertInboxEntryReference(entry.subject_type, entry.subject_id);
-  const forbidden = ["title", "summary", "body", "message", "content", "credential", "cursor"];
-  for (const key of forbidden) {
-    if (Object.hasOwn(entry, key)) throw new Error(`feed_contract_inbox_copies_${key}`);
-  }
-  for (const key of Object.keys(entry.detail)) {
-    const normalized = key.toLowerCase();
-    if (forbidden.some((token) => normalized.includes(token))) {
-      throw new Error(`feed_contract_inbox_detail_copies_${key}`);
-    }
-  }
+  assertAttentionEntryShape({
+    project_id: entry.board_id,
+    entry_id: entry.entry_id,
+    subject_type: entry.subject_type,
+    subject_id: entry.subject_id,
+    reason: entry.reason,
+    status: entry.status,
+    detail: entry.detail,
+    revision: entry.revision,
+    created_at: entry.created_at,
+    updated_at: entry.updated_at,
+    completed_at: entry.completed_at,
+  });
 }
 
 export function assertInboxEntryTransition(from: InboxEntryStatus, to: InboxEntryStatus): void {
-  if (from === to) return;
-  if (!INBOX_ENTRY_STATUS_TRANSITIONS[from].includes(to)) {
-    throw new Error(`feed_contract_invalid_inbox_transition:${from}:${to}`);
-  }
+  assertAttentionTransition(from, to);
 }
 
 export function assertSourceStatusTransition(from: FeedSourceStatus, to: FeedSourceStatus): void {

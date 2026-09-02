@@ -9,7 +9,7 @@ import {
   THEME_BOOTSTRAP_SCRIPT,
   VISUAL_FOUNDATION_CLIENT_SCRIPT,
   VISUAL_FOUNDATION_STYLES,
-} from "../src/web/visual-foundation.js";
+} from "@adeptify/goalboard-design-system";
 import {
   renderGoalBoardProjectIndexStylesheet,
   renderGoalBoardSettingsStylesheet,

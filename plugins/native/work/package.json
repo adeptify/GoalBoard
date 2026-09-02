@@ -1,0 +1,41 @@
+{
+  "name": "@adeptify/goalboard-plugin-work",
+  "version": "0.0.0",
+  "private": true,
+  "description": "First-party Session, Runtime, resume, and handoff product UI.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "plugins/native/work",
+    "kind": "native-plugin",
+    "maturity": "contract-only",
+    "contract": "@adeptify/goalboard-contracts/platform/plugin",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-wk3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

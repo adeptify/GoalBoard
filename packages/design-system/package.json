@@ -1,0 +1,46 @@
+{
+  "name": "@adeptify/goalboard-design-system",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tokens, primitives, icons, themes, and accessibility foundations.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "packages/design-system",
+    "kind": "foundation",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/ui",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ap3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "design-system.theme.v1",
+      "design-system.tokens.v1",
+      "design-system.accessibility.v1"
+    ]
+  }
+}

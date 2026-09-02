@@ -1,35 +1,71 @@
 import Database from "better-sqlite3";
+import {
+  ARTIFACTS_SCHEMA_SQL,
+  migrateArtifactsSchema,
+  type ArtifactsSqliteDatabase,
+} from "@adeptify/goalboard-module-artifacts";
+import {
+  EVIDENCE_SCHEMA_SQL,
+  EvidenceRepository,
+  evidenceCorrectionsMigrationRequired,
+  migrateEvidenceContractRevisionColumns,
+  migrateEvidenceCorrections,
+  migrateEvidenceLocatorSource,
+  migrateEvidenceLocatorValidation,
+  migrateEvidenceLocatorWorkspace,
+  type EvidenceMigrationDatabase,
+  type EvidenceSqliteDatabase,
+} from "@adeptify/goalboard-module-evidence-verification";
+import {
+  EXECUTION_SCHEMA_SQL,
+  ExecutionRepository,
+  migrateClarifierRoles,
+  migrateExecutionActionColumns,
+  migrateReviewerRunRoles,
+  migrateUnifiedClaimRolesAndExclusivity,
+  type ExecutionMigrationDatabase,
+  type ExecutionSqliteDatabase,
+} from "@adeptify/goalboard-module-execution";
+import {
+  GOVERNANCE_SCHEMA_SQL,
+  GovernanceRepository,
+  governanceLegacySupersessionMigrationRequired,
+  governanceNarrativeMigrationRequired,
+  migrateContractProposals,
+  migrateGoalTreeLegacySupersession,
+  migrateGoalTreeProposalDecisions,
+  migrateGoalTreeProposalNarrative,
+  migrateGoalTreeProposals,
+  migrateReviewContractRevisionColumn,
+  migrateRuntimeDialogueAuthority,
+  type GovernanceSqliteDatabase,
+} from "@adeptify/goalboard-module-governance-collaboration";
+import {
+  migrateActiveGoalLifecycle,
+  migrateGoalArchiveSchema,
+  migrateGoalContractCoverageSchema,
+  migrateGoalLifecycleState,
+  migratePlanningMethodPacksSchema,
+  migrateGoalTrashSchema,
+  GoalsRepository,
+  GoalsQueryService,
+  type GoalLifecycleMigrationDatabase,
+} from "@adeptify/goalboard-module-goals";
 import { migrateFeedTables, migrateInfoflowContractV2 } from "../feed/store.js";
-import { randomUUID } from "node:crypto";
-import type { PlanningMethodPack } from "../planning/method-packs.js";
+import type { PlanningMethodPack } from "@adeptify/goalboard-contracts/modules/goals";
 import type {
   AcceptanceCriterion,
   BoardSnapshot,
-  CandidateGoalRecord,
-  ClaimRecord,
   ClarificationSessionRecord,
   ClarificationTurnRecord,
-  ContractProposalRecord,
   CoverageContractRevisionRecord,
-  EvidenceCorrectionRecord,
-  EvidenceRecord,
   GoalContractRevisionRecord,
   GoalLifecycleEventRecord,
-  GoalTreeProposalDecisionRecord,
-  GoalTreeProposalItemRecord,
-  GoalTreeProposalRecord,
   GoalPolicy,
   GoalRecord,
-  GoalRelationRecord,
-  GoalRiskLinkRecord,
   ImpactBindingRecord,
   ProjectGuidanceEntryRecord,
   ProjectGuidanceRevisionRecord,
-  ReviewObligationRecord,
-  ReviewRecord,
-  RewireRecord,
-  RiskRecord,
-  RunRecord,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -57,10 +93,6 @@ function optionalText(value: unknown): string | null {
 
 function number(value: unknown): number {
   return Number(value ?? 0);
-}
-
-function bool(value: unknown): boolean {
-  return Number(value ?? 0) === 1;
 }
 
 export class SqliteGoalBoardStore {
@@ -290,117 +322,13 @@ export class SqliteGoalBoardStore {
         );
         CREATE INDEX policies_scope_idx ON policy_bindings(board_id, goal_id, state);
 
-        CREATE TABLE claims (
-          claim_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-          actor_id TEXT NOT NULL,
-          role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'self_verifier', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-          contract_revision INTEGER NOT NULL DEFAULT 1,
-          action_kind TEXT,
-          action_target_id TEXT,
-          state TEXT NOT NULL CHECK (state IN ('active', 'released', 'expired', 'revoked')),
-          capabilities_json TEXT NOT NULL DEFAULT '[]',
-          goal_mode_attestation INTEGER NOT NULL DEFAULT 0,
-          resolved_policy_json TEXT NOT NULL,
-          claimed_at TEXT NOT NULL,
-          expires_at TEXT NOT NULL,
-          renewed_at TEXT,
-          released_at TEXT,
-          release_reason TEXT
-        );
-        CREATE INDEX claims_board_state_idx ON claims(board_id, state, expires_at);
-        CREATE INDEX claims_goal_idx ON claims(goal_id, state);
-        CREATE INDEX claims_action_idx ON claims(board_id, action_kind, action_target_id, state);
-        CREATE UNIQUE INDEX claims_one_active_per_goal
-          ON claims(goal_id)
-          WHERE state = 'active';
+        ${EXECUTION_SCHEMA_SQL}
 
-        CREATE TABLE runs (
-          run_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-          claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-          actor_id TEXT NOT NULL,
-          role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'self_verifier', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-          state TEXT NOT NULL CHECK (state IN ('started', 'blocked', 'completed', 'failed', 'abandoned')),
-          block_reason TEXT,
-          output_refs_json TEXT NOT NULL DEFAULT '[]',
-          discovery_refs_json TEXT NOT NULL DEFAULT '[]',
-          started_at TEXT NOT NULL,
-          ended_at TEXT
-        );
-        CREATE UNIQUE INDEX runs_one_nonterminal_per_claim
-          ON runs(claim_id)
-          WHERE state IN ('started', 'blocked');
+        ${EVIDENCE_SCHEMA_SQL}
 
-        CREATE TABLE evidence (
-          evidence_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-          contract_revision INTEGER NOT NULL DEFAULT 1,
-          criterion_ids_json TEXT NOT NULL,
-          producer_actor_id TEXT NOT NULL,
-          run_id TEXT REFERENCES runs(run_id),
-          review_id TEXT,
-          kind TEXT NOT NULL,
-          locator TEXT NOT NULL,
-          locator_status TEXT NOT NULL DEFAULT 'unverified' CHECK (locator_status IN ('verified', 'unverified')),
-          locator_validation_reason TEXT NOT NULL DEFAULT '历史 Evidence 未进行 locator 预检',
-          locator_checked_at TEXT,
-          locator_workspace_id TEXT,
-          locator_workspace_root TEXT,
-          digest TEXT,
-          captured_at TEXT NOT NULL,
-          result TEXT NOT NULL CHECK (result IN ('passed', 'failed', 'inconclusive')),
-          historical_unmapped INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX evidence_goal_idx ON evidence(goal_id, result);
+        ${GOVERNANCE_SCHEMA_SQL}
 
-        CREATE TABLE evidence_corrections (
-          correction_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
-          target_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(evidence_id),
-          action TEXT NOT NULL CHECK (action IN ('supersede', 'retract')),
-          replacement_evidence_id TEXT REFERENCES evidence(evidence_id),
-          actor_id TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          CHECK (
-            (action = 'supersede' AND replacement_evidence_id IS NOT NULL) OR
-            (action = 'retract' AND replacement_evidence_id IS NULL)
-          )
-        );
-        CREATE INDEX evidence_corrections_goal_idx
-          ON evidence_corrections(board_id, goal_id, created_at, correction_id);
-
-        CREATE TABLE review_obligations (
-          obligation_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-          contract_revision INTEGER NOT NULL DEFAULT 1,
-          role TEXT NOT NULL CHECK (role IN ('self_verifier', 'cross_reviewer', 'adversarial_reviewer', 'human_approver')),
-          required_count INTEGER NOT NULL,
-          independence_rule TEXT NOT NULL,
-          criterion_scope_json TEXT NOT NULL DEFAULT '[]',
-          state TEXT NOT NULL CHECK (state IN ('pending', 'satisfied', 'waived')),
-          created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE reviews (
-          review_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-          obligation_id TEXT NOT NULL REFERENCES review_obligations(obligation_id),
-          claim_id TEXT REFERENCES claims(claim_id),
-          actor_id TEXT NOT NULL,
-          verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'needs_changes', 'inconclusive')),
-          evidence_refs_json TEXT NOT NULL DEFAULT '[]',
-          reasoning TEXT NOT NULL,
-          submitted_at TEXT NOT NULL
-        );
-        CREATE INDEX reviews_obligation_idx ON reviews(obligation_id, verdict);
+        ${ARTIFACTS_SCHEMA_SQL}
 
         CREATE TABLE coverage_contract_revisions (
           parent_goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
@@ -412,53 +340,6 @@ export class SqliteGoalBoardStore {
         );
         CREATE INDEX coverage_contract_revisions_child_idx
           ON coverage_contract_revisions(child_goal_id, child_contract_revision);
-
-        CREATE TABLE candidates (
-          candidate_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          submitted_by TEXT NOT NULL,
-          discovered_in_run_id TEXT REFERENCES runs(run_id),
-          proposed_goal_json TEXT NOT NULL,
-          proposed_relations_json TEXT NOT NULL DEFAULT '[]',
-          proposed_impacts_json TEXT NOT NULL DEFAULT '[]',
-          proposed_risks_json TEXT NOT NULL DEFAULT '[]',
-          blocking_mode TEXT NOT NULL CHECK (blocking_mode IN ('none', 'current_run', 'dependent_claims')),
-          state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'dismissed', 'superseded')),
-          decision_json TEXT,
-          created_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-
-        CREATE TABLE rewires (
-          rewire_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          candidate_id TEXT REFERENCES candidates(candidate_id),
-          proposal_json TEXT NOT NULL,
-          impact_json TEXT NOT NULL,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'confirmed', 'rejected', 'applied')),
-          created_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-
-        CREATE TABLE contract_proposals (
-          proposal_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
-          submitted_by TEXT NOT NULL,
-          discovered_in_run_id TEXT NOT NULL REFERENCES runs(run_id),
-          proposed_goal_json TEXT NOT NULL,
-          field_sources_json TEXT NOT NULL,
-          review_policy_json TEXT NOT NULL,
-          proposed_impacts_json TEXT NOT NULL DEFAULT '[]',
-          proposed_risks_json TEXT NOT NULL DEFAULT '[]',
-          dependency_rewire_ids_json TEXT NOT NULL DEFAULT '[]',
-          state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'superseded')),
-          decision_json TEXT,
-          created_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-        CREATE INDEX contract_proposals_goal_idx
-          ON contract_proposals(board_id, goal_id, state, created_at);
 
         CREATE TABLE clarification_sessions (
           session_id TEXT PRIMARY KEY,
@@ -502,79 +383,6 @@ export class SqliteGoalBoardStore {
         );
         CREATE INDEX clarification_turns_session_idx
           ON clarification_turns(session_id, turn_index, turn_id);
-
-        CREATE TABLE goal_tree_proposals (
-          proposal_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          root_goal_id TEXT REFERENCES goals(goal_id) ON DELETE SET NULL,
-          submitted_by TEXT NOT NULL,
-          discovered_in_run_id TEXT REFERENCES runs(run_id) ON DELETE SET NULL,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'superseded', 'approved', 'partially_applied', 'rejected', 'dismissed', 'closed')),
-          version INTEGER NOT NULL,
-          supersedes_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-          supersedes_legacy_proposal_id TEXT,
-          base_event_cursor INTEGER NOT NULL,
-          summary TEXT NOT NULL,
-          narrative_json TEXT,
-          decision_json TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-        CREATE INDEX goal_tree_proposals_board_idx
-          ON goal_tree_proposals(board_id, root_goal_id, state, created_at DESC, proposal_id);
-        CREATE INDEX goal_tree_proposals_supersedes_idx
-          ON goal_tree_proposals(supersedes_proposal_id);
-        CREATE INDEX goal_tree_proposals_supersedes_legacy_idx
-          ON goal_tree_proposals(supersedes_legacy_proposal_id);
-
-        CREATE TABLE goal_tree_proposal_items (
-          item_id TEXT PRIMARY KEY,
-          proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          ordinal INTEGER NOT NULL,
-          kind TEXT NOT NULL CHECK (kind IN ('goal', 'contract', 'relation', 'dependency', 'risk', 'policy', 'candidate', 'rewire')),
-          operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'deactivate')),
-          payload_json TEXT NOT NULL,
-          source_refs_json TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          explanation_json TEXT,
-          confidence REAL NOT NULL,
-          affected_objects_json TEXT NOT NULL,
-          baseline_versions_json TEXT NOT NULL,
-          requires_user_confirmation INTEGER NOT NULL DEFAULT 1,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'conflict', 'superseded', 'approved', 'applied', 'rejected', 'dismissed')),
-          conflict_json TEXT,
-          materialized_objects_json TEXT NOT NULL DEFAULT '[]',
-          revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-          supersedes_item_id TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          UNIQUE(proposal_id, ordinal)
-        );
-        CREATE INDEX goal_tree_proposal_items_proposal_idx
-          ON goal_tree_proposal_items(proposal_id, ordinal, item_id);
-        CREATE INDEX goal_tree_proposal_items_board_idx
-          ON goal_tree_proposal_items(board_id, state, item_id);
-
-        CREATE TABLE goal_tree_proposal_decisions (
-          decision_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
-          item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
-          decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
-          actor_id TEXT NOT NULL,
-          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
-          runtime_actor_id TEXT,
-          conversation_ref TEXT NOT NULL,
-          message_ref TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-          materialized_objects_json TEXT NOT NULL DEFAULT '[]',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX goal_tree_proposal_decisions_item_idx
-          ON goal_tree_proposal_decisions(proposal_id, item_id, created_at, decision_id);
 
         CREATE TABLE project_guidance_entries (
           guidance_id TEXT PRIMARY KEY,
@@ -746,6 +554,9 @@ export class SqliteGoalBoardStore {
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (30, ?)")
         .run(new Date().toISOString());
+      this.db
+        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (31, ?)")
+        .run(new Date().toISOString());
       });
       return;
     }
@@ -753,15 +564,21 @@ export class SqliteGoalBoardStore {
     const clarifierRolesApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 2")
       .get();
-    if (!clarifierRolesApplied) this.migrateClarifierRoles();
+    if (!clarifierRolesApplied) {
+      migrateClarifierRoles(this.db as unknown as ExecutionMigrationDatabase);
+    }
     const contractProposalsApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 3")
       .get();
-    if (!contractProposalsApplied) this.migrateContractProposals();
+    if (!contractProposalsApplied) {
+      migrateContractProposals(this.db as unknown as GovernanceSqliteDatabase);
+    }
     const goalArchiveApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 4")
       .get();
-    if (!goalArchiveApplied) this.migrateGoalArchive();
+    if (!goalArchiveApplied) {
+      migrateGoalArchiveSchema(this.db as unknown as GoalLifecycleMigrationDatabase);
+    }
     const impactHistoryApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 5")
       .get();
@@ -769,11 +586,15 @@ export class SqliteGoalBoardStore {
     const reviewerRunRolesApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 6")
       .get();
-    if (!reviewerRunRolesApplied) this.migrateReviewerRunRoles();
+    if (!reviewerRunRolesApplied) {
+      migrateReviewerRunRoles(this.db as unknown as ExecutionMigrationDatabase);
+    }
     const unifiedClaimRolesApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 7")
       .get();
-    if (!unifiedClaimRolesApplied) this.migrateUnifiedClaimRolesAndExclusivity();
+    if (!unifiedClaimRolesApplied) {
+      migrateUnifiedClaimRolesAndExclusivity(this.db as unknown as ExecutionMigrationDatabase);
+    }
     const clarificationDialogueApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 8")
       .get();
@@ -781,27 +602,39 @@ export class SqliteGoalBoardStore {
     const goalTreeProposalsApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 9")
       .get();
-    if (!goalTreeProposalsApplied) this.migrateGoalTreeProposals();
+    if (!goalTreeProposalsApplied) {
+      migrateGoalTreeProposals(this.db as unknown as GovernanceSqliteDatabase);
+    }
     const goalTreeProposalDecisionsApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 10")
       .get();
-    if (!goalTreeProposalDecisionsApplied) this.migrateGoalTreeProposalDecisions();
+    if (!goalTreeProposalDecisionsApplied) {
+      migrateGoalTreeProposalDecisions(this.db as unknown as GovernanceSqliteDatabase);
+    }
     const goalTrashApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 11")
       .get();
-    if (!goalTrashApplied) this.migrateGoalTrash();
+    if (!goalTrashApplied) {
+      migrateGoalTrashSchema(this.db as unknown as GoalLifecycleMigrationDatabase);
+    }
     const lifecycleReconciliationApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 12")
       .get();
-    if (!lifecycleReconciliationApplied) this.migrateLifecycleState();
+    if (!lifecycleReconciliationApplied) {
+      migrateGoalLifecycleState(this.db as unknown as GoalLifecycleMigrationDatabase);
+    }
     const activeGoalLifecycleApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 13")
       .get();
-    if (!activeGoalLifecycleApplied) this.migrateActiveGoalLifecycle();
+    if (!activeGoalLifecycleApplied) {
+      migrateActiveGoalLifecycle(this.db as unknown as GoalLifecycleMigrationDatabase);
+    }
     const runtimeDialogueAuthorityApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 14")
       .get();
-    if (!runtimeDialogueAuthorityApplied) this.migrateRuntimeDialogueAuthority();
+    if (!runtimeDialogueAuthorityApplied) {
+      migrateRuntimeDialogueAuthority(this.db as unknown as GovernanceSqliteDatabase);
+    }
     const riskTreatmentPlanApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 15")
       .get();
@@ -809,26 +642,30 @@ export class SqliteGoalBoardStore {
     const planningMethodPacksApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 16")
       .get();
-    if (!planningMethodPacksApplied) this.migratePlanningMethodPacks();
-    const evidenceCorrectionsApplied = this.db
-      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 17")
-      .get();
-    const evidenceCorrectionsTable = this.db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_corrections'")
-      .get();
-    if (!evidenceCorrectionsApplied || !evidenceCorrectionsTable) this.migrateEvidenceCorrections();
+    if (!planningMethodPacksApplied) {
+      migratePlanningMethodPacksSchema(this.db as unknown as GoalLifecycleMigrationDatabase);
+    }
+    if (evidenceCorrectionsMigrationRequired(this.db as unknown as EvidenceMigrationDatabase)) {
+      migrateEvidenceCorrections(this.db as unknown as EvidenceMigrationDatabase);
+    }
     const evidenceLocatorValidationApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 18")
       .get();
-    if (!evidenceLocatorValidationApplied) this.migrateEvidenceLocatorValidation();
+    if (!evidenceLocatorValidationApplied) {
+      migrateEvidenceLocatorValidation(this.db as unknown as EvidenceMigrationDatabase);
+    }
     const evidenceLocatorWorkspaceApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 19")
       .get();
-    if (!evidenceLocatorWorkspaceApplied) this.migrateEvidenceLocatorWorkspace();
+    if (!evidenceLocatorWorkspaceApplied) {
+      migrateEvidenceLocatorWorkspace(this.db as unknown as EvidenceMigrationDatabase);
+    }
     const evidenceLocatorSourceApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 20")
       .get();
-    if (!evidenceLocatorSourceApplied) this.migrateEvidenceLocatorSource();
+    if (!evidenceLocatorSourceApplied) {
+      migrateEvidenceLocatorSource(this.db as unknown as EvidenceMigrationDatabase);
+    }
     const contractCoverageApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 21")
       .get();
@@ -839,7 +676,7 @@ export class SqliteGoalBoardStore {
       !goalColumns.some((column) => column.name === "decomposition_review_json") ||
       !riskColumns.some((column) => column.name === "resolution_basis_json")
     ) {
-      this.migrateContractCoverageAndRiskResolution();
+      migrateGoalContractCoverageSchema(this.db as unknown as GoalLifecycleMigrationDatabase);
     }
     const feedWorkbenchApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 22")
@@ -893,21 +730,17 @@ export class SqliteGoalBoardStore {
     const goalTreeProposalNarrativeApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 27")
       .get();
-    const goalTreeProposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
-    const goalTreeProposalItemColumns = this.db.pragma("table_info(goal_tree_proposal_items)") as Array<{ name: string }>;
     if (
       !goalTreeProposalNarrativeApplied ||
-      !goalTreeProposalColumns.some((column) => column.name === "narrative_json") ||
-      !goalTreeProposalItemColumns.some((column) => column.name === "explanation_json")
-    ) this.migrateGoalTreeProposalNarrative();
+      governanceNarrativeMigrationRequired(this.db as unknown as GovernanceSqliteDatabase)
+    ) migrateGoalTreeProposalNarrative(this.db as unknown as GovernanceSqliteDatabase);
     const goalTreeLegacySupersessionApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 28")
       .get();
-    const refreshedProposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
     if (
       !goalTreeLegacySupersessionApplied ||
-      !refreshedProposalColumns.some((column) => column.name === "supersedes_legacy_proposal_id")
-    ) this.migrateGoalTreeLegacySupersession();
+      governanceLegacySupersessionMigrationRequired(this.db as unknown as GovernanceSqliteDatabase)
+    ) migrateGoalTreeLegacySupersession(this.db as unknown as GovernanceSqliteDatabase);
     const infoflowContractApplied = this.db
       .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 29")
       .get();
@@ -928,6 +761,18 @@ export class SqliteGoalBoardStore {
       !continuousActionModelApplied ||
       !currentGoalColumns.some((column) => column.name === "current_contract_revision")
     ) this.migrateContinuousActionModel();
+    const artifactsApplied = this.db
+      .prepare("SELECT migration_id FROM schema_migrations WHERE migration_id = 31")
+      .get();
+    const artifactsTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifacts'")
+      .get();
+    const artifactVersionsTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifact_versions'")
+      .get();
+    if (!artifactsApplied || !artifactsTable || !artifactVersionsTable) {
+      migrateArtifactsSchema(this.db as unknown as ArtifactsSqliteDatabase);
+    }
   }
 
   private migrateContinuousActionModel(): void {
@@ -939,12 +784,9 @@ export class SqliteGoalBoardStore {
         }
       };
       addColumn("goals", "current_contract_revision", "INTEGER NOT NULL DEFAULT 1");
-      addColumn("claims", "contract_revision", "INTEGER NOT NULL DEFAULT 1");
-      addColumn("claims", "action_kind", "TEXT");
-      addColumn("claims", "action_target_id", "TEXT");
-      addColumn("evidence", "contract_revision", "INTEGER NOT NULL DEFAULT 1");
-      addColumn("evidence", "historical_unmapped", "INTEGER NOT NULL DEFAULT 0");
-      addColumn("review_obligations", "contract_revision", "INTEGER NOT NULL DEFAULT 1");
+      migrateExecutionActionColumns(this.db as unknown as ExecutionMigrationDatabase);
+      migrateEvidenceContractRevisionColumns(this.db as unknown as EvidenceMigrationDatabase);
+      migrateReviewContractRevisionColumn(this.db as unknown as GovernanceSqliteDatabase);
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS goal_contract_revisions (
           goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
@@ -960,8 +802,6 @@ export class SqliteGoalBoardStore {
         );
         CREATE INDEX IF NOT EXISTS goal_contract_revisions_board_idx
           ON goal_contract_revisions(board_id, goal_id, revision DESC);
-        CREATE INDEX IF NOT EXISTS claims_action_idx
-          ON claims(board_id, action_kind, action_target_id, state);
         CREATE TABLE IF NOT EXISTS coverage_contract_revisions (
           parent_goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
           child_goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
@@ -1009,14 +849,6 @@ export class SqliteGoalBoardStore {
         );
       }
       this.db.exec(`
-        UPDATE claims SET action_kind = CASE role
-          WHEN 'clarifier' THEN 'clarify'
-          WHEN 'revalidator' THEN 'revalidate'
-          WHEN 'executor' THEN 'execute'
-          ELSE 'review'
-        END
-        WHERE action_kind IS NULL;
-        UPDATE claims SET action_target_id = goal_id WHERE action_target_id IS NULL;
         INSERT OR IGNORE INTO coverage_contract_revisions (
           parent_goal_id, child_goal_id, parent_contract_revision, child_contract_revision, recorded_at
         )
@@ -1033,117 +865,6 @@ export class SqliteGoalBoardStore {
     });
   }
 
-  private migrateClarifierRoles(): void {
-    this.db.pragma("foreign_keys = OFF");
-    try {
-      this.immediate(() => {
-        this.db.exec(`
-          CREATE TABLE claims_v2 (
-            claim_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-            actor_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-            state TEXT NOT NULL CHECK (state IN ('active', 'released', 'expired', 'revoked')),
-            capabilities_json TEXT NOT NULL DEFAULT '[]',
-            goal_mode_attestation INTEGER NOT NULL DEFAULT 0,
-            resolved_policy_json TEXT NOT NULL,
-            claimed_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            renewed_at TEXT,
-            released_at TEXT,
-            release_reason TEXT
-          );
-          INSERT INTO claims_v2 SELECT * FROM claims;
-
-          CREATE TABLE runs_v2 (
-            run_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-            claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-            actor_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'revalidator')),
-            state TEXT NOT NULL CHECK (state IN ('started', 'blocked', 'completed', 'failed', 'abandoned')),
-            block_reason TEXT,
-            output_refs_json TEXT NOT NULL DEFAULT '[]',
-            discovery_refs_json TEXT NOT NULL DEFAULT '[]',
-            started_at TEXT NOT NULL,
-            ended_at TEXT
-          );
-          INSERT INTO runs_v2 SELECT * FROM runs;
-
-          DROP TABLE runs;
-          DROP TABLE claims;
-          ALTER TABLE claims_v2 RENAME TO claims;
-          ALTER TABLE runs_v2 RENAME TO runs;
-
-          CREATE INDEX claims_board_state_idx ON claims(board_id, state, expires_at);
-          CREATE INDEX claims_goal_idx ON claims(goal_id, state);
-          CREATE UNIQUE INDEX claims_one_active_executor
-            ON claims(goal_id)
-            WHERE state = 'active' AND role IN ('executor', 'revalidator');
-          CREATE UNIQUE INDEX claims_one_active_clarifier
-            ON claims(goal_id)
-            WHERE state = 'active' AND role = 'clarifier';
-          CREATE UNIQUE INDEX runs_one_nonterminal_per_claim
-            ON runs(claim_id)
-            WHERE state IN ('started', 'blocked');
-        `);
-        this.db
-          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (2, ?)")
-          .run(new Date().toISOString());
-      });
-    } finally {
-      this.db.pragma("foreign_keys = ON");
-    }
-    const violations = this.db.pragma("foreign_key_check") as unknown[];
-    if (violations.length > 0) {
-      throw new Error(`GoalBoard migration 2 foreign key check failed: ${JSON.stringify(violations)}`);
-    }
-  }
-
-  private migrateContractProposals(): void {
-    this.immediate(() => {
-      this.db.exec(`
-        CREATE TABLE contract_proposals (
-          proposal_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
-          submitted_by TEXT NOT NULL,
-          discovered_in_run_id TEXT NOT NULL REFERENCES runs(run_id),
-          proposed_goal_json TEXT NOT NULL,
-          field_sources_json TEXT NOT NULL,
-          review_policy_json TEXT NOT NULL,
-          proposed_impacts_json TEXT NOT NULL DEFAULT '[]',
-          proposed_risks_json TEXT NOT NULL DEFAULT '[]',
-          dependency_rewire_ids_json TEXT NOT NULL DEFAULT '[]',
-          state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'superseded')),
-          decision_json TEXT,
-          created_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-        CREATE INDEX contract_proposals_goal_idx
-          ON contract_proposals(board_id, goal_id, state, created_at);
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (3, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateGoalArchive(): void {
-    this.immediate(() => {
-      this.db.exec(`
-        ALTER TABLE goals ADD COLUMN archived_at TEXT;
-        ALTER TABLE goals ADD COLUMN archived_by TEXT;
-        CREATE INDEX goals_archive_idx ON goals(board_id, archived_at);
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (4, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
   private migrateImpactHistory(): void {
     this.immediate(() => {
       this.db.exec(`
@@ -1156,111 +877,6 @@ export class SqliteGoalBoardStore {
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (5, ?)")
         .run(new Date().toISOString());
     });
-  }
-
-  private migrateReviewerRunRoles(): void {
-    this.db.pragma("foreign_keys = OFF");
-    try {
-      this.immediate(() => {
-        this.db.exec(`
-          CREATE TABLE runs_v3 (
-            run_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-            claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-            actor_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-            state TEXT NOT NULL CHECK (state IN ('started', 'blocked', 'completed', 'failed', 'abandoned')),
-            block_reason TEXT,
-            output_refs_json TEXT NOT NULL DEFAULT '[]',
-            discovery_refs_json TEXT NOT NULL DEFAULT '[]',
-            started_at TEXT NOT NULL,
-            ended_at TEXT
-          );
-          INSERT INTO runs_v3 SELECT * FROM runs;
-          DROP TABLE runs;
-          ALTER TABLE runs_v3 RENAME TO runs;
-          CREATE UNIQUE INDEX runs_one_nonterminal_per_claim
-            ON runs(claim_id)
-            WHERE state IN ('started', 'blocked');
-        `);
-        this.db
-          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (6, ?)")
-          .run(new Date().toISOString());
-      });
-    } finally {
-      this.db.pragma("foreign_keys = ON");
-    }
-    const violations = this.db.pragma("foreign_key_check") as unknown[];
-    if (violations.length > 0) {
-      throw new Error(`GoalBoard migration 6 foreign key check failed: ${JSON.stringify(violations)}`);
-    }
-  }
-
-  private migrateUnifiedClaimRolesAndExclusivity(): void {
-    this.db.pragma("foreign_keys = OFF");
-    try {
-      this.immediate(() => {
-        this.db.exec(`
-          CREATE TABLE claims_v4 (
-            claim_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-            actor_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'self_verifier', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-            state TEXT NOT NULL CHECK (state IN ('active', 'released', 'expired', 'revoked')),
-            capabilities_json TEXT NOT NULL DEFAULT '[]',
-            goal_mode_attestation INTEGER NOT NULL DEFAULT 0,
-            resolved_policy_json TEXT NOT NULL,
-            claimed_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            renewed_at TEXT,
-            released_at TEXT,
-            release_reason TEXT
-          );
-          INSERT INTO claims_v4 SELECT * FROM claims;
-
-          CREATE TABLE runs_v4 (
-            run_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            goal_id TEXT NOT NULL REFERENCES goals(goal_id),
-            claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-            actor_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('clarifier', 'executor', 'self_verifier', 'cross_reviewer', 'adversarial_reviewer', 'revalidator')),
-            state TEXT NOT NULL CHECK (state IN ('started', 'blocked', 'completed', 'failed', 'abandoned')),
-            block_reason TEXT,
-            output_refs_json TEXT NOT NULL DEFAULT '[]',
-            discovery_refs_json TEXT NOT NULL DEFAULT '[]',
-            started_at TEXT NOT NULL,
-            ended_at TEXT
-          );
-          INSERT INTO runs_v4 SELECT * FROM runs;
-
-          DROP TABLE runs;
-          DROP TABLE claims;
-          ALTER TABLE claims_v4 RENAME TO claims;
-          ALTER TABLE runs_v4 RENAME TO runs;
-
-          CREATE INDEX claims_board_state_idx ON claims(board_id, state, expires_at);
-          CREATE INDEX claims_goal_idx ON claims(goal_id, state);
-          CREATE UNIQUE INDEX claims_one_active_per_goal
-            ON claims(goal_id)
-            WHERE state = 'active';
-          CREATE UNIQUE INDEX runs_one_nonterminal_per_claim
-            ON runs(claim_id)
-            WHERE state IN ('started', 'blocked');
-        `);
-        this.db
-          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (7, ?)")
-          .run(new Date().toISOString());
-      });
-    } finally {
-      this.db.pragma("foreign_keys = ON");
-    }
-    const violations = this.db.pragma("foreign_key_check") as unknown[];
-    if (violations.length > 0) {
-      throw new Error(`GoalBoard migration 7 foreign key check failed: ${JSON.stringify(violations)}`);
-    }
   }
 
   private migrateClarificationDialogue(): void {
@@ -1315,360 +931,6 @@ export class SqliteGoalBoardStore {
       });
   }
 
-  private migrateGoalTreeProposals(): void {
-    this.immediate(() => {
-      this.db.exec(`
-        CREATE TABLE goal_tree_proposals (
-          proposal_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          root_goal_id TEXT REFERENCES goals(goal_id) ON DELETE SET NULL,
-          submitted_by TEXT NOT NULL,
-          discovered_in_run_id TEXT REFERENCES runs(run_id) ON DELETE SET NULL,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'superseded', 'approved', 'partially_applied', 'rejected', 'dismissed', 'closed')),
-          version INTEGER NOT NULL,
-          supersedes_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-          supersedes_legacy_proposal_id TEXT,
-          base_event_cursor INTEGER NOT NULL,
-          summary TEXT NOT NULL,
-          decision_json TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          decided_at TEXT
-        );
-        CREATE INDEX goal_tree_proposals_board_idx
-          ON goal_tree_proposals(board_id, root_goal_id, state, created_at DESC, proposal_id);
-        CREATE INDEX goal_tree_proposals_supersedes_idx
-          ON goal_tree_proposals(supersedes_proposal_id);
-        CREATE INDEX goal_tree_proposals_supersedes_legacy_idx
-          ON goal_tree_proposals(supersedes_legacy_proposal_id);
-
-        CREATE TABLE goal_tree_proposal_items (
-          item_id TEXT PRIMARY KEY,
-          proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          ordinal INTEGER NOT NULL,
-          kind TEXT NOT NULL CHECK (kind IN ('goal', 'contract', 'relation', 'dependency', 'risk', 'policy', 'candidate', 'rewire')),
-          operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'deactivate')),
-          payload_json TEXT NOT NULL,
-          source_refs_json TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          confidence REAL NOT NULL,
-          affected_objects_json TEXT NOT NULL,
-          baseline_versions_json TEXT NOT NULL,
-          requires_user_confirmation INTEGER NOT NULL DEFAULT 1,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'conflict', 'superseded', 'approved', 'applied', 'rejected', 'dismissed')),
-          conflict_json TEXT,
-          supersedes_item_id TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          UNIQUE(proposal_id, ordinal)
-        );
-        CREATE INDEX goal_tree_proposal_items_proposal_idx
-          ON goal_tree_proposal_items(proposal_id, ordinal, item_id);
-        CREATE INDEX goal_tree_proposal_items_board_idx
-          ON goal_tree_proposal_items(board_id, state, item_id);
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (9, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateGoalTreeProposalDecisions(): void {
-    this.immediate(() => {
-      const itemColumns = this.db.pragma("table_info(goal_tree_proposal_items)") as Array<{ name: string }>;
-      const existing = new Set(itemColumns.map((column) => column.name));
-      if (!existing.has("materialized_objects_json")) {
-        this.db.exec("ALTER TABLE goal_tree_proposal_items ADD COLUMN materialized_objects_json TEXT NOT NULL DEFAULT '[]'");
-      }
-      if (!existing.has("revision_proposal_id")) {
-        this.db.exec("ALTER TABLE goal_tree_proposal_items ADD COLUMN revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id)");
-      }
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS goal_tree_proposal_decisions (
-          decision_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
-          item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
-          decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
-          actor_id TEXT NOT NULL,
-          authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
-          runtime_actor_id TEXT,
-          conversation_ref TEXT NOT NULL,
-          message_ref TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-          materialized_objects_json TEXT NOT NULL DEFAULT '[]',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS goal_tree_proposal_decisions_item_idx
-          ON goal_tree_proposal_decisions(proposal_id, item_id, created_at, decision_id);
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (10, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateGoalTrash(): void {
-    this.immediate(() => {
-      const goalColumns = this.db.pragma("table_info(goals)") as Array<{ name: string }>;
-      const existingColumns = new Set(goalColumns.map((column) => column.name));
-      if (!existingColumns.has("trashed_at")) {
-        this.db.exec("ALTER TABLE goals ADD COLUMN trashed_at TEXT");
-      }
-      if (!existingColumns.has("trashed_by")) {
-        this.db.exec("ALTER TABLE goals ADD COLUMN trashed_by TEXT");
-      }
-      this.db.exec(`
-        CREATE INDEX IF NOT EXISTS goals_trash_idx ON goals(board_id, trashed_at);
-
-        CREATE TABLE IF NOT EXISTS goal_trash_records (
-          trash_record_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
-          trashed_at TEXT NOT NULL,
-          trashed_by TEXT NOT NULL,
-          trash_reason TEXT NOT NULL,
-          restored_at TEXT,
-          restored_by TEXT,
-          restore_reason TEXT
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS goal_trash_one_open_per_goal
-          ON goal_trash_records(board_id, goal_id)
-          WHERE restored_at IS NULL;
-        CREATE INDEX IF NOT EXISTS goal_trash_records_goal_idx
-          ON goal_trash_records(board_id, goal_id, restored_at, trashed_at);
-
-        CREATE TABLE IF NOT EXISTS goal_trash_relation_records (
-          trash_record_id TEXT NOT NULL REFERENCES goal_trash_records(trash_record_id) ON DELETE CASCADE,
-          relation_id TEXT NOT NULL REFERENCES goal_relations(relation_id) ON DELETE CASCADE,
-          prior_state TEXT NOT NULL CHECK (prior_state = 'active'),
-          deactivated_at TEXT NOT NULL,
-          restored_at TEXT,
-          PRIMARY KEY (trash_record_id, relation_id)
-        );
-        CREATE INDEX IF NOT EXISTS goal_trash_relation_records_relation_idx
-          ON goal_trash_relation_records(relation_id, restored_at);
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (11, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateLifecycleState(): void {
-    this.immediate(() => {
-      const migratedAt = new Date().toISOString();
-      const migrationActor = "goalboard:migration-12";
-      const staleRuns = this.db
-        .prepare(`
-          SELECT
-            r.run_id,
-            r.board_id,
-            r.goal_id,
-            r.claim_id,
-            r.state AS run_state,
-            c.state AS claim_state,
-            c.released_at
-          FROM runs r
-          JOIN claims c ON c.claim_id = r.claim_id
-          WHERE r.state IN ('started', 'blocked') AND c.state != 'active'
-          ORDER BY r.run_id
-        `)
-        .all() as Row[];
-      for (const row of staleRuns) {
-        const claimState = text(row.claim_state);
-        const reason = `关联 Claim 已是 ${claimState}，迁移时关闭历史遗留 Run`;
-        const endedAt = optionalText(row.released_at) ?? migratedAt;
-        this.db
-          .prepare(`
-            UPDATE runs
-            SET state = 'abandoned', block_reason = ?, ended_at = ?
-            WHERE run_id = ? AND state IN ('started', 'blocked')
-          `)
-          .run(reason, endedAt, text(row.run_id));
-        this.appendEvent({
-          eventId: randomUUID(),
-          boardId: text(row.board_id),
-          actorId: migrationActor,
-          type: "run.abandoned",
-          objectType: "run",
-          objectId: text(row.run_id),
-          reason,
-          payload: {
-            claim_id: text(row.claim_id),
-            claim_state: claimState,
-            goal_id: text(row.goal_id),
-            previous_state: text(row.run_state),
-            recovery: true,
-            migration_id: 12,
-          },
-          at: migratedAt,
-        });
-      }
-
-      const staleClarifications = this.db
-        .prepare(`
-          SELECT
-            cs.session_id,
-            cs.board_id,
-            cs.goal_id,
-            cs.state AS session_state,
-            g.definition_state,
-            g.accepted_at
-          FROM clarification_sessions cs
-          JOIN goals g ON g.board_id = cs.board_id AND g.goal_id = cs.goal_id
-          WHERE cs.state != 'closed' AND g.definition_state != 'draft'
-          ORDER BY cs.session_id
-        `)
-        .all() as Row[];
-      for (const row of staleClarifications) {
-        const closedAt = optionalText(row.accepted_at) ?? migratedAt;
-        const reason = "Goal 已结束 Draft 澄清，迁移时关闭历史遗留澄清会话";
-        this.db
-          .prepare(`
-            UPDATE clarification_sessions
-            SET state = 'closed', updated_at = ?, closed_at = ?
-            WHERE session_id = ? AND state != 'closed'
-          `)
-          .run(migratedAt, closedAt, text(row.session_id));
-        this.appendEvent({
-          eventId: randomUUID(),
-          boardId: text(row.board_id),
-          actorId: migrationActor,
-          type: "clarification.closed",
-          objectType: "clarification_session",
-          objectId: text(row.session_id),
-          reason,
-          payload: {
-            goal_id: text(row.goal_id),
-            definition_state: text(row.definition_state),
-            previous_state: text(row.session_state),
-            recovery: true,
-            migration_id: 12,
-          },
-          at: migratedAt,
-        });
-      }
-
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (12, ?)")
-        .run(migratedAt);
-    });
-  }
-
-  private migrateActiveGoalLifecycle(): void {
-    this.immediate(() => {
-      const migratedAt = new Date().toISOString();
-      const migrationActor = "goalboard:migration-13";
-      const staleActiveGoals = this.db
-        .prepare(`
-          SELECT
-            b.board_id,
-            b.active_goal_id,
-            g.goal_id,
-            g.fulfillment_state,
-            g.archived_at,
-            g.trashed_at
-          FROM boards b
-          LEFT JOIN goals g
-            ON g.board_id = b.board_id AND g.goal_id = b.active_goal_id
-          WHERE b.active_goal_id IS NOT NULL
-            AND (
-              g.goal_id IS NULL
-              OR g.fulfillment_state = 'satisfied'
-              OR g.archived_at IS NOT NULL
-              OR g.trashed_at IS NOT NULL
-            )
-          ORDER BY b.board_id
-        `)
-        .all() as Row[];
-      for (const row of staleActiveGoals) {
-        const boardId = text(row.board_id);
-        const goalId = text(row.active_goal_id);
-        const reason = row.goal_id == null
-          ? "Active Goal 已不存在，迁移时清空历史指针"
-          : row.trashed_at != null
-            ? "Active Goal 已在回收站，迁移时清空历史指针"
-            : row.archived_at != null
-              ? "Active Goal 已归档，迁移时清空历史指针"
-              : "Active Goal 已完成，迁移时清空历史指针";
-        this.db
-          .prepare("UPDATE boards SET active_goal_id = NULL, updated_at = ? WHERE board_id = ? AND active_goal_id = ?")
-          .run(migratedAt, boardId, goalId);
-        this.appendEvent({
-          eventId: randomUUID(),
-          boardId,
-          actorId: migrationActor,
-          type: "board.active_goal_cleared",
-          objectType: "goal",
-          objectId: goalId,
-          reason,
-          payload: {
-            previous_active_goal_id: goalId,
-            fulfillment_state: optionalText(row.fulfillment_state),
-            recovery: true,
-            migration_id: 13,
-          },
-          at: migratedAt,
-        });
-      }
-
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (13, ?)")
-        .run(migratedAt);
-    });
-  }
-
-  private migrateRuntimeDialogueAuthority(): void {
-    this.db.pragma("foreign_keys = OFF");
-    try {
-      this.immediate(() => {
-        this.db.exec(`
-          CREATE TABLE goal_tree_proposal_decisions_v14 (
-            decision_id TEXT PRIMARY KEY,
-            board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-            proposal_id TEXT NOT NULL REFERENCES goal_tree_proposals(proposal_id) ON DELETE CASCADE,
-            item_id TEXT NOT NULL REFERENCES goal_tree_proposal_items(item_id) ON DELETE CASCADE,
-            decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revised', 'conflict')),
-            actor_id TEXT NOT NULL,
-            authority_source TEXT NOT NULL CHECK (authority_source IN ('runtime_dialogue', 'web', 'management')),
-            runtime_actor_id TEXT,
-            conversation_ref TEXT NOT NULL,
-            message_ref TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            revision_proposal_id TEXT REFERENCES goal_tree_proposals(proposal_id),
-            materialized_objects_json TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL
-          );
-          INSERT INTO goal_tree_proposal_decisions_v14 (
-            decision_id, board_id, proposal_id, item_id, decision, actor_id,
-            authority_source, runtime_actor_id, conversation_ref, message_ref,
-            reason, revision_proposal_id, materialized_objects_json, created_at
-          )
-          SELECT
-            decision_id, board_id, proposal_id, item_id, decision, actor_id,
-            CASE authority_source
-              WHEN 'runtime_trusted_host' THEN 'runtime_dialogue'
-              ELSE authority_source
-            END, runtime_actor_id, conversation_ref, message_ref,
-            reason, revision_proposal_id, materialized_objects_json, created_at
-          FROM goal_tree_proposal_decisions;
-          DROP TABLE goal_tree_proposal_decisions;
-          ALTER TABLE goal_tree_proposal_decisions_v14 RENAME TO goal_tree_proposal_decisions;
-          CREATE INDEX goal_tree_proposal_decisions_item_idx
-            ON goal_tree_proposal_decisions(proposal_id, item_id, created_at, decision_id);
-        `);
-        this.db
-          .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (14, ?)")
-          .run(new Date().toISOString());
-      });
-    } finally {
-      this.db.pragma("foreign_keys = ON");
-    }
-  }
-
   private migrateRiskTreatmentPlan(): void {
     this.immediate(() => {
       const columns = this.db.pragma("table_info(risks)") as Array<{ name: string }>;
@@ -1677,95 +939,6 @@ export class SqliteGoalBoardStore {
       }
       this.db
         .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (15, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migratePlanningMethodPacks(): void {
-    this.immediate(() => {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS planning_method_packs (
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          method_id TEXT NOT NULL,
-          version INTEGER NOT NULL,
-          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-          pack_json TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          PRIMARY KEY (board_id, method_id)
-        );
-      `);
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (16, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateEvidenceCorrections(): void {
-    this.immediate(() => {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS evidence_corrections (
-          correction_id TEXT PRIMARY KEY,
-          board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
-          goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
-          target_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(evidence_id),
-          action TEXT NOT NULL CHECK (action IN ('supersede', 'retract')),
-          replacement_evidence_id TEXT REFERENCES evidence(evidence_id),
-          actor_id TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          CHECK (
-            (action = 'supersede' AND replacement_evidence_id IS NOT NULL) OR
-            (action = 'retract' AND replacement_evidence_id IS NULL)
-          )
-        );
-        CREATE INDEX IF NOT EXISTS evidence_corrections_goal_idx
-          ON evidence_corrections(board_id, goal_id, created_at, correction_id);
-      `);
-      this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (17, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateEvidenceLocatorValidation(): void {
-    this.immediate(() => {
-      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
-      if (!columns.some((column) => column.name === "locator_status")) {
-        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_status TEXT NOT NULL DEFAULT 'unverified' CHECK (locator_status IN ('verified', 'unverified'))");
-      }
-      if (!columns.some((column) => column.name === "locator_validation_reason")) {
-        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_validation_reason TEXT NOT NULL DEFAULT '历史 Evidence 未进行 locator 预检'");
-      }
-      if (!columns.some((column) => column.name === "locator_checked_at")) {
-        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_checked_at TEXT");
-      }
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (18, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateEvidenceLocatorWorkspace(): void {
-    this.immediate(() => {
-      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
-      if (!columns.some((column) => column.name === "locator_workspace_id")) {
-        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_workspace_id TEXT");
-      }
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (19, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateEvidenceLocatorSource(): void {
-    this.immediate(() => {
-      const columns = this.db.pragma("table_info(evidence)") as Array<{ name: string }>;
-      if (!columns.some((column) => column.name === "locator_workspace_root")) {
-        this.db.exec("ALTER TABLE evidence ADD COLUMN locator_workspace_root TEXT");
-      }
-      this.db
-        .prepare("INSERT INTO schema_migrations (migration_id, applied_at) VALUES (20, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -1852,54 +1025,6 @@ export class SqliteGoalBoardStore {
       `);
       this.db
         .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (26, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateContractCoverageAndRiskResolution(): void {
-    this.immediate(() => {
-      const goalColumns = this.db.pragma("table_info(goals)") as Array<{ name: string }>;
-      if (!goalColumns.some((column) => column.name === "decomposition_review_json")) {
-        this.db.exec("ALTER TABLE goals ADD COLUMN decomposition_review_json TEXT");
-      }
-      const riskColumns = this.db.pragma("table_info(risks)") as Array<{ name: string }>;
-      if (!riskColumns.some((column) => column.name === "resolution_basis_json")) {
-        this.db.exec("ALTER TABLE risks ADD COLUMN resolution_basis_json TEXT");
-      }
-      this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (21, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateGoalTreeProposalNarrative(): void {
-    this.immediate(() => {
-      const proposalColumns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
-      if (!proposalColumns.some((column) => column.name === "narrative_json")) {
-        this.db.exec("ALTER TABLE goal_tree_proposals ADD COLUMN narrative_json TEXT");
-      }
-      const itemColumns = this.db.pragma("table_info(goal_tree_proposal_items)") as Array<{ name: string }>;
-      if (!itemColumns.some((column) => column.name === "explanation_json")) {
-        this.db.exec("ALTER TABLE goal_tree_proposal_items ADD COLUMN explanation_json TEXT");
-      }
-      this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (27, ?)")
-        .run(new Date().toISOString());
-    });
-  }
-
-  private migrateGoalTreeLegacySupersession(): void {
-    this.immediate(() => {
-      const columns = this.db.pragma("table_info(goal_tree_proposals)") as Array<{ name: string }>;
-      if (!columns.some((column) => column.name === "supersedes_legacy_proposal_id")) {
-        this.db.exec("ALTER TABLE goal_tree_proposals ADD COLUMN supersedes_legacy_proposal_id TEXT");
-      }
-      this.db.exec(`
-        CREATE INDEX IF NOT EXISTS goal_tree_proposals_supersedes_legacy_idx
-          ON goal_tree_proposals(supersedes_legacy_proposal_id);
-      `);
-      this.db
-        .prepare("INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (28, ?)")
         .run(new Date().toISOString());
     });
   }
@@ -1997,140 +1122,54 @@ export class SqliteGoalBoardStore {
   }
 
   getGoal(goalId: string): GoalRecord | null {
-    const row = this.db.prepare("SELECT * FROM goals WHERE goal_id = ?").get(goalId) as
-      | Row
-      | undefined;
-    if (!row) return null;
-    const criteria = this.db
-      .prepare("SELECT * FROM acceptance_criteria WHERE goal_id = ? ORDER BY criterion_id")
-      .all(goalId) as Row[];
-    return this.mapGoal(row, criteria);
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase).getGoal(goalId);
   }
 
   listGoals(boardId: string): GoalRecord[] {
-    const rows = this.db
-      .prepare("SELECT * FROM goals WHERE board_id = ? ORDER BY priority DESC, created_at, goal_id")
-      .all(boardId) as Row[];
-    const criteriaRows = this.db
-      .prepare(`
-        SELECT ac.* FROM acceptance_criteria ac
-        JOIN goals g ON g.goal_id = ac.goal_id
-        WHERE g.board_id = ? ORDER BY ac.criterion_id
-      `)
-      .all(boardId) as Row[];
-    const byGoal = new Map<string, Row[]>();
-    for (const criterion of criteriaRows) {
-      const goalId = text(criterion.goal_id);
-      byGoal.set(goalId, [...(byGoal.get(goalId) ?? []), criterion]);
-    }
-    return rows.map((row) => this.mapGoal(row, byGoal.get(text(row.goal_id)) ?? []));
+    return this.goalsQuery().listGoals(boardId);
   }
 
   listTrashedGoals(boardId: string): GoalRecord[] {
-    return this.listGoals(boardId).filter((goal) => goal.trashed_at !== null);
+    return this.goalsQuery().listTrashedGoals(boardId);
   }
 
   listPlanningMethodPacks(boardId: string): PlanningMethodPack[] {
-    return (this.db
-      .prepare("SELECT pack_json FROM planning_method_packs WHERE board_id = ? ORDER BY method_id")
-      .all(boardId) as Row[])
-      .map((row) => parseJson<PlanningMethodPack | null>(row.pack_json, null))
-      .filter((pack): pack is PlanningMethodPack => pack != null);
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase)
+      .listPlanningMethodPacks(boardId);
   }
 
   listProjectGuidanceEntries(boardId: string, includeInactive = false): ProjectGuidanceEntryRecord[] {
-    return (this.db
-      .prepare(`SELECT * FROM project_guidance_entries WHERE board_id = ?${includeInactive ? "" : " AND active = 1"} ORDER BY position, guidance_id`)
-      .all(boardId) as Row[]).map(mapProjectGuidanceEntry);
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase)
+      .listProjectGuidanceEntries(boardId, includeInactive);
   }
 
   listProjectGuidanceRevisions(boardId: string): ProjectGuidanceRevisionRecord[] {
-    return (this.db
-      .prepare("SELECT * FROM project_guidance_revisions WHERE board_id = ? ORDER BY created_at DESC, guidance_id, revision DESC")
-      .all(boardId) as Row[]).map(mapProjectGuidanceRevision);
-  }
-
-  putPlanningMethodPack(boardId: string, pack: PlanningMethodPack): void {
-    this.db
-      .prepare(`
-        INSERT INTO planning_method_packs (
-          board_id, method_id, version, enabled, pack_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(board_id, method_id) DO UPDATE SET
-          version = excluded.version,
-          enabled = excluded.enabled,
-          pack_json = excluded.pack_json,
-          updated_at = excluded.updated_at
-      `)
-      .run(
-        boardId,
-        pack.method_id,
-        pack.version,
-        pack.enabled ? 1 : 0,
-        json(pack),
-        pack.created_at,
-        pack.updated_at,
-      );
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase)
+      .listProjectGuidanceRevisions(boardId);
   }
 
   snapshot(boardId: string): BoardSnapshot {
-    const board = this.db.prepare("SELECT * FROM boards WHERE board_id = ?").get(boardId) as
-      | Row
-      | undefined;
-    if (!board) throw new Error(`Board 不存在: ${boardId}`);
-    const evidenceCorrections = (this.db
-      .prepare("SELECT * FROM evidence_corrections WHERE board_id = ? ORDER BY created_at, correction_id")
-      .all(boardId) as Row[]).map(mapEvidenceCorrection);
-    const evidenceCorrectionByTarget = new Map(
-      evidenceCorrections.map((correction) => [correction.target_evidence_id, correction]),
-    );
+    const goals = this.goalsQuery().snapshot(boardId);
+    const execution = new ExecutionRepository(this.db as unknown as ExecutionSqliteDatabase);
+    const evidence = new EvidenceRepository(this.db as unknown as EvidenceSqliteDatabase);
+    const governance = new GovernanceRepository(this.db as unknown as GovernanceSqliteDatabase)
+      .snapshot(boardId);
     return {
-      board: {
-        board_id: text(board.board_id),
-        title: text(board.title),
-        active_goal_id: optionalText(board.active_goal_id),
-        created_at: text(board.created_at),
-        updated_at: text(board.updated_at),
-      },
-      cursor: this.eventCursor(boardId),
-      goals: this.listGoals(boardId),
-      relations: (this.db
-        .prepare("SELECT * FROM goal_relations WHERE board_id = ? ORDER BY created_at, relation_id")
-        .all(boardId) as Row[]).map(mapRelation),
+      board: goals.board,
+      cursor: goals.observed_event_cursor,
+      goals: goals.goals,
+      relations: goals.relations,
       impacts: (this.db
         .prepare("SELECT * FROM impact_bindings WHERE board_id = ? ORDER BY surface, binding_id")
         .all(boardId) as Row[]).map(mapImpact),
-      risks: (this.db
-        .prepare("SELECT * FROM risks WHERE board_id = ? ORDER BY created_at, risk_id")
-        .all(boardId) as Row[]).map(mapRisk),
-      goal_risks: (this.db
-        .prepare(`
-          SELECT goal_risk.goal_id, goal_risk.risk_id
-          FROM goal_risks goal_risk
-          JOIN goals goal ON goal.goal_id = goal_risk.goal_id
-          WHERE goal.board_id = ?
-          ORDER BY goal_risk.goal_id, goal_risk.risk_id
-        `)
-        .all(boardId) as Row[]).map((row): GoalRiskLinkRecord => ({
-          goal_id: text(row.goal_id),
-          risk_id: text(row.risk_id),
-        })),
-      claims: (this.db
-        .prepare("SELECT * FROM claims WHERE board_id = ? ORDER BY claimed_at DESC, claim_id")
-        .all(boardId) as Row[]).map(mapClaim),
-      runs: (this.db
-        .prepare("SELECT * FROM runs WHERE board_id = ? ORDER BY started_at DESC, run_id")
-        .all(boardId) as Row[]).map(mapRun),
-      evidence: (this.db
-        .prepare("SELECT * FROM evidence WHERE board_id = ? ORDER BY captured_at DESC, evidence_id")
-        .all(boardId) as Row[]).map((row) => mapEvidence(row, evidenceCorrectionByTarget.get(text(row.evidence_id)) ?? null)),
-      evidence_corrections: evidenceCorrections,
-      review_obligations: (this.db
-        .prepare("SELECT * FROM review_obligations WHERE board_id = ? ORDER BY created_at, obligation_id")
-        .all(boardId) as Row[]).map(mapReviewObligation),
-      reviews: (this.db
-        .prepare("SELECT * FROM reviews WHERE board_id = ? ORDER BY submitted_at, review_id")
-        .all(boardId) as Row[]).map(mapReview),
+      risks: goals.risks,
+      goal_risks: goals.goal_risks,
+      claims: execution.listClaims(boardId),
+      runs: execution.listRuns(boardId),
+      evidence: evidence.listEvidence(boardId),
+      evidence_corrections: evidence.listCorrections(boardId),
+      review_obligations: governance.review_obligations,
+      reviews: governance.reviews,
       goal_contract_revisions: (this.db
         .prepare(`
           SELECT * FROM goal_contract_revisions
@@ -2172,60 +1211,19 @@ export class SqliteGoalBoardStore {
           payload: parseJson<Record<string, unknown>>(row.payload_json, {}),
           at: text(row.at),
         })),
-      candidates: (this.db
-        .prepare("SELECT * FROM candidates WHERE board_id = ? ORDER BY created_at DESC, candidate_id")
-        .all(boardId) as Row[]).map(mapCandidate),
-      contract_proposals: (this.db
-        .prepare("SELECT * FROM contract_proposals WHERE board_id = ? ORDER BY created_at DESC, proposal_id")
-        .all(boardId) as Row[]).map(mapContractProposal),
-      rewires: (this.db
-        .prepare("SELECT * FROM rewires WHERE board_id = ? ORDER BY created_at DESC, rewire_id")
-        .all(boardId) as Row[]).map(mapRewire),
+      candidates: governance.candidates,
+      contract_proposals: governance.contract_proposals,
+      rewires: governance.rewires,
       clarification_sessions: (this.db
         .prepare("SELECT * FROM clarification_sessions WHERE board_id = ? ORDER BY updated_at DESC, session_id")
         .all(boardId) as Row[]).map(mapClarificationSession),
       clarification_turns: (this.db
         .prepare("SELECT * FROM clarification_turns WHERE board_id = ? ORDER BY session_id, turn_index, turn_id")
         .all(boardId) as Row[]).map(mapClarificationTurn),
-      goal_tree_proposals: this.readGoalTreeProposals(boardId),
-      planning_method_packs: this.listPlanningMethodPacks(boardId),
-      project_guidance: this.listProjectGuidanceEntries(boardId),
+      goal_tree_proposals: governance.goal_tree_proposals,
+      planning_method_packs: goals.planning_method_packs,
+      project_guidance: goals.project_guidance,
     };
-  }
-
-  private readGoalTreeProposals(boardId: string): GoalTreeProposalRecord[] {
-    const decisionsByProposal = new Map<string, GoalTreeProposalDecisionRecord[]>();
-    const latestDecisionByItem = new Map<string, GoalTreeProposalDecisionRecord>();
-    for (const row of this.db
-      .prepare(`
-        SELECT * FROM goal_tree_proposal_decisions
-        WHERE board_id = ?
-        ORDER BY proposal_id, item_id, created_at, decision_id
-      `)
-      .all(boardId) as Row[]) {
-      const decision = mapGoalTreeProposalDecision(row);
-      decisionsByProposal.set(
-        decision.proposal_id,
-        [...(decisionsByProposal.get(decision.proposal_id) ?? []), decision],
-      );
-      latestDecisionByItem.set(decision.item_id, decision);
-    }
-    const itemsByProposal = new Map<string, GoalTreeProposalItemRecord[]>();
-    for (const row of this.db
-      .prepare("SELECT * FROM goal_tree_proposal_items WHERE board_id = ? ORDER BY proposal_id, ordinal, item_id")
-      .all(boardId) as Row[]) {
-      const item = mapGoalTreeProposalItem(row, latestDecisionByItem.get(text(row.item_id)) ?? null);
-      itemsByProposal.set(item.proposal_id, [...(itemsByProposal.get(item.proposal_id) ?? []), item]);
-    }
-    return (this.db
-      .prepare("SELECT * FROM goal_tree_proposals WHERE board_id = ? ORDER BY created_at DESC, proposal_id")
-      .all(boardId) as Row[]).map((row) =>
-      mapGoalTreeProposal(
-        row,
-        itemsByProposal.get(text(row.proposal_id)) ?? [],
-        decisionsByProposal.get(text(row.proposal_id)) ?? [],
-      ),
-    );
   }
 
   activePolicyRows(boardId: string, goalId: string): Array<{
@@ -2233,18 +1231,8 @@ export class SqliteGoalBoardStore {
     goal_id: string | null;
     policy: Partial<GoalPolicy>;
   }> {
-    return (this.db
-      .prepare(`
-        SELECT scope, goal_id, policy_json FROM policy_bindings
-        WHERE board_id = ? AND state = 'active' AND (goal_id IS NULL OR goal_id = ?)
-        ORDER BY CASE scope WHEN 'project_default' THEN 0 WHEN 'ancestor_minimum' THEN 1 ELSE 2 END,
-                 created_at
-      `)
-      .all(boardId, goalId) as Row[]).map((row) => ({
-      scope: text(row.scope),
-      goal_id: optionalText(row.goal_id),
-      policy: parseJson<Partial<GoalPolicy>>(row.policy_json, {}),
-    }));
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase)
+      .listActivePolicyBindings(boardId, goalId);
   }
 
   /** Load active policy inputs once for board-wide projections such as Available. */
@@ -2253,78 +1241,15 @@ export class SqliteGoalBoardStore {
     goal_id: string | null;
     policy: Partial<GoalPolicy>;
   }> {
-    return (this.db
-      .prepare(`
-        SELECT scope, goal_id, policy_json FROM policy_bindings
-        WHERE board_id = ? AND state = 'active'
-        ORDER BY CASE scope WHEN 'project_default' THEN 0 WHEN 'ancestor_minimum' THEN 1 ELSE 2 END,
-                 created_at
-      `)
-      .all(boardId) as Row[]).map((row) => ({
-      scope: text(row.scope),
-      goal_id: optionalText(row.goal_id),
-      policy: parseJson<Partial<GoalPolicy>>(row.policy_json, {}),
-    }));
+    return new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase)
+      .listActivePolicyBindings(boardId);
   }
 
-  private mapGoal(row: Row, criteria: Row[]): GoalRecord {
-    return {
-      goal_id: text(row.goal_id),
-      board_id: text(row.board_id),
-      title: text(row.title),
-      outcome: text(row.outcome),
-      why: text(row.why),
-      business_logic: text(row.business_logic),
-      in_scope: parseJson<string[]>(row.in_scope_json, []),
-      out_of_scope: parseJson<string[]>(row.out_of_scope_json, []),
-      constraints: parseJson<string[]>(row.constraints_json, []),
-      required_inputs: parseJson<string[]>(row.required_inputs_json, []),
-      promised_outputs: parseJson<string[]>(row.promised_outputs_json, []),
-      decomposition_review: parseJson<GoalRecord["decomposition_review"]>(row.decomposition_review_json, null),
-      definition_state: text(row.definition_state) as GoalRecord["definition_state"],
-      decomposition_state: text(row.decomposition_state) as GoalRecord["decomposition_state"],
-      validity_state: text(row.validity_state) as GoalRecord["validity_state"],
-      fulfillment_state: text(row.fulfillment_state) as GoalRecord["fulfillment_state"],
-      current_contract_revision: Math.max(1, number(row.current_contract_revision) || 1),
-      trashed_at: optionalText(row.trashed_at),
-      trashed_by: optionalText(row.trashed_by),
-      archived_at: optionalText(row.archived_at),
-      archived_by: optionalText(row.archived_by),
-      priority: number(row.priority),
-      accepted_by: optionalText(row.accepted_by),
-      accepted_at: optionalText(row.accepted_at),
-      created_at: text(row.created_at),
-      updated_at: text(row.updated_at),
-      acceptance_criteria: criteria.map(mapCriterion),
-    };
+  private goalsQuery(): GoalsQueryService {
+    return new GoalsQueryService(
+      new GoalsRepository(this.db as unknown as GoalLifecycleMigrationDatabase),
+    );
   }
-}
-
-function mapCriterion(row: Row): AcceptanceCriterion {
-  return {
-    criterion_id: text(row.criterion_id),
-    goal_id: text(row.goal_id),
-    statement: text(row.statement),
-    decision_method: text(row.decision_method) as AcceptanceCriterion["decision_method"],
-    pass_condition: text(row.pass_condition),
-    target: parseJson<Record<string, unknown> | null>(row.target_json, null),
-    required_evidence: parseJson<string[]>(row.required_evidence_json, []),
-  };
-}
-
-function mapRelation(row: Row): GoalRelationRecord {
-  return {
-    relation_id: text(row.relation_id),
-    board_id: text(row.board_id),
-    from_goal_id: text(row.from_goal_id),
-    to_goal_id: text(row.to_goal_id),
-    type: text(row.type) as GoalRelationRecord["type"],
-    state: text(row.state) as GoalRelationRecord["state"],
-    reason: text(row.reason),
-    created_by: text(row.created_by),
-    created_at: text(row.created_at),
-    deactivated_at: optionalText(row.deactivated_at),
-  };
 }
 
 function mapImpact(row: Row): ImpactBindingRecord {
@@ -2345,160 +1270,15 @@ function mapImpact(row: Row): ImpactBindingRecord {
   };
 }
 
-function mapRisk(row: Row): RiskRecord {
+function mapCriterion(row: Row): AcceptanceCriterion {
   return {
-    risk_id: text(row.risk_id),
-    board_id: text(row.board_id),
-    description: text(row.description),
-    probability: text(row.probability),
-    impact: text(row.impact),
-    affected_surfaces: parseJson<string[]>(row.affected_surfaces_json, []),
-    trigger: text(row.trigger),
-    treatment: text(row.treatment) as RiskRecord["treatment"],
-    treatment_plan: text(row.treatment_plan),
-    blocking_mode: text(row.blocking_mode) as RiskRecord["blocking_mode"],
-    revisit_condition: text(row.revisit_condition),
-    owner: text(row.owner),
-    state: text(row.state) as RiskRecord["state"],
-    resolution_basis: parseJson<RiskRecord["resolution_basis"]>(row.resolution_basis_json, null),
-    created_at: text(row.created_at),
-    updated_at: text(row.updated_at),
-  };
-}
-
-function mapProjectGuidanceEntry(row: Row): ProjectGuidanceEntryRecord {
-  return {
-    guidance_id: text(row.guidance_id),
-    board_id: text(row.board_id),
-    position: number(row.position),
-    revision: row.revision == null ? 1 : number(row.revision),
-    active: row.active == null ? true : bool(row.active),
-    kind: text(row.kind) as ProjectGuidanceEntryRecord["kind"],
-    content: text(row.content),
-    content_hash: text(row.content_hash),
-    source_refs: parseJson<string[]>(row.source_refs_json, []),
-    created_by: text(row.created_by),
-    confirmation_summary: text(row.confirmation_summary),
-    reason: text(row.reason),
-    created_at: text(row.created_at),
-    updated_by: text(row.updated_by) || text(row.created_by),
-    updated_at: text(row.updated_at) || text(row.created_at),
-  };
-}
-
-function mapProjectGuidanceRevision(row: Row): ProjectGuidanceRevisionRecord {
-  return {
-    revision_id: text(row.revision_id),
-    guidance_id: text(row.guidance_id),
-    board_id: text(row.board_id),
-    revision: number(row.revision),
-    kind: text(row.kind) as ProjectGuidanceRevisionRecord["kind"],
-    content: text(row.content),
-    content_hash: text(row.content_hash),
-    source_refs: parseJson<string[]>(row.source_refs_json, []),
-    active: bool(row.active),
-    changed_by: text(row.changed_by),
-    change_kind: text(row.change_kind) as ProjectGuidanceRevisionRecord["change_kind"],
-    confirmation_summary: text(row.confirmation_summary),
-    reason: text(row.reason),
-    created_at: text(row.created_at),
-  };
-}
-
-function mapClaim(row: Row): ClaimRecord {
-  return {
-    claim_id: text(row.claim_id),
-    board_id: text(row.board_id),
+    criterion_id: text(row.criterion_id),
     goal_id: text(row.goal_id),
-    actor_id: text(row.actor_id),
-    role: text(row.role) as ClaimRecord["role"],
-    contract_revision: Math.max(1, number(row.contract_revision) || 1),
-    action_kind: optionalText(row.action_kind) as ClaimRecord["action_kind"],
-    action_target_id: optionalText(row.action_target_id),
-    state: text(row.state) as ClaimRecord["state"],
-    capabilities: parseJson<string[]>(row.capabilities_json, []),
-    goal_mode_attestation: bool(row.goal_mode_attestation),
-    resolved_policy: parseJson<GoalPolicy>(row.resolved_policy_json, {} as GoalPolicy),
-    claimed_at: text(row.claimed_at),
-    expires_at: text(row.expires_at),
-    renewed_at: optionalText(row.renewed_at),
-    released_at: optionalText(row.released_at),
-    release_reason: optionalText(row.release_reason),
-  };
-}
-
-function mapRun(row: Row): RunRecord {
-  return {
-    run_id: text(row.run_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    claim_id: text(row.claim_id),
-    actor_id: text(row.actor_id),
-    role: text(row.role) as RunRecord["role"],
-    state: text(row.state) as RunRecord["state"],
-    block_reason: optionalText(row.block_reason),
-    output_refs: parseJson<string[]>(row.output_refs_json, []),
-    discovery_refs: parseJson<string[]>(row.discovery_refs_json, []),
-    started_at: text(row.started_at),
-    ended_at: optionalText(row.ended_at),
-  };
-}
-
-function mapEvidenceCorrection(row: Row): EvidenceCorrectionRecord {
-  return {
-    correction_id: text(row.correction_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    target_evidence_id: text(row.target_evidence_id),
-    action: text(row.action) as EvidenceCorrectionRecord["action"],
-    replacement_evidence_id: optionalText(row.replacement_evidence_id),
-    actor_id: text(row.actor_id),
-    reason: text(row.reason),
-    created_at: text(row.created_at),
-  };
-}
-
-function mapEvidence(row: Row, correction: EvidenceCorrectionRecord | null = null): EvidenceRecord {
-  return {
-    evidence_id: text(row.evidence_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    contract_revision: Math.max(1, number(row.contract_revision) || 1),
-    criterion_ids: parseJson<string[]>(row.criterion_ids_json, []),
-    producer_actor_id: text(row.producer_actor_id),
-    run_id: optionalText(row.run_id),
-    review_id: optionalText(row.review_id),
-    kind: text(row.kind) as EvidenceRecord["kind"],
-    locator: text(row.locator),
-    locator_status: (text(row.locator_status) || "unverified") as EvidenceRecord["locator_status"],
-    locator_validation_reason: text(row.locator_validation_reason) || "历史 Evidence 未进行 locator 预检",
-    locator_checked_at: optionalText(row.locator_checked_at),
-    locator_workspace_id: optionalText(row.locator_workspace_id),
-    digest: optionalText(row.digest),
-    captured_at: text(row.captured_at),
-    result: text(row.result) as EvidenceRecord["result"],
-    lifecycle_state: correction?.action === "supersede"
-      ? "superseded"
-      : correction?.action === "retract"
-        ? "retracted"
-        : "effective",
-    correction,
-    historical_unmapped: bool(row.historical_unmapped),
-  };
-}
-
-function mapReviewObligation(row: Row): ReviewObligationRecord {
-  return {
-    obligation_id: text(row.obligation_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    contract_revision: Math.max(1, number(row.contract_revision) || 1),
-    role: text(row.role) as ReviewObligationRecord["role"],
-    required_count: number(row.required_count),
-    independence_rule: text(row.independence_rule),
-    criterion_scope: parseJson<string[]>(row.criterion_scope_json, []),
-    state: text(row.state) as ReviewObligationRecord["state"],
-    created_at: text(row.created_at),
+    statement: text(row.statement),
+    decision_method: text(row.decision_method) as AcceptanceCriterion["decision_method"],
+    pass_condition: text(row.pass_condition),
+    target: parseJson<Record<string, unknown> | null>(row.target_json, null),
+    required_evidence: parseJson<string[]>(row.required_evidence_json, []),
   };
 }
 
@@ -2513,59 +1293,6 @@ function mapGoalContractRevision(row: Row): GoalContractRevisionRecord {
     changed_by: text(row.changed_by),
     reason: text(row.reason),
     created_at: text(row.created_at),
-  };
-}
-
-function mapReview(row: Row): ReviewRecord {
-  return {
-    review_id: text(row.review_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    obligation_id: text(row.obligation_id),
-    claim_id: optionalText(row.claim_id),
-    actor_id: text(row.actor_id),
-    verdict: text(row.verdict) as ReviewRecord["verdict"],
-    evidence_refs: parseJson<string[]>(row.evidence_refs_json, []),
-    reasoning: text(row.reasoning),
-    submitted_at: text(row.submitted_at),
-  };
-}
-
-function mapCandidate(row: Row): CandidateGoalRecord {
-  return {
-    candidate_id: text(row.candidate_id),
-    board_id: text(row.board_id),
-    submitted_by: text(row.submitted_by),
-    discovered_in_run_id: optionalText(row.discovered_in_run_id),
-    proposed_goal: parseJson(row.proposed_goal_json, {} as CandidateGoalRecord["proposed_goal"]),
-    proposed_relations: parseJson<Array<Record<string, unknown>>>(row.proposed_relations_json, []),
-    proposed_impacts: parseJson<Array<Record<string, unknown>>>(row.proposed_impacts_json, []),
-    proposed_risks: parseJson<Array<Record<string, unknown>>>(row.proposed_risks_json, []),
-    blocking_mode: text(row.blocking_mode) as CandidateGoalRecord["blocking_mode"],
-    state: text(row.state) as CandidateGoalRecord["state"],
-    decision: parseJson<Record<string, unknown> | null>(row.decision_json, null),
-    created_at: text(row.created_at),
-    decided_at: optionalText(row.decided_at),
-  };
-}
-
-function mapContractProposal(row: Row): ContractProposalRecord {
-  return {
-    proposal_id: text(row.proposal_id),
-    board_id: text(row.board_id),
-    goal_id: text(row.goal_id),
-    submitted_by: text(row.submitted_by),
-    discovered_in_run_id: text(row.discovered_in_run_id),
-    proposed_goal: parseJson(row.proposed_goal_json, {} as ContractProposalRecord["proposed_goal"]),
-    field_sources: parseJson(row.field_sources_json, [] as ContractProposalRecord["field_sources"]),
-    review_policy: parseJson(row.review_policy_json, {} as ContractProposalRecord["review_policy"]),
-    proposed_impacts: parseJson(row.proposed_impacts_json, [] as ContractProposalRecord["proposed_impacts"]),
-    proposed_risks: parseJson(row.proposed_risks_json, [] as ContractProposalRecord["proposed_risks"]),
-    dependency_rewire_ids: parseJson<string[]>(row.dependency_rewire_ids_json, []),
-    state: text(row.state) as ContractProposalRecord["state"],
-    decision: parseJson<Record<string, unknown> | null>(row.decision_json, null),
-    created_at: text(row.created_at),
-    decided_at: optionalText(row.decided_at),
   };
 }
 
@@ -2608,107 +1335,4 @@ function mapClarificationTurn(row: Row): ClarificationTurnRecord {
   };
 }
 
-function mapGoalTreeProposalDecision(row: Row): GoalTreeProposalDecisionRecord {
-  return {
-    decision_id: text(row.decision_id),
-    board_id: text(row.board_id),
-    proposal_id: text(row.proposal_id),
-    item_id: text(row.item_id),
-    decision: text(row.decision) as GoalTreeProposalDecisionRecord["decision"],
-    actor_id: text(row.actor_id),
-    authority_source: text(row.authority_source) as GoalTreeProposalDecisionRecord["authority_source"],
-    runtime_actor_id: optionalText(row.runtime_actor_id),
-    conversation_ref: text(row.conversation_ref),
-    message_ref: text(row.message_ref),
-    reason: text(row.reason),
-    revision_proposal_id: optionalText(row.revision_proposal_id),
-    materialized_objects: parseJson<GoalTreeProposalDecisionRecord["materialized_objects"]>(
-      row.materialized_objects_json,
-      [],
-    ),
-    created_at: text(row.created_at),
-  };
-}
-
-function mapGoalTreeProposalItem(
-  row: Row,
-  decision: GoalTreeProposalDecisionRecord | null,
-): GoalTreeProposalItemRecord {
-  return {
-    item_id: text(row.item_id),
-    proposal_id: text(row.proposal_id),
-    board_id: text(row.board_id),
-    ordinal: number(row.ordinal),
-    kind: text(row.kind) as GoalTreeProposalItemRecord["kind"],
-    operation: text(row.operation) as GoalTreeProposalItemRecord["operation"],
-    payload: parseJson<Record<string, unknown>>(row.payload_json, {}),
-    source_refs: parseJson<string[]>(row.source_refs_json, []),
-    reason: text(row.reason),
-    explanation: parseJson<GoalTreeProposalItemRecord["explanation"]>(row.explanation_json, null),
-    confidence: number(row.confidence),
-    affected_objects: parseJson<GoalTreeProposalItemRecord["affected_objects"]>(
-      row.affected_objects_json,
-      [],
-    ),
-    baseline_versions: parseJson<GoalTreeProposalItemRecord["baseline_versions"]>(
-      row.baseline_versions_json,
-      [],
-    ),
-    requires_user_confirmation: bool(row.requires_user_confirmation),
-    state: text(row.state) as GoalTreeProposalItemRecord["state"],
-    conflict: parseJson<Record<string, unknown> | null>(row.conflict_json, null),
-    decision,
-    materialized_objects: parseJson<GoalTreeProposalItemRecord["materialized_objects"]>(
-      row.materialized_objects_json,
-      [],
-    ),
-    revision_proposal_id: optionalText(row.revision_proposal_id),
-    supersedes_item_id: optionalText(row.supersedes_item_id),
-    created_at: text(row.created_at),
-    updated_at: text(row.updated_at),
-  };
-}
-
-function mapGoalTreeProposal(
-  row: Row,
-  items: GoalTreeProposalItemRecord[],
-  decisions: GoalTreeProposalDecisionRecord[],
-): GoalTreeProposalRecord {
-  return {
-    proposal_id: text(row.proposal_id),
-    board_id: text(row.board_id),
-    origin: "native",
-    root_goal_id: optionalText(row.root_goal_id),
-    submitted_by: text(row.submitted_by),
-    discovered_in_run_id: optionalText(row.discovered_in_run_id),
-    state: text(row.state) as GoalTreeProposalRecord["state"],
-    version: number(row.version),
-    supersedes_proposal_id:
-      optionalText(row.supersedes_proposal_id) ?? optionalText(row.supersedes_legacy_proposal_id),
-    base_event_cursor: number(row.base_event_cursor),
-    summary: text(row.summary),
-    narrative: parseJson<GoalTreeProposalRecord["narrative"]>(row.narrative_json, null),
-    decision: parseJson<Record<string, unknown> | null>(row.decision_json, null),
-    created_at: text(row.created_at),
-    updated_at: text(row.updated_at),
-    decided_at: optionalText(row.decided_at),
-    items,
-    decisions,
-  };
-}
-
-function mapRewire(row: Row): RewireRecord {
-  return {
-    rewire_id: text(row.rewire_id),
-    board_id: text(row.board_id),
-    candidate_id: optionalText(row.candidate_id),
-    proposal: parseJson<RewireRecord["proposal"]>(row.proposal_json, {}),
-    impact: parseJson<Record<string, unknown>>(row.impact_json, {}),
-    state: text(row.state) as RewireRecord["state"],
-    created_at: text(row.created_at),
-    decided_at: optionalText(row.decided_at),
-  };
-}
-
 export const sqliteJson = json;
-export const mapSqliteClaim = mapClaim;

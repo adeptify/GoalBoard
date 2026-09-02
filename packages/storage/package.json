@@ -1,0 +1,41 @@
+{
+  "name": "@adeptify/goalboard-storage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SQLite, filesystem, Blob, transaction, migration, and backup technical ports.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "packages/storage",
+    "kind": "foundation",
+    "maturity": "contract-only",
+    "contract": "@adeptify/goalboard-contracts/platform/storage",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ap2"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

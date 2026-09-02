@@ -1,0 +1,158 @@
+{
+  "name": "@adeptify/goalboard-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Publishable Module, service, and platform Contract subpaths.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./modules/actions": {
+      "types": "./dist/modules/actions.d.ts",
+      "import": "./dist/modules/actions.js"
+    },
+    "./modules/artifacts": {
+      "types": "./dist/modules/artifacts.d.ts",
+      "import": "./dist/modules/artifacts.js"
+    },
+    "./modules/attention-resumption": {
+      "types": "./dist/modules/attention-resumption.d.ts",
+      "import": "./dist/modules/attention-resumption.js"
+    },
+    "./modules/automation": {
+      "types": "./dist/modules/automation.d.ts",
+      "import": "./dist/modules/automation.js"
+    },
+    "./modules/context-ledger": {
+      "types": "./dist/modules/context-ledger.d.ts",
+      "import": "./dist/modules/context-ledger.js"
+    },
+    "./modules/evidence-verification": {
+      "types": "./dist/modules/evidence-verification.d.ts",
+      "import": "./dist/modules/evidence-verification.js"
+    },
+    "./modules/execution": {
+      "types": "./dist/modules/execution.d.ts",
+      "import": "./dist/modules/execution.js"
+    },
+    "./modules/feed": {
+      "types": "./dist/modules/feed.d.ts",
+      "import": "./dist/modules/feed.js"
+    },
+    "./modules/goals": {
+      "types": "./dist/modules/goals.d.ts",
+      "import": "./dist/modules/goals.js"
+    },
+    "./modules/governance-collaboration": {
+      "types": "./dist/modules/governance-collaboration.d.ts",
+      "import": "./dist/modules/governance-collaboration.js"
+    },
+    "./modules/identity-team-access": {
+      "types": "./dist/modules/identity-team-access.d.ts",
+      "import": "./dist/modules/identity-team-access.js"
+    },
+    "./modules/private-work-context": {
+      "types": "./dist/modules/private-work-context.d.ts",
+      "import": "./dist/modules/private-work-context.js"
+    },
+    "./modules/projects": {
+      "types": "./dist/modules/projects.d.ts",
+      "import": "./dist/modules/projects.js"
+    },
+    "./modules/signals": {
+      "types": "./dist/modules/signals.d.ts",
+      "import": "./dist/modules/signals.js"
+    },
+    "./modules/sources": {
+      "types": "./dist/modules/sources.d.ts",
+      "import": "./dist/modules/sources.js"
+    },
+    "./modules/sync-replication": {
+      "types": "./dist/modules/sync-replication.d.ts",
+      "import": "./dist/modules/sync-replication.js"
+    },
+    "./platform/app-host": {
+      "types": "./dist/platform/app-host.d.ts",
+      "import": "./dist/platform/app-host.js"
+    },
+    "./platform/exchange": {
+      "types": "./dist/platform/exchange.d.ts",
+      "import": "./dist/platform/exchange.js"
+    },
+    "./platform/kernel": {
+      "types": "./dist/platform/kernel.d.ts",
+      "import": "./dist/platform/kernel.js"
+    },
+    "./platform/observability": {
+      "types": "./dist/platform/observability.d.ts",
+      "import": "./dist/platform/observability.js"
+    },
+    "./platform/package": {
+      "types": "./dist/platform/package.d.ts",
+      "import": "./dist/platform/package.js"
+    },
+    "./platform/plugin": {
+      "types": "./dist/platform/plugin.d.ts",
+      "import": "./dist/platform/plugin.js"
+    },
+    "./platform/storage": {
+      "types": "./dist/platform/storage.d.ts",
+      "import": "./dist/platform/storage.js"
+    },
+    "./platform/testing": {
+      "types": "./dist/platform/testing.d.ts",
+      "import": "./dist/platform/testing.js"
+    },
+    "./platform/tooling": {
+      "types": "./dist/platform/tooling.d.ts",
+      "import": "./dist/platform/tooling.js"
+    },
+    "./platform/ui": {
+      "types": "./dist/platform/ui.d.ts",
+      "import": "./dist/platform/ui.js"
+    },
+    "./services/connector-host": {
+      "types": "./dist/services/connector-host.d.ts",
+      "import": "./dist/services/connector-host.js"
+    },
+    "./services/listener-host": {
+      "types": "./dist/services/listener-host.d.ts",
+      "import": "./dist/services/listener-host.js"
+    },
+    "./services/runtime-host": {
+      "types": "./dist/services/runtime-host.d.ts",
+      "import": "./dist/services/runtime-host.js"
+    },
+    "./services/scheduler": {
+      "types": "./dist/services/scheduler.d.ts",
+      "import": "./dist/services/scheduler.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "goalboard": {
+    "path": "packages/contracts",
+    "kind": "foundation",
+    "maturity": "contract-only",
+    "contract": "@adeptify/goalboard-contracts/platform/package",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-f3"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md"
+  }
+}

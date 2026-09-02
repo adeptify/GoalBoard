@@ -1,29 +1,62 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants, realpathSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { PlanningMethodPack } from "../planning/method-packs.js";
+import type { PlanningMethodPack } from "@adeptify/goalboard-contracts/modules/goals";
+import {
+  ExecutionRepository,
+  type ExecutionSqliteDatabase,
+} from "@adeptify/goalboard-module-execution";
+import {
+  DesktopPanelService,
+  type AliasDesktopPanelSessionInput,
+  type DesktopPanelRecord,
+  type OpenDesktopPanelInput,
+} from "@adeptify/goalboard-app-desktop";
+import type {
+  AddWorkspaceProjectInput,
+  ChangeWorkspaceProjectInput,
+  DeleteProjectInput,
+  MigrateProjectInput,
+  ProjectDeletionRecord,
+  ProjectDeletionResult,
+  ProjectMigrationStep,
+  ProjectRecord,
+  ProjectSelection,
+  ProjectWorkspaceDirectoryRecord,
+  ProjectWorkspaceMembership,
+  RepairWorkspaceProjectInput,
+} from "@adeptify/goalboard-contracts/modules/projects";
+import {
+  createProjectsSchema,
+  migrateProjectDataClassSchema,
+  normalizeProjectWorkspace,
+  ProjectsModule,
+  type StoredProjectDeletion,
+} from "@adeptify/goalboard-module-projects";
+import type {
+  RuntimeContextBindingEventRecord,
+  RuntimeContextBindingRecord,
+} from "@adeptify/goalboard-contracts/modules/private-work-context";
+import {
+  RuntimeContextBindingRepository,
+  createRuntimeContextBindingTables,
+  createRuntimeContextSetupRequestTable,
+  createRuntimeContextSuggestionRejectionTable,
+  migrateRuntimeContextBindingEventsForUnbind,
+} from "@adeptify/goalboard-module-private-work-context";
 import { GoalBoardCoordinator } from "../v1/coordinator.js";
 import { DEMO_BOARD_ID, seedDemoBoard } from "../v1/demo.js";
 import { SqliteGoalBoardStore } from "../v1/store.js";
 import type { BoardSnapshot } from "../v1/types.js";
+import { createDesktopPanelTables, SqliteDesktopPanelRepository } from "./desktop-panel-adapter.js";
 
 const CATALOG_SCHEMA_VERSION = 9;
 const CATALOG_OWNER = "goalboard-project-catalog-v1";
 
-export interface GoalBoardProjectRecord {
-  project_id: string;
-  display_name: string;
-  board_id: string;
-  database_path: string;
-  source: "created" | "migrated";
-  data_class: "user" | "migrated_user" | "regenerable_demo";
-  migrated_from_path: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type GoalBoardProjectRecord = ProjectRecord;
 
 export interface GoalBoardProjectCatalogOptions {
   /** Defaults to ~/.goalboard. */
@@ -70,50 +103,10 @@ export interface NormalizedRuntimeWorkspaceContext extends RuntimeWorkspaceConte
 
 export type GoalBoardProjectBindingScope = "session" | "workspace_default";
 
-export interface GoalBoardWorkspaceMembership {
-  membership_id: string;
-  workspace_id: string;
-  workspace_name: string;
-  realpath_verified: boolean;
-  project_id: string;
-  is_default: boolean;
-  bound_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GoalBoardWorkspaceDirectoryRecord {
-  workspace_id: string;
-  canonical_path: string;
-  realpath_verified: boolean;
-  display_name: string;
-  project_ids: string[];
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AddWorkspaceProjectInput {
-  canonical_path: string;
-  project_id: string;
-  actor_id: string;
-  user_confirmed: boolean;
-}
-
-export interface RepairWorkspaceProjectInput extends AddWorkspaceProjectInput {
-  workspace_id: string;
-}
-
-export interface ChangeWorkspaceProjectInput {
-  workspace_id: string;
-  project_id: string;
-  actor_id: string;
-  user_confirmed: boolean;
-}
-
-export interface GoalBoardProjectSelection {
-  project_id: string;
-  display_name: string;
-}
+export type GoalBoardWorkspaceMembership = ProjectWorkspaceMembership;
+export type GoalBoardWorkspaceDirectoryRecord = ProjectWorkspaceDirectoryRecord;
+export type { AddWorkspaceProjectInput, RepairWorkspaceProjectInput, ChangeWorkspaceProjectInput };
+export type GoalBoardProjectSelection = ProjectSelection;
 
 /**
  * A non-authoritative, host-owned clue that can rank existing projects for a
@@ -140,64 +133,13 @@ export interface GoalBoardProjectSuggestion extends GoalBoardProjectSelection {
   reasons: string[];
 }
 
-export interface GoalBoardRuntimeContextBinding {
-  binding_id: string;
-  runtime_id: string;
-  stable_work_context_id: string;
-  project_id: string;
-  bound_by: string;
-  created_at: string;
-  updated_at: string;
-}
+export type GoalBoardRuntimeContextBinding = RuntimeContextBindingRecord;
 
-export interface GoalBoardDesktopPanelRecord {
-  panel_id: string;
-  project_id: string;
-  goal_id: string;
-  runtime_kind: string;
-  launch_command: string;
-  launch_args: string[];
-  cwd: string | null;
-  work_context_id: string;
-  host_session_id: string | null;
-  tab_index: number;
-  title: string;
-  status: "open" | "exited";
-  created_at: string;
-  updated_at: string;
-}
+export type GoalBoardDesktopPanelRecord = DesktopPanelRecord;
+export type OpenGoalBoardDesktopPanelInput = OpenDesktopPanelInput;
+export type AliasGoalBoardDesktopPanelSessionInput = AliasDesktopPanelSessionInput;
 
-export interface OpenGoalBoardDesktopPanelInput {
-  project_id: string;
-  goal_id: string;
-  runtime_kind: string;
-  launch_command: string;
-  launch_args?: string[];
-  cwd?: string | null;
-  title?: string;
-  actor_id: string;
-  host_session_id?: string | null;
-  user_confirmed: boolean;
-}
-
-export interface AliasGoalBoardDesktopPanelSessionInput {
-  panel_id: string;
-  runtime_id: string;
-  host_session_id: string;
-  actor_id: string;
-}
-
-export interface GoalBoardRuntimeContextBindingEvent {
-  event_id: string;
-  binding_id: string;
-  runtime_id: string;
-  stable_work_context_id: string;
-  type: "context.bound" | "context.rebound" | "context.unbound";
-  previous_project_id: string | null;
-  project_id: string;
-  actor_id: string;
-  created_at: string;
-}
+export type GoalBoardRuntimeContextBindingEvent = RuntimeContextBindingEventRecord;
 
 export interface GoalBoardProjectConnection {
   project_id: string;
@@ -279,31 +221,9 @@ export interface GoalBoardDemoProjectResult {
   project: GoalBoardProjectRecord;
 }
 
-export interface DeleteGoalBoardProjectInput {
-  project_id: string;
-  actor_id: string;
-  /** Separate from normal project selection: this is permission to erase its managed DB. */
-  delete_confirmed: boolean;
-  idempotency_key: string;
-}
-
-export interface GoalBoardProjectDeletionRecord {
-  deletion_id: string;
-  project_id: string;
-  display_name: string;
-  board_id: string;
-  actor_id: string;
-  deleted_binding_count: number;
-  cleanup_state: "complete" | "pending";
-  cleanup_error: string | null;
-  deleted_at: string;
-  cleaned_at: string | null;
-}
-
-export interface GoalBoardProjectDeletionResult {
-  deletion: GoalBoardProjectDeletionRecord;
-  replayed: boolean;
-}
+export type DeleteGoalBoardProjectInput = DeleteProjectInput;
+export type GoalBoardProjectDeletionRecord = ProjectDeletionRecord;
+export type GoalBoardProjectDeletionResult = ProjectDeletionResult;
 
 /**
  * Creates a new GoalBoard project and binds it to the host-declared work
@@ -320,18 +240,8 @@ export interface CreateAndBindRuntimeContextInput {
   idempotency_key: string;
 }
 
-export type GoalBoardProjectMigrationStep =
-  | "after_copy"
-  | "after_validation"
-  | "before_catalog_commit";
-
-export interface MigrateGoalBoardProjectInput {
-  legacy_database_path: string;
-  display_name?: string;
-  actor_id: string;
-  /** Test-only failure injection used to verify migration rollback. */
-  beforeStep?: (step: GoalBoardProjectMigrationStep) => void | Promise<void>;
-}
+export type GoalBoardProjectMigrationStep = ProjectMigrationStep;
+export type MigrateGoalBoardProjectInput = MigrateProjectInput;
 
 export class GoalBoardProjectCatalogError extends Error {
   constructor(
@@ -408,6 +318,9 @@ export class GoalBoardProjectCatalog {
   readonly homeDirectory: string;
   readonly projectsDirectory: string;
   readonly databasePath: string;
+  private readonly projects: ProjectsModule;
+  private readonly workContexts: RuntimeContextBindingRepository;
+  readonly desktopPanels: DesktopPanelService;
 
   private constructor(
     private readonly db: Database.Database,
@@ -416,6 +329,38 @@ export class GoalBoardProjectCatalog {
     this.homeDirectory = homeDirectory;
     this.projectsDirectory = path.join(homeDirectory, "projects");
     this.databasePath = path.join(this.projectsDirectory, "catalog.db");
+    this.projects = new ProjectsModule({
+      db,
+      errorFactory: (code, message) =>
+        new GoalBoardProjectCatalogError(code as GoalBoardProjectCatalogError["code"], message),
+    });
+    this.workContexts = new RuntimeContextBindingRepository(db);
+    this.desktopPanels = new DesktopPanelService({
+      repository: new SqliteDesktopPanelRepository(db),
+      errorFactory: (code, message) => new GoalBoardProjectCatalogError(code, message),
+      context: {
+        assertProject: (projectId) => { this.getProject(projectId); },
+        bind: (input) => {
+          const workspace = input.cwd
+            ? normalizeRuntimeWorkspaceContext({ canonical_path: input.cwd, realpath_verified: false })
+            : undefined;
+          this.bindRuntimeContextInTransaction({
+            normalized: {
+              runtime_id: input.runtime_id,
+              stable_work_context_id: input.stable_work_context_id,
+              ...(workspace ? { workspace } : {}),
+            },
+            projectId: input.project_id,
+            actorId: input.actor_id,
+            rebindConfirmed: true,
+            bindingScope: "session",
+          });
+        },
+        appendProjectEvent: (projectId, type, actorId, payload) => {
+          this.appendEvent(projectId, type, actorId, payload);
+        },
+      },
+    });
   }
 
   static async open(options: GoalBoardProjectCatalogOptions = {}): Promise<GoalBoardProjectCatalog> {
@@ -448,9 +393,7 @@ export class GoalBoardProjectCatalog {
   }
 
   listProjects(): GoalBoardProjectRecord[] {
-    return (this.db
-      .prepare("SELECT * FROM projects ORDER BY display_name COLLATE NOCASE, created_at, project_id")
-      .all() as Array<Record<string, unknown>>).map(mapProject);
+    return this.projects.query.listProjects();
   }
 
   listPersonalPlanningMethodPacks(): PlanningMethodPack[] {
@@ -491,13 +434,7 @@ export class GoalBoardProjectCatalog {
   }
 
   getProject(projectId: string): GoalBoardProjectRecord {
-    const row = this.db
-      .prepare("SELECT * FROM projects WHERE project_id = ?")
-      .get(projectId) as Record<string, unknown> | undefined;
-    if (!row) {
-      throw new GoalBoardProjectCatalogError("catalog.project_not_found", `找不到 GoalBoard 项目: ${projectId}`);
-    }
-    return mapProject(row);
+    return this.projects.query.getProject(projectId);
   }
 
   /**
@@ -565,20 +502,14 @@ export class GoalBoardProjectCatalog {
           "这个项目不是当前 Runtime Session 的候选项目，不能把它标记为已拒绝",
         );
       }
-      const result = this.db
-        .prepare(`
-          INSERT OR IGNORE INTO runtime_context_suggestion_rejections (
-            runtime_id, stable_work_context_id, project_id, actor_id, created_at
-          ) VALUES (?, ?, ?, ?, ?)
-        `)
-        .run(
-          normalized.runtime_id,
-          normalized.stable_work_context_id,
-          projectId,
-          actorId,
-          new Date().toISOString(),
-        );
-      if (result.changes > 0) {
+      const changed = this.workContexts.rejectSuggestion({
+        runtime_id: normalized.runtime_id,
+        stable_work_context_id: normalized.stable_work_context_id!,
+        project_id: projectId,
+        actor_id: actorId,
+        created_at: new Date().toISOString(),
+      });
+      if (changed) {
         this.appendEvent(projectId, "project.runtime_context_suggestion_rejected", actorId, {
           runtime_id: normalized.runtime_id,
           stable_work_context_id: normalized.stable_work_context_id,
@@ -590,7 +521,7 @@ export class GoalBoardProjectCatalog {
           project_id: suggestion.project_id,
           display_name: suggestion.display_name,
         },
-        changed: result.changes > 0,
+        changed,
       };
     })();
   }
@@ -664,12 +595,12 @@ export class GoalBoardProjectCatalog {
             changed: false,
           };
         }
-        this.db.prepare(`
-          DELETE FROM workspace_project_memberships WHERE workspace_id = ? AND project_id = ?
-        `).run(normalized.workspace.workspace_id, projectId);
-        this.appendEvent(projectId, "project.workspace_unlinked", actorId, {
-          workspace_id: normalized.workspace.workspace_id,
-        });
+        this.projects.lifecycle.unlinkWorkspaceMembership(
+          normalized.workspace.workspace_id,
+          projectId,
+          actorId,
+          false,
+        );
         const project = this.getProject(projectId);
         return {
           resolution: this.resolveRuntimeContext(input.context),
@@ -780,21 +711,14 @@ export class GoalBoardProjectCatalog {
           bindingScope: input.binding_scope
             ?? (normalized.stable_work_context_id ? "session" : "workspace_member"),
         });
-        this.db
-          .prepare(`
-            INSERT INTO runtime_context_setup_requests (
-              runtime_id, stable_work_context_id, idempotency_key,
-              request_fingerprint, project_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-          `)
-          .run(
-            normalized.runtime_id,
-            runtimeContextPersistenceId(normalized),
-            idempotencyKey,
-            requestFingerprint,
-            record.project_id,
-            new Date().toISOString(),
-          );
+        this.workContexts.insertSetupRequest({
+          runtime_id: normalized.runtime_id,
+          persistence_id: runtimeContextPersistenceId(normalized),
+          idempotency_key: idempotencyKey,
+          request_fingerprint: requestFingerprint,
+          project_id: record.project_id,
+          created_at: new Date().toISOString(),
+        });
         return resolution;
       })(),
     );
@@ -847,24 +771,7 @@ export class GoalBoardProjectCatalog {
         created_at: now,
         updated_at: now,
       };
-      this.db
-        .prepare(
-          `
-            INSERT INTO runtime_context_bindings (
-              binding_id, runtime_id, stable_work_context_id, project_id,
-              bound_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          `,
-        )
-        .run(
-          binding.binding_id,
-          binding.runtime_id,
-          binding.stable_work_context_id,
-          binding.project_id,
-          binding.bound_by,
-          binding.created_at,
-          binding.updated_at,
-        );
+      this.workContexts.insert(binding);
       this.appendRuntimeContextBindingEvent({
         binding,
         type: "context.bound",
@@ -891,15 +798,7 @@ export class GoalBoardProjectCatalog {
     }
 
     const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `
-          UPDATE runtime_context_bindings
-          SET project_id = ?, bound_by = ?, updated_at = ?
-          WHERE binding_id = ?
-        `,
-      )
-      .run(project.project_id, input.actorId, now, current.binding_id);
+    this.workContexts.updateProject(current.binding_id, project.project_id, input.actorId, now);
     const rebound: GoalBoardRuntimeContextBinding = {
       ...current,
       project_id: project.project_id,
@@ -933,20 +832,12 @@ export class GoalBoardProjectCatalog {
   ): GoalBoardRuntimeContextBindingEvent[] {
     const normalized = context ? normalizeRuntimeWorkContext(context) : null;
     if (normalized && !normalized.stable_work_context_id) return [];
-    const rows = normalized
-      ? this.db
-          .prepare(
-            `
-              SELECT * FROM runtime_context_binding_events
-              WHERE runtime_id = ? AND stable_work_context_id = ?
-              ORDER BY rowid
-            `,
-          )
-          .all(normalized.runtime_id, normalized.stable_work_context_id)
-      : this.db
-          .prepare("SELECT * FROM runtime_context_binding_events ORDER BY rowid")
-          .all();
-    return (rows as Array<Record<string, unknown>>).map(mapRuntimeContextBindingEvent);
+    return normalized
+      ? this.workContexts.listEvents({
+          runtime_id: normalized.runtime_id,
+          stable_work_context_id: normalized.stable_work_context_id!,
+        })
+      : this.workContexts.listEvents();
   }
 
   /**
@@ -955,477 +846,85 @@ export class GoalBoardProjectCatalog {
    * opaque host identity; Web uses the GoalBoard-owned binding ID instead.
    */
   listRuntimeContextBindings(): GoalBoardRuntimeContextBinding[] {
-    const rows = this.db
-      .prepare(`
-        SELECT * FROM runtime_context_bindings
-        ORDER BY updated_at DESC, runtime_id, stable_work_context_id
-      `)
-      .all();
-    return (rows as Array<Record<string, unknown>>).map(mapRuntimeContextBinding);
+    return this.workContexts.list();
   }
 
   openDesktopPanel(input: OpenGoalBoardDesktopPanelInput): GoalBoardDesktopPanelRecord {
-    const projectId = requiredProjectId(input.project_id);
-    const goalId = input.goal_id.trim();
-    const runtimeKind = requiredRuntimeId(input.runtime_kind);
-    const command = input.launch_command.trim();
-    const actorId = requiredActorId(input.actor_id);
-    if (!goalId) {
-      throw new GoalBoardProjectCatalogError("catalog.panel_not_found", "打开终端时必须指定 Goal");
-    }
-    if (!command) {
-      throw new GoalBoardProjectCatalogError("catalog.invalid_name", "打开终端时必须提供启动命令");
-    }
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardProjectCatalogError(
-        "catalog.panel_confirmation_required",
-        "只有在 Goal 详情里点开终端后才能建立这个面板",
-      );
-    }
-    const cwd = normalizeOptionalAbsolutePath(input.cwd);
-    const hostSessionId = input.host_session_id?.trim() || null;
-    const args = Array.isArray(input.launch_args)
-      ? input.launch_args.map((item) => String(item))
-      : [];
-
-    return this.db.transaction(() => {
-      const project = this.getProject(projectId);
-      const now = new Date().toISOString();
-      const panelId = `panel-${randomUUID()}`;
-      const workContextId = panelId;
-      const tabIndexRow = this.db
-        .prepare(`
-          SELECT COALESCE(MAX(tab_index), -1) AS tab_index
-          FROM goal_desktop_panels
-          WHERE project_id = ? AND goal_id = ?
-        `)
-        .get(projectId, goalId) as { tab_index?: unknown };
-      const tabIndex = Number(tabIndexRow.tab_index) + 1;
-      const record: GoalBoardDesktopPanelRecord = {
-        panel_id: panelId,
-        project_id: projectId,
-        goal_id: goalId,
-        runtime_kind: runtimeKind,
-        launch_command: command,
-        launch_args: args,
-        cwd,
-        work_context_id: workContextId,
-        host_session_id: hostSessionId,
-        tab_index: tabIndex,
-        title: input.title?.trim() || command,
-        status: "open",
-        created_at: now,
-        updated_at: now,
-      };
-      const workspace = cwd
-        ? normalizeRuntimeWorkspaceContext({ canonical_path: cwd, realpath_verified: false })
-        : undefined;
-      this.insertDesktopPanel(record);
-      this.insertDesktopPanelAlias(panelId, runtimeKind, workContextId, now);
-      this.bindRuntimeContextInTransaction({
-        normalized: {
-          runtime_id: runtimeKind,
-          stable_work_context_id: workContextId,
-          ...(workspace ? { workspace } : {}),
-        },
-        projectId,
-        actorId,
-        rebindConfirmed: true,
-        bindingScope: "session",
-      });
-      if (hostSessionId && hostSessionId !== workContextId) {
-        this.insertDesktopPanelAlias(panelId, runtimeKind, hostSessionId, now);
-        this.bindRuntimeContextInTransaction({
-          normalized: {
-            runtime_id: runtimeKind,
-            stable_work_context_id: hostSessionId,
-          },
-          projectId,
-          actorId,
-          rebindConfirmed: true,
-          bindingScope: "session",
-        });
-      }
-      this.appendEvent(project.project_id, "project.desktop_panel_opened", actorId, {
-        panel_id: panelId,
-        goal_id: goalId,
-        runtime_kind: runtimeKind,
-      });
-      return record;
-    })();
+    return this.desktopPanels.open(input);
   }
 
   listDesktopPanels(projectId: string, goalId?: string): GoalBoardDesktopPanelRecord[] {
-    const id = requiredProjectId(projectId);
-    const rows = goalId
-      ? this.db
-          .prepare(`
-            SELECT * FROM goal_desktop_panels
-            WHERE project_id = ? AND goal_id = ?
-            ORDER BY tab_index, created_at, panel_id
-          `)
-          .all(id, goalId.trim())
-      : this.db
-          .prepare(`
-            SELECT * FROM goal_desktop_panels
-            WHERE project_id = ?
-            ORDER BY goal_id, tab_index, created_at, panel_id
-          `)
-          .all(id);
-    return (rows as Array<Record<string, unknown>>).map(mapDesktopPanel);
+    return this.desktopPanels.list(projectId, goalId);
   }
 
   getDesktopPanel(panelId: string): GoalBoardDesktopPanelRecord {
-    const row = this.db
-      .prepare("SELECT * FROM goal_desktop_panels WHERE panel_id = ?")
-      .get(panelId.trim()) as Record<string, unknown> | undefined;
-    if (!row) {
-      throw new GoalBoardProjectCatalogError("catalog.panel_not_found", "找不到这个终端面板");
-    }
-    return mapDesktopPanel(row);
+    return this.desktopPanels.get(panelId);
   }
 
   markDesktopPanelExited(panelId: string): GoalBoardDesktopPanelRecord {
-    return this.db.transaction(() => {
-      const current = this.getDesktopPanel(panelId);
-      if (current.status === "exited") return current;
-      const now = new Date().toISOString();
-      this.db
-        .prepare("UPDATE goal_desktop_panels SET status = 'exited', updated_at = ? WHERE panel_id = ?")
-        .run(now, current.panel_id);
-      return { ...current, status: "exited" as const, updated_at: now };
-    })();
+    return this.desktopPanels.markExited(panelId);
   }
 
   markDesktopPanelOpen(panelId: string): GoalBoardDesktopPanelRecord {
-    return this.db.transaction(() => {
-      const current = this.getDesktopPanel(panelId);
-      if (current.status === "open") return current;
-      const now = new Date().toISOString();
-      this.db
-        .prepare("UPDATE goal_desktop_panels SET status = 'open', updated_at = ? WHERE panel_id = ?")
-        .run(now, current.panel_id);
-      return { ...current, status: "open" as const, updated_at: now };
-    })();
+    return this.desktopPanels.markOpen(panelId);
   }
 
   closeDesktopPanel(panelId: string, actorId: string): void {
-    const actor = requiredActorId(actorId);
-    this.db.transaction(() => {
-      const current = this.getDesktopPanel(panelId);
-      this.db.prepare("DELETE FROM goal_desktop_panel_aliases WHERE panel_id = ?").run(current.panel_id);
-      this.db.prepare("DELETE FROM goal_desktop_panels WHERE panel_id = ?").run(current.panel_id);
-      this.appendEvent(current.project_id, "project.desktop_panel_closed", actor, {
-        panel_id: current.panel_id,
-        goal_id: current.goal_id,
-        runtime_kind: current.runtime_kind,
-      });
-    })();
+    this.desktopPanels.close(panelId, actorId);
   }
 
   aliasDesktopPanelSession(input: AliasGoalBoardDesktopPanelSessionInput): GoalBoardDesktopPanelRecord {
-    const panelId = input.panel_id.trim();
-    const runtimeId = requiredRuntimeId(input.runtime_id);
-    const hostSessionId = input.host_session_id.trim();
-    const actorId = requiredActorId(input.actor_id);
-    if (!hostSessionId) {
-      throw new GoalBoardProjectCatalogError("context.stable_identity_required", "宿主 Session 标识不能为空");
-    }
-    return this.db.transaction(() => {
-      const current = this.getDesktopPanel(panelId);
-      const now = new Date().toISOString();
-      this.insertDesktopPanelAlias(current.panel_id, runtimeId, hostSessionId, now);
-      if (current.host_session_id !== hostSessionId) {
-        this.db
-          .prepare(`
-            UPDATE goal_desktop_panels
-            SET host_session_id = ?, updated_at = ?
-            WHERE panel_id = ?
-          `)
-          .run(hostSessionId, now, current.panel_id);
-      }
-      this.bindRuntimeContextInTransaction({
-        normalized: {
-          runtime_id: runtimeId,
-          stable_work_context_id: hostSessionId,
-        },
-        projectId: current.project_id,
-        actorId,
-        rebindConfirmed: true,
-        bindingScope: "session",
-      });
-      return {
-        ...current,
-        host_session_id: hostSessionId,
-        updated_at: current.host_session_id === hostSessionId ? current.updated_at : now,
-      };
-    })();
+    return this.desktopPanels.aliasSession(input);
   }
 
   findDesktopPanelByWorkContext(
     runtimeId: string,
     workContextId: string,
   ): GoalBoardDesktopPanelRecord | null {
-    const row = this.db
-      .prepare(`
-        SELECT panels.* FROM goal_desktop_panel_aliases AS aliases
-        INNER JOIN goal_desktop_panels AS panels ON panels.panel_id = aliases.panel_id
-        WHERE aliases.runtime_id = ? AND aliases.stable_work_context_id = ?
-      `)
-      .get(requiredRuntimeId(runtimeId), workContextId.trim()) as Record<string, unknown> | undefined;
-    return row ? mapDesktopPanel(row) : null;
+    return this.desktopPanels.findByWorkContext(runtimeId, workContextId);
   }
 
   preferredWorkspacePath(projectId: string): string | null {
-    const row = this.db
-      .prepare(`
-        SELECT workspace.canonical_path AS canonical_path
-        FROM workspace_project_memberships AS membership
-        INNER JOIN workspaces AS workspace ON workspace.workspace_id = membership.workspace_id
-        WHERE membership.project_id = ?
-        ORDER BY membership.is_default DESC, membership.updated_at DESC, membership.membership_id
-        LIMIT 1
-      `)
-      .get(requiredProjectId(projectId)) as { canonical_path?: unknown } | undefined;
-    return typeof row?.canonical_path === "string" ? row.canonical_path : null;
-  }
-
-  private insertDesktopPanel(record: GoalBoardDesktopPanelRecord): void {
-    this.db
-      .prepare(`
-        INSERT INTO goal_desktop_panels (
-          panel_id, project_id, goal_id, runtime_kind, launch_command, launch_args,
-          cwd, work_context_id, host_session_id, tab_index, title, status,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        record.panel_id,
-        record.project_id,
-        record.goal_id,
-        record.runtime_kind,
-        record.launch_command,
-        JSON.stringify(record.launch_args),
-        record.cwd,
-        record.work_context_id,
-        record.host_session_id,
-        record.tab_index,
-        record.title,
-        record.status,
-        record.created_at,
-        record.updated_at,
-      );
-  }
-
-  private insertDesktopPanelAlias(
-    panelId: string,
-    runtimeId: string,
-    workContextId: string,
-    createdAt: string,
-  ): void {
-    this.db
-      .prepare(`
-        INSERT INTO goal_desktop_panel_aliases (
-          panel_id, runtime_id, stable_work_context_id, created_at
-        ) VALUES (?, ?, ?, ?)
-        ON CONFLICT(runtime_id, stable_work_context_id) DO UPDATE SET panel_id = excluded.panel_id
-      `)
-      .run(panelId, runtimeId, workContextId, createdAt);
+    return this.projects.query.preferredWorkspacePath(projectId);
   }
 
   /** Safe Web/settings view: deliberately omits the canonical filesystem path. */
   listWorkspaceMemberships(): GoalBoardWorkspaceMembership[] {
-    const rows = this.db
-      .prepare(`
-        SELECT membership.membership_id, membership.workspace_id,
-          workspace.display_name AS workspace_name, workspace.realpath_verified,
-          membership.project_id, membership.is_default, membership.bound_by,
-          membership.created_at, membership.updated_at
-        FROM workspace_project_memberships AS membership
-        INNER JOIN workspaces AS workspace ON workspace.workspace_id = membership.workspace_id
-        ORDER BY workspace.display_name COLLATE NOCASE, membership.is_default DESC,
-          membership.updated_at DESC, membership.project_id
-      `)
-      .all() as Array<Record<string, unknown>>;
-    return rows.map(mapWorkspaceMembership);
+    return this.projects.query.listWorkspaceMemberships();
   }
 
   /** Project-scoped management view. The canonical path never enters global settings. */
   listWorkspaceDirectory(projectId?: string): GoalBoardWorkspaceDirectoryRecord[] {
-    const normalizedProjectId = projectId ? requiredProjectId(projectId) : null;
-    const rows = this.db.prepare(`
-      SELECT workspace.workspace_id, workspace.canonical_path,
-        workspace.realpath_verified, workspace.display_name,
-        workspace.created_at, workspace.updated_at
-      FROM workspaces AS workspace
-      ${normalizedProjectId ? "INNER JOIN workspace_project_memberships AS selected_membership ON selected_membership.workspace_id = workspace.workspace_id" : ""}
-      ${normalizedProjectId ? "WHERE selected_membership.project_id = ?" : ""}
-      ORDER BY workspace.display_name COLLATE NOCASE, workspace.canonical_path
-    `).all(...(normalizedProjectId ? [normalizedProjectId] : [])) as Array<Record<string, unknown>>;
-    const memberships = this.listWorkspaceMemberships();
-    return rows.map((row) => ({
-      workspace_id: String(row.workspace_id),
-      canonical_path: String(row.canonical_path),
-      realpath_verified: Number(row.realpath_verified) === 1,
-      display_name: String(row.display_name),
-      project_ids: memberships
-        .filter((membership) => membership.workspace_id === String(row.workspace_id))
-        .map((membership) => membership.project_id),
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-    }));
+    return this.projects.query.listWorkspaceDirectory(projectId);
   }
 
   addWorkspaceProject(input: AddWorkspaceProjectInput): GoalBoardWorkspaceDirectoryRecord {
-    const projectId = requiredProjectId(input.project_id);
-    const actorId = requiredActorId(input.actor_id);
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardProjectCatalogError(
-        "context.user_confirmation_required",
-        "只有用户明确确认后才能关联工作目录",
-      );
-    }
-    const workspace = normalizeRuntimeWorkspaceContext({
-      canonical_path: input.canonical_path,
-      realpath_verified: false,
-    });
-    if (!workspace) {
-      throw new GoalBoardProjectCatalogError(
-        "context.workspace_required",
-        "工作目录必须是绝对路径",
-      );
-    }
-    this.db.transaction(() => {
-      this.upsertWorkspaceMembership(workspace, projectId, actorId);
-    })();
-    return this.requireWorkspaceDirectoryRecord(workspace.workspace_id);
+    return this.projects.commands.addWorkspaceProject(input);
   }
 
   repairWorkspaceProject(input: RepairWorkspaceProjectInput): GoalBoardWorkspaceDirectoryRecord {
-    const workspaceId = requiredWorkspaceId(input.workspace_id);
-    const projectId = requiredProjectId(input.project_id);
-    const actorId = requiredActorId(input.actor_id);
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardProjectCatalogError(
-        "context.user_confirmation_required",
-        "只有用户明确确认后才能修复工作目录路径",
-      );
-    }
-    const current = this.requireWorkspaceDirectoryRecord(workspaceId);
-    if (!current.project_ids.includes(projectId)) {
-      throw new GoalBoardProjectCatalogError(
-        "context.workspace_membership_not_found",
-        "这个目录尚未关联当前项目",
-      );
-    }
-    const next = normalizeRuntimeWorkspaceContext({
-      canonical_path: input.canonical_path,
-      realpath_verified: false,
-    });
-    if (!next) {
-      throw new GoalBoardProjectCatalogError(
-        "context.workspace_required",
-        "新的工作目录必须是绝对路径",
-      );
-    }
-    this.db.transaction(() => {
-      this.upsertWorkspaceMembership(next, projectId, actorId);
-      if (next.workspace_id !== workspaceId) {
-        this.db.prepare(`
-          DELETE FROM workspace_project_memberships
-          WHERE workspace_id = ? AND project_id = ?
-        `).run(workspaceId, projectId);
-        this.db.prepare(`
-          DELETE FROM workspaces
-          WHERE workspace_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM workspace_project_memberships
-              WHERE workspace_project_memberships.workspace_id = workspaces.workspace_id
-            )
-        `).run(workspaceId);
-      }
-      this.appendEvent(projectId, "project.workspace_path_repaired", actorId, {
-        previous_workspace_id: workspaceId,
-        workspace_id: next.workspace_id,
-      });
-    })();
-    return this.requireWorkspaceDirectoryRecord(next.workspace_id);
+    return this.projects.commands.repairWorkspaceProject(input);
   }
 
   setWorkspaceDefault(input: ChangeWorkspaceProjectInput): GoalBoardWorkspaceMembership[] {
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardProjectCatalogError(
-        "context.user_confirmation_required",
-        "只有用户明确确认后才能更改目录的默认项目",
-      );
-    }
-    throw new GoalBoardProjectCatalogError(
-      "context.workspace_default_unsupported",
-      "工作目录不再保存默认项目；请为当前 Session 选择项目",
-    );
+    return this.projects.commands.setWorkspaceDefault(input);
   }
 
   removeWorkspaceMembership(input: ChangeWorkspaceProjectInput): GoalBoardWorkspaceMembership[] {
-    const workspaceId = requiredWorkspaceId(input.workspace_id);
-    const projectId = requiredProjectId(input.project_id);
-    const actorId = requiredActorId(input.actor_id);
-    if (input.user_confirmed !== true) {
-      throw new GoalBoardProjectCatalogError(
-        "context.user_confirmation_required",
-        "只有用户明确确认后才能解除目录与项目的关联",
-      );
-    }
-    this.db.transaction(() => {
-      const result = this.db.prepare(`
-        DELETE FROM workspace_project_memberships WHERE workspace_id = ? AND project_id = ?
-      `).run(workspaceId, projectId);
-      if (result.changes > 0) {
-        this.db.prepare(`
-          DELETE FROM workspaces
-          WHERE workspace_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM workspace_project_memberships
-              WHERE workspace_project_memberships.workspace_id = workspaces.workspace_id
-            )
-        `).run(workspaceId);
-        this.appendEvent(projectId, "project.workspace_unlinked", actorId, { workspace_id: workspaceId });
-      }
-    })();
-    return this.listWorkspaceMemberships();
-  }
-
-  private requireWorkspaceDirectoryRecord(workspaceId: string): GoalBoardWorkspaceDirectoryRecord {
-    const record = this.listWorkspaceDirectory().find((workspace) => workspace.workspace_id === workspaceId);
-    if (!record) {
-      throw new GoalBoardProjectCatalogError(
-        "context.workspace_membership_not_found",
-        "找不到这条工作目录记录",
-      );
-    }
-    return record;
+    return this.projects.commands.removeWorkspaceMembership(input);
   }
 
   private projectSelections(): GoalBoardProjectSelection[] {
-    return this.listProjects().map((project) => ({
-      project_id: project.project_id,
-      display_name: project.display_name,
-    }));
+    return this.projects.query.selections();
   }
 
   private workspaceMemberSuggestions(
     workspace: NormalizedRuntimeWorkspaceContext | undefined,
   ): GoalBoardProjectSuggestion[] {
     if (!workspace) return [];
-    const rows = this.db.prepare(`
-      SELECT project.project_id, project.display_name
-      FROM workspace_project_memberships AS membership
-      INNER JOIN projects AS project ON project.project_id = membership.project_id
-      WHERE membership.workspace_id = ?
-      ORDER BY membership.updated_at DESC, project.display_name COLLATE NOCASE
-    `).all(workspace.workspace_id) as Array<{ project_id?: unknown; display_name?: unknown }>;
-    return rows.map((row) => ({
-      project_id: String(row.project_id),
-      display_name: String(row.display_name),
+    return this.projects.query.workspaceProjectSelections(workspace.workspace_id).map((project) => ({
+      project_id: project.project_id,
+      display_name: project.display_name,
       reasons: ["这个项目已经与当前目录精确关联"],
     }));
   }
@@ -1444,44 +943,7 @@ export class GoalBoardProjectCatalog {
     projectId: string,
     actorId: string,
   ): void {
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO workspaces (
-        workspace_id, canonical_path, realpath_verified, display_name, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_id) DO UPDATE SET
-        canonical_path = excluded.canonical_path,
-        realpath_verified = excluded.realpath_verified,
-        display_name = excluded.display_name,
-        updated_at = excluded.updated_at
-    `).run(
-      workspace.workspace_id,
-      workspace.canonical_path,
-      workspace.realpath_verified ? 1 : 0,
-      workspace.display_name,
-      now,
-      now,
-    );
-    this.db.prepare(`
-      INSERT INTO workspace_project_memberships (
-        membership_id, workspace_id, project_id, is_default, bound_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_id, project_id) DO UPDATE SET
-        is_default = 0,
-        bound_by = excluded.bound_by,
-        updated_at = excluded.updated_at
-    `).run(
-      `workspace-membership-${randomUUID()}`,
-      workspace.workspace_id,
-      projectId,
-      0,
-      actorId,
-      now,
-      now,
-    );
-    this.appendEvent(projectId, "project.workspace_member_bound", actorId, {
-      workspace_id: workspace.workspace_id,
-    });
+    this.projects.lifecycle.upsertWorkspaceMembership(workspace, projectId, actorId);
   }
 
   private runtimeContextSuggestions(
@@ -1524,63 +986,34 @@ export class GoalBoardProjectCatalog {
 
   private rejectedSuggestionProjectIds(context: NormalizedRuntimeWorkContext): Set<string> {
     if (!context.stable_work_context_id) return new Set<string>();
-    const rows = this.db
-      .prepare(`
-        SELECT project_id
-        FROM runtime_context_suggestion_rejections
-        WHERE runtime_id = ? AND stable_work_context_id = ?
-      `)
-      .all(context.runtime_id, context.stable_work_context_id) as Array<{ project_id?: unknown }>;
-    return new Set(rows.map((row) => String(row.project_id)));
+    return this.workContexts.rejectedProjectIds(context.runtime_id, context.stable_work_context_id);
   }
 
   private hasRuntimeContextUnboundEvent(context: NormalizedRuntimeWorkContext): boolean {
     if (!context.stable_work_context_id) return false;
-    return this.db
-      .prepare(`
-        SELECT 1
-        FROM runtime_context_binding_events
-        WHERE runtime_id = ? AND stable_work_context_id = ? AND type = 'context.unbound'
-        LIMIT 1
-      `)
-      .get(context.runtime_id, context.stable_work_context_id) != null;
+    return this.workContexts.hasUnboundEvent(context.runtime_id, context.stable_work_context_id);
   }
 
   private latestConfirmedProjectIdForOtherSession(context: NormalizedRuntimeWorkContext): string | null {
     if (!context.stable_work_context_id) return null;
-    const row = this.db
-      .prepare(`
-        SELECT event.project_id
-        FROM runtime_context_binding_events AS event
-        INNER JOIN projects AS project ON project.project_id = event.project_id
-        WHERE event.runtime_id = ?
-          AND event.stable_work_context_id <> ?
-          AND event.type IN ('context.bound', 'context.rebound')
-        ORDER BY event.created_at DESC, event.event_id DESC
-        LIMIT 1
-      `)
-      .get(context.runtime_id, context.stable_work_context_id) as { project_id?: unknown } | undefined;
-    return row?.project_id == null ? null : String(row.project_id);
+    const projectIds = this.workContexts.confirmedProjectIdsForOtherSessions(
+      context.runtime_id,
+      context.stable_work_context_id,
+    );
+    const currentProjectIds = new Set(this.projects.query.listProjects().map((project) => project.project_id));
+    return projectIds.find((projectId) => currentProjectIds.has(projectId)) ?? null;
   }
 
   private findRuntimeContextBinding(
     context: NormalizedRuntimeWorkContext,
   ): GoalBoardRuntimeContextBinding | null {
     if (!context.stable_work_context_id) return null;
-    const row = this.db
-      .prepare(
-        `
-          SELECT * FROM runtime_context_bindings
-          WHERE runtime_id = ? AND stable_work_context_id = ?
-        `,
-      )
-      .get(context.runtime_id, context.stable_work_context_id) as Record<string, unknown> | undefined;
-    return row ? mapRuntimeContextBinding(row) : null;
+    return this.workContexts.find(context.runtime_id, context.stable_work_context_id);
   }
 
   private removeSessionBinding(binding: GoalBoardRuntimeContextBinding, actorId: string): void {
     const now = new Date().toISOString();
-    this.db.prepare("DELETE FROM runtime_context_bindings WHERE binding_id = ?").run(binding.binding_id);
+    this.workContexts.remove(binding.binding_id);
     this.appendRuntimeContextBindingEvent({
       binding,
       type: "context.unbound",
@@ -1600,18 +1033,7 @@ export class GoalBoardProjectCatalog {
     idempotencyKey: string,
   ): { request_fingerprint: string; project_id: string } | null {
     const persistenceId = runtimeContextPersistenceId(context);
-    const row = this.db
-      .prepare(`
-        SELECT request_fingerprint, project_id
-        FROM runtime_context_setup_requests
-        WHERE runtime_id = ? AND stable_work_context_id = ? AND idempotency_key = ?
-      `)
-      .get(context.runtime_id, persistenceId, idempotencyKey) as
-        | { request_fingerprint?: unknown; project_id?: unknown }
-        | undefined;
-    return row
-      ? { request_fingerprint: String(row.request_fingerprint), project_id: String(row.project_id) }
-      : null;
+    return this.workContexts.findSetupRequest(context.runtime_id, persistenceId, idempotencyKey);
   }
 
   private appendRuntimeContextBindingEvent(input: {
@@ -1621,32 +1043,18 @@ export class GoalBoardProjectCatalog {
     actorId: string;
     createdAt: string;
   }): void {
-    this.db
-      .prepare(
-        `
-          INSERT INTO runtime_context_binding_events (
-            event_id, binding_id, runtime_id, stable_work_context_id, type,
-            previous_project_id, project_id, actor_id, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        `context-binding-event-${randomUUID()}`,
-        input.binding.binding_id,
-        input.binding.runtime_id,
-        input.binding.stable_work_context_id,
-        input.type,
-        input.previousProjectId,
-        input.binding.project_id,
-        input.actorId,
-        input.createdAt,
-      );
+    this.workContexts.appendEvent({
+      binding: input.binding,
+      type: input.type,
+      previous_project_id: input.previousProjectId,
+      actor_id: input.actorId,
+      created_at: input.createdAt,
+    });
   }
 
   async createProject(input: CreateGoalBoardProjectInput): Promise<GoalBoardProjectRecord> {
-    const displayName = requiredName(input.display_name);
     const actorId = requiredActorId(input.actor_id);
-    return this.provisionCreatedProject({ displayName, actorId }, (record) => {
+    return this.provisionCreatedProject({ displayName: input.display_name, actorId }, (record) => {
       this.insertProject(record, "project.created", actorId);
       return record;
     });
@@ -1657,11 +1065,16 @@ export class GoalBoardProjectCatalog {
     const existing = this.listProjects().find((project) => project.data_class === "regenerable_demo");
     if (existing) return { status: "existing", project: existing };
     const actorId = requiredActorId(input.actor_id);
-    const displayName = requiredName(input.display_name ?? "GoalBoard 示例项目");
-    const projectId = `project-${randomUUID()}`;
-    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${projectId}`);
-    const projectDirectory = path.join(this.projectsDirectory, projectId);
-    const databasePath = path.join(projectDirectory, "goalboard.db");
+    const record = this.projects.lifecycle.prepareRecord({
+      display_name: input.display_name ?? "GoalBoard 示例项目",
+      board_id: DEMO_BOARD_ID,
+      projects_directory: this.projectsDirectory,
+      source: "created",
+      data_class: "regenerable_demo",
+      migrated_from_path: null,
+    });
+    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${record.project_id}`);
+    const projectDirectory = path.dirname(record.database_path);
     let promoted = false;
     try {
       await fs.mkdir(stagingDirectory, { recursive: false });
@@ -1670,15 +1083,6 @@ export class GoalBoardProjectCatalog {
       validateManagedBoard(stagedDatabasePath, DEMO_BOARD_ID);
       await fs.rename(stagingDirectory, projectDirectory);
       promoted = true;
-      const record = projectRecord({
-        projectId,
-        displayName,
-        boardId: DEMO_BOARD_ID,
-        databasePath,
-        source: "created",
-        dataClass: "regenerable_demo",
-        migratedFromPath: null,
-      });
       this.insertProject(record, "project.demo_created", actorId);
       return { status: "created", project: record };
     } catch (error) {
@@ -1708,10 +1112,13 @@ export class GoalBoardProjectCatalog {
       await fs.rename(stagingDirectory, projectDirectory);
       resetPromoted = true;
       await fs.rm(backupDirectory, { recursive: true, force: true });
-      const updatedAt = new Date().toISOString();
-      this.db.prepare("UPDATE projects SET updated_at = ? WHERE project_id = ?").run(updatedAt, project.project_id);
-      this.appendEvent(project.project_id, "project.demo_reset", actorId, { board_id: project.board_id });
-      return { status: "reset", project: this.getProject(project.project_id) };
+      const updated = this.projects.lifecycle.touch(
+        project.project_id,
+        "project.demo_reset",
+        actorId,
+        { board_id: project.board_id },
+      );
+      return { status: "reset", project: updated };
     } catch (error) {
       if (resetPromoted) await fs.rm(projectDirectory, { recursive: true, force: true });
       if (previousMoved) await fs.rename(backupDirectory, projectDirectory).catch(() => undefined);
@@ -1737,9 +1144,7 @@ export class GoalBoardProjectCatalog {
   }
 
   listProjectDeletions(): GoalBoardProjectDeletionRecord[] {
-    return (this.db
-      .prepare("SELECT * FROM project_deletions ORDER BY deleted_at DESC, deletion_id DESC")
-      .all() as Array<Record<string, unknown>>).map((row) => projectDeletionRecord(mapStoredProjectDeletion(row)));
+    return this.projects.query.listProjectDeletions();
   }
 
   /**
@@ -1765,7 +1170,7 @@ export class GoalBoardProjectCatalog {
     }
     const idempotencyKey = requiredDeletionIdempotencyKey(input.idempotency_key);
     const requestFingerprint = JSON.stringify({ project_id: projectId, delete_confirmed: true });
-    const replay = this.findProjectDeletion(actorId, idempotencyKey);
+    const replay = this.projects.lifecycle.findDeletion(actorId, idempotencyKey);
     if (replay) {
       if (replay.request_fingerprint !== requestFingerprint) {
         throw new GoalBoardProjectCatalogError(
@@ -1784,27 +1189,19 @@ export class GoalBoardProjectCatalog {
     await fs.rename(projectDirectory, stagedDirectory);
     let catalogCommitted = false;
     try {
-      const deletion = this.db.transaction(() => {
-        const racedReplay = this.findProjectDeletion(actorId, idempotencyKey);
+      const deletion = this.projects.lifecycle.transaction(() => {
+        const racedReplay = this.projects.lifecycle.findDeletion(actorId, idempotencyKey);
         if (racedReplay) {
           throw new GoalBoardProjectCatalogError(
             "catalog.deletion_idempotency_conflict",
             "同一个项目删除请求正在或已经由另一个调用处理，请重新读取项目列表",
           );
         }
-        const deletedSessionBindingCount = this.db
-          .prepare("DELETE FROM runtime_context_bindings WHERE project_id = ?")
-          .run(project.project_id).changes;
-        const deletedWorkspaceMembershipCount = this.db
-          .prepare("DELETE FROM workspace_project_memberships WHERE project_id = ?")
-          .run(project.project_id).changes;
-        this.db.prepare("DELETE FROM runtime_context_setup_requests WHERE project_id = ?").run(project.project_id);
-        this.db.prepare(`
-          DELETE FROM goal_desktop_panel_aliases
-          WHERE panel_id IN (SELECT panel_id FROM goal_desktop_panels WHERE project_id = ?)
-        `).run(project.project_id);
-        this.db.prepare("DELETE FROM goal_desktop_panels WHERE project_id = ?").run(project.project_id);
-        this.db.prepare("DELETE FROM projects WHERE project_id = ?").run(project.project_id);
+        const deletedSessionBindingCount = this.workContexts.removeProjectFacts(project.project_id);
+        const deletedWorkspaceMembershipCount =
+          this.projects.lifecycle.removeWorkspaceMembershipsForProject(project.project_id);
+        this.desktopPanels.deleteForProject(project.project_id);
+        this.projects.lifecycle.removeFacts(project.project_id);
         const now = new Date().toISOString();
         const record: StoredProjectDeletion = {
           deletion_id: `project-deletion-${randomUUID()}`,
@@ -1821,9 +1218,9 @@ export class GoalBoardProjectCatalog {
           deleted_at: now,
           cleaned_at: null,
         };
-        this.insertProjectDeletion(record);
+        this.projects.lifecycle.insertDeletion(record);
         return record;
-      })();
+      });
       catalogCommitted = true;
       return { deletion: await this.finishProjectDeletionCleanup(deletion), replayed: false };
     } catch (error) {
@@ -1851,16 +1248,9 @@ export class GoalBoardProjectCatalog {
     try {
       projectDb = new Database(project.database_path, { readonly: true, fileMustExist: true });
       const now = new Date().toISOString();
-      const activeClaimCount = Number(
-        (projectDb
-          .prepare("SELECT COUNT(*) AS count FROM claims WHERE board_id = ? AND state = 'active' AND expires_at > ?")
-          .get(project.board_id, now) as { count?: unknown } | undefined)?.count ?? 0,
-      );
-      const unfinishedRunCount = Number(
-        (projectDb
-          .prepare("SELECT COUNT(*) AS count FROM runs WHERE board_id = ? AND state IN ('started', 'blocked')")
-          .get(project.board_id) as { count?: unknown } | undefined)?.count ?? 0,
-      );
+      const execution = new ExecutionRepository(projectDb as unknown as ExecutionSqliteDatabase);
+      const activeClaimCount = execution.activeClaimCount(project.board_id, now);
+      const unfinishedRunCount = execution.nonterminalRunCount(project.board_id);
       if (activeClaimCount > 0 || unfinishedRunCount > 0) {
         throw new GoalBoardProjectCatalogError(
           "catalog.project_active_work",
@@ -1878,87 +1268,52 @@ export class GoalBoardProjectCatalog {
     }
   }
 
-  private findProjectDeletion(actorId: string, idempotencyKey: string): StoredProjectDeletion | null {
-    const row = this.db
-      .prepare("SELECT * FROM project_deletions WHERE actor_id = ? AND idempotency_key = ?")
-      .get(actorId, idempotencyKey) as Record<string, unknown> | undefined;
-    return row ? mapStoredProjectDeletion(row) : null;
-  }
-
-  private insertProjectDeletion(record: StoredProjectDeletion): void {
-    this.db
-      .prepare(`
-        INSERT INTO project_deletions (
-          deletion_id, actor_id, idempotency_key, request_fingerprint,
-          project_id, display_name, board_id, staged_directory, deleted_binding_count,
-          cleanup_state, cleanup_error, deleted_at, cleaned_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        record.deletion_id,
-        record.actor_id,
-        record.idempotency_key,
-        record.request_fingerprint,
-        record.project_id,
-        record.display_name,
-        record.board_id,
-        record.staged_directory,
-        record.deleted_binding_count,
-        record.cleanup_state,
-        record.cleanup_error,
-        record.deleted_at,
-        record.cleaned_at,
-      );
-  }
-
   private async finishProjectDeletionCleanup(record: StoredProjectDeletion): Promise<GoalBoardProjectDeletionRecord> {
-    if (record.cleanup_state === "complete") return projectDeletionRecord(record);
+    if (record.cleanup_state === "complete") return this.projects.lifecycle.deletionRecord(record);
     try {
       await fs.rm(record.staged_directory, { recursive: true, force: true });
       const cleanedAt = new Date().toISOString();
-      this.db
-        .prepare(
-          "UPDATE project_deletions SET cleanup_state = 'complete', cleanup_error = NULL, cleaned_at = ? WHERE deletion_id = ?",
-        )
-        .run(cleanedAt, record.deletion_id);
+      record = this.projects.lifecycle.updateDeletionCleanup(record.deletion_id, {
+        state: "complete",
+        error: null,
+        cleaned_at: cleanedAt,
+      });
     } catch (error) {
-      this.db
-        .prepare("UPDATE project_deletions SET cleanup_state = 'pending', cleanup_error = ? WHERE deletion_id = ?")
-        .run(error instanceof Error ? error.message : String(error), record.deletion_id);
+      record = this.projects.lifecycle.updateDeletionCleanup(record.deletion_id, {
+        state: "pending",
+        error: error instanceof Error ? error.message : String(error),
+        cleaned_at: null,
+      });
     }
-    const updated = this.db
-      .prepare("SELECT * FROM project_deletions WHERE deletion_id = ?")
-      .get(record.deletion_id) as Record<string, unknown> | undefined;
-    if (!updated) {
-      throw new GoalBoardProjectCatalogError("catalog.project_storage_invalid", "项目删除记录意外丢失");
-    }
-    return projectDeletionRecord(mapStoredProjectDeletion(updated));
+    return this.projects.lifecycle.deletionRecord(record);
   }
 
   private async provisionCreatedProject<T>(
     input: { displayName: string; actorId: string },
     commit: (record: GoalBoardProjectRecord) => T,
   ): Promise<T> {
-    const projectId = `project-${randomUUID()}`;
-    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${projectId}`);
-    const projectDirectory = path.join(this.projectsDirectory, projectId);
-    const projectDatabasePath = path.join(projectDirectory, "goalboard.db");
+    const record = this.projects.lifecycle.prepareRecord({
+      display_name: input.displayName,
+      board_id: "",
+      projects_directory: this.projectsDirectory,
+      source: "created",
+      data_class: "user",
+      migrated_from_path: null,
+    });
+    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${record.project_id}`);
+    const projectDirectory = path.dirname(record.database_path);
     let promoted = false;
     try {
       await fs.mkdir(stagingDirectory, { recursive: false });
-      await initializeProjectDatabase(path.join(stagingDirectory, "goalboard.db"), projectId, input.displayName, input.actorId);
-      await validateManagedBoard(path.join(stagingDirectory, "goalboard.db"), projectId);
+      await initializeProjectDatabase(
+        path.join(stagingDirectory, "goalboard.db"),
+        record.project_id,
+        record.display_name,
+        input.actorId,
+      );
+      await validateManagedBoard(path.join(stagingDirectory, "goalboard.db"), record.project_id);
       await fs.rename(stagingDirectory, projectDirectory);
       promoted = true;
-      const record = projectRecord({
-        projectId,
-        displayName: input.displayName,
-        boardId: projectId,
-        databasePath: projectDatabasePath,
-        source: "created",
-        dataClass: "user",
-        migratedFromPath: null,
-      });
       return commit(record);
     } catch (error) {
       await fs.rm(stagingDirectory, { recursive: true, force: true });
@@ -1968,20 +1323,7 @@ export class GoalBoardProjectCatalog {
   }
 
   renameProject(projectId: string, displayName: string, actorId: string): GoalBoardProjectRecord {
-    const nextName = requiredName(displayName);
-    const existing = this.getProject(projectId);
-    if (existing.display_name === nextName) return existing;
-    const updatedAt = new Date().toISOString();
-    this.db.transaction(() => {
-      this.db
-        .prepare("UPDATE projects SET display_name = ?, updated_at = ? WHERE project_id = ?")
-        .run(nextName, updatedAt, projectId);
-      this.appendEvent(projectId, "project.renamed", actorId, {
-        previous_display_name: existing.display_name,
-        display_name: nextName,
-      });
-    })();
-    return this.getProject(projectId);
+    return this.projects.commands.renameProject(projectId, displayName, actorId);
   }
 
   async migrateLegacyDatabase(input: MigrateGoalBoardProjectInput): Promise<GoalBoardProjectRecord> {
@@ -1998,11 +1340,16 @@ export class GoalBoardProjectCatalog {
     }
 
     const source = readManagedBoard(legacyDatabasePath, true);
-    const displayName = requiredName(input.display_name ?? source.snapshot.board.title);
-    const projectId = `project-${randomUUID()}`;
-    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${projectId}`);
-    const projectDirectory = path.join(this.projectsDirectory, projectId);
-    const projectDatabasePath = path.join(projectDirectory, "goalboard.db");
+    const record = this.projects.lifecycle.prepareRecord({
+      display_name: input.display_name ?? source.snapshot.board.title,
+      board_id: source.boardId,
+      projects_directory: this.projectsDirectory,
+      source: "migrated",
+      data_class: "migrated_user",
+      migrated_from_path: legacyDatabasePath,
+    });
+    const stagingDirectory = path.join(this.projectsDirectory, `.staging-${record.project_id}`);
+    const projectDirectory = path.dirname(record.database_path);
     let promoted = false;
     let inserted = false;
     try {
@@ -2018,15 +1365,6 @@ export class GoalBoardProjectCatalog {
       await fs.rename(stagingDirectory, projectDirectory);
       promoted = true;
       await runStep(input, "before_catalog_commit");
-      const record = projectRecord({
-        projectId,
-        displayName,
-        boardId: source.boardId,
-        databasePath: projectDatabasePath,
-        source: "migrated",
-        dataClass: "migrated_user",
-        migratedFromPath: legacyDatabasePath,
-      });
       this.insertProject(record, "project.migrated", input.actor_id);
       inserted = true;
       await Promise.all([
@@ -2036,7 +1374,7 @@ export class GoalBoardProjectCatalog {
       await fs.rm(legacyDatabasePath);
       return record;
     } catch (error) {
-      if (inserted) this.db.prepare("DELETE FROM projects WHERE project_id = ?").run(projectId);
+      if (inserted) this.projects.lifecycle.rollbackRegistration(record.project_id);
       await fs.rm(stagingDirectory, { recursive: true, force: true });
       if (promoted) await fs.rm(projectDirectory, { recursive: true, force: true });
       throw error;
@@ -2044,60 +1382,16 @@ export class GoalBoardProjectCatalog {
   }
 
   private insertProject(record: GoalBoardProjectRecord, eventType: string, actorId: string): void {
-    this.db.transaction(() => this.insertProjectInTransaction(record, eventType, actorId))();
+    this.projects.lifecycle.register(record, eventType, actorId);
   }
 
   private insertProjectInTransaction(record: GoalBoardProjectRecord, eventType: string, actorId: string): void {
-    this.db
-      .prepare(`
-          INSERT INTO projects (
-            project_id, display_name, board_id, database_path, source,
-            data_class, migrated_from_path, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-      .run(
-        record.project_id,
-        record.display_name,
-        record.board_id,
-        record.database_path,
-        record.source,
-        record.data_class,
-        record.migrated_from_path,
-        record.created_at,
-        record.updated_at,
-      );
-    this.appendEvent(record.project_id, eventType, actorId, {
-      board_id: record.board_id,
-      database_path: record.database_path,
-      source: record.source,
-      migrated_from_path: record.migrated_from_path,
-    });
+    this.projects.lifecycle.register(record, eventType, actorId);
   }
 
   private appendEvent(projectId: string, type: string, actorId: string, payload: Record<string, unknown>): void {
-    this.db
-      .prepare(`
-        INSERT INTO project_events (event_id, project_id, type, actor_id, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `)
-      .run(`project-event-${randomUUID()}`, projectId, type, actorId, JSON.stringify(payload), new Date().toISOString());
+    this.projects.lifecycle.appendEvent(projectId, type, actorId, payload);
   }
-}
-
-interface StoredProjectDeletion {
-  deletion_id: string;
-  actor_id: string;
-  idempotency_key: string;
-  request_fingerprint: string;
-  project_id: string;
-  display_name: string;
-  board_id: string;
-  staged_directory: string;
-  deleted_binding_count: number;
-  cleanup_state: "complete" | "pending";
-  cleanup_error: string | null;
-  deleted_at: string;
-  cleaned_at: string | null;
 }
 
 function initializeCatalog(db: Database.Database): void {
@@ -2106,33 +1400,11 @@ function initializeCatalog(db: Database.Database): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-    CREATE TABLE projects (
-      project_id TEXT PRIMARY KEY,
-      display_name TEXT NOT NULL,
-      board_id TEXT NOT NULL,
-      database_path TEXT NOT NULL UNIQUE,
-      source TEXT NOT NULL CHECK (source IN ('created', 'migrated')),
-      data_class TEXT NOT NULL CHECK (data_class IN ('user', 'migrated_user', 'regenerable_demo')),
-      migrated_from_path TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX projects_display_name_idx ON projects(display_name COLLATE NOCASE, project_id);
-    CREATE TABLE project_events (
-      event_id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-      type TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX project_events_project_idx ON project_events(project_id, created_at, event_id);
   `);
+  createProjectsSchema(db);
   createRuntimeContextBindingTables(db);
   createRuntimeContextSetupRequestTable(db);
   createRuntimeContextSuggestionRejectionTable(db);
-  createWorkspaceProjectMembershipTables(db);
-  createProjectDeletionTable(db);
   createDesktopPanelTables(db);
   createPersonalPlanningMethodPackTable(db);
   db.prepare("INSERT INTO catalog_meta (key, value) VALUES (?, ?)").run("owner", CATALOG_OWNER);
@@ -2177,7 +1449,7 @@ function migrateCatalog(db: Database.Database, databasePath: string): void {
     }
     if (current === 3) {
       migrateRuntimeContextBindingEventsForUnbind(db);
-      createProjectDeletionTable(db);
+      createProjectsSchema(db);
       db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("4");
       current = 4;
     }
@@ -2187,22 +1459,12 @@ function migrateCatalog(db: Database.Database, databasePath: string): void {
       current = 5;
     }
     if (current === 5) {
-      createWorkspaceProjectMembershipTables(db);
+      createProjectsSchema(db);
       db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("6");
       current = 6;
     }
     if (current === 6) {
-      if (!tableHasColumn(db, "projects", "data_class")) {
-        db.exec(`
-          ALTER TABLE projects ADD COLUMN data_class TEXT NOT NULL DEFAULT 'user'
-            CHECK (data_class IN ('user', 'migrated_user', 'regenerable_demo'));
-        `);
-      }
-      db.exec(`
-        UPDATE projects
-        SET data_class = CASE WHEN source = 'migrated' THEN 'migrated_user' ELSE 'user' END
-        WHERE data_class <> 'regenerable_demo';
-      `);
+      migrateProjectDataClassSchema(db);
       db.prepare("UPDATE catalog_meta SET value = ? WHERE key = 'schema_version'").run("7");
       current = 7;
     }
@@ -2275,180 +1537,6 @@ function realpathExists(filePath: string): boolean {
   }
 }
 
-function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
-  return (db.pragma(`table_info(${table})`) as Array<{ name?: unknown }>)
-    .some((entry) => entry.name === column);
-}
-
-function createWorkspaceProjectMembershipTables(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workspaces (
-      workspace_id TEXT PRIMARY KEY,
-      canonical_path TEXT NOT NULL UNIQUE,
-      realpath_verified INTEGER NOT NULL CHECK (realpath_verified IN (0, 1)),
-      display_name TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS workspace_project_memberships (
-      membership_id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
-      project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-      is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
-      bound_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(workspace_id, project_id)
-    );
-    CREATE INDEX IF NOT EXISTS workspace_project_memberships_project_idx
-      ON workspace_project_memberships(project_id, workspace_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS workspace_project_memberships_one_default_idx
-      ON workspace_project_memberships(workspace_id) WHERE is_default = 1;
-  `);
-}
-
-function createRuntimeContextBindingTables(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE runtime_context_bindings (
-      binding_id TEXT PRIMARY KEY,
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      project_id TEXT NOT NULL REFERENCES projects(project_id),
-      bound_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(runtime_id, stable_work_context_id)
-    );
-    CREATE INDEX runtime_context_bindings_project_idx
-      ON runtime_context_bindings(project_id, runtime_id, stable_work_context_id);
-    CREATE TABLE runtime_context_binding_events (
-      event_id TEXT PRIMARY KEY,
-      binding_id TEXT NOT NULL,
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('context.bound', 'context.rebound', 'context.unbound')),
-      previous_project_id TEXT,
-      project_id TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX runtime_context_binding_events_context_idx
-      ON runtime_context_binding_events(runtime_id, stable_work_context_id, created_at, event_id);
-  `);
-}
-
-function createRuntimeContextSetupRequestTable(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS runtime_context_setup_requests (
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      idempotency_key TEXT NOT NULL,
-      request_fingerprint TEXT NOT NULL,
-      project_id TEXT NOT NULL REFERENCES projects(project_id),
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (runtime_id, stable_work_context_id, idempotency_key)
-    );
-    CREATE INDEX IF NOT EXISTS runtime_context_setup_requests_project_idx
-      ON runtime_context_setup_requests(project_id, created_at);
-  `);
-}
-
-function createRuntimeContextSuggestionRejectionTable(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS runtime_context_suggestion_rejections (
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-      actor_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (runtime_id, stable_work_context_id, project_id)
-    );
-    CREATE INDEX IF NOT EXISTS runtime_context_suggestion_rejections_project_idx
-      ON runtime_context_suggestion_rejections(project_id, created_at);
-  `);
-}
-
-function migrateRuntimeContextBindingEventsForUnbind(db: Database.Database): void {
-  db.exec(`
-    ALTER TABLE runtime_context_binding_events RENAME TO runtime_context_binding_events_v3;
-    CREATE TABLE runtime_context_binding_events (
-      event_id TEXT PRIMARY KEY,
-      binding_id TEXT NOT NULL,
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('context.bound', 'context.rebound', 'context.unbound')),
-      previous_project_id TEXT,
-      project_id TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    INSERT INTO runtime_context_binding_events (
-      event_id, binding_id, runtime_id, stable_work_context_id, type,
-      previous_project_id, project_id, actor_id, created_at
-    )
-    SELECT
-      event_id, binding_id, runtime_id, stable_work_context_id, type,
-      previous_project_id, project_id, actor_id, created_at
-    FROM runtime_context_binding_events_v3;
-    DROP TABLE runtime_context_binding_events_v3;
-    CREATE INDEX runtime_context_binding_events_context_idx
-      ON runtime_context_binding_events(runtime_id, stable_work_context_id, created_at, event_id);
-  `);
-}
-
-function createProjectDeletionTable(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS project_deletions (
-      deletion_id TEXT PRIMARY KEY,
-      actor_id TEXT NOT NULL,
-      idempotency_key TEXT NOT NULL,
-      request_fingerprint TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      board_id TEXT NOT NULL,
-      staged_directory TEXT NOT NULL,
-      deleted_binding_count INTEGER NOT NULL,
-      cleanup_state TEXT NOT NULL CHECK (cleanup_state IN ('complete', 'pending')),
-      cleanup_error TEXT,
-      deleted_at TEXT NOT NULL,
-      cleaned_at TEXT,
-      UNIQUE(actor_id, idempotency_key)
-    );
-    CREATE INDEX IF NOT EXISTS project_deletions_project_idx
-      ON project_deletions(project_id, deleted_at, deletion_id);
-  `);
-}
-
-function createDesktopPanelTables(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS goal_desktop_panels (
-      panel_id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(project_id),
-      goal_id TEXT NOT NULL,
-      runtime_kind TEXT NOT NULL,
-      launch_command TEXT NOT NULL,
-      launch_args TEXT NOT NULL,
-      cwd TEXT,
-      work_context_id TEXT NOT NULL,
-      host_session_id TEXT,
-      tab_index INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('open', 'exited')),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS goal_desktop_panels_goal_idx
-      ON goal_desktop_panels(project_id, goal_id, tab_index);
-    CREATE TABLE IF NOT EXISTS goal_desktop_panel_aliases (
-      panel_id TEXT NOT NULL REFERENCES goal_desktop_panels(panel_id) ON DELETE CASCADE,
-      runtime_id TEXT NOT NULL,
-      stable_work_context_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (runtime_id, stable_work_context_id)
-    );
-  `);
-}
-
 async function initializeProjectDatabase(
   databasePath: string,
   boardId: string,
@@ -2502,153 +1590,6 @@ function readManagedBoard(
   }
 }
 
-function projectRecord(input: {
-  projectId: string;
-  displayName: string;
-  boardId: string;
-  databasePath: string;
-  source: GoalBoardProjectRecord["source"];
-  dataClass: GoalBoardProjectRecord["data_class"];
-  migratedFromPath: string | null;
-}): GoalBoardProjectRecord {
-  const now = new Date().toISOString();
-  return {
-    project_id: input.projectId,
-    display_name: input.displayName,
-    board_id: input.boardId,
-    database_path: input.databasePath,
-    source: input.source,
-    data_class: input.dataClass,
-    migrated_from_path: input.migratedFromPath,
-    created_at: now,
-    updated_at: now,
-  };
-}
-
-function mapProject(row: Record<string, unknown>): GoalBoardProjectRecord {
-  return {
-    project_id: String(row.project_id),
-    display_name: String(row.display_name),
-    board_id: String(row.board_id),
-    database_path: String(row.database_path),
-    source: String(row.source) as GoalBoardProjectRecord["source"],
-    data_class: String(row.data_class) as GoalBoardProjectRecord["data_class"],
-    migrated_from_path: row.migrated_from_path == null ? null : String(row.migrated_from_path),
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-  };
-}
-
-function mapRuntimeContextBinding(row: Record<string, unknown>): GoalBoardRuntimeContextBinding {
-  return {
-    binding_id: String(row.binding_id),
-    runtime_id: String(row.runtime_id),
-    stable_work_context_id: String(row.stable_work_context_id),
-    project_id: String(row.project_id),
-    bound_by: String(row.bound_by),
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-  };
-}
-
-function mapWorkspaceMembership(row: Record<string, unknown>): GoalBoardWorkspaceMembership {
-  return {
-    membership_id: String(row.membership_id),
-    workspace_id: String(row.workspace_id),
-    workspace_name: String(row.workspace_name),
-    realpath_verified: Number(row.realpath_verified) === 1,
-    project_id: String(row.project_id),
-    is_default: Number(row.is_default) === 1,
-    bound_by: String(row.bound_by),
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-  };
-}
-
-function mapRuntimeContextBindingEvent(
-  row: Record<string, unknown>,
-): GoalBoardRuntimeContextBindingEvent {
-  return {
-    event_id: String(row.event_id),
-    binding_id: String(row.binding_id),
-    runtime_id: String(row.runtime_id),
-    stable_work_context_id: String(row.stable_work_context_id),
-    type: String(row.type) as GoalBoardRuntimeContextBindingEvent["type"],
-    previous_project_id: row.previous_project_id == null ? null : String(row.previous_project_id),
-    project_id: String(row.project_id),
-    actor_id: String(row.actor_id),
-    created_at: String(row.created_at),
-  };
-}
-
-function mapDesktopPanel(row: Record<string, unknown>): GoalBoardDesktopPanelRecord {
-  let launchArgs: string[] = [];
-  try {
-    const parsed = JSON.parse(String(row.launch_args ?? "[]")) as unknown;
-    if (Array.isArray(parsed)) launchArgs = parsed.map((item) => String(item));
-  } catch {
-    launchArgs = [];
-  }
-  return {
-    panel_id: String(row.panel_id),
-    project_id: String(row.project_id),
-    goal_id: String(row.goal_id),
-    runtime_kind: String(row.runtime_kind),
-    launch_command: String(row.launch_command),
-    launch_args: launchArgs,
-    cwd: row.cwd == null ? null : String(row.cwd),
-    work_context_id: String(row.work_context_id),
-    host_session_id: row.host_session_id == null ? null : String(row.host_session_id),
-    tab_index: Number(row.tab_index),
-    title: String(row.title),
-    status: String(row.status) === "exited" ? "exited" : "open",
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-  };
-}
-
-function normalizeOptionalAbsolutePath(value: string | null | undefined): string | null {
-  const raw = value?.trim();
-  if (!raw) return null;
-  if (!path.isAbsolute(raw)) {
-    throw new GoalBoardProjectCatalogError("catalog.invalid_name", "终端工作目录必须是绝对路径");
-  }
-  return path.resolve(raw);
-}
-
-function mapStoredProjectDeletion(row: Record<string, unknown>): StoredProjectDeletion {
-  return {
-    deletion_id: String(row.deletion_id),
-    actor_id: String(row.actor_id),
-    idempotency_key: String(row.idempotency_key),
-    request_fingerprint: String(row.request_fingerprint),
-    project_id: String(row.project_id),
-    display_name: String(row.display_name),
-    board_id: String(row.board_id),
-    staged_directory: String(row.staged_directory),
-    deleted_binding_count: Number(row.deleted_binding_count),
-    cleanup_state: String(row.cleanup_state) as StoredProjectDeletion["cleanup_state"],
-    cleanup_error: row.cleanup_error == null ? null : String(row.cleanup_error),
-    deleted_at: String(row.deleted_at),
-    cleaned_at: row.cleaned_at == null ? null : String(row.cleaned_at),
-  };
-}
-
-function projectDeletionRecord(record: StoredProjectDeletion): GoalBoardProjectDeletionRecord {
-  return {
-    deletion_id: record.deletion_id,
-    project_id: record.project_id,
-    display_name: record.display_name,
-    board_id: record.board_id,
-    actor_id: record.actor_id,
-    deleted_binding_count: record.deleted_binding_count,
-    cleanup_state: record.cleanup_state,
-    cleanup_error: record.cleanup_error,
-    deleted_at: record.deleted_at,
-    cleaned_at: record.cleaned_at,
-  };
-}
-
 /** Normalize the optional Session ID and canonicalize the independent workspace. */
 export function normalizeRuntimeWorkContext(input: RuntimeWorkContext): NormalizedRuntimeWorkContext {
   const runtimeId = requiredRuntimeId(input.runtime_id);
@@ -2667,24 +1608,7 @@ export function normalizeRuntimeWorkContext(input: RuntimeWorkContext): Normaliz
 function normalizeRuntimeWorkspaceContext(
   input: RuntimeWorkspaceContext | null | undefined,
 ): NormalizedRuntimeWorkspaceContext | undefined {
-  if (!input || typeof input.canonical_path !== "string") return undefined;
-  const suppliedPath = input.canonical_path.trim();
-  if (!suppliedPath || !path.isAbsolute(suppliedPath)) return undefined;
-  let canonicalPath = path.resolve(suppliedPath);
-  let realpathVerified = false;
-  try {
-    canonicalPath = realpathSync.native(canonicalPath);
-    realpathVerified = true;
-  } catch {
-    realpathVerified = input.realpath_verified === true;
-  }
-  const workspaceId = `workspace-${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 24)}`;
-  return {
-    workspace_id: workspaceId,
-    canonical_path: canonicalPath,
-    realpath_verified: realpathVerified,
-    display_name: path.basename(canonicalPath) || canonicalPath,
-  };
+  return normalizeProjectWorkspace(input);
 }
 
 function requireStableRuntimeWorkContext(input: RuntimeWorkContext): NormalizedRuntimeWorkContext {
@@ -2875,14 +1799,6 @@ function requiredProjectId(value: string): string {
     throw new GoalBoardProjectCatalogError("catalog.project_not_found", "项目 ID 不能为空");
   }
   return projectId;
-}
-
-function requiredWorkspaceId(value: string): string {
-  const workspaceId = value.trim();
-  if (!workspaceId) {
-    throw new GoalBoardProjectCatalogError("context.workspace_required", "必须选择一个项目目录");
-  }
-  return workspaceId;
 }
 
 function requiredRuntimeId(value: string): string {

@@ -19,7 +19,10 @@ import {
 import { runV1Cli } from "../src/v1/cli.js";
 import { main as runPublicCli } from "../src/cli/main.js";
 import { GoalBoardServer } from "../src/mcp/server.js";
-import { ProjectReferenceError, readProjectReference } from "../src/evidence/locator.js";
+import {
+  ProjectReferenceError,
+  readProjectReference,
+} from "@adeptify/goalboard-module-evidence-verification";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,7 +51,7 @@ function createLeaf(
   goalId: string,
   priority = 0,
 ) {
-  return coordinator.createGoal(
+  return coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: goalId,
@@ -80,7 +83,7 @@ function completeLeafGoal(
   goalId: string,
   actorId = `runtime-${goalId}`,
 ) {
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: goalId,
     actor_id: actorId,
@@ -88,7 +91,7 @@ function completeLeafGoal(
     idempotency_key: `${goalId}-execute`,
   });
   assert.equal(execution.allowed, true);
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: actorId,
@@ -96,7 +99,7 @@ function completeLeafGoal(
     output_refs: [`test://${goalId}`],
     idempotency_key: `${goalId}-run-complete`,
   });
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: goalId,
     actor_id: actorId,
@@ -111,7 +114,7 @@ function completeLeafGoal(
     .snapshot("board-1")
     .review_obligations.find((item) => item.goal_id === goalId && item.role === "self_verifier");
   assert.ok(selfReview);
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: goalId,
     obligation_id: selfReview!.obligation_id,
@@ -121,13 +124,13 @@ function completeLeafGoal(
     reasoning: "完成结果与验收 Evidence 一致",
     idempotency_key: `${goalId}-self-review`,
   });
-  assert.equal(coordinator.evaluateLeafCompletion({
+  assert.equal(coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: goalId,
     actor_id: actorId,
     idempotency_key: `${goalId}-complete`,
   }).satisfied, true);
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: actorId,
@@ -147,7 +150,7 @@ function selectProjectedAction(
     target_id?: string;
   },
 ) {
-  const projection = coordinator.getGoalActionProjection({
+  const projection = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: input.goal_id,
   });
@@ -158,7 +161,7 @@ function selectProjectedAction(
     (input.target_id == null || action.target_id === input.target_id)
   );
   assert.ok(selected, `missing ${input.kind} action for ${input.goal_id}`);
-  return coordinator.selectGoalAndStart({
+  return coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: input.goal_id,
     actor_id: input.actor_id,
@@ -465,7 +468,7 @@ function createAcceptedCompoundParent(
   decompositionState: "abstract" | "frontier_open" | "closed_leaf" | "closed_compound" = "abstract",
 ) {
   const title = `收口 ${goalId}`;
-  return coordinator.createGoal(
+  return coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: goalId,
@@ -564,7 +567,7 @@ test("batch Goal work states match canonical single-Goal reads", () => {
   try {
     createLeaf(coordinator, "foundation");
     createLeaf(coordinator, "delivery");
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       "board-1",
       {
         from_goal_id: "delivery",
@@ -575,7 +578,7 @@ test("batch Goal work states match canonical single-Goal reads", () => {
       },
       { actor_id: "user-1", idempotency_key: "batch-state-dependency" },
     );
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       "board-1",
       {
         goal_id: "rough-idea",
@@ -592,12 +595,12 @@ test("batch Goal work states match canonical single-Goal reads", () => {
 
     const snapshot = store.snapshot("board-1");
     const batch = new Map(
-      coordinator.getGoalWorkStates({ board_id: "board-1", snapshot }).map((state) => [state.goal_id, state]),
+      coordinator.executionValidation.query.getGoalWorkStates({ board_id: "board-1", snapshot }).map((state) => [state.goal_id, state]),
     );
     for (const goal of store.listGoals("board-1")) {
       assert.deepEqual(
         batch.get(goal.goal_id),
-        coordinator.getGoalWorkState({ board_id: "board-1", goal_id: goal.goal_id }),
+        coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: goal.goal_id }),
       );
     }
   } finally {
@@ -834,7 +837,7 @@ test("fresh SQLite authority creates a usable board and reopens idempotently", (
 test("project guidance is user-confirmed, deduplicated, and rendered as a stable prompt prefix", () => {
   const { store, coordinator } = fixture();
   assert.throws(
-    () => coordinator.addProjectGuidance({
+    () => coordinator.goals.commands.addProjectGuidance({
       board_id: "board-1",
       actor_id: "runtime-guidance",
       kind: "constraint",
@@ -847,7 +850,7 @@ test("project guidance is user-confirmed, deduplicated, and rendered as a stable
     (error: unknown) =>
       error instanceof GoalBoardV1Error && error.code === "project_guidance.user_confirmation_required",
   );
-  const first = coordinator.addProjectGuidance({
+  const first = coordinator.goals.commands.addProjectGuidance({
     board_id: "board-1",
     actor_id: "user-1",
     kind: "constraint",
@@ -867,7 +870,7 @@ test("project guidance is user-confirmed, deduplicated, and rendered as a stable
   assert.match(firstView.runtime_prompt_prefix, /^<GOALBOARD_PROJECT_GUIDANCE>/);
   assert.match(firstView.runtime_prompt_prefix, /\[constraint\]/);
 
-  const duplicate = coordinator.addProjectGuidance({
+  const duplicate = coordinator.goals.commands.addProjectGuidance({
     board_id: "board-1",
     actor_id: "user-1",
     kind: "constraint",
@@ -880,7 +883,7 @@ test("project guidance is user-confirmed, deduplicated, and rendered as a stable
   assert.equal(duplicate.created, false);
   assert.equal(duplicate.entry.guidance_id, first.entry.guidance_id);
 
-  const second = coordinator.addProjectGuidance({
+  const second = coordinator.goals.commands.addProjectGuidance({
     board_id: "board-1",
     actor_id: "user-1",
     kind: "workflow",
@@ -906,7 +909,7 @@ test("project guidance is user-confirmed, deduplicated, and rendered as a stable
   );
 
   assert.throws(
-    () => coordinator.addProjectGuidance({
+    () => coordinator.goals.commands.addProjectGuidance({
       board_id: "board-1",
       actor_id: "user-1",
       kind: "constraint",
@@ -924,7 +927,7 @@ test("project guidance is user-confirmed, deduplicated, and rendered as a stable
 
 test("project guidance edits, deactivation, and restoration preserve immutable revisions without a Goal queue", () => {
   const { store, coordinator } = fixture();
-  const created = coordinator.addProjectGuidance({
+  const created = coordinator.goals.commands.addProjectGuidance({
     board_id: "board-1",
     actor_id: "user-1",
     kind: "constraint",
@@ -939,7 +942,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
   assert.equal(created.entry.active, true);
 
   assert.throws(
-    () => coordinator.updateProjectGuidance({
+    () => coordinator.goals.commands.updateProjectGuidance({
       board_id: "board-1",
       guidance_id: created.entry.guidance_id,
       actor_id: "runtime-guidance",
@@ -955,7 +958,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
       error instanceof GoalBoardV1Error && error.code === "project_guidance.user_confirmation_required",
   );
 
-  const edited = coordinator.updateProjectGuidance({
+  const edited = coordinator.goals.commands.updateProjectGuidance({
     board_id: "board-1",
     guidance_id: created.entry.guidance_id,
     actor_id: "user-1",
@@ -971,7 +974,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
   assert.equal(edited.entry.revision, 2);
   assert.equal(edited.revision.change_kind, "edited");
   assert.equal(edited.entry.kind, "quality_bar");
-  const replay = coordinator.updateProjectGuidance({
+  const replay = coordinator.goals.commands.updateProjectGuidance({
     board_id: "board-1",
     guidance_id: created.entry.guidance_id,
     actor_id: "user-1",
@@ -988,7 +991,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
   assert.equal(replay.entry.revision, 2);
   assert.doesNotMatch(coordinator.readProjectGuidance("board-1").runtime_prompt_prefix, /发布前检查升级路径。/);
 
-  const deactivated = coordinator.updateProjectGuidance({
+  const deactivated = coordinator.goals.commands.updateProjectGuidance({
     board_id: "board-1",
     guidance_id: created.entry.guidance_id,
     actor_id: "user-1",
@@ -1006,7 +1009,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
   assert.doesNotMatch(inactiveView.runtime_prompt_prefix, /回滚和安装路径/);
   assert.deepEqual(store.snapshot("board-1").project_guidance, []);
 
-  const restored = coordinator.updateProjectGuidance({
+  const restored = coordinator.goals.commands.updateProjectGuidance({
     board_id: "board-1",
     guidance_id: created.entry.guidance_id,
     actor_id: "user-1",
@@ -1031,7 +1034,7 @@ test("project guidance edits, deactivation, and restoration preserve immutable r
 
 test("migration 26 backfills revision history for existing project guidance", () => {
   const { store, coordinator } = fixture();
-  const created = coordinator.addProjectGuidance({
+  const created = coordinator.goals.commands.addProjectGuidance({
     board_id: "board-1",
     actor_id: "user-1",
     kind: "context",
@@ -1073,7 +1076,7 @@ test("project guidance rejects invalid, empty, and project-total overflow conten
     user_confirmed: true,
   };
   assert.throws(
-    () => coordinator.addProjectGuidance({
+    () => coordinator.goals.commands.addProjectGuidance({
       ...base,
       kind: "temporary" as never,
       content: "不支持的分类",
@@ -1082,7 +1085,7 @@ test("project guidance rejects invalid, empty, and project-total overflow conten
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "project_guidance.kind_invalid",
   );
   assert.throws(
-    () => coordinator.addProjectGuidance({
+    () => coordinator.goals.commands.addProjectGuidance({
       ...base,
       content: "  \n  ",
       idempotency_key: "guidance-empty",
@@ -1090,14 +1093,14 @@ test("project guidance rejects invalid, empty, and project-total overflow conten
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "project_guidance.invalid",
   );
   for (let index = 0; index < 8; index += 1) {
-    coordinator.addProjectGuidance({
+    coordinator.goals.commands.addProjectGuidance({
       ...base,
       content: `${index}${"x".repeat(3_999)}`,
       idempotency_key: `guidance-fill-${index}`,
     });
   }
   assert.throws(
-    () => coordinator.addProjectGuidance({
+    () => coordinator.goals.commands.addProjectGuidance({
       ...base,
       content: "超过项目总长度",
       idempotency_key: "guidance-total-overflow",
@@ -1133,7 +1136,7 @@ test("migration 30 backfills Contract revisions and action targets without rewri
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "migration-30-parent");
   createLeaf(coordinator, "migration-30-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "migration-30-child",
@@ -1144,7 +1147,7 @@ test("migration 30 backfills Contract revisions and action targets without rewri
     },
     { actor_id: "user-1", idempotency_key: "migration-30-part-of" },
   );
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "migration-30-child",
     actor_id: "runtime-migration-30",
@@ -1152,14 +1155,14 @@ test("migration 30 backfills Contract revisions and action targets without rewri
     idempotency_key: "migration-30-select",
   });
   assert.equal(execution.allowed, true);
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-migration-30",
     state: "completed",
     idempotency_key: "migration-30-run-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "migration-30-child",
     run_id: execution.run!.run_id,
@@ -1228,13 +1231,13 @@ test("migration 30 backfills Contract revisions and action targets without rewri
 test("action tokens ignore informational Risk edits but reject stale work after an actionable Risk appears", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "action-token-scope");
-  const initial = coordinator.getGoalActionProjection({
+  const initial = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "action-token-scope",
   });
   assert.equal(initial.primary_action?.kind, "execute");
 
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "action-token-informational",
@@ -1250,13 +1253,13 @@ test("action tokens ignore informational Risk edits but reject stale work after 
     },
     { actor_id: "runtime-observer", idempotency_key: "action-token-informational" },
   );
-  const afterInformational = coordinator.getGoalActionProjection({
+  const afterInformational = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "action-token-scope",
   });
   assert.equal(afterInformational.action_token, initial.action_token);
 
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "action-token-mitigation",
@@ -1273,14 +1276,14 @@ test("action tokens ignore informational Risk edits but reject stale work after 
     },
     { actor_id: "runtime-mitigator", idempotency_key: "action-token-mitigation" },
   );
-  const changed = coordinator.getGoalActionProjection({
+  const changed = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "action-token-scope",
   });
   assert.notEqual(changed.action_token, initial.action_token);
   assert.equal(changed.primary_action?.kind, "mitigate_risk");
   assert.throws(
-    () => coordinator.selectGoalAndStart({
+    () => coordinator.executionValidation.commands.selectGoalAndStart({
       board_id: "board-1",
       goal_id: "action-token-scope",
       actor_id: "runtime-stale",
@@ -1302,7 +1305,7 @@ test("user Risk decisions require one current action and reconcile every linked 
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "risk-decision-a");
   createLeaf(coordinator, "risk-decision-b");
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "shared-accept-risk",
@@ -1318,14 +1321,14 @@ test("user Risk decisions require one current action and reconcile every linked 
     },
     { actor_id: "runtime-risk", idempotency_key: "shared-accept-risk-add" },
   );
-  const projection = coordinator.getGoalActionProjection({
+  const projection = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "risk-decision-a",
   });
   assert.equal(projection.primary_action?.kind, "accept_risk");
 
   assert.throws(
-    () => coordinator.setRiskState(
+    () => coordinator.goals.commands.setRiskState(
       "board-1",
       {
         risk_id: "shared-accept-risk",
@@ -1340,7 +1343,7 @@ test("user Risk decisions require one current action and reconcile every linked 
   );
   assert.equal(store.snapshot("board-1").risks.find((risk) => risk.risk_id === "shared-accept-risk")?.state, "open");
 
-  const accepted = coordinator.setRiskState(
+  const accepted = coordinator.goals.commands.setRiskState(
     "board-1",
     {
       risk_id: "shared-accept-risk",
@@ -1370,7 +1373,7 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     definition_state: "accepted",
     decomposition_state: "closed_leaf",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     { ...initialContract, constraints: ["保持既有验收语义"], priority: 12 },
     { actor_id: "user-1", idempotency_key: "create-metadata-continuity" },
@@ -1382,7 +1385,7 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     idempotency_key: "metadata-continuity-execute",
   });
   assert.equal(execution.allowed, true);
-  const activeBeforeRevision = coordinator.getGoalActionProjection({
+  const activeBeforeRevision = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "metadata-continuity",
   });
@@ -1467,11 +1470,11 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     obligation.obligation_id === obligationBefore!.obligation_id
   )?.state, "pending");
   assert.equal(
-    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "metadata-continuity" }).action_token,
+    coordinator.executionValidation.query.getGoalActionProjection({ board_id: "board-1", goal_id: "metadata-continuity" }).action_token,
     activeBeforeRevision.action_token,
   );
 
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-metadata",
@@ -1480,11 +1483,11 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     action_token: activeBeforeRevision.action_token,
     idempotency_key: "metadata-continuity-run-complete",
   });
-  const evidenceProjection = coordinator.getGoalActionProjection({
+  const evidenceProjection = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "metadata-continuity",
   });
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "metadata-continuity",
     run_id: execution.run!.run_id,
@@ -1499,7 +1502,7 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
   }).evidence;
   assert.equal(evidence.contract_revision, 2);
 
-  const readyForReview = coordinator.getGoalActionProjection({
+  const readyForReview = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "metadata-continuity",
   });
@@ -1507,7 +1510,7 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     action.kind === "review" && action.target_id === obligationBefore!.obligation_id
   );
   assert.ok(reviewAction);
-  const reviewSelection = coordinator.selectGoalAndStart({
+  const reviewSelection = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "metadata-continuity",
     actor_id: "runtime-metadata",
@@ -1517,11 +1520,11 @@ test("metadata-only Contract revisions preserve the active Run, action token, Ev
     idempotency_key: "metadata-continuity-review-select",
   });
   assert.equal(reviewSelection.allowed, true);
-  const reviewProjection = coordinator.getGoalActionProjection({
+  const reviewProjection = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "metadata-continuity",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "metadata-continuity",
     obligation_id: obligationBefore!.obligation_id,
@@ -1705,7 +1708,7 @@ test("only satisfied Goals can be archived and restoration preserves completion 
   createLeaf(coordinator, "archive-target");
   assert.throws(
     () =>
-      coordinator.setGoalArchived(
+      coordinator.goals.lifecycle.setArchived(
         "board-1",
         { goal_id: "archive-target", archived: true, reason: "整理已完成目标" },
         { actor_id: "user-1", idempotency_key: "archive-unmet" },
@@ -1722,7 +1725,7 @@ test("only satisfied Goals can be archived and restoration preserves completion 
     .prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
     .run("archive-target");
   setNow("2026-08-15T01:00:00.000Z");
-  const archived = coordinator.setGoalArchived(
+  const archived = coordinator.goals.lifecycle.setArchived(
     "board-1",
     { goal_id: "archive-target", archived: true, reason: "用户手动归档" },
     { actor_id: "user-1", idempotency_key: "archive-target" },
@@ -1741,7 +1744,7 @@ test("only satisfied Goals can be archived and restoration preserves completion 
   );
 
   setNow("2026-08-15T02:00:00.000Z");
-  const restored = coordinator.setGoalArchived(
+  const restored = coordinator.goals.lifecycle.setArchived(
     "board-1",
     { goal_id: "archive-target", archived: false, reason: "用户恢复归档" },
     { actor_id: "user-1", idempotency_key: "restore-target" },
@@ -1761,7 +1764,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
   createLeaf(coordinator, "trash-target");
   createLeaf(coordinator, "trash-peer");
   createLeaf(coordinator, "trash-inactive-peer");
-  const activeRelation = coordinator.addRelation(
+  const activeRelation = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trash-target",
@@ -1771,7 +1774,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     },
     { actor_id: "user-1", idempotency_key: "trash-active-relation" },
   ).relation_id;
-  const inactiveRelation = coordinator.addRelation(
+  const inactiveRelation = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trash-target",
@@ -1781,20 +1784,20 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     },
     { actor_id: "user-1", idempotency_key: "trash-inactive-relation" },
   ).relation_id;
-  coordinator.deactivateRelation(
+  coordinator.goals.commands.deactivateRelation(
     "board-1",
     { relation_id: inactiveRelation, reason: "该缓解关系此前已经不再适用" },
     { actor_id: "user-1", idempotency_key: "trash-inactive-relation-deactivate" },
   );
 
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "trash-target",
     actor_id: "runtime-trash",
     idempotency_key: "trash-history-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim!.claim_id,
     actor_id: "runtime-trash",
@@ -1820,7 +1823,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     blocking_mode: "none",
     idempotency_key: "trash-history-candidate",
   }).candidate;
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "trash-target",
     actor_id: "runtime-trash",
@@ -1831,7 +1834,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     result: "passed",
     idempotency_key: "trash-history-evidence",
   }).evidence;
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "trash-history-risk",
@@ -1847,7 +1850,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     },
     { actor_id: "user-1", idempotency_key: "trash-history-risk" },
   );
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: run.run_id,
     actor_id: "runtime-trash",
@@ -1855,7 +1858,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     output_refs: ["test://trash-history"],
     idempotency_key: "trash-history-run-completed",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: claim!.claim_id,
     actor_id: "runtime-trash",
@@ -1868,7 +1871,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     { actor_id: "user-1", idempotency_key: "trash-history-active-goal" },
   );
 
-  const trashed = coordinator.setGoalTrashed(
+  const trashed = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-target", trashed: true, reason: "用户暂时移入回收站" },
     { actor_id: "user-1", idempotency_key: "trash-target" },
@@ -1904,7 +1907,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     ),
     false,
   );
-  const deniedClaim = coordinator.claimGoal({
+  const deniedClaim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "trash-target",
     actor_id: "runtime-other",
@@ -1914,7 +1917,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
   assert.ok(deniedClaim.reasons.some((item) => item.code === "goal.trashed"));
   assert.throws(
     () =>
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         "board-1",
         {
           from_goal_id: "trash-peer",
@@ -1932,7 +1935,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
   assert.ok(selfReview);
   assert.throws(
     () =>
-      coordinator.submitReview({
+      coordinator.executionValidation.commands.submitReview({
         board_id: "board-1",
         goal_id: "trash-target",
         obligation_id: selfReview!.obligation_id,
@@ -1944,13 +1947,13 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     (error) => error instanceof GoalBoardV1Error && error.code === "goal.trashed",
   );
 
-  const repeatedTrash = coordinator.setGoalTrashed(
+  const repeatedTrash = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-target", trashed: true, reason: "重复删除不产生副作用" },
     { actor_id: "user-1", idempotency_key: "trash-target-repeat" },
   );
   assert.equal(repeatedTrash.status, "already_trashed");
-  const restored = coordinator.setGoalTrashed(
+  const restored = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-target", trashed: false, reason: "用户恢复原 Goal" },
     { actor_id: "user-1", idempotency_key: "restore-target" },
@@ -1971,7 +1974,7 @@ test("Goal trash preserves history, deactivates only active relations, and resto
     ["goal.trashed", "goal.restored_from_trash"],
   );
   assert.equal(
-    coordinator.setGoalTrashed(
+    coordinator.goals.lifecycle.setTrashed(
       "board-1",
       { goal_id: "trash-target", trashed: false, reason: "重复恢复不产生副作用" },
       { actor_id: "user-1", idempotency_key: "restore-target-repeat" },
@@ -1985,7 +1988,7 @@ test("Goal trash protects active work and rolls the whole deletion transaction b
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "trash-active-work");
   createLeaf(coordinator, "trash-active-peer");
-  const relationId = coordinator.addRelation(
+  const relationId = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trash-active-work",
@@ -1995,20 +1998,20 @@ test("Goal trash protects active work and rolls the whole deletion transaction b
     },
     { actor_id: "user-1", idempotency_key: "trash-active-work-relation" },
   ).relation_id;
-  const claimed = coordinator.claimGoal({
+  const claimed = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "trash-active-work",
     actor_id: "runtime-active",
     idempotency_key: "trash-active-work-claim",
   }).claim;
   assert.ok(claimed);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claimed!.claim_id,
     actor_id: "runtime-active",
     idempotency_key: "trash-active-work-run",
   }).run;
-  const blocked = coordinator.setGoalTrashed(
+  const blocked = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-active-work", trashed: true, reason: "活动工作不应被删除" },
     { actor_id: "user-1", idempotency_key: "trash-active-work-blocked" },
@@ -2019,7 +2022,7 @@ test("Goal trash protects active work and rolls the whole deletion transaction b
   assert.equal(store.getGoal("trash-active-work")?.trashed_at, null);
   assert.equal(store.snapshot("board-1").relations.find((item) => item.relation_id === relationId)?.state, "active");
 
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: run.run_id,
     actor_id: "runtime-active",
@@ -2035,7 +2038,7 @@ test("Goal trash protects active work and rolls the whole deletion transaction b
   `);
   assert.throws(
     () =>
-      coordinator.setGoalTrashed(
+      coordinator.goals.lifecycle.setTrashed(
         "board-1",
         { goal_id: "trash-active-work", trashed: true, reason: "注入失败应回滚全部修改" },
         { actor_id: "user-1", idempotency_key: "trash-active-work-rollback" },
@@ -2050,7 +2053,7 @@ test("Goal trash protects active work and rolls the whole deletion transaction b
   );
   store.db.exec("DROP TRIGGER trash_relation_failure");
   assert.equal(
-    coordinator.setGoalTrashed(
+    coordinator.goals.lifecycle.setTrashed(
       "board-1",
       { goal_id: "trash-active-work", trashed: true, reason: "活动工作结束后可以删除" },
       { actor_id: "user-1", idempotency_key: "trash-active-work-success" },
@@ -2064,7 +2067,7 @@ test("a Relation waits safely until both independently trashed endpoints are res
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "trash-left");
   createLeaf(coordinator, "trash-right");
-  const relationId = coordinator.addRelation(
+  const relationId = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trash-left",
@@ -2074,17 +2077,17 @@ test("a Relation waits safely until both independently trashed endpoints are res
     },
     { actor_id: "user-1", idempotency_key: "trash-two-endpoints-relation" },
   ).relation_id;
-  coordinator.setGoalTrashed(
+  coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-left", trashed: true, reason: "先删除左侧 Goal" },
     { actor_id: "user-1", idempotency_key: "trash-left" },
   );
-  coordinator.setGoalTrashed(
+  coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-right", trashed: true, reason: "再删除右侧 Goal" },
     { actor_id: "user-1", idempotency_key: "trash-right" },
   );
-  const leftRestored = coordinator.setGoalTrashed(
+  const leftRestored = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-left", trashed: false, reason: "右侧仍在回收站，关系保持停用" },
     { actor_id: "user-1", idempotency_key: "restore-left" },
@@ -2092,7 +2095,7 @@ test("a Relation waits safely until both independently trashed endpoints are res
   assert.deepEqual(leftRestored.restored_relation_ids, []);
   assert.deepEqual(leftRestored.pending_relation_ids, [relationId]);
   assert.equal(store.snapshot("board-1").relations.find((item) => item.relation_id === relationId)?.state, "inactive");
-  const rightRestored = coordinator.setGoalTrashed(
+  const rightRestored = coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trash-right", trashed: false, reason: "两端都恢复后才恢复关系" },
     { actor_id: "user-1", idempotency_key: "restore-right" },
@@ -2104,7 +2107,7 @@ test("a Relation waits safely until both independently trashed endpoints are res
 
 test("a user can update one Draft Contract while accepted Contracts stay immutable", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "editable-draft",
@@ -2119,7 +2122,7 @@ test("a user can update one Draft Contract while accepted Contracts stay immutab
     { actor_id: "user-1", idempotency_key: "editable-draft-create" },
   );
 
-  const updated = coordinator.updateDraftGoal(
+  const updated = coordinator.goals.commands.updateDraftGoal(
     "board-1",
     "editable-draft",
     {
@@ -2174,7 +2177,7 @@ test("a user can update one Draft Contract while accepted Contracts stay immutab
   createLeaf(coordinator, "accepted-contract");
   assert.throws(
     () =>
-      coordinator.updateDraftGoal(
+      coordinator.goals.commands.updateDraftGoal(
         "board-1",
         "accepted-contract",
         {
@@ -2207,7 +2210,7 @@ test("a user can update one Draft Contract while accepted Contracts stay immutab
 test("policy edits replace the same scope while Goal rules only strengthen project defaults", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "policy-target");
-  const firstProject = coordinator.setPolicy(
+  const firstProject = coordinator.goals.commands.setPolicy(
     "board-1",
     {
       policy: {
@@ -2232,7 +2235,7 @@ test("policy edits replace the same scope while Goal rules only strengthen proje
     false,
   );
 
-  const firstGoal = coordinator.setPolicy(
+  const firstGoal = coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "policy-target",
@@ -2255,7 +2258,7 @@ test("policy edits replace the same scope while Goal rules only strengthen proje
   assert.equal(strengthened.cross_reviewers, 1);
   assert.equal(strengthened.max_lease_seconds, 2400);
 
-  const secondProject = coordinator.setPolicy(
+  const secondProject = coordinator.goals.commands.setPolicy(
     "board-1",
     {
       policy: {
@@ -2271,7 +2274,7 @@ test("policy edits replace the same scope while Goal rules only strengthen proje
     },
     { actor_id: "user-1", idempotency_key: "project-policy-required" },
   );
-  const secondGoal = coordinator.setPolicy(
+  const secondGoal = coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "policy-target",
@@ -2315,7 +2318,7 @@ test("user relation maintenance keeps direction, reason, history, and idempotenc
   createLeaf(coordinator, "relation-source");
   createLeaf(coordinator, "relation-target");
 
-  const added = coordinator.addRelation(
+  const added = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "relation-source",
@@ -2327,7 +2330,7 @@ test("user relation maintenance keeps direction, reason, history, and idempotenc
   );
   assert.throws(
     () =>
-      coordinator.addRelation(
+      coordinator.goals.commands.addRelation(
         "board-1",
         {
           from_goal_id: "relation-source",
@@ -2341,7 +2344,7 @@ test("user relation maintenance keeps direction, reason, history, and idempotenc
       error instanceof GoalBoardV1Error && error.code === "relation.already_exists",
   );
 
-  const deactivated = coordinator.deactivateRelation(
+  const deactivated = coordinator.goals.commands.deactivateRelation(
     "board-1",
     {
       relation_id: added.relation_id,
@@ -2355,7 +2358,7 @@ test("user relation maintenance keeps direction, reason, history, and idempotenc
   assert.equal(deactivated.relation.state, "inactive");
   assert.ok(deactivated.relation.deactivated_at);
 
-  const replay = coordinator.deactivateRelation(
+  const replay = coordinator.goals.commands.deactivateRelation(
     "board-1",
     {
       relation_id: added.relation_id,
@@ -2366,7 +2369,7 @@ test("user relation maintenance keeps direction, reason, history, and idempotenc
   assert.equal(replay.replayed, true);
   assert.throws(
     () =>
-      coordinator.deactivateRelation(
+      coordinator.goals.commands.deactivateRelation(
         "board-1",
         { relation_id: added.relation_id, reason: "再次解除" },
         { actor_id: "user-1", idempotency_key: "relation-maintenance-deactivate-again" },
@@ -2385,7 +2388,7 @@ test("ready query explains dependency and Goal Mode blockers in plain language",
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "foundation");
   createLeaf(coordinator, "feature", 10);
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "feature",
@@ -2395,7 +2398,7 @@ test("ready query explains dependency and Goal Mode blockers in plain language",
     },
     { actor_id: "user-1", idempotency_key: "dependency-1" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     { goal_id: "foundation", policy: { goal_mode: "required" }, reason: "执行时保持目标约束" },
     { actor_id: "user-1", idempotency_key: "policy-1" },
@@ -2454,7 +2457,7 @@ test("an active replacement retires the old Goal from Ready, Available, and sele
       .some((item) => item.goal.goal_id === "roster-v1"),
   );
 
-  const replacement = coordinator.addRelation(
+  const replacement = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "roster-v2",
@@ -2489,10 +2492,10 @@ test("an active replacement retires the old Goal from Ready, Available, and sele
   assert.equal(explained.ready, false);
   assert.ok(explained.reasons.some((item) => item.code === "goal.replaced"));
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "roster-v1" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "roster-v1" }).work_state,
     "replaced",
   );
-  const denied = coordinator.selectGoalAndStart({
+  const denied = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "roster-v1",
     actor_id: "runtime-after",
@@ -2506,13 +2509,13 @@ test("an active replacement retires the old Goal from Ready, Available, and sele
     "active",
   );
 
-  coordinator.deactivateRelation(
+  coordinator.goals.commands.deactivateRelation(
     "board-1",
     { relation_id: replacement.relation_id, reason: "用户明确恢复旧 Goal 的可执行性" },
     { actor_id: "user-1", idempotency_key: "restore-roster-v1" },
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "roster-v1" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "roster-v1" }).work_state,
     "execution_pending",
   );
   assert.ok(
@@ -2526,7 +2529,7 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "goal-a");
 
-  const first = coordinator.claimGoal({
+  const first = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "goal-a",
     actor_id: "runtime-a",
@@ -2536,7 +2539,7 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   assert.equal(first.allowed, true);
   assert.ok(first.claim);
 
-  const replay = coordinator.claimGoal({
+  const replay = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "goal-a",
     actor_id: "runtime-a",
@@ -2546,7 +2549,7 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   assert.equal(replay.replayed, true);
   assert.equal(replay.claim?.claim_id, first.claim?.claim_id);
 
-  const denied = coordinator.claimGoal({
+  const denied = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "goal-a",
     actor_id: "runtime-b",
@@ -2560,7 +2563,7 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
   );
 
   setNow("2026-08-15T00:02:00.000Z");
-  const afterExpiry = coordinator.claimGoal({
+  const afterExpiry = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "goal-a",
     actor_id: "runtime-b",
@@ -2581,7 +2584,7 @@ test("claim is atomic, idempotent, and expired leases stop blocking", () => {
 test("releasing a Claim hands the Runtime back to Available without authorizing unrelated work", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "release-handoff");
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "release-handoff",
     actor_id: "runtime-release-handoff",
@@ -2589,7 +2592,7 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
     idempotency_key: "release-handoff-select",
   });
 
-  const released = coordinator.releaseClaim({
+  const released = coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: selected.claim!.claim_id,
     actor_id: "runtime-release-handoff",
@@ -2606,7 +2609,7 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
   assert.equal(released.transition.goal_id, "release-handoff");
   assert.equal(released.transition.projection.display_status, "continue");
 
-  const replayed = coordinator.releaseClaim({
+  const replayed = coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: selected.claim!.claim_id,
     actor_id: "runtime-release-handoff",
@@ -2621,7 +2624,7 @@ test("releasing a Claim hands the Runtime back to Available without authorizing 
 test("a completed Run keeps its Claim until Evidence is ready and then auto-releases", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completed-run-handoff", 12);
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completed-run-handoff",
     actor_id: "runtime-completed-run-handoff",
@@ -2629,7 +2632,7 @@ test("a completed Run keeps its Claim until Evidence is ready and then auto-rele
     idempotency_key: "completed-run-handoff-select",
   });
 
-  const reported = coordinator.reportRun({
+  const reported = coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: selected.run!.run_id,
     actor_id: "runtime-completed-run-handoff",
@@ -2641,7 +2644,7 @@ test("a completed Run keeps its Claim until Evidence is ready and then auto-rele
   assert.equal(reported.transition.projection.primary_action?.kind, "submit_evidence");
   assert.equal(store.snapshot("board-1").claims.find((item) => item.claim_id === selected.claim!.claim_id)?.state, "active");
 
-  const submitted = coordinator.submitEvidence({
+  const submitted = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "completed-run-handoff",
     actor_id: "runtime-completed-run-handoff",
@@ -2676,7 +2679,7 @@ test("a completed Run keeps its Claim until Evidence is ready and then auto-rele
 test("Contract presents an expired Claim and its Run as one recoverable lifecycle", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-contract");
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-contract",
     actor_id: "runtime-expired-contract",
@@ -2713,7 +2716,7 @@ test("Contract presents an expired Claim and its Run as one recoverable lifecycl
 test("expired Run reports and releases materialize once and direct the Runtime to select again", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-report");
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-report",
     actor_id: "runtime-expired-report",
@@ -2724,7 +2727,7 @@ test("expired Run reports and releases materialize once and direct the Runtime t
   setNow("2026-08-15T00:00:11.000Z");
 
   const reportsExpiredLease = (idempotencyKey: string) => assert.throws(
-    () => coordinator.reportRun({
+    () => coordinator.executionValidation.commands.reportRun({
       board_id: "board-1",
       run_id: selected.run!.run_id,
       actor_id: "runtime-expired-report",
@@ -2755,7 +2758,7 @@ test("expired Run reports and releases materialize once and direct the Runtime t
   );
 
   createLeaf(coordinator, "lease-release");
-  const releaseTarget = coordinator.selectGoalAndStart({
+  const releaseTarget = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-release",
     actor_id: "runtime-expired-release",
@@ -2765,7 +2768,7 @@ test("expired Run reports and releases materialize once and direct the Runtime t
   });
   setNow("2026-08-15T00:00:22.000Z");
   assert.throws(
-    () => coordinator.releaseClaim({
+    () => coordinator.executionValidation.commands.releaseClaim({
       board_id: "board-1",
       claim_id: releaseTarget.claim!.claim_id,
       actor_id: "runtime-expired-release",
@@ -2781,7 +2784,7 @@ test("expired Run reports and releases materialize once and direct the Runtime t
   assert.equal(snapshot.claims.find((item) => item.claim_id === releaseTarget.claim!.claim_id)?.state, "expired");
   assert.equal(snapshot.runs.find((item) => item.run_id === releaseTarget.run!.run_id)?.state, "abandoned");
 
-  const recovered = coordinator.selectGoalAndStart({
+  const recovered = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-report",
     actor_id: "runtime-recovered-report",
@@ -2797,7 +2800,7 @@ test("lease omission uses the resolved policy while over-limit Draft startup lea
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "lease-default");
 
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-default",
     actor_id: "runtime-default",
@@ -2809,7 +2812,7 @@ test("lease omission uses the resolved policy while over-limit Draft startup lea
     (new Date(selected.claim!.expires_at).getTime() - new Date(selected.claim!.claimed_at).getTime()) / 1000,
     1800,
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: selected.claim!.claim_id,
     actor_id: "runtime-default",
@@ -2842,13 +2845,13 @@ test("lease omission uses the resolved policy while over-limit Draft startup lea
 test("a project dynamic lease policy can allow an explicit value above the default", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "lease-dynamic");
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     { policy: { max_lease_seconds: 3600 }, reason: "当前项目允许更长的受控执行窗口" },
     { actor_id: "user-1", idempotency_key: "lease-dynamic-policy" },
   );
 
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "lease-dynamic",
     actor_id: "runtime-dynamic",
@@ -2866,7 +2869,7 @@ test("a project dynamic lease policy can allow an explicit value above the defau
 test("an active Claim can renew the same lifecycle and exposes a near-expiry action", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-renew");
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "lease-renew",
     actor_id: "runtime-renew",
@@ -2876,7 +2879,7 @@ test("an active Claim can renew the same lifecycle and exposes a near-expiry act
   });
 
   setNow("2026-08-15T00:00:07.000Z");
-  const renewed = coordinator.renewClaim({
+  const renewed = coordinator.executionValidation.commands.renewClaim({
     board_id: "board-1",
     claim_id: selected.claim!.claim_id,
     actor_id: "runtime-renew",
@@ -2895,7 +2898,7 @@ test("an active Claim can renew the same lifecycle and exposes a near-expiry act
     "续租不能创建新的 Run",
   );
 
-  const replay = coordinator.renewClaim({
+  const replay = coordinator.executionValidation.commands.renewClaim({
     board_id: "board-1",
     claim_id: selected.claim!.claim_id,
     actor_id: "runtime-renew",
@@ -2910,7 +2913,7 @@ test("an active Claim can renew the same lifecycle and exposes a near-expiry act
   );
 
   setNow("2026-08-15T00:00:15.000Z");
-  const workState = coordinator.getGoalWorkState({
+  const workState = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "lease-renew",
   });
@@ -2926,7 +2929,7 @@ test("an active Claim can renew the same lifecycle and exposes a near-expiry act
 test("Claim renewal rejects another actor, policy overflow, expired and released leases", () => {
   const { store, coordinator, setNow } = fixture();
   createLeaf(coordinator, "lease-renew-guard");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "lease-renew-guard",
     actor_id: "runtime-owner",
@@ -2935,7 +2938,7 @@ test("Claim renewal rejects another actor, policy overflow, expired and released
   }).claim!;
 
   assert.throws(
-    () => coordinator.renewClaim({
+    () => coordinator.executionValidation.commands.renewClaim({
       board_id: "board-1",
       claim_id: claim.claim_id,
       actor_id: "runtime-other",
@@ -2953,7 +2956,7 @@ test("Claim renewal rejects another actor, policy overflow, expired and released
       && error.details?.same_runtime_continuation_only === true,
   );
   assert.throws(
-    () => coordinator.renewClaim({
+    () => coordinator.executionValidation.commands.renewClaim({
       board_id: "board-1",
       claim_id: claim.claim_id,
       actor_id: "runtime-owner",
@@ -2965,7 +2968,7 @@ test("Claim renewal rejects another actor, policy overflow, expired and released
 
   setNow("2026-08-15T00:00:11.000Z");
   assert.throws(
-    () => coordinator.renewClaim({
+    () => coordinator.executionValidation.commands.renewClaim({
       board_id: "board-1",
       claim_id: claim.claim_id,
       actor_id: "runtime-owner",
@@ -2977,13 +2980,13 @@ test("Claim renewal rejects another actor, policy overflow, expired and released
   );
 
   createLeaf(coordinator, "lease-renew-released");
-  const released = coordinator.claimGoal({
+  const released = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "lease-renew-released",
     actor_id: "runtime-owner",
     idempotency_key: "lease-renew-released-claim",
   }).claim!;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: released.claim_id,
     actor_id: "runtime-owner",
@@ -2991,7 +2994,7 @@ test("Claim renewal rejects another actor, policy overflow, expired and released
     idempotency_key: "lease-renew-release",
   });
   assert.throws(
-    () => coordinator.renewClaim({
+    () => coordinator.executionValidation.commands.renewClaim({
       board_id: "board-1",
       claim_id: released.claim_id,
       actor_id: "runtime-owner",
@@ -3023,7 +3026,7 @@ test("confirmed impact bindings prevent two active writers", () => {
     );
   }
   assert.equal(
-    coordinator.claimGoal({
+    coordinator.executionValidation.commands.claimGoal({
       board_id: "board-1",
       goal_id: "writer-a",
       actor_id: "runtime-a",
@@ -3031,7 +3034,7 @@ test("confirmed impact bindings prevent two active writers", () => {
     }).allowed,
     true,
   );
-  const second = coordinator.claimGoal({
+  const second = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "writer-b",
     actor_id: "runtime-b",
@@ -3148,7 +3151,7 @@ test("Impact bindings can be updated and deactivated without erasing their histo
 test("reusing an idempotency key with another request is rejected", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "goal-a");
-  coordinator.claimGoal({
+  coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "goal-a",
     actor_id: "runtime-a",
@@ -3157,7 +3160,7 @@ test("reusing an idempotency key with another request is rejected", () => {
   });
   assert.throws(
     () =>
-      coordinator.claimGoal({
+      coordinator.executionValidation.commands.claimGoal({
         board_id: "board-1",
         goal_id: "goal-a",
         actor_id: "runtime-a",
@@ -3177,25 +3180,25 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
     { goal_id: "delivery", reason: "当前正在推进这份交付" },
     { actor_id: "user-1", idempotency_key: "delivery-active-goal" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     { goal_id: "delivery", policy: { cross_reviewers: 1 }, reason: "交付结果需要另一人复核" },
     { actor_id: "user-1", idempotency_key: "delivery-review-policy" },
   );
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "delivery",
     actor_id: "runtime-a",
     idempotency_key: "delivery-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
     idempotency_key: "delivery-run",
   }).run;
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: run.run_id,
     actor_id: "runtime-a",
@@ -3204,7 +3207,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
     idempotency_key: "delivery-run-complete",
   });
 
-  const tooEarly = coordinator.evaluateLeafCompletion({
+  const tooEarly = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "delivery",
     actor_id: "runtime-a",
@@ -3214,7 +3217,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
   assert.ok(tooEarly.reasons.some((item) => item.code === "evidence.criterion_uncovered"));
   assert.equal(tooEarly.reasons.filter((item) => item.code === "policy.review_pending").length, 2);
 
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "delivery",
     actor_id: "runtime-a",
@@ -3229,7 +3232,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
   const selfReview = obligations.find((item) => item.role === "self_verifier");
   const crossReview = obligations.find((item) => item.role === "cross_reviewer");
   assert.ok(selfReview && crossReview);
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "delivery",
     obligation_id: selfReview.obligation_id,
@@ -3241,7 +3244,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
   });
   assert.throws(
     () =>
-      coordinator.submitReview({
+      coordinator.executionValidation.commands.submitReview({
         board_id: "board-1",
         goal_id: "delivery",
         obligation_id: crossReview.obligation_id,
@@ -3253,7 +3256,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
       }),
     (error) => error instanceof GoalBoardV1Error && error.code === "review.independence_failed",
   );
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "delivery",
     obligation_id: crossReview.obligation_id,
@@ -3263,7 +3266,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
     reasoning: "独立复核运行结果和证据，条件满足",
     idempotency_key: "delivery-cross-review",
   });
-  const completion = coordinator.evaluateLeafCompletion({
+  const completion = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "delivery",
     actor_id: "runtime-a",
@@ -3291,7 +3294,7 @@ test("Run, Evidence, independent Review, and completion form one enforceable loo
 test("Evidence corrections preserve immutable history and only effective Evidence satisfies gates", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "evidence-correction");
-  const original = coordinator.submitEvidence({
+  const original = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-correction",
     actor_id: "runtime-a",
@@ -3302,7 +3305,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
     result: "passed",
     idempotency_key: "evidence-correction-original",
   }).evidence;
-  const replacement = coordinator.submitEvidence({
+  const replacement = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-correction",
     actor_id: "runtime-a",
@@ -3315,7 +3318,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
   }).evidence;
 
   assert.throws(
-    () => coordinator.correctEvidence({
+    () => coordinator.executionValidation.commands.correctEvidence({
       board_id: "board-1",
       goal_id: "evidence-correction",
       actor_id: "runtime-b",
@@ -3327,7 +3330,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.correction_not_owner",
   );
 
-  const corrected = coordinator.correctEvidence({
+  const corrected = coordinator.executionValidation.commands.correctEvidence({
     board_id: "board-1",
     goal_id: "evidence-correction",
     actor_id: "runtime-a",
@@ -3341,7 +3344,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
   assert.equal(corrected.correction.action, "supersede");
   assert.equal(corrected.correction.replacement_evidence_id, replacement.evidence_id);
   assert.equal(
-    coordinator.correctEvidence({
+    coordinator.executionValidation.commands.correctEvidence({
       board_id: "board-1",
       goal_id: "evidence-correction",
       actor_id: "runtime-a",
@@ -3364,7 +3367,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
   assert.equal(effectiveReplacement?.lifecycle_state, "effective");
   assert.deepEqual(snapshot.evidence_corrections.map((item) => item.correction_id), [corrected.correction.correction_id]);
   assert.equal(
-    coordinator.evaluateLeafCompletion({
+    coordinator.goals.lifecycle.evaluateCompletion({
       board_id: "board-1",
       goal_id: "evidence-correction",
       actor_id: "runtime-a",
@@ -3374,7 +3377,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
   );
 
   assert.throws(
-    () => coordinator.correctEvidence({
+    () => coordinator.executionValidation.commands.correctEvidence({
       board_id: "board-1",
       goal_id: "evidence-correction",
       actor_id: "runtime-a",
@@ -3387,7 +3390,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.correction_cycle",
   );
 
-  const retracted = coordinator.correctEvidence({
+  const retracted = coordinator.executionValidation.commands.correctEvidence({
     board_id: "board-1",
     goal_id: "evidence-correction",
     actor_id: "runtime-a",
@@ -3403,7 +3406,7 @@ test("Evidence corrections preserve immutable history and only effective Evidenc
     "retracted",
   );
   assert.equal(
-    coordinator.evaluateLeafCompletion({
+    coordinator.goals.lifecycle.evaluateCompletion({
       board_id: "board-1",
       goal_id: "evidence-correction",
       actor_id: "runtime-a",
@@ -3419,11 +3422,11 @@ test("correcting passing Evidence reopens the current trust state without erasin
   createLeaf(coordinator, "completed-evidence-correction");
   const { evidence } = completeLeafGoal(store, coordinator, "completed-evidence-correction");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
     "satisfied",
   );
 
-  coordinator.correctEvidence({
+  coordinator.executionValidation.commands.correctEvidence({
     board_id: "board-1",
     goal_id: "completed-evidence-correction",
     actor_id: "runtime-completed-evidence-correction",
@@ -3437,7 +3440,7 @@ test("correcting passing Evidence reopens the current trust state without erasin
   assert.equal(reopenedGoal?.fulfillment_state, "satisfied");
   assert.equal(reopenedGoal?.validity_state, "needs_revalidation");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
     "revalidation_pending",
   );
   assert.deepEqual(
@@ -3453,7 +3456,7 @@ test("correcting passing Evidence reopens the current trust state without erasin
     1,
   );
 
-  const revalidation = coordinator.selectGoalAndStart({
+  const revalidation = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completed-evidence-correction",
     actor_id: "runtime-revalidator",
@@ -3461,7 +3464,7 @@ test("correcting passing Evidence reopens the current trust state without erasin
     idempotency_key: "completed-evidence-correction-revalidate-select",
   });
   assert.equal(revalidation.allowed, true);
-  assert.equal(coordinator.revalidateGoal({
+  assert.equal(coordinator.goals.lifecycle.revalidate({
     board_id: "board-1",
     goal_id: "completed-evidence-correction",
     run_id: revalidation.run!.run_id,
@@ -3470,14 +3473,14 @@ test("correcting passing Evidence reopens the current trust state without erasin
     reason: "用正确输出重新核对，原完成结果仍然成立",
     idempotency_key: "completed-evidence-correction-revalidated",
   }).revalidated, true);
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: revalidation.run!.run_id,
     actor_id: "runtime-revalidator",
     state: "completed",
     idempotency_key: "completed-evidence-correction-revalidate-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: revalidation.claim!.claim_id,
     actor_id: "runtime-revalidator",
@@ -3485,7 +3488,7 @@ test("correcting passing Evidence reopens the current trust state without erasin
     idempotency_key: "completed-evidence-correction-revalidate-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "completed-evidence-correction" }).work_state,
     "satisfied",
   );
   store.close();
@@ -3494,21 +3497,21 @@ test("correcting passing Evidence reopens the current trust state without erasin
 test("Review pass rejects superseded or retracted Evidence references", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "evidence-review-gate");
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "evidence-review-gate",
     actor_id: "runtime-a",
     role: "executor",
     idempotency_key: "evidence-review-select",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: selected.run.run_id,
     actor_id: "runtime-a",
     state: "completed",
     idempotency_key: "evidence-review-complete",
   });
-  const original = coordinator.submitEvidence({
+  const original = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-review-gate",
     actor_id: "runtime-a",
@@ -3519,7 +3522,7 @@ test("Review pass rejects superseded or retracted Evidence references", () => {
     result: "passed",
     idempotency_key: "evidence-review-original",
   }).evidence;
-  const replacement = coordinator.submitEvidence({
+  const replacement = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-review-gate",
     actor_id: "runtime-a",
@@ -3530,7 +3533,7 @@ test("Review pass rejects superseded or retracted Evidence references", () => {
     result: "passed",
     idempotency_key: "evidence-review-replacement",
   }).evidence;
-  coordinator.correctEvidence({
+  coordinator.executionValidation.commands.correctEvidence({
     board_id: "board-1",
     goal_id: "evidence-review-gate",
     actor_id: "runtime-a",
@@ -3545,7 +3548,7 @@ test("Review pass rejects superseded or retracted Evidence references", () => {
   );
   assert.ok(obligation);
   assert.throws(
-    () => coordinator.submitReview({
+    () => coordinator.executionValidation.commands.submitReview({
       board_id: "board-1",
       goal_id: "evidence-review-gate",
       obligation_id: obligation.obligation_id,
@@ -3557,7 +3560,7 @@ test("Review pass rejects superseded or retracted Evidence references", () => {
     }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "review.evidence_not_effective",
   );
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "evidence-review-gate",
     obligation_id: obligation.obligation_id,
@@ -3579,7 +3582,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     "# Content Growth Studio\n\n## 平台差异化观察窗口\n\n已确认。\n\n## 重复章节\n\n## 重复章节-1\n\n## 重复章节\n",
   );
 
-  const absoluteVerified = coordinator.submitEvidence({
+  const absoluteVerified = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3594,7 +3597,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(absoluteVerified.locator, "project://contract.md");
   assert.equal(absoluteVerified.locator_workspace_id, "workspace-absolute");
 
-  const verified = coordinator.submitEvidence({
+  const verified = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3614,7 +3617,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.match(verified.locator_validation_reason, /Markdown 文件与 anchor/);
   assert.ok(verified.locator_checked_at);
 
-  const repoAlias = coordinator.submitEvidence({
+  const repoAlias = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3630,7 +3633,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(repoAlias.locator_workspace_id, "workspace-repo-alias");
 
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3645,7 +3648,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   );
 
   writeFileSync(join(projectRoot, "large-ledger.json"), "x".repeat(512 * 1024 + 1));
-  const largeLedger = coordinator.submitEvidence({
+  const largeLedger = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3665,7 +3668,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.match(largeLedger.locator_validation_reason, /内容未全文预检/);
   assert.match(largeLedger.locator_validation_reason, /digest.*未核验/);
 
-  const largeMarkdownAnchor = coordinator.submitEvidence({
+  const largeMarkdownAnchor = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3679,7 +3682,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(largeMarkdownAnchor.locator_status, "unverified");
   assert.match(largeMarkdownAnchor.locator_validation_reason, /anchor 未校验/);
 
-  const deduplicated = coordinator.submitEvidence({
+  const deduplicated = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3693,7 +3696,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.equal(deduplicated.locator_status, "verified");
 
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3707,7 +3710,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_anchor_missing",
   );
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3721,7 +3724,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_anchor_missing",
   );
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3735,7 +3738,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_file_missing",
   );
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3753,7 +3756,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   const escapingLink = join(projectRoot, "outside-link.txt");
   symlinkSync(outsideFile, escapingLink);
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "evidence-locator",
       actor_id: "runtime-a",
@@ -3767,7 +3770,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "evidence.locator_outside_project",
   );
 
-  const external = coordinator.submitEvidence({
+  const external = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3783,7 +3786,7 @@ test("Evidence locator preflight verifies project Markdown anchors and marks opa
   assert.match(external.locator_validation_reason, /不会发起网络请求/);
   assert.ok(external.locator_checked_at);
 
-  const opaque = coordinator.submitEvidence({
+  const opaque = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "evidence-locator",
     actor_id: "runtime-a",
@@ -3804,7 +3807,7 @@ test("a file URI outside the current workspace is registered without reading the
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "external-local-evidence");
 
-  const submitted = coordinator.submitEvidence({
+  const submitted = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "external-local-evidence",
     actor_id: "runtime-a",
@@ -3856,7 +3859,7 @@ test("Evidence verifies an uncommitted file in a registered worktree of the cano
   const worktreeFile = join(worktreeRoot, "uncommitted-evidence.txt");
   writeFileSync(worktreeFile, "fresh evidence from an isolated worktree\n");
 
-  const submitted = coordinator.submitEvidence({
+  const submitted = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "same-repository-worktree-evidence",
     actor_id: "runtime-a",
@@ -3892,7 +3895,7 @@ test("Evidence verifies an uncommitted file in a registered worktree of the cano
   const otherFile = join(otherRepository, "other.txt");
   writeFileSync(otherFile, "not the canonical repository\n");
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "same-repository-worktree-evidence",
       actor_id: "runtime-a",
@@ -3911,7 +3914,7 @@ test("Evidence verifies an uncommitted file in a registered worktree of the cano
   const forgedFile = join(forgedDirectory, "forged.txt");
   writeFileSync(forgedFile, "not registered by git worktree\n");
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "same-repository-worktree-evidence",
       actor_id: "runtime-a",
@@ -3931,7 +3934,7 @@ test("Evidence verifies an uncommitted file in a registered worktree of the cano
   const escapingLink = join(worktreeRoot, "links", "outside.txt");
   symlinkSync(outsideFile, escapingLink);
   assert.throws(
-    () => coordinator.submitEvidence({
+    () => coordinator.executionValidation.commands.submitEvidence({
       board_id: "board-1",
       goal_id: "same-repository-worktree-evidence",
       actor_id: "runtime-a",
@@ -3960,14 +3963,14 @@ test("Evidence verifies an uncommitted file in a registered worktree of the cano
 test("Runtime can submit a Candidate Goal but only a user can decide it", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "current-goal");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "current-goal",
     actor_id: "runtime-a",
     idempotency_key: "candidate-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -4023,7 +4026,7 @@ test("Runtime can submit a Candidate Goal but only a user can decide it", () => 
 
 test("clarifier completes the same Draft only through a user-approved Contract Proposal", () => {
   const { store, coordinator } = fixture();
-  const draft = coordinator.createGoal(
+  const draft = coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "rough-draft",
@@ -4055,7 +4058,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
       .queryReady({ board_id: "board-1", actor_id: "runtime-clarifier", role: "clarifier" })
       .ready.some((item) => item.goal.goal_id === "rough-draft"),
   );
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "rough-draft",
     actor_id: "runtime-clarifier",
@@ -4063,7 +4066,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
     idempotency_key: "draft-clarifier-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-clarifier",
@@ -4293,7 +4296,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
   assert.equal(after.impacts[0]?.surface, "src/onboarding");
   assert.equal(after.impacts[0]?.state, "confirmed");
   assert.equal(after.risks[0]?.risk_id, "risk-first-use-copy");
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: run.run_id,
     actor_id: "runtime-clarifier",
@@ -4301,7 +4304,7 @@ test("clarifier completes the same Draft only through a user-approved Contract P
     output_refs: [secondProposal.proposal_id],
     idempotency_key: "draft-clarifier-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-clarifier",
@@ -4417,7 +4420,7 @@ test("current Runtime persists a Draft dialogue and can resume it without canoni
   assert.equal(store.snapshot("board-1").contract_proposals.length, 0);
   assert.equal(store.snapshot("board-1").relations.length, 0);
 
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: started.claim!.claim_id,
     actor_id: "runtime-current-session",
@@ -4475,7 +4478,7 @@ test("current Runtime persists a Draft dialogue and can resume it without canoni
 
 test("current Runtime can begin clarification for an existing Draft without creating a second Goal", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "existing-draft-dialogue",
@@ -4534,7 +4537,7 @@ test("accepted frontier Goal initializes dialogue on its selected clarifier Run"
   createAcceptedCompoundParent(coordinator, "accepted-frontier-dialogue", "frontier_open");
   const goalCountBeforeStart = store.snapshot("board-1").goals.length;
 
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "accepted-frontier-dialogue",
     actor_id: "runtime-frontier-clarifier",
@@ -4585,7 +4588,7 @@ test("accepted frontier Goal resumes its persisted clarification in a new Run", 
     rough_idea: "继续澄清尚未闭合的子 Goal 边界。",
     idempotency_key: "accepted-frontier-resume-start",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: started.claim!.claim_id,
     actor_id: "runtime-frontier-first",
@@ -4612,7 +4615,7 @@ test("accepted frontier Goal resumes its persisted clarification in a new Run", 
 
 test("a denied Draft dialogue start rolls back its draft, claim, run, and dialogue session together", () => {
   const { store, coordinator } = fixture();
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     { policy: { goal_mode: "required" }, reason: "验证 Draft 初始化也遵守 Goal Mode" },
     { actor_id: "user-1", idempotency_key: "draft-dialogue-required-policy" },
@@ -5040,7 +5043,7 @@ test("Goal Tree proposal rejects an invalid Risk before it enters the decision q
 test("Goal Tree Risk updates reject unsupported lifecycle states before user decision", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "risk-state-target");
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "risk-state-validation",
@@ -5129,7 +5132,7 @@ test("a Draft Risk lifecycle Goal cannot leave its Contract behind", () => {
     revisit_condition: "回归测试通过后关闭",
     owner: "runtime-risk-lifecycle",
   };
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     riskFacts,
     { actor_id: "user-1", idempotency_key: "risk-lifecycle-atomic-add" },
@@ -5256,12 +5259,12 @@ test("an executor can propose only the same Goal's evidenced Risk lifecycle resu
     revisit_condition: "Evidence 通过后关闭",
     owner: "runtime-risk-executor",
   };
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     riskFacts,
     { actor_id: "user-1", idempotency_key: "executor-risk-result-add" },
   );
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "executor-risk-goal",
     actor_id: "runtime-risk-executor",
@@ -5269,7 +5272,7 @@ test("an executor can propose only the same Goal's evidenced Risk lifecycle resu
     idempotency_key: "executor-risk-goal-select",
   });
   assert.equal(execution.allowed, true);
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "executor-risk-goal",
     actor_id: "runtime-risk-executor",
@@ -5388,12 +5391,12 @@ test("a confirmed Risk update materializes a supported state and clears the comp
     revisit_condition: "覆盖检查通过后关闭风险",
     owner: "runtime-risk-closure",
   };
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     riskFacts,
     { actor_id: "user-1", idempotency_key: "risk-completion-state-add" },
   );
-  const before = coordinator.evaluateLeafCompletion({
+  const before = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "risk-completion-target",
     actor_id: "runtime-risk-closure",
@@ -5509,7 +5512,7 @@ test("a confirmed Risk update materializes a supported state and clears the comp
       residual_gaps: ["未覆盖登录态平台，只在当前 Contract 范围内解决"],
     },
   );
-  const after = coordinator.evaluateLeafCompletion({
+  const after = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "risk-completion-target",
     actor_id: "runtime-risk-closure",
@@ -5541,7 +5544,7 @@ test("checking a pending Risk proposal exposes an unsupported lifecycle state as
     revisit_condition: "覆盖检查通过后关闭风险",
     owner: "runtime-risk-check",
   };
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     riskFacts,
     { actor_id: "user-1", idempotency_key: "risk-state-check-add" },
@@ -6012,7 +6015,7 @@ test("Goal Tree proposals cannot call a game plan complete while product paths o
 test("Goal Tree proposals cannot close a compound Goal without mapping every parent Contract result to child Contracts", () => {
   const { store, coordinator } = fixture();
   createAcceptedCompoundParent(coordinator, "contract-coverage-parent");
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "contract-coverage-child",
@@ -6038,7 +6041,7 @@ test("Goal Tree proposals cannot close a compound Goal without mapping every par
     },
     { actor_id: "user-1", idempotency_key: "contract-coverage-child-create" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "contract-coverage-child",
@@ -6223,12 +6226,12 @@ test("Goal Tree proposals cannot close a compound Goal without mapping every par
       relation.state === "active",
   );
   assert.ok(activeRelation);
-  coordinator.deactivateRelation(
+  coordinator.goals.commands.deactivateRelation(
     "board-1",
     { relation_id: activeRelation.relation_id, reason: "测试重新激活关系时的父级完成防线" },
     { actor_id: "user-1", idempotency_key: "contract-coverage-relation-deactivate" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "contract-coverage-child",
@@ -6640,28 +6643,28 @@ test("trusted partial Goal Tree decisions materialize a hierarchy and derive par
   createAcceptedCompoundParent(coordinator, "tree-decision-consumer");
   createLeaf(coordinator, "tree-decision-consumer-child");
   createLeaf(coordinator, "tree-decision-unrelated");
-  coordinator.addRelation("board-1", {
+  coordinator.goals.commands.addRelation("board-1", {
     from_goal_id: "tree-decision-parent",
     to_goal_id: "tree-decision-root",
     type: "part_of",
     state: "active",
     reason: "当前重规划 Goal 属于稳定的根结果。",
   }, { actor_id: "user-1", idempotency_key: "tree-decision-parent-root" });
-  coordinator.addRelation("board-1", {
+  coordinator.goals.commands.addRelation("board-1", {
     from_goal_id: "tree-decision-parent",
     to_goal_id: "tree-decision-provider",
     type: "depends_on",
     state: "active",
     reason: "当前重规划 Goal 消费上游输入。",
   }, { actor_id: "user-1", idempotency_key: "tree-decision-provider-link" });
-  coordinator.addRelation("board-1", {
+  coordinator.goals.commands.addRelation("board-1", {
     from_goal_id: "tree-decision-consumer",
     to_goal_id: "tree-decision-parent",
     type: "depends_on",
     state: "active",
     reason: "下游消费者依赖当前重规划结果。",
   }, { actor_id: "user-1", idempotency_key: "tree-decision-consumer-link" });
-  coordinator.addRelation("board-1", {
+  coordinator.goals.commands.addRelation("board-1", {
     from_goal_id: "tree-decision-consumer-child",
     to_goal_id: "tree-decision-consumer",
     type: "part_of",
@@ -7178,7 +7181,7 @@ test("Candidate bootstrap reconciliation rejects an unproven existing Goal witho
     proposed_goal: finalGoal,
     idempotency_key: "unproven-bootstrap-candidate",
   }).candidate;
-  coordinator.createGoal("board-1", finalGoal, {
+  coordinator.goals.commands.createGoal("board-1", finalGoal, {
     actor_id: "user-1",
     idempotency_key: "unproven-bootstrap-direct-goal",
   });
@@ -7328,7 +7331,7 @@ test("a user can close an accepted parent without changing its Contract", () => 
   const { store, coordinator } = fixture();
   createAcceptedCompoundParent(coordinator, "accepted-closure-parent");
   createLeaf(coordinator, "accepted-closure-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-closure-child",
@@ -7356,7 +7359,7 @@ test("a user can close an accepted parent without changing its Contract", () => 
   };
   assert.equal(before.decomposition_state, "abstract");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "accepted-closure-parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "accepted-closure-parent" }).work_state,
     "clarification_pending",
   );
 
@@ -7444,7 +7447,7 @@ test("closing an accepted parent reconciles completed children and compound ance
   createLeaf(coordinator, "accepted-closure-complete-child");
   store.db.prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
     .run("accepted-closure-complete-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-closure-complete-parent",
@@ -7454,7 +7457,7 @@ test("closing an accepted parent reconciles completed children and compound ance
     },
     { actor_id: "user-1", idempotency_key: "accepted-closure-ancestor-relation" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-closure-complete-child",
@@ -7533,7 +7536,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
   createAcceptedCompoundParent(coordinator, "historical-compound-ancestor", "closed_compound");
   createAcceptedCompoundParent(coordinator, "historical-compound-parent", "closed_compound");
   createLeaf(coordinator, "historical-compound-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "historical-compound-parent",
@@ -7543,7 +7546,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
     },
     { actor_id: "user-1", idempotency_key: "historical-compound-ancestor-relation" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "historical-compound-child",
@@ -7559,7 +7562,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
 
   createAcceptedCompoundParent(coordinator, "incomplete-compound-parent", "closed_compound");
   createLeaf(coordinator, "incomplete-compound-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "incomplete-compound-child",
@@ -7576,13 +7579,13 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
     definition_state: "draft",
     decomposition_state: "abstract",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     draftParent,
     { actor_id: "user-1", idempotency_key: "newly-accepted-compound-parent-create" },
   );
   createLeaf(coordinator, "newly-accepted-compound-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "newly-accepted-compound-child",
@@ -7680,7 +7683,7 @@ test("Goal Tree decisions reconcile newly accepted and historical compound paren
   assert.equal(store.getGoal("historical-compound-ancestor")?.fulfillment_state, "satisfied");
   assert.equal(store.getGoal("incomplete-compound-parent")?.fulfillment_state, "unmet");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "incomplete-compound-parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "incomplete-compound-parent" }).work_state,
     "waiting_children",
   );
   assert.deepEqual(
@@ -7850,7 +7853,7 @@ test("accepted compound closure rejects structural gaps and versions material Co
 
   createAcceptedCompoundParent(coordinator, "accepted-closure-invalid-transition");
   createLeaf(coordinator, "accepted-closure-invalid-transition-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-closure-invalid-transition-child",
@@ -7880,7 +7883,7 @@ test("accepted compound closure rejects structural gaps and versions material Co
 
   createAcceptedCompoundParent(coordinator, "accepted-closure-mutated-contract");
   createLeaf(coordinator, "accepted-closure-mutated-contract-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-closure-mutated-contract-child",
@@ -8155,7 +8158,7 @@ test("whole Goal Tree confirmation preflights invariants and never leaves a part
     const { store, coordinator } = fixtureResult;
     createAcceptedCompoundParent(coordinator, "atomic-confirm-parent");
     createLeaf(coordinator, "atomic-confirm-existing-child");
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       "board-1",
       {
         from_goal_id: "atomic-confirm-existing-child",
@@ -8315,7 +8318,7 @@ test("accepted leaf Contract changes keep the Goal ID and preserve relation hist
   createLeaf(coordinator, "accepted-leaf-provider", 7);
   store.db.prepare("UPDATE goals SET fulfillment_state = 'satisfied' WHERE goal_id = ?")
     .run("accepted-leaf-provider");
-  const partOf = coordinator.addRelation(
+  const partOf = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-leaf-revision",
@@ -8325,7 +8328,7 @@ test("accepted leaf Contract changes keep the Goal ID and preserve relation hist
     },
     { actor_id: "user-1", idempotency_key: "accepted-leaf-part-of" },
   );
-  const dependsOn = coordinator.addRelation(
+  const dependsOn = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "accepted-leaf-revision",
@@ -9096,19 +9099,19 @@ test("a native relation proposal precisely supersedes an equivalent pending lega
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "legacy-supersession-consumer");
   createLeaf(coordinator, "legacy-supersession-provider");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "legacy-supersession-consumer",
     actor_id: "runtime-legacy-supersession",
     idempotency_key: "legacy-supersession-claim",
   }).claim!;
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-legacy-supersession",
     idempotency_key: "legacy-supersession-run",
   }).run;
-  const relation = coordinator.addRelation(
+  const relation = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "legacy-supersession-consumer",
@@ -9271,14 +9274,14 @@ test("Dependency Proposal requires reviewable evidence and only a user-applied R
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "consumer");
   createLeaf(coordinator, "provider");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "consumer",
     actor_id: "runtime-a",
     idempotency_key: "dependency-proposal-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -9328,7 +9331,7 @@ test("Dependency Proposal requires reviewable evidence and only a user-applied R
       .readGoalContract("board-1", "consumer")
       .rewires.some((rewire) => rewire.rewire_id === addProposal.rewire_id),
   );
-  const pendingCompletion = coordinator.evaluateLeafCompletion({
+  const pendingCompletion = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "consumer",
     actor_id: "runtime-a",
@@ -9443,14 +9446,14 @@ test("Dependency Proposal requires reviewable evidence and only a user-applied R
 test("Candidate idempotency replays the original result after approval changes Board state", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "candidate-replay-source");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "candidate-replay-source",
     actor_id: "runtime-a",
     idempotency_key: "candidate-replay-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -9612,14 +9615,14 @@ test("CLI and MCP operate on the same SQLite truth and return the same Ready sem
 test("approved Candidate creates a pending Rewire and confirmation never retargets an active Run", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "active-work");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "active-work",
     actor_id: "runtime-a",
     idempotency_key: "rewire-active-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -9679,7 +9682,7 @@ test("approved Candidate creates a pending Rewire and confirmation never retarge
   const pending = store.snapshot("board-1").rewires[0];
   assert.equal(pending?.state, "pending");
   assert.equal(store.getGoal("new-required-work")?.validity_state, "needs_revalidation");
-  const completionBeforeRewire = coordinator.evaluateLeafCompletion({
+  const completionBeforeRewire = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "active-work",
     actor_id: "runtime-a",
@@ -9742,14 +9745,14 @@ test("approved Candidate creates a pending Rewire and confirmation never retarge
 test("user can accept a Candidate Goal while rejecting its proposed Rewire", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "current-work");
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "current-work",
     actor_id: "runtime-a",
     idempotency_key: "reject-rewire-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -9831,7 +9834,7 @@ test("user can accept a Candidate Goal while rejecting its proposed Rewire", () 
         relation.type === "depends_on",
     ),
   );
-  const completion = coordinator.evaluateLeafCompletion({
+  const completion = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "current-work",
     actor_id: "runtime-a",
@@ -9844,7 +9847,7 @@ test("user can accept a Candidate Goal while rejecting its proposed Rewire", () 
 test("human approval Review requires an explicitly trusted user actor", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "human-reviewed-goal");
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "human-reviewed-goal",
@@ -9853,27 +9856,27 @@ test("human approval Review requires an explicitly trusted user actor", () => {
     },
     { actor_id: "user-1", idempotency_key: "human-review-policy" },
   );
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "human-reviewed-goal",
     actor_id: "runtime-a",
     idempotency_key: "human-reviewed-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
     idempotency_key: "human-reviewed-run",
   }).run;
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: run.run_id,
     actor_id: "runtime-a",
     state: "completed",
     idempotency_key: "human-reviewed-run-completed",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-a",
@@ -9886,7 +9889,7 @@ test("human approval Review requires an explicitly trusted user actor", () => {
   assert.ok(obligation);
   assert.throws(
     () =>
-      coordinator.submitReview({
+      coordinator.executionValidation.commands.submitReview({
         board_id: "board-1",
         goal_id: "human-reviewed-goal",
         obligation_id: obligation.obligation_id,
@@ -9899,7 +9902,7 @@ test("human approval Review requires an explicitly trusted user actor", () => {
     (error) =>
       error instanceof GoalBoardV1Error && error.code === "review.user_authority_required",
   );
-  const review = coordinator.submitReview({
+  const review = coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "human-reviewed-goal",
     obligation_id: obligation.obligation_id,
@@ -10002,7 +10005,7 @@ test("two Runtime processes racing to select one Goal produce exactly one Claim 
     await new Promise(resolve => setTimeout(resolve, wait));
     const store = new SqliteGoalBoardStore(process.env.GOAL_DB);
     try {
-      const result = new GoalBoardCoordinator(store).selectGoalAndStart({
+      const result = new GoalBoardCoordinator(store).executionValidation.commands.selectGoalAndStart({
         board_id: 'board-1', goal_id: 'race-goal', actor_id: process.env.ACTOR,
         idempotency_key: 'race-' + process.env.ACTOR
       });
@@ -10042,7 +10045,7 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     { actor_id: "user-1", idempotency_key: "risk-active-goal" },
   );
   assert.equal(store.snapshot("board-1").board.active_goal_id, "risk-goal");
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "claim-risk",
@@ -10064,14 +10067,14 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
       .reasons.some((item) => item.code === "risk.blocks_claim"),
   );
   assert.throws(
-    () => coordinator.setRiskState(
+    () => coordinator.goals.commands.setRiskState(
       "board-1",
       { risk_id: "claim-risk", state: "resolved", reason: "输入已经确认" },
       { actor_id: "user-1", idempotency_key: "risk-resolve-claim-without-basis" },
     ),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "risk.resolution_basis_required",
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     "board-1",
     {
       risk_id: "claim-risk",
@@ -10097,7 +10100,7 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     coordinator.explainGoal({ board_id: "board-1", goal_id: "risk-goal", actor_id: "runtime-a" }).ready,
     true,
   );
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "invalidating-risk",
@@ -10126,7 +10129,7 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     revisit_condition: "规则稳定并完成重新验证",
     owner: "risk-owner",
   };
-  const updatedRisk = coordinator.updateRisk(
+  const updatedRisk = coordinator.goals.commands.updateRisk(
     "board-1",
     updateInput,
     { actor_id: "user-1", idempotency_key: "risk-update-invalidating", reason: "补齐影响范围和关联 Goal" },
@@ -10139,28 +10142,28 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     ["risk-goal", "risk-linked-goal"],
   );
   assert.equal(
-    coordinator.updateRisk(
+    coordinator.goals.commands.updateRisk(
       "board-1",
       updateInput,
       { actor_id: "user-1", idempotency_key: "risk-update-invalidating", reason: "补齐影响范围和关联 Goal" },
     ).replayed,
     true,
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     "board-1",
     { risk_id: "invalidating-risk", state: "triggered", reason: "上游规则已改变" },
     { actor_id: "user-1", idempotency_key: "risk-trigger" },
   );
   assert.equal(store.getGoal("risk-goal")?.validity_state, "invalidated");
   assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "invalidated");
-  coordinator.updateRisk(
+  coordinator.goals.commands.updateRisk(
     "board-1",
     { ...updateInput, goal_ids: ["risk-linked-goal"] },
     { actor_id: "user-1", idempotency_key: "risk-unlink-triggered", reason: "当前只影响关联 Goal" },
   );
   assert.equal(store.getGoal("risk-goal")?.validity_state, "needs_revalidation");
   assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "invalidated");
-  coordinator.updateRisk(
+  coordinator.goals.commands.updateRisk(
     "board-1",
     { ...updateInput, goal_ids: ["risk-linked-goal"], treatment: "accept" },
     {
@@ -10169,14 +10172,14 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
       reason: "改为由用户决定是否接受残余风险",
     },
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     "board-1",
     { risk_id: "invalidating-risk", state: "accepted", reason: "用户接受风险，但历史结果仍需重新验证" },
     { actor_id: "user-1", idempotency_key: "risk-accept-invalidating" },
   );
   assert.equal(store.getGoal("risk-linked-goal")?.validity_state, "needs_revalidation");
   assert.throws(
-    () => coordinator.setRiskState(
+    () => coordinator.goals.commands.setRiskState(
       "board-1",
       { risk_id: "invalidating-risk", state: "open", reason: "" },
       { actor_id: "user-1", idempotency_key: "risk-empty-state-reason" },
@@ -10184,7 +10187,7 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     /必须说明原因/,
   );
   assert.throws(
-    () => coordinator.setRiskState(
+    () => coordinator.goals.commands.setRiskState(
       "board-1",
       { risk_id: "invalidating-risk", state: "unknown" as never, reason: "错误状态" },
       { actor_id: "user-1", idempotency_key: "risk-invalid-state" },
@@ -10192,7 +10195,7 @@ test("Risk operations block Claim and propagate triggered invalidation explicitl
     /状态必须是/,
   );
   assert.throws(
-    () => coordinator.updateRisk(
+    () => coordinator.goals.commands.updateRisk(
       "board-1",
       updateInput,
       { actor_id: "user-1", idempotency_key: "risk-empty-update-reason", reason: "" },
@@ -10207,7 +10210,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   createLeaf(coordinator, "revalidation-target");
   createLeaf(coordinator, "revalidation-dependency");
 
-  const executorClaim = coordinator.claimGoal({
+  const executorClaim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "revalidation-target",
     actor_id: "runtime-executor",
@@ -10216,7 +10219,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     idempotency_key: "revalidation-executor-claim",
   }).claim;
   assert.ok(executorClaim);
-  const executorRun = coordinator.startRun({
+  const executorRun = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: executorClaim.claim_id,
     actor_id: "runtime-executor",
@@ -10238,7 +10241,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   );
   assert.throws(
     () =>
-      coordinator.revalidateGoal({
+      coordinator.goals.lifecycle.revalidate({
         board_id: "board-1",
         goal_id: "revalidation-target",
         run_id: executorRun.run_id,
@@ -10250,7 +10253,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     (error: unknown) =>
       error instanceof GoalBoardV1Error && error.code === "revalidation.role_required",
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: executorClaim.claim_id,
     actor_id: "runtime-executor",
@@ -10268,7 +10271,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     ready.ready.find((item) => item.goal.goal_id === "revalidation-target")?.why_now ?? "",
     /重新核对/,
   );
-  const firstRevalidatorClaim = coordinator.claimGoal({
+  const firstRevalidatorClaim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "revalidation-target",
     actor_id: "runtime-revalidator",
@@ -10277,7 +10280,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     idempotency_key: "revalidation-first-claim",
   }).claim;
   assert.ok(firstRevalidatorClaim);
-  const firstRevalidatorRun = coordinator.startRun({
+  const firstRevalidatorRun = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: firstRevalidatorClaim.claim_id,
     actor_id: "runtime-revalidator",
@@ -10285,7 +10288,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   }).run;
   assert.throws(
     () =>
-      coordinator.revalidateGoal({
+      coordinator.goals.lifecycle.revalidate({
         board_id: "board-1",
         goal_id: "revalidation-target",
         run_id: firstRevalidatorRun.run_id,
@@ -10296,7 +10299,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
       }),
     (error: unknown) => error instanceof GoalBoardV1Error && error.code === "run.not_owner",
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: firstRevalidatorClaim.claim_id,
     actor_id: "runtime-revalidator",
@@ -10305,7 +10308,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   });
   assert.throws(
     () =>
-      coordinator.revalidateGoal({
+      coordinator.goals.lifecycle.revalidate({
         board_id: "board-1",
         goal_id: "revalidation-target",
         run_id: firstRevalidatorRun.run_id,
@@ -10318,7 +10321,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
       error instanceof GoalBoardV1Error && error.code === "revalidation.claim_inactive",
   );
 
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "revalidation-target",
     actor_id: "runtime-revalidator",
@@ -10327,14 +10330,14 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     idempotency_key: "revalidation-second-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim_id,
     actor_id: "runtime-revalidator",
     idempotency_key: "revalidation-second-run",
   }).run;
 
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "revalidation-target",
@@ -10358,13 +10361,13 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
     revisit_condition: "补齐迁移检查并关闭风险",
     owner: "runtime-revalidator",
   };
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     revalidationRisk,
     { actor_id: "user-1", idempotency_key: "revalidation-add-risk" },
   );
 
-  const blocked = coordinator.revalidateGoal({
+  const blocked = coordinator.goals.lifecycle.revalidate({
     board_id: "board-1",
     goal_id: "revalidation-target",
     run_id: run.run_id,
@@ -10496,7 +10499,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
   assert.equal(succeeded.revalidated, true);
   assert.equal(succeeded.goal.validity_state, "valid");
 
-  const replay = coordinator.revalidateGoal({
+  const replay = coordinator.goals.lifecycle.revalidate({
     board_id: "board-1",
     goal_id: "revalidation-target",
     run_id: run.run_id,
@@ -10519,7 +10522,7 @@ test("revalidator alone can restore a Goal after Contract, dependency, and Risk 
 
 test("clarifier and executor pull different Goal states without weakening execution gates", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "rough-idea",
@@ -10534,7 +10537,7 @@ test("clarifier and executor pull different Goal states without weakening execut
     { actor_id: "user-1", idempotency_key: "create-rough-idea" },
   );
   createLeaf(coordinator, "ready-leaf", 10);
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "rough-idea",
@@ -10571,7 +10574,7 @@ test("clarifier and executor pull different Goal states without weakening execut
     false,
   );
 
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "rough-idea",
     actor_id: "runtime-clarifier",
@@ -10580,7 +10583,7 @@ test("clarifier and executor pull different Goal states without weakening execut
   });
   assert.equal(claim.allowed, true);
   assert.equal(claim.claim?.role, "clarifier");
-  const competingClarifier = coordinator.claimGoal({
+  const competingClarifier = coordinator.executionValidation.commands.claimGoal({
     board_id: "board-1",
     goal_id: "rough-idea",
     actor_id: "runtime-clarifier-2",
@@ -10592,7 +10595,7 @@ test("clarifier and executor pull different Goal states without weakening execut
     competingClarifier.reasons.some((item) => item.code === "claim.already_active"),
   );
 
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "board-1",
     claim_id: claim.claim!.claim_id,
     actor_id: "runtime-clarifier",
@@ -10659,7 +10662,7 @@ test("clarifier and executor pull different Goal states without weakening execut
 
 test("unified Available lets the Runtime choose across clarification, execution, review, and revalidation", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "rough-draft",
@@ -10679,21 +10682,21 @@ test("unified Available lets the Runtime choose across clarification, execution,
   store.db
     .prepare("UPDATE goals SET validity_state = 'needs_revalidation' WHERE goal_id = ?")
     .run("needs-revalidation");
-  const reviewProducer = coordinator.selectGoalAndStart({
+  const reviewProducer = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "ready-review",
     actor_id: "runtime-producer",
     role: "executor",
     idempotency_key: "available-review-producer",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: reviewProducer.run!.run_id,
     actor_id: "runtime-producer",
     state: "completed",
     idempotency_key: "available-review-producer-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "ready-review",
     actor_id: "runtime-producer",
@@ -10704,7 +10707,7 @@ test("unified Available lets the Runtime choose across clarification, execution,
     result: "passed",
     idempotency_key: "available-review-producer-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: reviewProducer.claim!.claim_id,
     actor_id: "runtime-producer",
@@ -10726,22 +10729,22 @@ test("unified Available lets the Runtime choose across clarification, execution,
     ],
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "rough-draft" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "rough-draft" }).work_state,
     "clarification_pending",
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "ready-execution" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "ready-execution" }).work_state,
     "execution_pending",
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "needs-revalidation" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "needs-revalidation" }).work_state,
     "revalidation_pending",
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "ready-review" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "ready-review" }).work_state,
     "review_pending",
   );
-  const reviewSelection = coordinator.selectGoalAndStart({
+  const reviewSelection = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "ready-review",
     actor_id: "runtime-reviewer",
@@ -10755,7 +10758,7 @@ test("unified Available lets the Runtime choose across clarification, execution,
 
 test("human_decision criteria wait for the user without reoffering Runtime review", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "human-decision-routing",
@@ -10785,7 +10788,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     { actor_id: "user-1", idempotency_key: "human-routing-create" },
   );
 
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     actor_id: "runtime-executor",
@@ -10801,14 +10804,14 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     ["self_verifier", ["human-routing-inspection"]],
   ]);
 
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "human-routing-execute-complete",
   });
-  const inspectionEvidence = coordinator.submitEvidence({
+  const inspectionEvidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     actor_id: "runtime-executor",
@@ -10819,7 +10822,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     result: "passed",
     idempotency_key: "human-routing-inspection-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -10829,14 +10832,14 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
 
   const selfObligation = store.snapshot("board-1").review_obligations
     .find((item) => item.goal_id === "human-decision-routing" && item.role === "self_verifier")!;
-  const reviewRun = coordinator.selectGoalAndStart({
+  const reviewRun = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     actor_id: "runtime-reviewer",
     role: "self_verifier",
     idempotency_key: "human-routing-review-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     obligation_id: selfObligation.obligation_id,
@@ -10847,14 +10850,14 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     reasoning: "工程与浏览器检查已经通过；人工决定由用户本人完成。",
     idempotency_key: "human-routing-review-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: reviewRun.run!.run_id,
     actor_id: "runtime-reviewer",
     state: "completed",
     idempotency_key: "human-routing-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: reviewRun.claim!.claim_id,
     actor_id: "runtime-reviewer",
@@ -10862,7 +10865,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     idempotency_key: "human-routing-review-release",
   });
 
-  const waiting = coordinator.getGoalWorkState({
+  const waiting = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "human-decision-routing",
   });
@@ -10902,7 +10905,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
   });
   assert.equal(explained.ready, false);
   assert.ok(explained.reasons.some((item) => item.code === "review.user_approval_required"));
-  const executorRetry = coordinator.selectGoalAndStart({
+  const executorRetry = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     actor_id: "runtime-next",
@@ -10926,7 +10929,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     JSON.stringify(["human-routing-owner-decision"]),
     new Date().toISOString(),
   );
-  const multiplePending = coordinator.getGoalWorkState({
+  const multiplePending = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "human-decision-routing",
   });
@@ -10937,7 +10940,7 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
 
   const humanObligation = store.snapshot("board-1").review_obligations
     .find((item) => item.goal_id === "human-decision-routing" && item.role === "human_approver")!;
-  const humanReview = coordinator.submitReview({
+  const humanReview = coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     obligation_id: humanObligation.obligation_id,
@@ -10948,11 +10951,11 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     idempotency_key: "human-routing-user-review",
   }).review;
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
     "waiting_for_human",
     "人工 Review 不能替代该 criterion 要求的真实验收依据",
   );
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "human-decision-routing",
     actor_id: "user-1",
@@ -10964,11 +10967,11 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
     idempotency_key: "human-routing-user-evidence",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "human-decision-routing" }).work_state,
     "satisfied",
   );
   assert.equal(
-    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "human-decision-routing" }).display_status,
+    coordinator.executionValidation.query.getGoalActionProjection({ board_id: "board-1", goal_id: "human-decision-routing" }).display_status,
     "completed",
   );
   store.close();
@@ -10977,21 +10980,21 @@ test("human_decision criteria wait for the user without reoffering Runtime revie
 test("inconclusive remains retryable when every criterion is Runtime-reviewable", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "runtime-inconclusive");
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "runtime-inconclusive",
     actor_id: "runtime-executor",
     role: "executor",
     idempotency_key: "runtime-inconclusive-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "runtime-inconclusive-execute-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "runtime-inconclusive",
     actor_id: "runtime-executor",
@@ -11002,7 +11005,7 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
     result: "passed",
     idempotency_key: "runtime-inconclusive-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -11011,14 +11014,14 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
   });
   const obligation = store.snapshot("board-1").review_obligations
     .find((item) => item.goal_id === "runtime-inconclusive" && item.role === "self_verifier")!;
-  const review = coordinator.selectGoalAndStart({
+  const review = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "runtime-inconclusive",
     actor_id: "runtime-reviewer",
     role: "self_verifier",
     idempotency_key: "runtime-inconclusive-review",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "runtime-inconclusive",
     obligation_id: obligation.obligation_id,
@@ -11028,14 +11031,14 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
     reasoning: "当前工程依据不足，仍需 Runtime 补齐后重试。",
     idempotency_key: "runtime-inconclusive-submit",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: review.run!.run_id,
     actor_id: "runtime-reviewer",
     state: "completed",
     idempotency_key: "runtime-inconclusive-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: review.claim!.claim_id,
     actor_id: "runtime-reviewer",
@@ -11043,7 +11046,7 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
     idempotency_key: "runtime-inconclusive-review-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "runtime-inconclusive" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "runtime-inconclusive" }).work_state,
     "review_pending",
   );
   assert.equal(
@@ -11062,7 +11065,7 @@ test("inconclusive remains retryable when every criterion is Runtime-reviewable"
 
 test("a historical mixed Review obligation is split on the next safe Review selection", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "historical-mixed-review",
@@ -11089,21 +11092,21 @@ test("a historical mixed Review obligation is split on the next safe Review sele
     },
     { actor_id: "user-1", idempotency_key: "historical-mixed-create" },
   );
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "historical-mixed-review",
     actor_id: "runtime-executor",
     role: "executor",
     idempotency_key: "historical-mixed-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "historical-mixed-execute-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "historical-mixed-review",
     actor_id: "runtime-executor",
@@ -11114,7 +11117,7 @@ test("a historical mixed Review obligation is split on the next safe Review sele
     result: "passed",
     idempotency_key: "historical-mixed-runtime-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -11128,14 +11131,14 @@ test("a historical mixed Review obligation is split on the next safe Review sele
   store.db.prepare("UPDATE review_obligations SET criterion_scope_json = ? WHERE obligation_id = ?")
     .run(JSON.stringify(["historical-runtime-check", "historical-human-check"]), selfObligation.obligation_id);
 
-  const legacyReview = coordinator.selectGoalAndStart({
+  const legacyReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "historical-mixed-review",
     actor_id: "runtime-legacy-reviewer",
     role: "self_verifier",
     idempotency_key: "historical-mixed-legacy-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "historical-mixed-review",
     obligation_id: selfObligation.obligation_id,
@@ -11145,14 +11148,14 @@ test("a historical mixed Review obligation is split on the next safe Review sele
     reasoning: "只确认 Runtime 有权判断的工程条件；人工条件不在本结论内。",
     idempotency_key: "historical-mixed-runtime-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: legacyReview.run!.run_id,
     actor_id: "runtime-legacy-reviewer",
     state: "completed",
     idempotency_key: "historical-mixed-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: legacyReview.claim!.claim_id,
     actor_id: "runtime-legacy-reviewer",
@@ -11168,7 +11171,7 @@ test("a historical mixed Review obligation is split on the next safe Review sele
   );
   assert.equal(reconciled.filter((item) => item.role === "human_approver").length, 1);
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "historical-mixed-review" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "historical-mixed-review" }).work_state,
     "waiting_for_human",
   );
   assert.equal(coordinator.queryAvailable({ board_id: "board-1", actor_id: "runtime-next" }).available
@@ -11179,7 +11182,7 @@ test("a historical mixed Review obligation is split on the next safe Review sele
 test("a mitigatable completion Risk becomes one scoped Runtime action without restarting execution", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completion-risk-handoff", 40);
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "completion-risk-handoff-risk",
@@ -11204,7 +11207,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     kind: "execute",
     idempotency_key: "completion-risk-handoff-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
@@ -11212,7 +11215,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     output_refs: ["artifact://completion-risk-handoff"],
     idempotency_key: "completion-risk-handoff-execute-complete",
   });
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
     actor_id: "runtime-executor",
@@ -11223,7 +11226,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     result: "passed",
     idempotency_key: "completion-risk-handoff-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -11236,14 +11239,14 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     .review_obligations.find(
       (item) => item.goal_id === "completion-risk-handoff" && item.role === "self_verifier",
     )!;
-  const review = coordinator.selectGoalAndStart({
+  const review = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
     actor_id: "runtime-reviewer",
     role: "self_verifier",
     idempotency_key: "completion-risk-handoff-review",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
     obligation_id: obligation.obligation_id,
@@ -11253,14 +11256,14 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     reasoning: "执行产物与通过证据一致，当前只剩 completion Risk 决定",
     idempotency_key: "completion-risk-handoff-review-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: review.run!.run_id,
     actor_id: "runtime-reviewer",
     state: "completed",
     idempotency_key: "completion-risk-handoff-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: review.claim!.claim_id,
     actor_id: "runtime-reviewer",
@@ -11269,7 +11272,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
   });
 
   const historyBefore = store.snapshot("board-1");
-  const state = coordinator.getGoalWorkState({
+  const state = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
   });
@@ -11299,7 +11302,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     "risk.blocks_completion",
   ]);
 
-  const duplicateExecution = coordinator.selectGoalAndStart({
+  const duplicateExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
     actor_id: "runtime-next",
@@ -11316,7 +11319,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
   assert.equal(historyAfter.runs.length, historyBefore.runs.length);
   assert.equal(historyAfter.evidence.length, historyBefore.evidence.length);
 
-  const resolved = coordinator.setRiskState(
+  const resolved = coordinator.goals.commands.setRiskState(
     "board-1",
     {
       risk_id: "completion-risk-handoff-risk",
@@ -11330,7 +11333,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     },
     { actor_id: "runtime-reviewer", idempotency_key: "completion-risk-handoff-resolve" },
   );
-  const recoveredState = coordinator.getGoalWorkState({
+  const recoveredState = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
   });
@@ -11357,7 +11360,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
   assert.equal(historyBeforeCompletion.runs.length, historyBefore.runs.length);
   assert.equal(historyBeforeCompletion.evidence.length, historyBefore.evidence.length);
 
-  coordinator.correctEvidence({
+  coordinator.executionValidation.commands.correctEvidence({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
     actor_id: "runtime-executor",
@@ -11366,13 +11369,13 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
     reason: "完成前发现原证据不再可信",
     idempotency_key: "completion-risk-handoff-retract-evidence",
   });
-  const retractedEvidenceState = coordinator.getGoalWorkState({
+  const retractedEvidenceState = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "completion-risk-handoff",
   });
   assert.equal(retractedEvidenceState.work_state, "revalidation_pending");
   assert.equal(
-    coordinator.getGoalActionProjection({ board_id: "board-1", goal_id: "completion-risk-handoff" }).primary_action?.kind,
+    coordinator.executionValidation.query.getGoalActionProjection({ board_id: "board-1", goal_id: "completion-risk-handoff" }).primary_action?.kind,
     "revalidate",
   );
   store.close();
@@ -11381,7 +11384,7 @@ test("a mitigatable completion Risk becomes one scoped Runtime action without re
 test("new counter-evidence can request audited rework without resolving a completion Risk", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "completion-risk-rework", 45);
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "completion-risk-rework-risk",
@@ -11405,14 +11408,14 @@ test("new counter-evidence can request audited rework without resolving a comple
     kind: "execute",
     idempotency_key: "completion-risk-rework-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execution.run!.run_id,
     actor_id: "runtime-original-executor",
     state: "completed",
     idempotency_key: "completion-risk-rework-run-complete",
   });
-  const oldEvidence = coordinator.submitEvidence({
+  const oldEvidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-original-executor",
@@ -11423,7 +11426,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     result: "passed",
     idempotency_key: "completion-risk-rework-old-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-original-executor",
@@ -11433,14 +11436,14 @@ test("new counter-evidence can request audited rework without resolving a comple
   const obligation = store.snapshot("board-1").review_obligations.find(
     (item) => item.goal_id === "completion-risk-rework" && item.role === "self_verifier",
   )!;
-  const review = coordinator.selectGoalAndStart({
+  const review = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-original-reviewer",
     role: "self_verifier",
     idempotency_key: "completion-risk-rework-review",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     obligation_id: obligation.obligation_id,
@@ -11450,14 +11453,14 @@ test("new counter-evidence can request audited rework without resolving a comple
     reasoning: "旧范围下检查通过",
     idempotency_key: "completion-risk-rework-review-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: review.run!.run_id,
     actor_id: "runtime-original-reviewer",
     state: "completed",
     idempotency_key: "completion-risk-rework-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: review.claim!.claim_id,
     actor_id: "runtime-original-reviewer",
@@ -11465,7 +11468,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     idempotency_key: "completion-risk-rework-review-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-rework" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "completion-risk-rework" }).work_state,
     "completion_blocked",
   );
   const blockedExplain = coordinator.explainGoal({
@@ -11490,7 +11493,7 @@ test("new counter-evidence can request audited rework without resolving a comple
   assert.equal(riskAvailable?.action_target_id, "completion-risk-rework-risk");
   assert.ok(riskAvailable?.action_id);
 
-  const requested = coordinator.requestGoalRework({
+  const requested = coordinator.executionValidation.commands.requestGoalRework({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-independent-auditor",
@@ -11502,7 +11505,7 @@ test("new counter-evidence can request audited rework without resolving a comple
   assert.equal(requested.replayed, false);
   assert.deepEqual(requested.criterion_ids, ["completion-risk-rework-criterion"]);
   assert.equal(
-    coordinator.requestGoalRework({
+    coordinator.executionValidation.commands.requestGoalRework({
       board_id: "board-1",
       goal_id: "completion-risk-rework",
       actor_id: "runtime-independent-auditor",
@@ -11514,7 +11517,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     true,
   );
 
-  const state = coordinator.getGoalWorkState({
+  const state = coordinator.executionValidation.query.getGoalWorkState({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
   });
@@ -11532,7 +11535,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     }).ready,
     true,
   );
-  const prematureCompletion = coordinator.evaluateLeafCompletion({
+  const prematureCompletion = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-independent-auditor",
@@ -11554,14 +11557,14 @@ test("new counter-evidence can request audited rework without resolving a comple
     idempotency_key: "completion-risk-rework-new-execution",
   });
   assert.equal(nextExecution.allowed, true);
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: nextExecution.run!.run_id,
     actor_id: "runtime-new-executor",
     state: "completed",
     idempotency_key: "completion-risk-rework-new-run-complete",
   });
-  const freshEvidence = coordinator.submitEvidence({
+  const freshEvidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-new-executor",
@@ -11572,14 +11575,14 @@ test("new counter-evidence can request audited rework without resolving a comple
     result: "passed",
     idempotency_key: "completion-risk-rework-fresh-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: nextExecution.claim!.claim_id,
     actor_id: "runtime-new-executor",
     reason: "返工实现和 fresh Evidence 已提交",
     idempotency_key: "completion-risk-rework-new-execution-release",
   });
-  const nextReview = coordinator.selectGoalAndStart({
+  const nextReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-new-reviewer",
@@ -11587,7 +11590,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     idempotency_key: "completion-risk-rework-new-review",
   });
   assert.throws(
-    () => coordinator.submitReview({
+    () => coordinator.executionValidation.commands.submitReview({
       board_id: "board-1",
       goal_id: "completion-risk-rework",
       obligation_id: obligation.obligation_id,
@@ -11600,7 +11603,7 @@ test("new counter-evidence can request audited rework without resolving a comple
     (error: unknown) =>
       error instanceof GoalBoardV1Error && error.code === "review.evidence_stale_after_rework",
   );
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     obligation_id: obligation.obligation_id,
@@ -11610,21 +11613,21 @@ test("new counter-evidence can request audited rework without resolving a comple
     reasoning: "新执行已经覆盖被返工请求点名的验收条件",
     idempotency_key: "completion-risk-rework-fresh-review",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: nextReview.run!.run_id,
     actor_id: "runtime-new-reviewer",
     state: "completed",
     idempotency_key: "completion-risk-rework-new-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: nextReview.claim!.claim_id,
     actor_id: "runtime-new-reviewer",
     reason: "返工后的 fresh Review 已提交",
     idempotency_key: "completion-risk-rework-new-review-release",
   });
-  const completionAfterFreshReview = coordinator.evaluateLeafCompletion({
+  const completionAfterFreshReview = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "completion-risk-rework",
     actor_id: "runtime-independent-auditor",
@@ -11645,7 +11648,7 @@ test("Available suggests separate Runtime slots for confirmed pairwise-safe exec
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "parallel-primary", 30);
   createLeaf(coordinator, "parallel-secondary", 20);
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "parallel-primary",
@@ -11654,7 +11657,7 @@ test("Available suggests separate Runtime slots for confirmed pairwise-safe exec
     },
     { actor_id: "user-1", idempotency_key: "parallel-primary-policy" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "parallel-secondary",
@@ -11769,21 +11772,21 @@ test("needs_changes reopens execution until a newer executor run completes", () 
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "review-rework");
 
-  const firstExecution = coordinator.selectGoalAndStart({
+  const firstExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-rework",
     actor_id: "runtime-executor-first",
     role: "executor",
     idempotency_key: "review-rework-execute-first",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: firstExecution.run!.run_id,
     actor_id: "runtime-executor-first",
     state: "completed",
     idempotency_key: "review-rework-execute-first-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "review-rework",
     actor_id: "runtime-executor-first",
@@ -11794,7 +11797,7 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     result: "passed",
     idempotency_key: "review-rework-first-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: firstExecution.claim!.claim_id,
     actor_id: "runtime-executor-first",
@@ -11805,14 +11808,14 @@ test("needs_changes reopens execution until a newer executor run completes", () 
   const obligation = store
     .snapshot("board-1")
     .review_obligations.find((item) => item.goal_id === "review-rework" && item.role === "self_verifier")!;
-  const reviewRun = coordinator.selectGoalAndStart({
+  const reviewRun = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-rework",
     actor_id: "runtime-reviewer",
     role: "self_verifier",
     idempotency_key: "review-rework-review-select",
   });
-  const feedback = coordinator.submitReview({
+  const feedback = coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "review-rework",
     obligation_id: obligation.obligation_id,
@@ -11821,14 +11824,14 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     reasoning: "已完成的局部结果可保留，但整体 Goal 仍需继续执行",
     idempotency_key: "review-rework-needs-changes",
   }).review;
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: reviewRun.run!.run_id,
     actor_id: "runtime-reviewer",
     state: "completed",
     idempotency_key: "review-rework-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: reviewRun.claim!.claim_id,
     actor_id: "runtime-reviewer",
@@ -11837,7 +11840,7 @@ test("needs_changes reopens execution until a newer executor run completes", () 
   });
 
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
     "execution_pending",
   );
   assert.deepEqual(
@@ -11853,21 +11856,21 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     "needs_changes",
   );
 
-  const secondExecution = coordinator.selectGoalAndStart({
+  const secondExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-rework",
     actor_id: "runtime-executor-second",
     role: "executor",
     idempotency_key: "review-rework-execute-second",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: secondExecution.run!.run_id,
     actor_id: "runtime-executor-second",
     state: "completed",
     idempotency_key: "review-rework-execute-second-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "review-rework",
     actor_id: "runtime-executor-second",
@@ -11878,7 +11881,7 @@ test("needs_changes reopens execution until a newer executor run completes", () 
     result: "passed",
     idempotency_key: "review-rework-second-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: secondExecution.claim!.claim_id,
     actor_id: "runtime-executor-second",
@@ -11887,7 +11890,7 @@ test("needs_changes reopens execution until a newer executor run completes", () 
   });
 
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-rework" }).work_state,
     "review_pending",
   );
   assert.deepEqual(
@@ -11904,7 +11907,7 @@ test("needs_changes reopens execution until a newer executor run completes", () 
 test("needs_changes starts a fresh review round without carrying earlier passes", () => {
   const { store, coordinator } = fixture();
   createLeaf(coordinator, "review-round-reset");
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     {
       goal_id: "review-round-reset",
@@ -11914,21 +11917,21 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     { actor_id: "user-1", idempotency_key: "review-round-reset-policy" },
   );
 
-  const firstExecution = coordinator.selectGoalAndStart({
+  const firstExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-author-first",
     role: "executor",
     idempotency_key: "review-round-reset-execute-first",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: firstExecution.run!.run_id,
     actor_id: "runtime-author-first",
     state: "completed",
     idempotency_key: "review-round-reset-execute-first-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-author-first",
@@ -11939,7 +11942,7 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     result: "passed",
     idempotency_key: "review-round-reset-first-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: firstExecution.claim!.claim_id,
     actor_id: "runtime-author-first",
@@ -11953,14 +11956,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
   const selfObligation = initialObligations.find((item) => item.role === "self_verifier")!;
   const crossObligation = initialObligations.find((item) => item.role === "cross_reviewer")!;
 
-  const selfReview = coordinator.selectGoalAndStart({
+  const selfReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-self-reviewer",
     role: "self_verifier",
     idempotency_key: "review-round-reset-self-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "review-round-reset",
     obligation_id: selfObligation.obligation_id,
@@ -11969,14 +11972,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     reasoning: "第一轮自检通过",
     idempotency_key: "review-round-reset-self-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: selfReview.run!.run_id,
     actor_id: "runtime-self-reviewer",
     state: "completed",
     idempotency_key: "review-round-reset-self-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: selfReview.claim!.claim_id,
     actor_id: "runtime-self-reviewer",
@@ -11984,14 +11987,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     idempotency_key: "review-round-reset-self-release",
   });
 
-  const firstCrossReview = coordinator.selectGoalAndStart({
+  const firstCrossReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-cross-reviewer-one",
     role: "cross_reviewer",
     idempotency_key: "review-round-reset-cross-one-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "review-round-reset",
     obligation_id: crossObligation.obligation_id,
@@ -12000,14 +12003,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     reasoning: "第一位交叉复核者在第一轮通过",
     idempotency_key: "review-round-reset-cross-one-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: firstCrossReview.run!.run_id,
     actor_id: "runtime-cross-reviewer-one",
     state: "completed",
     idempotency_key: "review-round-reset-cross-one-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: firstCrossReview.claim!.claim_id,
     actor_id: "runtime-cross-reviewer-one",
@@ -12015,14 +12018,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     idempotency_key: "review-round-reset-cross-one-release",
   });
 
-  const changeReview = coordinator.selectGoalAndStart({
+  const changeReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-cross-reviewer-two",
     role: "cross_reviewer",
     idempotency_key: "review-round-reset-cross-two-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "review-round-reset",
     obligation_id: crossObligation.obligation_id,
@@ -12031,14 +12034,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     reasoning: "发现仍需返工，上一轮所有通过结果都需要在新产物上重验",
     idempotency_key: "review-round-reset-cross-two-needs-changes",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: changeReview.run!.run_id,
     actor_id: "runtime-cross-reviewer-two",
     state: "completed",
     idempotency_key: "review-round-reset-cross-two-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: changeReview.claim!.claim_id,
     actor_id: "runtime-cross-reviewer-two",
@@ -12057,7 +12060,7 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
   );
   assert.throws(
     () =>
-      coordinator.submitReview({
+      coordinator.executionValidation.commands.submitReview({
         board_id: "board-1",
         goal_id: "review-round-reset",
         obligation_id: selfObligation.obligation_id,
@@ -12070,21 +12073,21 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
       error instanceof GoalBoardV1Error && error.code === "review.rework_pending",
   );
 
-  const secondExecution = coordinator.selectGoalAndStart({
+  const secondExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-author-second",
     role: "executor",
     idempotency_key: "review-round-reset-execute-second",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: secondExecution.run!.run_id,
     actor_id: "runtime-author-second",
     state: "completed",
     idempotency_key: "review-round-reset-execute-second-complete",
   });
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-author-second",
@@ -12095,7 +12098,7 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     result: "passed",
     idempotency_key: "review-round-reset-second-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: secondExecution.claim!.claim_id,
     actor_id: "runtime-author-second",
@@ -12103,14 +12106,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
     idempotency_key: "review-round-reset-execute-second-release",
   });
 
-  const freshCrossReview = coordinator.selectGoalAndStart({
+  const freshCrossReview = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-round-reset",
     actor_id: "runtime-cross-reviewer-three",
     role: "cross_reviewer",
     idempotency_key: "review-round-reset-cross-three-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "review-round-reset",
     obligation_id: crossObligation.obligation_id,
@@ -12125,14 +12128,14 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
       .review_obligations.find((item) => item.obligation_id === crossObligation.obligation_id)?.state,
     "pending",
   );
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: freshCrossReview.run!.run_id,
     actor_id: "runtime-cross-reviewer-three",
     state: "completed",
     idempotency_key: "review-round-reset-cross-three-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: freshCrossReview.claim!.claim_id,
     actor_id: "runtime-cross-reviewer-three",
@@ -12144,7 +12147,7 @@ test("needs_changes starts a fresh review round without carrying earlier passes"
 
 test("Available brings an unfinished parent back to the user after its current children finish", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "open-parent",
@@ -12165,7 +12168,7 @@ test("Available brings an unfinished parent back to the user after its current c
     { actor_id: "user-1", idempotency_key: "open-parent-create" },
   );
   createLeaf(coordinator, "finished-current-child", 5);
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "finished-current-child",
@@ -12194,7 +12197,7 @@ test("Available brings an unfinished parent back to the user after its current c
   assert.match(available[0]?.why_now ?? "", /先和用户确认是否已经覆盖整个父目标/);
   assert.equal(available[1]?.requires_parent_confirmation, false);
 
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "open-parent",
     actor_id: "runtime-a",
@@ -12209,7 +12212,7 @@ test("Available brings an unfinished parent back to the user after its current c
 
 test("Runtime selection atomically creates a Claim and Run, and compound parents complete from children", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "parent",
@@ -12231,7 +12234,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     { actor_id: "user-1", idempotency_key: "compound-parent-create" },
   );
   createLeaf(coordinator, "child", 60);
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     { from_goal_id: "child", to_goal_id: "parent", type: "part_of", reason: "这是父 Goal 的必需子结果" },
     { actor_id: "user-1", idempotency_key: "compound-parent-child" },
@@ -12242,7 +12245,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     { actor_id: "user-1", idempotency_key: "compound-parent-active" },
   );
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "waiting_children",
   );
   assert.equal(
@@ -12250,7 +12253,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     false,
   );
 
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "child",
     actor_id: "runtime-a",
@@ -12262,10 +12265,10 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
   assert.ok(selected.run);
   assert.equal(selected.claim?.claim_id, selected.run?.claim_id);
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "child" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "child" }).work_state,
     "executing",
   );
-  const replay = coordinator.selectGoalAndStart({
+  const replay = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "child",
     actor_id: "runtime-a",
@@ -12283,7 +12286,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     1,
   );
 
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: selected.run!.run_id,
     actor_id: "runtime-a",
@@ -12291,7 +12294,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     output_refs: ["test://compound-child"],
     idempotency_key: "compound-child-run-complete",
   });
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "child",
     actor_id: "runtime-a",
@@ -12306,7 +12309,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     .snapshot("board-1")
     .review_obligations.find((item) => item.goal_id === "child" && item.role === "self_verifier");
   assert.ok(selfReview);
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: "board-1",
     goal_id: "child",
     obligation_id: selfReview!.obligation_id,
@@ -12316,7 +12319,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
     reasoning: "子 Goal 的验收证据完整",
     idempotency_key: "compound-child-review",
   });
-  const completion = coordinator.evaluateLeafCompletion({
+  const completion = coordinator.goals.lifecycle.evaluateCompletion({
     board_id: "board-1",
     goal_id: "child",
     actor_id: "runtime-a",
@@ -12326,7 +12329,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
   assert.equal(store.getGoal("parent")?.fulfillment_state, "satisfied");
   assert.equal(store.snapshot("board-1").board.active_goal_id, null);
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "satisfied",
   );
   assert.equal(
@@ -12342,7 +12345,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
   assert.equal(JSON.parse(childCompletionEvent.payload_json).active_goal_cleared, false);
   assert.equal(JSON.parse(parentCompletionEvent.payload_json).active_goal_cleared, true);
   createLeaf(coordinator, "new-child", 50);
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     { from_goal_id: "new-child", to_goal_id: "parent", type: "part_of", reason: "用户决定把新发现的结果纳入父 Goal" },
     { actor_id: "user-1", idempotency_key: "compound-parent-new-child" },
@@ -12350,7 +12353,7 @@ test("Runtime selection atomically creates a Claim and Run, and compound parents
   assert.equal(store.getGoal("parent")?.definition_state, "draft");
   assert.equal(store.getGoal("parent")?.decomposition_state, "frontier_open");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "parent" }).work_state,
     "clarification_pending",
   );
   store.close();
@@ -12360,7 +12363,7 @@ test("compound parents consume only valid, active child completions and reopen w
   const { store, coordinator } = fixture();
   createAcceptedCompoundParent(coordinator, "trusted-parent", "closed_compound");
   createLeaf(coordinator, "trusted-child");
-  const primaryRelation = coordinator.addRelation(
+  const primaryRelation = coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trusted-child",
@@ -12373,7 +12376,7 @@ test("compound parents consume only valid, active child completions and reopen w
   completeLeafGoal(store, coordinator, "trusted-child");
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
 
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "board-1",
     {
       risk_id: "trusted-child-invalidating-risk",
@@ -12391,7 +12394,7 @@ test("compound parents consume only valid, active child completions and reopen w
     },
     { actor_id: "user-1", idempotency_key: "trusted-child-risk-add" },
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     "board-1",
     { risk_id: "trusted-child-invalidating-risk", state: "triggered", reason: "外部规则已更新" },
     { actor_id: "user-1", idempotency_key: "trusted-child-risk-trigger" },
@@ -12399,12 +12402,12 @@ test("compound parents consume only valid, active child completions and reopen w
   assert.equal(store.getGoal("trusted-child")?.validity_state, "invalidated");
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "trusted-parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "trusted-parent" }).work_state,
     "waiting_children",
   );
 
   createAcceptedCompoundParent(coordinator, "late-parent", "closed_compound");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "trusted-child",
@@ -12416,11 +12419,11 @@ test("compound parents consume only valid, active child completions and reopen w
   );
   assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "late-parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "late-parent" }).work_state,
     "waiting_children",
   );
 
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     "board-1",
     {
       risk_id: "trusted-child-invalidating-risk",
@@ -12434,7 +12437,7 @@ test("compound parents consume only valid, active child completions and reopen w
     },
     { actor_id: "user-1", idempotency_key: "trusted-child-risk-resolve" },
   );
-  const revalidation = coordinator.selectGoalAndStart({
+  const revalidation = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "trusted-child",
     actor_id: "runtime-trusted-child-revalidator",
@@ -12442,7 +12445,7 @@ test("compound parents consume only valid, active child completions and reopen w
     idempotency_key: "trusted-child-revalidate-select",
   });
   assert.equal(revalidation.allowed, true);
-  assert.equal(coordinator.revalidateGoal({
+  assert.equal(coordinator.goals.lifecycle.revalidate({
     board_id: "board-1",
     goal_id: "trusted-child",
     run_id: revalidation.run!.run_id,
@@ -12451,14 +12454,14 @@ test("compound parents consume only valid, active child completions and reopen w
     reason: "按新规则重新核对子结果，结果仍然成立",
     idempotency_key: "trusted-child-revalidated",
   }).revalidated, true);
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: revalidation.run!.run_id,
     actor_id: "runtime-trusted-child-revalidator",
     state: "completed",
     idempotency_key: "trusted-child-revalidation-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: revalidation.claim!.claim_id,
     actor_id: "runtime-trusted-child-revalidator",
@@ -12473,14 +12476,14 @@ test("compound parents consume only valid, active child completions and reopen w
     1,
   );
 
-  coordinator.setGoalArchived(
+  coordinator.goals.lifecycle.setArchived(
     "board-1",
     { goal_id: "trusted-child", archived: true, reason: "验证归档结果不能继续支撑父 Goal" },
     { actor_id: "user-1", idempotency_key: "trusted-child-archive" },
   );
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
   assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
-  coordinator.setGoalArchived(
+  coordinator.goals.lifecycle.setArchived(
     "board-1",
     { goal_id: "trusted-child", archived: false, reason: "恢复仍然有效的子结果" },
     { actor_id: "user-1", idempotency_key: "trusted-child-unarchive" },
@@ -12488,21 +12491,21 @@ test("compound parents consume only valid, active child completions and reopen w
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
   assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
 
-  coordinator.setGoalTrashed(
+  coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trusted-child", trashed: true, reason: "验证回收结果不能继续支撑父 Goal" },
     { actor_id: "user-1", idempotency_key: "trusted-child-trash" },
   );
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "unmet");
   assert.equal(store.getGoal("late-parent")?.fulfillment_state, "unmet");
-  coordinator.setGoalTrashed(
+  coordinator.goals.lifecycle.setTrashed(
     "board-1",
     { goal_id: "trusted-child", trashed: false, reason: "恢复仍然有效的子结果与关系" },
     { actor_id: "user-1", idempotency_key: "trusted-child-restore" },
   );
   assert.equal(store.getGoal("trusted-parent")?.fulfillment_state, "satisfied");
   assert.equal(store.getGoal("late-parent")?.fulfillment_state, "satisfied");
-  coordinator.deactivateRelation(
+  coordinator.goals.commands.deactivateRelation(
     "board-1",
     { relation_id: primaryRelation.relation_id, reason: "验证非 active 子关系不能继续支撑父 Goal" },
     { actor_id: "user-1", idempotency_key: "trusted-parent-child-deactivate" },
@@ -12514,7 +12517,7 @@ test("compound parents consume only valid, active child completions and reopen w
 
 test("linking a child does not silently accept a Draft compound parent", () => {
   const { store, coordinator } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "draft-compound-parent",
@@ -12536,7 +12539,7 @@ test("linking a child does not silently accept a Draft compound parent", () => {
     { actor_id: "user-1", idempotency_key: "draft-compound-parent-create" },
   );
   createLeaf(coordinator, "draft-compound-child");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "board-1",
     {
       from_goal_id: "draft-compound-child",
@@ -12549,7 +12552,7 @@ test("linking a child does not silently accept a Draft compound parent", () => {
   assert.equal(store.getGoal("draft-compound-parent")?.definition_state, "draft");
   assert.equal(store.getGoal("draft-compound-parent")?.decomposition_state, "closed_compound");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "draft-compound-parent" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "draft-compound-parent" }).work_state,
     "clarification_pending",
   );
   store.close();
@@ -12567,7 +12570,7 @@ test("a failed atomic selection leaves no orphan Claim", () => {
   `);
   assert.throws(
     () =>
-      coordinator.selectGoalAndStart({
+      coordinator.executionValidation.commands.selectGoalAndStart({
         board_id: "board-1",
         goal_id: "trigger-failure",
         actor_id: "runtime-a",
@@ -12588,7 +12591,7 @@ test("a failed atomic selection leaves no orphan Claim", () => {
 
 test("work states preserve phase through blocks and recover after Claim loss", () => {
   const { store, coordinator, setNow } = fixture();
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "board-1",
     {
       goal_id: "draft-phase",
@@ -12609,14 +12612,14 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     .prepare("UPDATE goals SET validity_state = 'needs_revalidation' WHERE goal_id = ?")
     .run("revalidation-phase");
 
-  const clarify = coordinator.selectGoalAndStart({
+  const clarify = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "draft-phase",
     actor_id: "runtime-clarifier",
     role: "clarifier",
     idempotency_key: "phase-clarify",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: clarify.run!.run_id,
     actor_id: "runtime-clarifier",
@@ -12625,10 +12628,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-clarify-block",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "draft-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "draft-phase" }).work_state,
     "clarification_blocked",
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: clarify.claim!.claim_id,
     actor_id: "runtime-clarifier",
@@ -12636,18 +12639,18 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-clarify-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "draft-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "draft-phase" }).work_state,
     "clarification_pending",
   );
 
-  const execute = coordinator.selectGoalAndStart({
+  const execute = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "execution-phase",
     actor_id: "runtime-executor",
     role: "executor",
     idempotency_key: "phase-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: execute.run!.run_id,
     actor_id: "runtime-executor",
@@ -12656,10 +12659,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-execute-block",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "execution-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "execution-phase" }).work_state,
     "execution_blocked",
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: execute.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -12667,18 +12670,18 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-execute-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "execution-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "execution-phase" }).work_state,
     "execution_pending",
   );
 
-  const revalidate = coordinator.selectGoalAndStart({
+  const revalidate = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "revalidation-phase",
     actor_id: "runtime-revalidator",
     role: "revalidator",
     idempotency_key: "phase-revalidate",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: revalidate.run!.run_id,
     actor_id: "runtime-revalidator",
@@ -12687,10 +12690,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-revalidate-block",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "revalidation-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "revalidation-phase" }).work_state,
     "revalidation_blocked",
   );
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "board-1",
     claim_id: revalidate.claim!.claim_id,
     actor_id: "runtime-revalidator",
@@ -12698,36 +12701,36 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-revalidate-release",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "revalidation-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "revalidation-phase" }).work_state,
     "revalidation_pending",
   );
 
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     "board-1",
     { goal_id: "review-phase", policy: { cross_reviewers: 1 }, reason: "需要交叉复核" },
     { actor_id: "user-1", idempotency_key: "phase-review-policy" },
   );
-  const reviewExecution = coordinator.selectGoalAndStart({
+  const reviewExecution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-phase",
     actor_id: "runtime-author",
     role: "executor",
     idempotency_key: "phase-review-execution",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: reviewExecution.run!.run_id,
     actor_id: "runtime-author",
     state: "completed",
     idempotency_key: "phase-review-execution-completed",
   });
-  const evidenceHandoff = coordinator.getGoalActionProjection({
+  const evidenceHandoff = coordinator.executionValidation.query.getGoalActionProjection({
     board_id: "board-1",
     goal_id: "review-phase",
   });
   assert.equal(evidenceHandoff.display_status, "in_progress");
   assert.equal(evidenceHandoff.primary_action?.kind, "submit_evidence");
-  coordinator.submitEvidence({
+  coordinator.executionValidation.commands.submitEvidence({
     board_id: "board-1",
     goal_id: "review-phase",
     actor_id: "runtime-author",
@@ -12739,10 +12742,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-review-evidence",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
     "review_pending",
   );
-  const review = coordinator.selectGoalAndStart({
+  const review = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "review-phase",
     actor_id: "runtime-reviewer",
@@ -12750,7 +12753,7 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-review-select",
   });
   assert.equal(review.work_state?.work_state, "reviewing");
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: review.run!.run_id,
     actor_id: "runtime-reviewer",
@@ -12759,10 +12762,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-review-block",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
     "review_blocked",
   );
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: review.run!.run_id,
     actor_id: "runtime-reviewer",
@@ -12770,10 +12773,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-review-resume",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
     "reviewing",
   );
-  coordinator.revokeClaim({
+  coordinator.executionValidation.commands.revokeClaim({
     board_id: "board-1",
     claim_id: review.claim!.claim_id,
     actor_id: "user-1",
@@ -12781,19 +12784,19 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-review-revoke",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "review-phase" }).work_state,
     "review_pending",
   );
 
   createLeaf(coordinator, "interrupted-phase");
-  const interrupted = coordinator.selectGoalAndStart({
+  const interrupted = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "interrupted-phase",
     actor_id: "runtime-interrupted",
     role: "executor",
     idempotency_key: "phase-interrupted-select",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "board-1",
     run_id: interrupted.run!.run_id,
     actor_id: "runtime-interrupted",
@@ -12802,13 +12805,13 @@ test("work states preserve phase through blocks and recover after Claim loss", (
     idempotency_key: "phase-interrupted-abandoned",
   });
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "interrupted-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "interrupted-phase" }).work_state,
     "execution_pending",
   );
   assert.equal(store.snapshot("board-1").claims.find((item) => item.claim_id === interrupted.claim!.claim_id)?.state, "released");
 
   createLeaf(coordinator, "expiry-phase");
-  const expiring = coordinator.selectGoalAndStart({
+  const expiring = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "expiry-phase",
     actor_id: "runtime-expiring",
@@ -12818,10 +12821,10 @@ test("work states preserve phase through blocks and recover after Claim loss", (
   });
   setNow("2026-08-15T00:00:11.000Z");
   assert.equal(
-    coordinator.getGoalWorkState({ board_id: "board-1", goal_id: "expiry-phase" }).work_state,
+    coordinator.executionValidation.query.getGoalWorkState({ board_id: "board-1", goal_id: "expiry-phase" }).work_state,
     "execution_pending",
   );
-  const recoveredAfterExpiry = coordinator.selectGoalAndStart({
+  const recoveredAfterExpiry = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "board-1",
     goal_id: "expiry-phase",
     actor_id: "runtime-recovered",

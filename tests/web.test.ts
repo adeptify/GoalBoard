@@ -597,7 +597,7 @@ test("Web keeps a released Run blocker as history instead of a current blocker",
     actor_id: "owner",
     idempotency_key: "historical-run-blocker-board-create",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "historical-run-blocker-board",
     {
       goal_id: "historical-run-blocker-goal",
@@ -617,14 +617,14 @@ test("Web keeps a released Run blocker as history instead of a current blocker",
     },
     { actor_id: "owner", idempotency_key: "historical-run-blocker-goal-create" },
   );
-  const selected = coordinator.selectGoalAndStart({
+  const selected = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: "historical-run-blocker-board",
     goal_id: "historical-run-blocker-goal",
     actor_id: "runtime-old-scope",
     role: "executor",
     idempotency_key: "historical-run-blocker-select",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "historical-run-blocker-board",
     run_id: selected.run!.run_id,
     actor_id: "runtime-old-scope",
@@ -660,7 +660,7 @@ test("an open completion Risk stays visible without replacing an executable Goal
     actor_id: "owner",
     idempotency_key: "completion-risk-action-board-create",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "completion-risk-action-board",
     {
       goal_id: "completion-risk-action-goal",
@@ -681,7 +681,7 @@ test("an open completion Risk stays visible without replacing an executable Goal
     },
     { actor_id: "owner", idempotency_key: "completion-risk-action-goal-create" },
   );
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     "completion-risk-action-board",
     {
       risk_id: "completion-risk-action-risk",
@@ -733,7 +733,7 @@ test("Web keeps a replaced Goal as readable history while directing work to its 
     idempotency_key: "replaced-goal-board-create",
   });
   for (const [goalId, title] of [["roster-v1", "旧版 KOL 名单"], ["roster-v2", "新版七平台 KOL 名单"]]) {
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       boardId,
       {
         goal_id: goalId,
@@ -755,7 +755,7 @@ test("Web keeps a replaced Goal as readable history while directing work to its 
       { actor_id: "owner", idempotency_key: `create-${goalId}` },
     );
   }
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     boardId,
     {
       from_goal_id: "roster-v2",
@@ -810,7 +810,7 @@ test("Web distinguishes local Contract satisfaction from recorded parent Contrac
     actor_id: "user-1",
     idempotency_key: "coverage-board-create",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "coverage-board",
     {
       goal_id: "coverage-parent",
@@ -862,7 +862,7 @@ test("Web distinguishes local Contract satisfaction from recorded parent Contrac
     },
     { actor_id: "user-1", idempotency_key: "coverage-parent-create" },
   );
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "coverage-board",
     {
       goal_id: "coverage-child",
@@ -885,7 +885,7 @@ test("Web distinguishes local Contract satisfaction from recorded parent Contrac
     },
     { actor_id: "user-1", idempotency_key: "coverage-child-create" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "coverage-board",
     {
       from_goal_id: "coverage-child",
@@ -1089,7 +1089,7 @@ test("Web View cache follows canonical Board events instead of SQLite file lifec
     const unchanged = cachedGoalBoardWebView(cache, reopenedStore, coordinator, options);
     assert.strictEqual(unchanged, first, "opening the SQLite WAL must not invalidate an unchanged Board");
 
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       DEMO_BOARD_ID,
       {
         goal_id: "CACHE-EVENT",
@@ -1201,7 +1201,7 @@ function addProjectGoal(
 ): void {
   const store = new SqliteGoalBoardStore(project.database_path);
   try {
-    new GoalBoardCoordinator(store).createGoal(
+    new GoalBoardCoordinator(store).goals.commands.createGoal(
       project.board_id,
       {
         goal_id: goalId,
@@ -1227,7 +1227,7 @@ function startProjectClarification(
 ): void {
   const store = new SqliteGoalBoardStore(project.database_path);
   try {
-    new GoalBoardCoordinator(store).selectGoalAndStart({
+    new GoalBoardCoordinator(store).executionValidation.commands.selectGoalAndStart({
       board_id: project.board_id,
       goal_id: goalId,
       actor_id: actorId,
@@ -1266,7 +1266,7 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
     title: string,
     definitionState: "draft" | "accepted",
     decompositionState: "frontier_open" | "closed_leaf" | "closed_compound",
-  ) => coordinator.createGoal(
+  ) => coordinator.goals.commands.createGoal(
     boardId,
     {
       goal_id: goalId,
@@ -1289,7 +1289,7 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
 
   createGoal("OPEN-PARENT", "尚未确认拆分结束的父 Goal", "draft", "frontier_open");
   createGoal("OPEN-CHILD", "已经完成的当前子 Goal", "accepted", "closed_leaf");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     boardId,
     {
       from_goal_id: "OPEN-CHILD",
@@ -1303,7 +1303,7 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
 
   createGoal("COMPOUND-PARENT", "已确认由子 Goal 完成的父 Goal", "accepted", "closed_compound");
   createGoal("COMPOUND-CHILD", "尚未完成的必要子 Goal", "accepted", "closed_leaf");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     boardId,
     {
       from_goal_id: "COMPOUND-CHILD",
@@ -1316,7 +1316,7 @@ test("Web distinguishes automatic parent completion from decomposition confirmat
 
   createGoal("LEAF-PARENT", "误标为叶子的父 Goal", "accepted", "closed_leaf");
   createGoal("LEAF-CHILD", "与叶子标记冲突的子 Goal", "accepted", "closed_leaf");
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     boardId,
     {
       from_goal_id: "LEAF-CHILD",
@@ -1415,7 +1415,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
     },
     { actor_id: "test-user", idempotency_key: "web-rich-impact" },
   );
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     DEMO_BOARD_ID,
     {
       risk_id: "RISK-WEB-OVERLOAD",
@@ -1432,7 +1432,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
     },
     { actor_id: "test-user", idempotency_key: "web-rich-risk" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     DEMO_BOARD_ID,
     {
       goal_id: "CORE",
@@ -1450,7 +1450,7 @@ test("Web view derives understandable Goal states from canonical SQLite facts", 
     "invalidates",
     "migrates_from",
   ].entries()) {
-    coordinator.addRelation(
+    coordinator.goals.commands.addRelation(
       DEMO_BOARD_ID,
       {
         from_goal_id: "CORE",
@@ -2134,7 +2134,7 @@ test("Web projects an expired Claim and started Run as one stopped lifecycle", (
       actor_id: "web-user",
       idempotency_key: "web-expired-board",
     });
-    coordinator.createGoal(boardId, {
+    coordinator.goals.commands.createGoal(boardId, {
       goal_id: goalId,
       title: "恢复过期执行",
       outcome: "旧执行停止后可以重新领取",
@@ -2151,7 +2151,7 @@ test("Web projects an expired Claim and started Run as one stopped lifecycle", (
         required_evidence: ["test"],
       }],
     }, { actor_id: "web-user", idempotency_key: "web-expired-create" });
-    const selected = coordinator.selectGoalAndStart({
+    const selected = coordinator.executionValidation.commands.selectGoalAndStart({
       board_id: boardId,
       goal_id: goalId,
       actor_id: "runtime-expired",
@@ -2183,7 +2183,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     DEMO_BOARD_ID,
     {
       risk_id: "RISK-RESULT-VISIBILITY",
@@ -2200,7 +2200,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
     },
     { actor_id: "test-user", idempotency_key: "web-result-risk-create" },
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     DEMO_BOARD_ID,
     { risk_id: "RISK-RESULT-VISIBILITY", state: "accepted", reason: "已明确接受影响，继续推进" },
     { actor_id: "test-user", idempotency_key: "web-result-risk-accept" },
@@ -2238,7 +2238,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
   }).rewire;
   const relationId = String((applied.impact.added_relation_ids as string[])[0]);
   assert.ok(relationId);
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     DEMO_BOARD_ID,
     {
       risk_id: "RISK-RESULT-NOOP",
@@ -2255,7 +2255,7 @@ test("Decision Center keeps canonical risk and rewire results visible after pend
     },
     { actor_id: "test-user", idempotency_key: "web-result-noop-risk-create" },
   );
-  coordinator.setRiskState(
+  coordinator.goals.commands.setRiskState(
     DEMO_BOARD_ID,
     { risk_id: "RISK-RESULT-NOOP", state: "open", reason: "接受现状，后续再看" },
     { actor_id: "test-user", idempotency_key: "web-result-noop-risk-open" },
@@ -2523,7 +2523,7 @@ test("Decision Center never presents a Runtime review as user approval", () => {
     actor_id: "owner",
     idempotency_key: "runtime-review-result-board",
   });
-  coordinator.createGoal(boardId, {
+  coordinator.goals.commands.createGoal(boardId, {
     goal_id: goalId,
     title: "工程检查完成后等待用户验收",
     outcome: "工程复核和用户验收不混淆",
@@ -2539,21 +2539,21 @@ test("Decision Center never presents a Runtime review as user approval", () => {
       required_evidence: ["inspection"],
     }],
   }, { actor_id: "owner", idempotency_key: "runtime-review-result-goal" });
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: boardId,
     goal_id: goalId,
     actor_id: "runtime-executor",
     role: "executor",
     idempotency_key: "runtime-review-result-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: boardId,
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "runtime-review-result-complete",
   });
-  const evidence = coordinator.submitEvidence({
+  const evidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: boardId,
     goal_id: goalId,
     actor_id: "runtime-executor",
@@ -2564,7 +2564,7 @@ test("Decision Center never presents a Runtime review as user approval", () => {
     result: "passed",
     idempotency_key: "runtime-review-result-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: boardId,
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -2574,7 +2574,7 @@ test("Decision Center never presents a Runtime review as user approval", () => {
   const obligation = store.snapshot(boardId).review_obligations.find(
     (item) => item.goal_id === goalId && item.role === "self_verifier",
   )!;
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: boardId,
     goal_id: goalId,
     obligation_id: obligation.obligation_id,
@@ -2607,7 +2607,7 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     actor_id: "owner",
     idempotency_key: "human-decision-inbox-board",
   });
-  coordinator.createGoal(boardId, {
+  coordinator.goals.commands.createGoal(boardId, {
     goal_id: goalId,
     title: "工程检查后由用户确认体验",
     outcome: "待用户决定的事项始终可见且一次提交完成审计闭环",
@@ -2632,21 +2632,21 @@ test("Decision Center prioritizes pending human decisions and submits the linked
       },
     ],
   }, { actor_id: "owner", idempotency_key: "human-decision-inbox-goal" });
-  const execution = coordinator.selectGoalAndStart({
+  const execution = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: boardId,
     goal_id: goalId,
     actor_id: "runtime-executor",
     role: "executor",
     idempotency_key: "human-decision-inbox-execute",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: boardId,
     run_id: execution.run!.run_id,
     actor_id: "runtime-executor",
     state: "completed",
     idempotency_key: "human-decision-inbox-execute-complete",
   });
-  const inspectionEvidence = coordinator.submitEvidence({
+  const inspectionEvidence = coordinator.executionValidation.commands.submitEvidence({
     board_id: boardId,
     goal_id: goalId,
     actor_id: "runtime-executor",
@@ -2657,7 +2657,7 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     result: "passed",
     idempotency_key: "human-decision-inbox-inspection-evidence",
   }).evidence;
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: boardId,
     claim_id: execution.claim!.claim_id,
     actor_id: "runtime-executor",
@@ -2667,14 +2667,14 @@ test("Decision Center prioritizes pending human decisions and submits the linked
   const selfObligation = store.snapshot(boardId).review_obligations.find(
     (item) => item.goal_id === goalId && item.role === "self_verifier",
   )!;
-  const reviewRun = coordinator.selectGoalAndStart({
+  const reviewRun = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: boardId,
     goal_id: goalId,
     actor_id: "runtime-reviewer",
     role: "self_verifier",
     idempotency_key: "human-decision-inbox-review-select",
   });
-  coordinator.submitReview({
+  coordinator.executionValidation.commands.submitReview({
     board_id: boardId,
     goal_id: goalId,
     obligation_id: selfObligation.obligation_id,
@@ -2685,14 +2685,14 @@ test("Decision Center prioritizes pending human decisions and submits the linked
     reasoning: "工程检查已通过；体验由用户本人决定。",
     idempotency_key: "human-decision-inbox-review-pass",
   });
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: boardId,
     run_id: reviewRun.run!.run_id,
     actor_id: "runtime-reviewer",
     state: "completed",
     idempotency_key: "human-decision-inbox-review-complete",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: boardId,
     claim_id: reviewRun.claim!.claim_id,
     actor_id: "runtime-reviewer",
@@ -2739,7 +2739,7 @@ test("Decision Center prioritizes pending human decisions and submits the linked
       (item) => item.goal_id === goalId && item.role === "human_approver",
     )!;
     const attentionToken = String(
-      obligationCoordinator.getGoalActionProjection({ board_id: boardId, goal_id: goalId })
+      obligationCoordinator.executionValidation.query.getGoalActionProjection({ board_id: boardId, goal_id: goalId })
         .actions.find((action) => action.target_id === humanObligation.obligation_id)
         ?.reasons[0]?.facts?.attention_token ?? "",
     );
@@ -2792,7 +2792,7 @@ test("Decision Center prioritizes pending human decisions and submits the linked
       1,
     );
     assert.equal(
-      verifiedCoordinator.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).display_status,
+      verifiedCoordinator.executionValidation.query.getGoalActionProjection({ board_id: boardId, goal_id: goalId }).display_status,
       "completed",
     );
     verifiedStore.close();
@@ -4638,7 +4638,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "ACTIVE-GOAL-WEB",
@@ -4660,7 +4660,7 @@ test("Web lets a user set an accepted Goal as the current Goal without starting 
     },
     { actor_id: "test-user", idempotency_key: "create-active-goal-web" },
   );
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "ACTIVE-GOAL-DRAFT",
@@ -4968,7 +4968,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     actor_id: "web-user",
     idempotency_key: "web-tree-preflight-init",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "web-tree-preflight-board",
     {
       goal_id: "web-tree-accepted-parent",
@@ -4991,7 +4991,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     },
     { actor_id: "web-user", idempotency_key: "web-tree-accepted-parent-create" },
   );
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "web-tree-preflight-board",
     {
       goal_id: "web-tree-existing-child",
@@ -5010,7 +5010,7 @@ test("Web explains a materialization conflict before the user confirms a whole G
     },
     { actor_id: "web-user", idempotency_key: "web-tree-existing-child-create" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "web-tree-preflight-board",
     {
       from_goal_id: "web-tree-existing-child",
@@ -6408,7 +6408,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     actor_id: "web-user",
     idempotency_key: "contract-board-init",
   });
-  const draft = coordinator.createGoal(
+  const draft = coordinator.goals.commands.createGoal(
     "contract-board",
     {
       goal_id: "FIRST-DRAFT",
@@ -6423,7 +6423,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     },
     { actor_id: "web-user", idempotency_key: "minimal-draft" },
   ).goal;
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: "contract-board",
     goal_id: draft.goal_id,
     actor_id: "clarifier-runtime",
@@ -6431,13 +6431,13 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     idempotency_key: "clarifier-claim",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: "contract-board",
     claim_id: claim.claim_id,
     actor_id: "clarifier-runtime",
     idempotency_key: "clarifier-run",
   }).run;
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "contract-board",
     {
       goal_id: "PRODUCT-ROOT",
@@ -6458,7 +6458,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     },
     { actor_id: "web-user", idempotency_key: "product-root" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     "contract-board",
     {
       from_goal_id: draft.goal_id,
@@ -6570,7 +6570,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     dependency_rewire_ids: [dependencyRewire.rewire_id],
     idempotency_key: "contract-proposal",
   }).proposal;
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: "contract-board",
     run_id: run.run_id,
     actor_id: "clarifier-runtime",
@@ -6578,7 +6578,7 @@ test("Web lets a user save a minimal Draft and confirm a readable Contract Propo
     output_refs: [proposal.proposal_id],
     idempotency_key: "clarifier-run-completed",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: "contract-board",
     claim_id: claim.claim_id,
     actor_id: "clarifier-runtime",
@@ -6716,7 +6716,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     actor_id: "web-user",
     idempotency_key: "draft-editor-board-init",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "draft-editor-board",
     {
       goal_id: "EDIT-ME",
@@ -6730,7 +6730,7 @@ test("Web maintains a structured Draft Contract and initial Risk and Impact with
     },
     { actor_id: "web-user", idempotency_key: "edit-me-create" },
   );
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "draft-editor-board",
     {
       goal_id: "LOCKED",
@@ -6928,7 +6928,7 @@ test("Web maintains complete Risk facts, linked Goals, lifecycle states, and the
     idempotency_key: "risk-workbench-init",
   });
   for (const [goalId, title] of [["RISK-A", "交付风险工作台"], ["RISK-B", "验证关联 Goal"]] as const) {
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       "risk-workbench-board",
       {
         goal_id: goalId,
@@ -7155,7 +7155,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     actor_id: "web-user",
     idempotency_key: "impact-workbench-init",
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "impact-workbench-board",
     {
       goal_id: "IMPACT-A",
@@ -7177,7 +7177,7 @@ test("Web maintains Impact facts, access state, deactivation, and retained histo
     },
     { actor_id: "web-user", idempotency_key: "impact-workbench-goal" },
   );
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     "impact-workbench-board",
     {
       goal_id: "IMPACT-B",
@@ -7326,7 +7326,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
   const { databasePath, homeDirectory } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "POLICY-WEB",
@@ -7396,7 +7396,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
 
     const runtimeStore = new SqliteGoalBoardStore(databasePath);
     const runtimeCoordinator = new GoalBoardCoordinator(runtimeStore);
-    const claim = runtimeCoordinator.claimGoal({
+    const claim = runtimeCoordinator.executionValidation.commands.claimGoal({
       board_id: DEMO_BOARD_ID,
       goal_id: "POLICY-WEB",
       actor_id: "runtime-policy-web",
@@ -7406,7 +7406,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       idempotency_key: "claim-policy-web",
     }).claim;
     assert.ok(claim);
-    const run = runtimeCoordinator.startRun({
+    const run = runtimeCoordinator.executionValidation.commands.startRun({
       board_id: DEMO_BOARD_ID,
       goal_id: "POLICY-WEB",
       claim_id: claim.claim_id,
@@ -7414,7 +7414,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       contract_cursor: runtimeStore.eventCursor(DEMO_BOARD_ID),
       idempotency_key: "run-policy-web",
     }).run;
-    const evidence = runtimeCoordinator.submitEvidence({
+    const evidence = runtimeCoordinator.executionValidation.commands.submitEvidence({
       board_id: DEMO_BOARD_ID,
       goal_id: "POLICY-WEB",
       actor_id: "runtime-policy-web",
@@ -7425,7 +7425,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       result: "passed",
       idempotency_key: "evidence-policy-web",
     }).evidence;
-    runtimeCoordinator.reportRun({
+    runtimeCoordinator.executionValidation.commands.reportRun({
       board_id: DEMO_BOARD_ID,
       run_id: run.run_id,
       actor_id: "runtime-policy-web",
@@ -7446,11 +7446,11 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
       (item) => item.goal_id === "POLICY-WEB" && item.role !== "human_approver",
     );
     for (const [index, runtimeObligation] of runtimeObligations.entries()) {
-      const projection = runtimeCoordinator.getGoalActionProjection({ board_id: DEMO_BOARD_ID, goal_id: "POLICY-WEB" });
+      const projection = runtimeCoordinator.executionValidation.query.getGoalActionProjection({ board_id: DEMO_BOARD_ID, goal_id: "POLICY-WEB" });
       const reviewAction = projection.actions.find((action) => action.target_id === runtimeObligation.obligation_id);
       assert.ok(reviewAction);
       const reviewerId = `runtime-policy-reviewer-${index}`;
-      runtimeCoordinator.selectGoalAndStart({
+      runtimeCoordinator.executionValidation.commands.selectGoalAndStart({
         board_id: DEMO_BOARD_ID,
         goal_id: "POLICY-WEB",
         actor_id: reviewerId,
@@ -7459,7 +7459,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
         action_token: projection.action_token,
         idempotency_key: `policy-review-select-${index}`,
       });
-      runtimeCoordinator.submitReview({
+      runtimeCoordinator.executionValidation.commands.submitReview({
         board_id: DEMO_BOARD_ID,
         goal_id: "POLICY-WEB",
         obligation_id: runtimeObligation.obligation_id,
@@ -7639,7 +7639,7 @@ test("Web edits project and Goal Policy and submits a user-only Human Review", a
 
     const decisionStore = new SqliteGoalBoardStore(databasePath);
     const decisionCoordinator = new GoalBoardCoordinator(decisionStore);
-    const decisionProjection = decisionCoordinator.getGoalActionProjection({
+    const decisionProjection = decisionCoordinator.executionValidation.query.getGoalActionProjection({
       board_id: DEMO_BOARD_ID,
       goal_id: "POLICY-WEB",
     });
@@ -7693,7 +7693,7 @@ test("Web result confirmation names the criterion that still lacks passing evide
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "REVIEW-NO-EVIDENCE",
@@ -7714,7 +7714,7 @@ test("Web result confirmation names the criterion that still lacks passing evide
     },
     { actor_id: "test-user", idempotency_key: "create-review-no-evidence" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     DEMO_BOARD_ID,
     {
       goal_id: "REVIEW-NO-EVIDENCE",
@@ -7731,7 +7731,7 @@ test("Web result confirmation names the criterion that still lacks passing evide
     },
     { actor_id: "test-user", idempotency_key: "policy-review-no-evidence" },
   );
-  const claim = coordinator.claimGoal({
+  const claim = coordinator.executionValidation.commands.claimGoal({
     board_id: DEMO_BOARD_ID,
     goal_id: "REVIEW-NO-EVIDENCE",
     actor_id: "runtime-no-evidence",
@@ -7740,7 +7740,7 @@ test("Web result confirmation names the criterion that still lacks passing evide
     idempotency_key: "claim-review-no-evidence",
   }).claim;
   assert.ok(claim);
-  const run = coordinator.startRun({
+  const run = coordinator.executionValidation.commands.startRun({
     board_id: DEMO_BOARD_ID,
     goal_id: "REVIEW-NO-EVIDENCE",
     claim_id: claim.claim_id,
@@ -7748,14 +7748,14 @@ test("Web result confirmation names the criterion that still lacks passing evide
     contract_cursor: store.eventCursor(DEMO_BOARD_ID),
     idempotency_key: "run-review-no-evidence",
   }).run;
-  coordinator.reportRun({
+  coordinator.executionValidation.commands.reportRun({
     board_id: DEMO_BOARD_ID,
     run_id: run.run_id,
     actor_id: "runtime-no-evidence",
     state: "completed",
     idempotency_key: "complete-run-review-no-evidence",
   });
-  coordinator.releaseClaim({
+  coordinator.executionValidation.commands.releaseClaim({
     board_id: DEMO_BOARD_ID,
     claim_id: claim.claim_id,
     actor_id: "runtime-no-evidence",
@@ -7798,7 +7798,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
   seedDemoBoard(databasePath);
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "EVIDENCE-WEB",
@@ -7820,7 +7820,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     },
     { actor_id: "test-user", idempotency_key: "create-evidence-web" },
   );
-  coordinator.addRelation(
+  coordinator.goals.commands.addRelation(
     DEMO_BOARD_ID,
     {
       from_goal_id: "EVIDENCE-WEB",
@@ -7830,7 +7830,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     },
     { actor_id: "test-user", idempotency_key: "evidence-web-relation" },
   );
-  coordinator.addRisk(
+  coordinator.goals.commands.addRisk(
     DEMO_BOARD_ID,
     {
       risk_id: "RISK-EVIDENCE-WEB",
@@ -7847,7 +7847,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
     },
     { actor_id: "test-user", idempotency_key: "evidence-web-risk" },
   );
-  coordinator.setPolicy(
+  coordinator.goals.commands.setPolicy(
     DEMO_BOARD_ID,
     {
       goal_id: "EVIDENCE-WEB",
@@ -7964,7 +7964,7 @@ test("Web records manual Evidence, safely opens project references, and exposes 
 
     const correctionStore = new SqliteGoalBoardStore(databasePath);
     const correctionCoordinator = new GoalBoardCoordinator(correctionStore);
-    correctionCoordinator.correctEvidence({
+    correctionCoordinator.executionValidation.commands.correctEvidence({
       board_id: DEMO_BOARD_ID,
       goal_id: "EVIDENCE-WEB",
       actor_id: "web-user",
@@ -8128,7 +8128,7 @@ test("Web opens a verified Evidence locator from its recorded Runtime workspace,
   let evidenceId: string;
   try {
     const coordinator = new GoalBoardCoordinator(store);
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       fixture.alpha.board_id,
       {
         goal_id: "LOCATOR-WORKSPACE",
@@ -8150,7 +8150,7 @@ test("Web opens a verified Evidence locator from its recorded Runtime workspace,
     );
     const normalized = normalizeRuntimeWorkContext(sourceContext);
     assert.ok(normalized.workspace);
-    evidenceId = coordinator.submitEvidence({
+    evidenceId = coordinator.executionValidation.commands.submitEvidence({
       board_id: fixture.alpha.board_id,
       goal_id: "LOCATOR-WORKSPACE",
       actor_id: "runtime-codex",
@@ -8224,7 +8224,7 @@ test("Web opens verified Evidence from the recorded root of a registered Git wor
   let evidenceId: string;
   try {
     const coordinator = new GoalBoardCoordinator(store);
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       fixture.alpha.board_id,
       {
         goal_id: "WORKTREE-EVIDENCE-WEB",
@@ -8244,7 +8244,7 @@ test("Web opens verified Evidence from the recorded root of a registered Git wor
       },
       { actor_id: "test-user", idempotency_key: "worktree-evidence-web-goal" },
     );
-    const evidence = coordinator.submitEvidence({
+    const evidence = coordinator.executionValidation.commands.submitEvidence({
       board_id: fixture.alpha.board_id,
       goal_id: "WORKTREE-EVIDENCE-WEB",
       actor_id: "runtime-codex",
@@ -8299,7 +8299,7 @@ test("Web normal Tree excludes trashed Goals while the coordinator retains their
   const { databasePath } = webFixture();
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     DEMO_BOARD_ID,
     {
       goal_id: "TRASHED-WEB",
@@ -8320,7 +8320,7 @@ test("Web normal Tree excludes trashed Goals while the coordinator retains their
     },
     { actor_id: "test-user", idempotency_key: "create-trashed-web" },
   );
-  coordinator.setGoalTrashed(
+  coordinator.goals.lifecycle.setTrashed(
     DEMO_BOARD_ID,
     { goal_id: "TRASHED-WEB", trashed: true, reason: "验证正常 Web 读取过滤" },
     { actor_id: "test-user", idempotency_key: "trash-web-goal" },
@@ -8343,7 +8343,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
   const store = new SqliteGoalBoardStore(databasePath);
   const coordinator = new GoalBoardCoordinator(store);
   const createGoal = (goalId: string, title: string) =>
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       DEMO_BOARD_ID,
       {
         goal_id: goalId,
@@ -8366,7 +8366,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     );
   createGoal("TRASH-UI-READY", "可移入回收站的 UI Goal");
   createGoal("TRASH-UI-ACTIVE", "有运行中工作的 UI Goal");
-  const relationId = coordinator.addRelation(
+  const relationId = coordinator.goals.commands.addRelation(
     DEMO_BOARD_ID,
     {
       from_goal_id: "TRASH-UI-READY",
@@ -8376,7 +8376,7 @@ test("Web provides confirmed recoverable trash, blocked-work feedback, and resto
     },
     { actor_id: "test-user", idempotency_key: "trash-ui-relation" },
   ).relation_id;
-  const activeDecision = coordinator.selectGoalAndStart({
+  const activeDecision = coordinator.executionValidation.commands.selectGoalAndStart({
     board_id: DEMO_BOARD_ID,
     goal_id: "TRASH-UI-ACTIVE",
     actor_id: "runtime-trash-ui",
@@ -8496,7 +8496,7 @@ test("Web archives only completed Goals and provides a reversible archive view",
     ["ARCHIVE-WEB", "可归档的已完成 Goal"],
     ["ARCHIVE-UNMET", "尚未完成的 Goal"],
   ]) {
-    coordinator.createGoal(
+    coordinator.goals.commands.createGoal(
       DEMO_BOARD_ID,
       {
         goal_id: goalId,

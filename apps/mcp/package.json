@@ -1,0 +1,49 @@
+{
+  "name": "@adeptify/goalboard-app-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Thin MCP schema, audience, and capability adapter.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*",
+    "@adeptify/goalboard-plugin-goals": "workspace:*"
+  },
+  "goalboard": {
+    "path": "apps/mcp",
+    "kind": "app",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/app-host",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-dv1",
+      "goal-reorg-dv2",
+      "goal-reorg-gw4",
+      "goal-reorg-ex4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "mcp.goals-command-adapter.v1",
+      "mcp.execution-validation-adapter.v1"
+    ]
+  }
+}

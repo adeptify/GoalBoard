@@ -1,0 +1,47 @@
+{
+  "name": "@adeptify/goalboard-module-projects",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Project identity, Catalog, membership, lifecycle, and board_id migration facts.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "modules/projects",
+    "kind": "module",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/modules/projects",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-ap1"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "project-identity",
+      "project-catalog",
+      "workspace-membership",
+      "project-deletion-receipts"
+    ]
+  }
+}

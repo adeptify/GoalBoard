@@ -1,0 +1,46 @@
+{
+  "name": "@adeptify/goalboard-plugin-feed",
+  "version": "0.0.0",
+  "private": true,
+  "description": "First-party Feed navigation, UI, disposition, and Module composition.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adeptify/goalboard-contracts": "workspace:*"
+  },
+  "goalboard": {
+    "path": "plugins/native/feed",
+    "kind": "native-plugin",
+    "maturity": "partial",
+    "contract": "@adeptify/goalboard-contracts/platform/plugin",
+    "migrationGoals": [
+      "goal-reorg-f2",
+      "goal-reorg-fd4"
+    ],
+    "ssot": "docs/SSOT-MATRIX.md",
+    "capabilities": [
+      "feed.native-plugin.contract.v1",
+      "feed.ui-contribution.v1",
+      "feed.http-routes.v1"
+    ]
+  }
+}

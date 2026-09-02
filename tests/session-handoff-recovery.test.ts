@@ -25,7 +25,7 @@ function contractFixture(databasePath: string, boardId: string, goalId: string) 
     actor_id: "owner",
     idempotency_key: `${boardId}-init`,
   });
-  coordinator.createGoal(
+  coordinator.goals.commands.createGoal(
     boardId,
     {
       goal_id: goalId,

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 
+import { SignalsModule } from "@adeptify/goalboard-module-signals";
+import { ConnectorHost } from "@adeptify/goalboard-service-connector-host";
+import { ListenerHost, ListenerHostError } from "@adeptify/goalboard-service-listener-host";
+
 import { toFeedPublicError } from "../contract.js";
 import { FeedDomainError } from "../errors.js";
 import { createFileSecretStore, peekSealedEntry } from "../security/secret-store.js";
@@ -14,13 +18,11 @@ import {
   unbindConnectorToken,
   type ConnectorCredentialKind,
 } from "./credentials.js";
-import { createGithubConnector } from "./github.js";
 import {
   pollGithubDeviceFlow,
   startGithubDeviceFlow,
   storeGithubClientId,
 } from "./github-oauth.js";
-import { createGmailConnector } from "./gmail.js";
 import { GMAIL_DEFAULT_SCOPE, normalizeGmailScope } from "./gmail-scope.js";
 import {
   completeGmailOAuthFlow,
@@ -31,7 +33,8 @@ import {
   type GmailOAuthComplete,
 } from "./gmail-oauth.js";
 import { gmailInstallationSecretRefs } from "./gmail-installations.js";
-import type { ConnectorPort, ConnectorSyncMode, ConnectorSyncResult } from "./types.js";
+import { OfficialIntegrationRegistry } from "./official-integrations.js";
+import type { ConnectorIngestItem, ConnectorPort, ConnectorSyncMode } from "./types.js";
 
 export interface ConnectorAuthStatus {
   github: ReturnType<typeof connectorCredentialStatus>;
@@ -43,13 +46,15 @@ export interface ConnectorAuthStatus {
 
 export class FeedConnectorService {
   readonly feed: FeedStore;
+  private readonly integrations: OfficialIntegrationRegistry;
 
   constructor(
     readonly db: Database.Database,
     readonly boardId: string,
-    private readonly connectorFactory?: (source: FeedSourceRecord) => ConnectorPort,
+    connectorFactory?: (source: FeedSourceRecord) => ConnectorPort,
   ) {
     this.feed = new FeedStore(db);
+    this.integrations = new OfficialIntegrationRegistry(connectorFactory);
   }
 
   ensureSources(): FeedSourceRecord[] {
@@ -308,158 +313,135 @@ export class FeedConnectorService {
     if (prior?.phase === "terminal") {
       return { source: this.feed.getSource(this.boardId, sourceId), run: prior, created: 0, deduped: 0, replayed: true };
     }
-    const startedAt = new Date().toISOString();
-    const running: FeedSourceRunRecord = {
-      board_id: this.boardId,
-      run_id: prior?.run_id ?? stableId("connector-run", operationId),
-      operation_id: operationId,
-      source_id: source.source_id,
-      phase: "running",
-      outcome: null,
-      empty: false,
-      error_code: null,
-      receipt: null,
-      created_count: 0,
-      deduped_count: 0,
-      recovery_count: prior ? prior.recovery_count + 1 : 0,
-      started_at: startedAt,
-      completed_at: null,
-      updated_at: startedAt,
-    };
-    this.feed.upsertSourceRun(running);
-    const port = this.portFor(source);
-    let result: ConnectorSyncResult;
+    let listener!: ListenerHost;
+    let listenerResult: Awaited<ReturnType<ListenerHost["run"]>>;
     try {
-      result = await port.sync({ cursor: source.cursor, mode: input.mode ?? "normal" });
+      const integration = await this.integrations.contributionFor(source);
+      const connector = new ConnectorHost();
+      const connectionId = `source:${source.source_id}`;
+      connector.registerDriver(integration.connector_driver);
+      connector.connect({
+        connection_id: connectionId,
+        driver_id: integration.connector_driver.driver_id,
+      });
+      const signals = new SignalsModule(this.db);
+      listener = new ListenerHost(this.db, connector, signals.commands, {
+        afterSignalAccepted: (event, receipt) => {
+          const raw = event.payload as unknown as ConnectorIngestItem;
+          const latest = this.feed.getSource(this.boardId, source.source_id);
+          this.feed.ingestItem({
+            source: latest,
+            externalId: `${latest.source_id}:${raw.externalId}`,
+            signal: {
+              signal_id: receipt.signal.signal_id,
+              revision: receipt.signal.revision,
+            },
+            title: raw.title,
+            summary: raw.summary,
+            body: raw.body,
+            url: raw.url,
+            kind: raw.kind,
+            priority: raw.priority,
+            tags: raw.tags,
+            author: raw.author,
+            occurredAt: raw.occurredAt ?? event.occurred_at,
+            attention: raw.attention,
+          });
+        },
+      });
+      listenerResult = await listener.run({
+        project_id: this.boardId,
+        source_id: source.source_id,
+        connection_id: connectionId,
+        operation_id: operationId,
+        adapter: integration.signal_adapter,
+        intent: { sync_mode: input.mode ?? "normal" },
+      });
     } catch (error) {
       const updatedAt = new Date().toISOString();
-      const errorCode = safeConnectorErrorCode(error);
-      const interrupted: FeedSourceRunRecord = {
-        ...running,
-        phase: "interrupted",
-        error_code: errorCode,
+      const errorCode = error instanceof ListenerHostError ? error.code : safeConnectorErrorCode(error);
+      await this.integrations.reportCrash(source.source_id, errorCode);
+      const latest = this.feed.getSource(this.boardId, sourceId);
+      this.feed.upsertSource({
+        ...latest,
+        status: latest.enabled ? "error" : "paused",
+        last_error_code: errorCode,
         updated_at: updatedAt,
-      };
-      this.db.transaction(() => {
-        this.feed.upsertSourceRun(interrupted);
-        const latest = this.feed.getSource(this.boardId, sourceId);
-        this.feed.upsertSource({
-          ...latest,
-          status: latest.enabled ? "error" : "paused",
-          last_error_code: errorCode,
-          updated_at: updatedAt,
-        });
-        appendConnectorEvent(
-          this.db,
-          this.boardId,
-          source.source_id,
-          "feed_connector.sync_interrupted",
-          `${source.name} 同步未取得终态，可安全重试`,
-          { operation_id: operationId, error_code: errorCode },
-        );
-      }).immediate();
+      });
+      appendConnectorEvent(
+        this.db,
+        this.boardId,
+        source.source_id,
+        "feed_connector.sync_interrupted",
+        `${source.name} 同步未取得终态，可安全重试`,
+        { operation_id: operationId, error_code: errorCode },
+      );
       throw new FeedDomainError("连接器同步未取得可信终态，本次没有写成成功；可稍后安全重试。", "feed_source_sync_interrupted");
     }
     const completedAt = new Date().toISOString();
-    if (!result.ok) {
-      const failed: FeedSourceRunRecord = {
-        ...running,
-        phase: "terminal",
-        outcome: "failed",
-        error_code: `connector_${result.failure}`,
-        receipt: {
-          mode: result.mode,
-          failure: result.failure,
-          ...(result.httpStatus == null ? {} : { http_status: result.httpStatus }),
-          ...(result.action ? { recovery_action: result.action } : {}),
-          ...(result.retryAfterAt ? { retry_after_at: result.retryAfterAt } : {}),
-        },
-        completed_at: completedAt,
-        updated_at: completedAt,
-      };
+    const connectorReceipt = listenerResult.connector_receipt ?? {};
+    if (listenerResult.outcome === "failed") {
+      const failure = String(connectorReceipt.failure ?? "provider");
+      const retryAfterAt = typeof connectorReceipt.retry_after_at === "string"
+        ? connectorReceipt.retry_after_at
+        : undefined;
+      const message = typeof connectorReceipt.message === "string"
+        ? connectorReceipt.message
+        : "Provider request failed safely";
+      const action = typeof connectorReceipt.recovery_action === "string"
+        ? connectorReceipt.recovery_action
+        : undefined;
       this.db.transaction(() => {
-        this.feed.upsertSourceRun(failed);
-        const retrySchedule = result.failure === "rate_limited"
-          && result.retryAfterAt
+        const retrySchedule = failure === "rate_limited"
+          && retryAfterAt
           && source.schedule.mode === "interval"
-          ? { ...source.schedule, next_pull_at: result.retryAfterAt }
+          ? { ...source.schedule, next_pull_at: retryAfterAt }
           : source.schedule;
         this.feed.upsertSource({
           ...source,
-          status: result.failure === "rate_limited" ? "active" : "error",
+          status: failure === "rate_limited" ? "active" : "error",
           schedule: retrySchedule,
           last_outcome: "failed",
-          last_error_code: failed.error_code,
+          last_error_code: listenerResult.error_code,
           updated_at: completedAt,
         });
-        appendConnectorEvent(this.db, this.boardId, source.source_id, "feed_connector.sync_failed", `${source.name} 同步失败：${result.message}`, {
-          failure: result.failure,
-          ...(result.action ? { action: result.action } : {}),
-          ...(result.retryAfterAt ? { retry_after_at: result.retryAfterAt } : {}),
+        appendConnectorEvent(this.db, this.boardId, source.source_id, "feed_connector.sync_failed", `${source.name} 同步失败：${message}`, {
+          failure,
+          ...(action ? { action } : {}),
+          ...(retryAfterAt ? { retry_after_at: retryAfterAt } : {}),
         });
       }).immediate();
-      this.recordActionableSourceFault(source, failed.error_code!, result.message, completedAt);
+      this.recordActionableSourceFault(source, listenerResult.error_code!, message, completedAt);
       throw new FeedDomainError(
-        result.action ? `${result.message} — ${result.action}` : result.message,
-        failed.error_code!,
+        action ? `${message} — ${action}` : message,
+        listenerResult.error_code!,
       );
     }
-
-    let created = 0;
-    let deduped = 0;
-    let durableSource = source;
-    let terminal!: FeedSourceRunRecord;
-    this.db.transaction(() => {
-      const latest = this.feed.getSource(this.boardId, source.source_id);
-      for (const raw of result.items) {
-        const externalId = `${latest.source_id}:${raw.externalId}`;
-        const ingested = this.feed.ingestItem({
-          source: latest,
-          externalId,
-          title: raw.title,
-          summary: raw.summary,
-          body: raw.body,
-          url: raw.url,
-          kind: raw.kind,
-          priority: raw.priority,
-          tags: raw.tags,
-          author: raw.author,
-          occurredAt: raw.occurredAt ?? completedAt,
-          attention: raw.attention,
-        });
-        if (ingested.created) created += 1;
-        else deduped += 1;
-      }
-      terminal = {
-        ...running,
-        phase: "terminal",
-        outcome: "completed",
-        empty: result.items.length === 0,
-        receipt: { mode: result.mode, sync_mode: input.mode ?? "normal" },
-        created_count: created,
-        deduped_count: deduped,
-        completed_at: completedAt,
-        updated_at: completedAt,
-      };
-      durableSource = this.feed.upsertSource({
-        ...latest,
-        status: result.mode === "live" ? "active" : "error",
-        item_count: latest.item_count + created,
-        cursor: result.cursor,
-        ...connectorSourceMetadata(latest, result.cursor),
-        last_sync_at: completedAt,
-        last_outcome: "completed",
-        last_error_code: result.mode === "live" ? null : "fixture_not_live",
-        updated_at: completedAt,
-      });
-      this.feed.upsertSourceRun(terminal);
-      appendConnectorEvent(this.db, this.boardId, source.source_id, "feed_connector.sync_completed", `${source.name} 同步完成：新增 ${created}，去重 ${deduped}`, {
-        created,
-        deduped,
-      });
-    }).immediate();
-    if (result.mode === "live") this.resolveSourceFaults(source.source_id);
-    return { source: durableSource, run: terminal, created, deduped, replayed: false };
+    const mode = connectorReceipt.mode === "fixture" ? "fixture" : "live";
+    const cursor = listener.checkpoint(this.boardId, source.source_id).cursor;
+    const latest = this.feed.getSource(this.boardId, source.source_id);
+    const durableSource = this.feed.upsertSource({
+      ...latest,
+      status: mode === "live" ? "active" : "error",
+      cursor,
+      ...connectorSourceMetadata(latest, cursor),
+      last_sync_at: completedAt,
+      last_outcome: "completed",
+      last_error_code: mode === "live" ? null : "fixture_not_live",
+      updated_at: completedAt,
+    });
+    appendConnectorEvent(this.db, this.boardId, source.source_id, "feed_connector.sync_completed", `${source.name} 同步完成：新增 ${listenerResult.created_count}，去重 ${listenerResult.deduped_count}`, {
+      created: listenerResult.created_count,
+      deduped: listenerResult.deduped_count,
+    });
+    if (mode === "live") this.resolveSourceFaults(source.source_id);
+    return {
+      source: durableSource,
+      run: this.feed.getSourceRunByOperationId(this.boardId, operationId)!,
+      created: listenerResult.created_count,
+      deduped: listenerResult.deduped_count,
+      replayed: listenerResult.replayed,
+    };
   }
 
   private recordActionableSourceFault(
@@ -519,16 +501,6 @@ export class FeedConnectorService {
     });
   }
 
-  private portFor(source: FeedSourceRecord): ConnectorPort {
-    if (this.connectorFactory) return this.connectorFactory(source);
-    if (source.sync_kind === "github") return createGithubConnector({ allowFixture: false });
-    const tokenRefs = source.config.token_refs;
-    return createGmailConnector({
-      allowFixture: false,
-      scope: normalizeGmailScope(source.config.scope),
-      ...(isGmailTokenRefs(tokenRefs) ? { tokenRefs } : {}),
-    });
-  }
 }
 
 function connectorSourceMetadata(
